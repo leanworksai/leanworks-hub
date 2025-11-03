@@ -1,4 +1,4 @@
-import { LayoutDashboard, Users, Puzzle, FolderKanban, Settings, LogOut } from "lucide-react";
+import { Users, Puzzle, FolderKanban, Settings, LogOut } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -14,10 +14,9 @@ import {
 } from "@/components/ui/sidebar";
 
 const menuItems = [
-  { title: "Dashboard", url: "/", icon: LayoutDashboard },
+  { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Teams", url: "/teams", icon: Users },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
-  { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
@@ -49,7 +48,6 @@ export function AppSidebar() {
                   <SidebarMenuButton asChild>
                     <NavLink
                       to={item.url}
-                      end={item.url === "/"}
                       className={({ isActive }) =>
                         isActive
                           ? "bg-sidebar-accent text-sidebar-accent-foreground"

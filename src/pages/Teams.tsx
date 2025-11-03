@@ -1,8 +1,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Plus, MoreVertical, Mail, UserPlus } from "lucide-react";
+import { Plus, MoreVertical } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
+import { useNavigate } from "react-router-dom";
 
 const teams = [
   {
@@ -35,14 +35,8 @@ const teams = [
   },
 ];
 
-const teamMembers = [
-  { name: "Sarah Johnson", role: "Team Lead", email: "sarah@leanworks.ai", avatar: "SJ" },
-  { name: "Michael Chen", role: "Developer", email: "michael@leanworks.ai", avatar: "MC" },
-  { name: "Emma Davis", role: "Designer", email: "emma@leanworks.ai", avatar: "ED" },
-  { name: "James Wilson", role: "Product Manager", email: "james@leanworks.ai", avatar: "JW" },
-];
-
 export default function Teams() {
+  const navigate = useNavigate();
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -60,7 +54,11 @@ export default function Teams() {
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {teams.map((team) => (
-          <Card key={team.name} className="bg-gradient-card border-border shadow-card">
+          <Card 
+            key={team.name} 
+            className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105"
+            onClick={() => navigate(`/teams/${team.name}`)}
+          >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-3">
                 <Avatar className="h-10 w-10 bg-primary">
@@ -75,7 +73,11 @@ export default function Teams() {
                   </CardDescription>
                 </div>
               </div>
-              <Button variant="ghost" size="icon">
+              <Button 
+                variant="ghost" 
+                size="icon"
+                onClick={(e) => e.stopPropagation()}
+              >
                 <MoreVertical className="h-4 w-4" />
               </Button>
             </CardHeader>
@@ -94,47 +96,6 @@ export default function Teams() {
           </Card>
         ))}
       </div>
-
-      <Card className="bg-gradient-card border-border shadow-card">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle>Team Members</CardTitle>
-            <CardDescription>
-              All members across your organization
-            </CardDescription>
-          </div>
-          <Button variant="outline" className="border-primary text-primary hover:bg-primary hover:text-primary-foreground">
-            <UserPlus className="mr-2 h-4 w-4" />
-            Invite Member
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {teamMembers.map((member) => (
-              <div
-                key={member.email}
-                className="flex items-center justify-between rounded-lg border border-border bg-secondary/30 p-4"
-              >
-                <div className="flex items-center gap-3">
-                  <Avatar>
-                    <AvatarFallback className="bg-primary text-primary-foreground">
-                      {member.avatar}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <p className="font-medium">{member.name}</p>
-                    <p className="text-sm text-muted-foreground flex items-center gap-1">
-                      <Mail className="h-3 w-3" />
-                      {member.email}
-                    </p>
-                  </div>
-                </div>
-                <Badge variant="secondary">{member.role}</Badge>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

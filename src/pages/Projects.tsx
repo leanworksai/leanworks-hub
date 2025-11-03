@@ -8,55 +8,85 @@ const projects = [
     name: "Mobile App Redesign",
     description: "Complete overhaul of the mobile experience",
     status: "In Progress",
-    progress: 68,
     team: 8,
     dueDate: "Dec 15, 2024",
     statusColor: "bg-blue-500",
+    summary: {
+      accomplishment: "Completed user flow redesign and prototyping",
+      decision: "Decided to adopt React Native for cross-platform support",
+      risk: "Timeline might slip due to API dependencies",
+      direction: "Moving towards beta testing phase",
+    },
   },
   {
     name: "API Integration",
     description: "Third-party API connections and webhooks",
     status: "In Progress",
-    progress: 45,
     team: 5,
     dueDate: "Jan 20, 2025",
     statusColor: "bg-blue-500",
+    summary: {
+      accomplishment: "Integrated Stripe and SendGrid APIs successfully",
+      decision: "Using webhook retry mechanism for reliability",
+      risk: "Rate limiting on third-party APIs",
+      direction: "Focus on error handling and monitoring",
+    },
   },
   {
     name: "Dashboard Analytics",
     description: "Real-time analytics and reporting dashboard",
     status: "Review",
-    progress: 92,
     team: 6,
     dueDate: "Nov 30, 2024",
     statusColor: "bg-yellow-500",
+    summary: {
+      accomplishment: "All charts and metrics implemented",
+      decision: "Using WebSockets for real-time updates",
+      risk: "Performance optimization needed for large datasets",
+      direction: "Final review and performance testing",
+    },
   },
   {
     name: "User Authentication",
     description: "Enhanced security and SSO implementation",
     status: "Completed",
-    progress: 100,
     team: 4,
     dueDate: "Nov 15, 2024",
     statusColor: "bg-green-500",
+    summary: {
+      accomplishment: "SSO integration with Google and Microsoft complete",
+      decision: "Implemented JWT with refresh token rotation",
+      risk: "None - project completed successfully",
+      direction: "Monitoring production performance",
+    },
   },
   {
     name: "Payment Gateway",
     description: "Stripe integration and checkout flow",
     status: "Planning",
-    progress: 15,
     team: 3,
     dueDate: "Feb 10, 2025",
     statusColor: "bg-gray-500",
+    summary: {
+      accomplishment: "Requirements gathering and architecture design",
+      decision: "Using Stripe Checkout for initial implementation",
+      risk: "Regulatory compliance requirements need review",
+      direction: "Starting development sprint next week",
+    },
   },
   {
     name: "Email Campaign System",
     description: "Automated marketing email workflows",
     status: "In Progress",
-    progress: 55,
     team: 4,
     dueDate: "Dec 28, 2024",
     statusColor: "bg-blue-500",
+    summary: {
+      accomplishment: "Template system and scheduler built",
+      decision: "Using SendGrid for email delivery",
+      risk: "Email deliverability rates need improvement",
+      direction: "A/B testing implementation in progress",
+    },
   },
 ];
 
@@ -109,19 +139,25 @@ export default function Projects() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Progress</span>
-                  <span className="font-medium">{project.progress}%</span>
+              <div className="grid gap-3 text-sm">
+                <div>
+                  <p className="font-medium text-primary">Accomplishment</p>
+                  <p className="text-muted-foreground">{project.summary.accomplishment}</p>
                 </div>
-                <div className="h-2 rounded-full bg-secondary overflow-hidden">
-                  <div
-                    className="h-full bg-primary transition-all"
-                    style={{ width: `${project.progress}%` }}
-                  />
+                <div>
+                  <p className="font-medium text-primary">Important Decision</p>
+                  <p className="text-muted-foreground">{project.summary.decision}</p>
+                </div>
+                <div>
+                  <p className="font-medium text-primary">Risk & Blocks</p>
+                  <p className="text-muted-foreground">{project.summary.risk}</p>
+                </div>
+                <div>
+                  <p className="font-medium text-primary">Overall Direction</p>
+                  <p className="text-muted-foreground">{project.summary.direction}</p>
                 </div>
               </div>
-              <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center justify-between text-sm pt-2 border-t border-border">
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Users className="h-4 w-4" />
                   <span>{project.team} members</span>
