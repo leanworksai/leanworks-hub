@@ -124,12 +124,6 @@ export default function Projects() {
             <CardHeader>
               <div className="flex items-start justify-between">
                 <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <div className={`h-2 w-2 rounded-full ${project.statusColor}`} />
-                    <Badge variant="secondary" className="text-xs">
-                      {project.status}
-                    </Badge>
-                  </div>
                   <CardTitle className="text-xl">{project.name}</CardTitle>
                   <CardDescription>{project.description}</CardDescription>
                 </div>
@@ -139,24 +133,12 @@ export default function Projects() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-3 text-sm">
-                <div>
-                  <p className="font-medium text-primary">Accomplishment</p>
-                  <p className="text-muted-foreground">{project.summary.accomplishment}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-primary">Important Decision</p>
-                  <p className="text-muted-foreground">{project.summary.decision}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-primary">Risk & Blocks</p>
-                  <p className="text-muted-foreground">{project.summary.risk}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-primary">Overall Direction</p>
-                  <p className="text-muted-foreground">{project.summary.direction}</p>
-                </div>
-              </div>
+              <ul className="list-disc list-inside space-y-2 text-sm text-muted-foreground">
+                <li>{project.summary.accomplishment}</li>
+                <li>{project.summary.decision}</li>
+                <li>{project.summary.risk}</li>
+                <li>{project.summary.direction}</li>
+              </ul>
               <div className="flex items-center justify-between text-sm pt-2 border-t border-border">
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Users className="h-4 w-4" />
