@@ -106,18 +106,6 @@ export default function Projects() {
         </Button>
       </div>
 
-      <div className="flex gap-2">
-        {["All Projects", "In Progress", "Review", "Completed"].map((filter) => (
-          <Badge
-            key={filter}
-            variant={filter === "All Projects" ? "default" : "secondary"}
-            className="cursor-pointer px-4 py-1.5"
-          >
-            {filter}
-          </Badge>
-        ))}
-      </div>
-
       <div className="grid gap-4 md:grid-cols-2">
         {projects.map((project) => (
           <Card key={project.name} className="bg-gradient-card border-border shadow-card">
