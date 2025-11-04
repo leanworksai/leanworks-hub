@@ -121,12 +121,15 @@ export default function Projects() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ul className="list-disc list-inside space-y-2 text-sm text-muted-foreground">
-                <li>{project.summary.accomplishment}</li>
-                <li>{project.summary.decision}</li>
-                <li>{project.summary.risk}</li>
-                <li>{project.summary.direction}</li>
-              </ul>
+              <div className="pt-2 border-t border-border">
+                <p className="text-xs font-medium text-muted-foreground/70 mb-3">PROGRESS SUMMARY</p>
+                <ul className="list-disc list-inside space-y-2 text-sm text-muted-foreground">
+                  <li>{project.summary.accomplishment}</li>
+                  <li>{project.summary.decision}</li>
+                  <li>{project.summary.risk}</li>
+                  <li>{project.summary.direction}</li>
+                </ul>
+              </div>
               <div className="flex items-center justify-between text-sm pt-2 border-t border-border">
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Users className="h-4 w-4" />
