@@ -1,8 +1,8 @@
+import { useParams, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Plus, MoreVertical, Users, Calendar } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { ArrowLeft, Users, Calendar } from "lucide-react";
 
 const projects = [
   {
@@ -91,82 +91,93 @@ const projects = [
   },
 ];
 
-const truncateText = (text: string, maxLength: number) => {
-  if (text.length <= maxLength) return text;
-  return text.substring(0, maxLength) + "...";
-};
-
-export default function Projects() {
+export default function ProjectDetail() {
+  const { projectName } = useParams();
   const navigate = useNavigate();
+  
+  const project = projects.find(
+    (p) => p.name.toLowerCase().replace(/\s+/g, '-') === projectName
+  );
 
-  const handleCardClick = (projectName: string) => {
-    const slug = projectName.toLowerCase().replace(/\s+/g, '-');
-    navigate(`/projects/${slug}`);
-  };
+  if (!project) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12">
+          <h1 className="text-2xl font-bold">Project not found</h1>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
-          <p className="text-muted-foreground">
-            Manage and track your active projects
-          </p>
+      <Button variant="ghost" onClick={() => navigate("/projects")}>
+        <ArrowLeft className="mr-2 h-4 w-4" />
+        Back to Projects
+      </Button>
+
+      <div>
+        <div className="flex items-start justify-between mb-2">
+          <h1 className="text-3xl font-bold tracking-tight">{project.name}</h1>
+          <Badge className={`${project.statusColor} text-white`}>
+            {project.status}
+          </Badge>
         </div>
-        <Button className="bg-primary hover:bg-primary/90">
-          <Plus className="mr-2 h-4 w-4" />
-          New Project
-        </Button>
+        <p className="text-muted-foreground text-lg">{project.description}</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        {projects.map((project) => (
-          <Card 
-            key={project.name} 
-            className="bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow"
-            onClick={() => handleCardClick(project.name)}
-          >
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="space-y-1 flex-1 mr-2">
-                  <CardTitle className="text-xl">{project.name}</CardTitle>
-                  <CardDescription className="line-clamp-2">{project.description}</CardDescription>
-                </div>
-                <Button 
-                  variant="ghost" 
-                  size="icon"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    // Handle menu action
-                  }}
-                >
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
+        <Card className="bg-gradient-card border-border shadow-card">
+          <CardHeader>
+            <CardTitle className="text-lg">Project Information</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Users className="h-5 w-5" />
+                <span className="font-medium">Team Size</span>
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="pt-2 border-t border-border">
-                <p className="text-xs font-medium text-muted-foreground/70 mb-3">PROGRESS SUMMARY</p>
-                <ul className="list-disc list-inside space-y-2 text-sm text-muted-foreground">
-                  <li>{truncateText(project.summary.accomplishment, 80)}</li>
-                  <li>{truncateText(project.summary.decision, 80)}</li>
-                  <li>{truncateText(project.summary.risk, 80)}</li>
-                  <li>{truncateText(project.summary.direction, 80)}</li>
-                </ul>
+              <span className="font-semibold">{project.team} members</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Calendar className="h-5 w-5" />
+                <span className="font-medium">Due Date</span>
               </div>
-              <div className="flex items-center justify-between text-sm pt-2 border-t border-border">
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Users className="h-4 w-4" />
-                  <span>{project.team} members</span>
-                </div>
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Calendar className="h-4 w-4" />
-                  <span>{project.dueDate}</span>
-                </div>
+              <span className="font-semibold">{project.dueDate}</span>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gradient-card border-border shadow-card">
+          <CardHeader>
+            <CardTitle className="text-lg">Progress Summary</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm font-medium text-muted-foreground mb-1">Accomplishment</p>
+                <p className="text-sm">{project.summary.accomplishment}</p>
               </div>
-            </CardContent>
-          </Card>
-        ))}
+              <div>
+                <p className="text-sm font-medium text-muted-foreground mb-1">Decision</p>
+                <p className="text-sm">{project.summary.decision}</p>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-muted-foreground mb-1">Risk</p>
+                <p className="text-sm">{project.summary.risk}</p>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-muted-foreground mb-1">Direction</p>
+                <p className="text-sm">{project.summary.direction}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

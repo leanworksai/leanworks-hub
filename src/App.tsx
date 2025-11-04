@@ -8,6 +8,7 @@ import Teams from "./pages/Teams";
 import TeamDetail from "./pages/TeamDetail";
 import Integrations from "./pages/Integrations";
 import Projects from "./pages/Projects";
+import ProjectDetail from "./pages/ProjectDetail";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -50,6 +51,14 @@ const App = () => (
             element={
               <DashboardLayout>
                 <Projects />
+              </DashboardLayout>
+            }
+          />
+          <Route
+            path="/projects/:projectName"
+            element={
+              <DashboardLayout>
+                <ProjectDetail />
               </DashboardLayout>
             }
           />
