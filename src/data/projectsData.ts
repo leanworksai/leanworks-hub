@@ -21,6 +21,14 @@ export interface ProgressUpdate {
   update: string;
 }
 
+export interface Comment {
+  id: string;
+  memberName: string;
+  memberAvatar: string;
+  date: string;
+  comment: string;
+}
+
 export interface Project {
   name: string;
   description: string;
@@ -33,6 +41,7 @@ export interface Project {
   members: ProjectMember[];
   tasks: Task[];
   progressUpdates: ProgressUpdate[];
+  comments: Comment[];
   summary: {
     accomplishment: string;
     decision: string;
@@ -68,6 +77,10 @@ export const projects: Project[] = [
       { id: "4", title: "User testing sessions", status: "in-progress", assignee: "David Park", dueDate: "Nov 25, 2024" },
       { id: "5", title: "Implement dark mode", status: "todo", assignee: "Emma Wilson", dueDate: "Dec 5, 2024" },
       { id: "6", title: "Performance optimization", status: "todo", assignee: "Chris Taylor", dueDate: "Dec 10, 2024" },
+    ],
+    comments: [
+      { id: "comment-1", memberName: "Lisa Anderson", memberAvatar: "LA", date: "Nov 11, 2024", comment: "The team is making great progress! Keep up the excellent work." },
+      { id: "comment-2", memberName: "Tom Rodriguez", memberAvatar: "TR", date: "Nov 10, 2024", comment: "Should we schedule a review meeting for next week to align on the progress?" },
     ],
     progressUpdates: [
       { id: "1", memberName: "Sarah Chen", memberAvatar: "SC", date: "Nov 10, 2024", update: "Completed the final design mockups and handed off to developers. All screens are now ready for implementation." },
@@ -105,6 +118,9 @@ export const projects: Project[] = [
       { id: "4", title: "API documentation", status: "in-progress", assignee: "Nina Patel", dueDate: "Dec 15, 2024" },
       { id: "5", title: "Load testing", status: "todo", assignee: "Rachel Kim", dueDate: "Jan 10, 2025" },
     ],
+    comments: [
+      { id: "comment-1", memberName: "Sam Lee", memberAvatar: "SL", date: "Nov 10, 2024", comment: "Great work on the Stripe integration! The payment flows look solid." },
+    ],
     progressUpdates: [
       { id: "1", memberName: "Nina Patel", memberAvatar: "NP", date: "Nov 10, 2024", update: "Stripe integration is live in production. All payment flows are working smoothly." },
       { id: "2", memberName: "Alex Turner", memberAvatar: "AT", date: "Nov 9, 2024", update: "SendGrid integration complete. Email delivery rates are excellent at 98%." },
@@ -141,6 +157,7 @@ export const projects: Project[] = [
       { id: "4", title: "Performance testing", status: "in-progress", assignee: "Marcus Johnson", dueDate: "Nov 25, 2024" },
       { id: "5", title: "User acceptance testing", status: "in-progress", assignee: "Diana Ross", dueDate: "Nov 28, 2024" },
     ],
+    comments: [],
     progressUpdates: [
       { id: "1", memberName: "Sophie Anderson", memberAvatar: "SA", date: "Nov 10, 2024", update: "All chart components are implemented and looking great. Ready for final review." },
       { id: "2", memberName: "Ryan Cooper", memberAvatar: "RC", date: "Nov 9, 2024", update: "WebSocket connection is stable. Real-time updates are working perfectly." },
@@ -175,6 +192,7 @@ export const projects: Project[] = [
       { id: "4", title: "Login UI components", status: "completed", assignee: "Jennifer Lee", dueDate: "Nov 1, 2024" },
       { id: "5", title: "Security audit", status: "completed", assignee: "William Chen", dueDate: "Nov 10, 2024" },
     ],
+    comments: [],
     progressUpdates: [
       { id: "1", memberName: "Patricia Davis", memberAvatar: "PD", date: "Nov 12, 2024", update: "Project successfully deployed to production. All security measures are in place." },
       { id: "2", memberName: "William Chen", memberAvatar: "WC", date: "Nov 10, 2024", update: "Security audit completed. No critical issues found. System is production-ready." },
@@ -207,6 +225,7 @@ export const projects: Project[] = [
       { id: "3", title: "Stripe account setup", status: "todo", assignee: "Michael Brown", dueDate: "Nov 25, 2024" },
       { id: "4", title: "Checkout UI mockups", status: "todo", assignee: "Sarah Thompson", dueDate: "Dec 1, 2024" },
     ],
+    comments: [],
     progressUpdates: [
       { id: "1", memberName: "Daniel Kim", memberAvatar: "DK", date: "Nov 10, 2024", update: "Completed requirements gathering. Documented all payment flows and edge cases." },
       { id: "2", memberName: "Michael Brown", memberAvatar: "MB", date: "Nov 8, 2024", update: "Working on architecture design. Evaluating different Stripe integration approaches." },
@@ -240,6 +259,7 @@ export const projects: Project[] = [
       { id: "4", title: "Analytics dashboard", status: "in-progress", assignee: "Chris Evans", dueDate: "Dec 5, 2024" },
       { id: "5", title: "Audience segmentation", status: "todo", assignee: "Amanda Foster", dueDate: "Dec 15, 2024" },
     ],
+    comments: [],
     progressUpdates: [
       { id: "1", memberName: "Laura Martinez", memberAvatar: "LM", date: "Nov 10, 2024", update: "A/B testing framework is coming together nicely. Should be ready for testing soon." },
       { id: "2", memberName: "Chris Evans", memberAvatar: "CE", date: "Nov 9, 2024", update: "Template builder is working great. Users can create beautiful emails with drag-and-drop." },

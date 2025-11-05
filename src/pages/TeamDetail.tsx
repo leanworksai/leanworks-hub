@@ -10,54 +10,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-const teamData = {
-  Engineering: {
-    name: "Engineering",
-    description: "Core development team",
-    avatar: "E",
-    members: [
-      { name: "Sarah Johnson", role: "Team Lead", email: "sarah@leanworks.ai", avatar: "SJ" },
-      { name: "Michael Chen", role: "Senior Developer", email: "michael@leanworks.ai", avatar: "MC" },
-      { name: "Alex Rivera", role: "Frontend Developer", email: "alex@leanworks.ai", avatar: "AR" },
-      { name: "David Kim", role: "Backend Developer", email: "david@leanworks.ai", avatar: "DK" },
-    ],
-  },
-  Design: {
-    name: "Design",
-    description: "UI/UX and product design",
-    avatar: "D",
-    members: [
-      { name: "Emma Davis", role: "Design Lead", email: "emma@leanworks.ai", avatar: "ED" },
-      { name: "Sophie Turner", role: "UI Designer", email: "sophie@leanworks.ai", avatar: "ST" },
-      { name: "Lucas Brown", role: "UX Researcher", email: "lucas@leanworks.ai", avatar: "LB" },
-    ],
-  },
-  Product: {
-    name: "Product",
-    description: "Product management",
-    avatar: "P",
-    members: [
-      { name: "James Wilson", role: "Product Manager", email: "james@leanworks.ai", avatar: "JW" },
-      { name: "Olivia Martinez", role: "Product Owner", email: "olivia@leanworks.ai", avatar: "OM" },
-    ],
-  },
-  Marketing: {
-    name: "Marketing",
-    description: "Growth and marketing",
-    avatar: "M",
-    members: [
-      { name: "Ryan Taylor", role: "Marketing Lead", email: "ryan@leanworks.ai", avatar: "RT" },
-      { name: "Nina Patel", role: "Content Strategist", email: "nina@leanworks.ai", avatar: "NP" },
-    ],
-  },
-};
+import { getTeamData } from "@/data/teamsData";
 
 export default function TeamDetail() {
   const { teamName } = useParams<{ teamName: string }>();
   const navigate = useNavigate();
   
-  const team = teamName ? teamData[teamName as keyof typeof teamData] : null;
+  const teamData = getTeamData();
+  const team = teamName ? teamData[teamName] : null;
 
   if (!team) {
     return (

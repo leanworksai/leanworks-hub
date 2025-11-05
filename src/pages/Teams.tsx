@@ -1,42 +1,77 @@
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Plus, MoreVertical } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
-
-const teams = [
-  {
-    name: "Engineering",
-    members: 24,
-    projects: 8,
-    avatar: "E",
-    description: "Core development team",
-  },
-  {
-    name: "Design",
-    members: 12,
-    projects: 5,
-    avatar: "D",
-    description: "UI/UX and product design",
-  },
-  {
-    name: "Product",
-    members: 8,
-    projects: 6,
-    avatar: "P",
-    description: "Product management",
-  },
-  {
-    name: "Marketing",
-    members: 6,
-    projects: 3,
-    avatar: "M",
-    description: "Growth and marketing",
-  },
-];
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { getTeams, addTeam, type Team, type TeamDetailData } from "@/data/teamsData";
+import { toast } from "@/components/ui/sonner";
 
 export default function Teams() {
   const navigate = useNavigate();
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [formData, setFormData] = useState({
+    name: "",
+    description: "",
+    members: "0",
+    projects: "0",
+  });
+
+  useEffect(() => {
+    setTeams(getTeams());
+  }, []);
+
+  const handleCreateTeam = () => {
+    if (!formData.name.trim()) {
+      toast.error("Team name is required");
+      return;
+    }
+
+    if (!formData.description.trim()) {
+      toast.error("Team description is required");
+      return;
+    }
+
+    // Get first letter of team name for avatar
+    const avatar = formData.name.charAt(0).toUpperCase();
+    
+    const newTeam: Team = {
+      name: formData.name.trim(),
+      description: formData.description.trim(),
+      members: parseInt(formData.members) || 0,
+      projects: parseInt(formData.projects) || 0,
+      avatar,
+    };
+
+    const newTeamDetail: TeamDetailData = {
+      name: formData.name.trim(),
+      description: formData.description.trim(),
+      avatar,
+      members: [], // Empty members array, can be added later
+    };
+
+    try {
+      addTeam(newTeam, newTeamDetail);
+      setTeams(getTeams());
+      setIsDialogOpen(false);
+      setFormData({ name: "", description: "", members: "0", projects: "0" });
+      toast.success("Team created successfully!");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to create team");
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -46,11 +81,83 @@ export default function Teams() {
             Manage your teams and members
           </p>
         </div>
-        <Button className="bg-primary hover:bg-primary/90">
+        <Button 
+          className="bg-primary hover:bg-primary/90"
+          onClick={() => setIsDialogOpen(true)}
+        >
           <Plus className="mr-2 h-4 w-4" />
           Create Team
         </Button>
       </div>
+
+      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Create New Team</DialogTitle>
+            <DialogDescription>
+              Add a new team to your organization. You can add members later.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="name">Team Name *</Label>
+              <Input
+                id="name"
+                placeholder="e.g., Sales, Operations"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="description">Description *</Label>
+              <Input
+                id="description"
+                placeholder="Brief description of the team"
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="members">Members</Label>
+                <Input
+                  id="members"
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={formData.members}
+                  onChange={(e) => setFormData({ ...formData, members: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="projects">Projects</Label>
+                <Input
+                  id="projects"
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={formData.projects}
+                  onChange={(e) => setFormData({ ...formData, projects: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsDialogOpen(false);
+                setFormData({ name: "", description: "", members: "0", projects: "0" });
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleCreateTeam} className="bg-primary hover:bg-primary/90">
+              Create Team
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {teams.map((team) => (

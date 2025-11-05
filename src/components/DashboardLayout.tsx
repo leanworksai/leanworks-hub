@@ -1,15 +1,24 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search } from "lucide-react";
+import { Bell, Search, Moon, Sun } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
+import { useTheme } from "next-themes";
+import { useEffect, useState } from "react";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
+  const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full">
@@ -28,6 +37,18 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  aria-label="Toggle theme"
+                >
+                  {mounted && theme === "dark" ? (
+                    <Sun className="h-5 w-5" />
+                  ) : (
+                    <Moon className="h-5 w-5" />
+                  )}
+                </Button>
                 <Button variant="ghost" size="icon" className="relative">
                   <Bell className="h-5 w-5" />
                   <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />

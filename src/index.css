@@ -52,6 +52,50 @@ All colors MUST be HSL.
     --shadow-glow: 0 0 40px hsl(270 70% 75% / 0.15);
     --shadow-card: 0 10px 30px -10px hsl(263 70% 5% / 0.5);
   }
+
+  .light {
+    --background: 270 10% 98%;
+    --foreground: 263 70% 15%;
+
+    --card: 270 10% 100%;
+    --card-foreground: 263 70% 15%;
+
+    --popover: 270 10% 100%;
+    --popover-foreground: 263 70% 15%;
+
+    --primary: 270 70% 55%;
+    --primary-foreground: 270 10% 98%;
+
+    --secondary: 270 10% 95%;
+    --secondary-foreground: 263 70% 20%;
+
+    --muted: 270 10% 95%;
+    --muted-foreground: 263 40% 40%;
+
+    --accent: 270 70% 55%;
+    --accent-foreground: 270 10% 98%;
+
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 270 10% 98%;
+
+    --border: 270 10% 90%;
+    --input: 270 10% 90%;
+    --ring: 270 70% 55%;
+
+    --sidebar-background: 270 10% 97%;
+    --sidebar-foreground: 263 70% 20%;
+    --sidebar-primary: 270 70% 55%;
+    --sidebar-primary-foreground: 270 10% 98%;
+    --sidebar-accent: 270 10% 92%;
+    --sidebar-accent-foreground: 263 70% 20%;
+    --sidebar-border: 270 10% 90%;
+    --sidebar-ring: 270 70% 55%;
+
+    --gradient-hero: linear-gradient(135deg, hsl(270 10% 98%) 0%, hsl(270 10% 95%) 100%);
+    --gradient-card: linear-gradient(135deg, hsl(270 10% 100%) 0%, hsl(270 10% 98%) 100%);
+    --shadow-glow: 0 0 40px hsl(270 70% 55% / 0.1);
+    --shadow-card: 0 10px 30px -10px hsl(263 70% 5% / 0.1);
+  }
 }
 
 @layer base {
@@ -61,7 +105,7 @@ All colors MUST be HSL.
 
   body {
     @apply bg-background text-foreground;
-    background: linear-gradient(135deg, hsl(263 70% 8%) 0%, hsl(273 60% 12%) 100%);
+    background: var(--gradient-hero);
     background-attachment: fixed;
   }
 }

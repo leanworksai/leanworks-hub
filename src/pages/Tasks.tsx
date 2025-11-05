@@ -1,7 +1,6 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { 
   Plus, 
   CheckCircle2, 
@@ -9,15 +8,9 @@ import {
   Clock, 
   AlertCircle, 
   FileCheck,
-  ArrowRight,
   Calendar,
   User,
-  Tag,
-  TrendingUp,
-  MessageSquare,
-  AlertTriangle,
-  Flag,
-  CheckCircle
+  ArrowRight
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { tasks, Task } from "@/data/tasksData";
@@ -66,32 +59,6 @@ const getPriorityColor = (priority: Task["priority"]) => {
   }
 };
 
-const getUpdateTypeIcon = (type?: string) => {
-  switch (type) {
-    case "milestone":
-      return <Flag className="h-3 w-3" />;
-    case "blocker":
-      return <AlertTriangle className="h-3 w-3" />;
-    case "question":
-      return <MessageSquare className="h-3 w-3" />;
-    default:
-      return <TrendingUp className="h-3 w-3" />;
-  }
-};
-
-const getUpdateTypeColor = (type?: string) => {
-  switch (type) {
-    case "milestone":
-      return "bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20";
-    case "blocker":
-      return "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20";
-    case "question":
-      return "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20";
-    default:
-      return "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20";
-  }
-};
-
 export default function Tasks() {
   const navigate = useNavigate();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
@@ -103,7 +70,12 @@ export default function Tasks() {
     return true;
   });
 
-  const handleProjectClick = (projectId: string) => {
+  const handleTaskClick = (taskId: string) => {
+    navigate(`/tasks/${taskId}`);
+  };
+
+  const handleProjectClick = (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation();
     const slug = projectId.toLowerCase().replace(/\s+/g, '-');
     navigate(`/projects/${slug}`);
   };
@@ -168,20 +140,21 @@ export default function Tasks() {
       </div>
 
       {/* Tasks List */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         {filteredTasks.map((task) => (
           <Card 
             key={task.id} 
-            className="bg-gradient-card border-border shadow-card hover:shadow-lg transition-shadow"
+            className="bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer"
+            onClick={() => handleTaskClick(task.id)}
           >
             <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3 flex-1">
-                  <div className="mt-1">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="mt-1 flex-shrink-0">
                     {getStatusIcon(task.status)}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <CardTitle className="text-lg">{task.title}</CardTitle>
                       <Badge 
                         className={`${getPriorityColor(task.priority)} text-xs`}
@@ -196,106 +169,29 @@ export default function Tasks() {
                         {task.status.replace("-", " ")}
                       </Badge>
                     </div>
-                    <CardDescription className="mb-3">
-                      {task.description}
-                    </CardDescription>
                     
                     {/* Task Meta Info */}
-                    <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground mb-3">
+                    <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <User className="h-4 w-4" />
                         <span>{task.assignee}</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <Calendar className="h-4 w-4" />
-                        <span>Due: {task.dueDate}</span>
+                        <span>{task.dueDate}</span>
                       </div>
-                      {task.estimatedHours && (
-                        <div className="flex items-center gap-1">
-                          <Clock className="h-4 w-4" />
-                          <span>
-                            {task.actualHours || 0}h / {task.estimatedHours}h
-                          </span>
-                        </div>
-                      )}
                       <button
-                        onClick={() => handleProjectClick(task.projectId)}
+                        onClick={(e) => handleProjectClick(e, task.projectId)}
                         className="flex items-center gap-1 text-primary hover:underline"
                       >
                         <span>{task.project}</span>
                         <ArrowRight className="h-3 w-3" />
                       </button>
                     </div>
-
-                    {/* Tags */}
-                    {task.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-3">
-                        {task.tags.map((tag) => (
-                          <Badge key={tag} variant="outline" className="text-xs">
-                            <Tag className="h-3 w-3 mr-1" />
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 </div>
               </div>
             </CardHeader>
-            
-            <CardContent>
-              {/* Progress Updates Section */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                  <h3 className="text-sm font-semibold text-muted-foreground">
-                    PROGRESS UPDATES ({task.progressUpdates.length})
-                  </h3>
-                </div>
-                
-                {task.progressUpdates.length > 0 ? (
-                  <div className="space-y-3 max-h-[280px] overflow-y-auto pr-2">
-                    {task.progressUpdates.map((update) => (
-                      <div 
-                        key={update.id} 
-                        className="border-l-2 border-primary/30 pl-4 pb-4 last:pb-0 relative"
-                      >
-                        <div className="absolute -left-2 top-0 h-4 w-4 rounded-full bg-background border-2 border-primary/50" />
-                        <div className="flex items-start gap-3 mb-2">
-                          <Avatar className="h-8 w-8">
-                            <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                              {update.memberAvatar}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              <p className="font-medium text-sm">{update.memberName}</p>
-                              <span className="text-xs text-muted-foreground">{update.date}</span>
-                              {update.type && (
-                                <Badge 
-                                  className={`${getUpdateTypeColor(update.type)} text-xs flex items-center gap-1`}
-                                  variant="outline"
-                                >
-                                  {getUpdateTypeIcon(update.type)}
-                                  <span>{update.type}</span>
-                                </Badge>
-                              )}
-                            </div>
-                            <p className="text-sm text-muted-foreground leading-relaxed">
-                              {update.update}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-sm text-muted-foreground">
-                    No progress updates yet
-                  </div>
-                )}
-              </div>
-            </CardContent>
           </Card>
         ))}
       </div>

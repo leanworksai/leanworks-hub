@@ -7,6 +7,14 @@ export interface TaskProgressUpdate {
   type?: "progress" | "blocker" | "milestone" | "question";
 }
 
+export interface TaskComment {
+  id: string;
+  memberName: string;
+  memberAvatar: string;
+  date: string;
+  comment: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -23,9 +31,10 @@ export interface Task {
   actualHours?: number;
   tags: string[];
   progressUpdates: TaskProgressUpdate[];
+  comments: TaskComment[];
 }
 
-export const tasks: Task[] = [
+let tasksData: Task[] = [
   {
     id: "task-1",
     title: "Implement new navigation system",
@@ -41,6 +50,22 @@ export const tasks: Task[] = [
     estimatedHours: 40,
     actualHours: 28,
     tags: ["frontend", "mobile", "navigation"],
+    comments: [
+      {
+        id: "comment-1",
+        memberName: "Sarah Chen",
+        memberAvatar: "SC",
+        date: "Nov 11, 2024",
+        comment: "Great progress! The navigation feels smooth. Looking forward to seeing the deep linking implementation."
+      },
+      {
+        id: "comment-2",
+        memberName: "Lisa Anderson",
+        memberAvatar: "LA",
+        date: "Nov 10, 2024",
+        comment: "Can we add animations for the transitions? That would make it feel more polished."
+      }
+    ],
     progressUpdates: [
       {
         id: "update-1",
@@ -91,6 +116,15 @@ export const tasks: Task[] = [
     estimatedHours: 24,
     actualHours: 16,
     tags: ["research", "ux", "testing"],
+    comments: [
+      {
+        id: "comment-1",
+        memberName: "Emma Wilson",
+        memberAvatar: "EW",
+        date: "Nov 9, 2024",
+        comment: "Great idea about platform-specific feedback. Let's include both iOS and Android users."
+      }
+    ],
     progressUpdates: [
       {
         id: "update-1",
@@ -133,6 +167,7 @@ export const tasks: Task[] = [
     estimatedHours: 32,
     actualHours: 22,
     tags: ["backend", "webhooks", "reliability"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -183,6 +218,7 @@ export const tasks: Task[] = [
     estimatedHours: 20,
     actualHours: 12,
     tags: ["documentation", "api"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -217,6 +253,7 @@ export const tasks: Task[] = [
     estimatedHours: 28,
     actualHours: 18,
     tags: ["testing", "performance", "optimization"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -259,6 +296,7 @@ export const tasks: Task[] = [
     estimatedHours: 36,
     actualHours: 24,
     tags: ["backend", "testing", "analytics"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -300,6 +338,7 @@ export const tasks: Task[] = [
     createdDate: "Nov 1, 2024",
     estimatedHours: 24,
     tags: ["frontend", "mobile", "ui"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -326,6 +365,15 @@ export const tasks: Task[] = [
     estimatedHours: 40,
     actualHours: 38,
     tags: ["design", "wireframes"],
+    comments: [
+      {
+        id: "comment-1",
+        memberName: "Mike Johnson",
+        memberAvatar: "MJ",
+        date: "Nov 1, 2024",
+        comment: "Excellent work on the wireframes! The layouts are clear and easy to follow."
+      }
+    ],
     progressUpdates: [
       {
         id: "update-1",
@@ -368,6 +416,7 @@ export const tasks: Task[] = [
     estimatedHours: 32,
     actualHours: 30,
     tags: ["backend", "payments", "stripe"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -410,6 +459,7 @@ export const tasks: Task[] = [
     estimatedHours: 28,
     actualHours: 16,
     tags: ["frontend", "analytics", "dashboard"],
+    comments: [],
     progressUpdates: [
       {
         id: "update-1",
@@ -430,4 +480,22 @@ export const tasks: Task[] = [
     ]
   }
 ];
+
+// Export tasks array
+export const tasks = tasksData;
+
+// Function to update a task
+export const updateTask = (taskId: string, updatedTask: Partial<Task>) => {
+  const index = tasksData.findIndex(t => t.id === taskId);
+  if (index !== -1) {
+    tasksData[index] = { ...tasksData[index], ...updatedTask };
+    return true;
+  }
+  return false;
+};
+
+// Function to get a task by ID
+export const getTaskById = (taskId: string): Task | undefined => {
+  return tasksData.find(t => t.id === taskId);
+};
 
