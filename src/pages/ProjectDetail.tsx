@@ -54,68 +54,28 @@ export default function ProjectDetail() {
           </Badge>
         </div>
         <p className="text-muted-foreground text-lg mb-4">{project.description}</p>
-        <p className="text-foreground">{project.detailedDescription}</p>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <Card className="bg-gradient-card border-border shadow-card">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Calendar className="h-5 w-5" />
-              Project Timeline
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Created</p>
-              <p className="font-medium">{project.createdDate}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Due Date</p>
-              <p className="font-medium">{project.dueDate}</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-gradient-card border-border shadow-card">
-          <CardHeader>
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              Team Size
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold">{project.team}</p>
-            <p className="text-sm text-muted-foreground">members</p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-gradient-card border-border shadow-card">
-          <CardHeader>
-            <CardTitle className="text-lg">Task Progress</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Completed</span>
-                <span className="font-medium">
-                  {project.tasks.filter(t => t.status === "completed").length} / {project.tasks.length}
-                </span>
-              </div>
-              <div className="w-full bg-secondary rounded-full h-2">
-                <div 
-                  className="bg-primary h-2 rounded-full transition-all"
-                  style={{ width: `${(project.tasks.filter(t => t.status === "completed").length / project.tasks.length) * 100}%` }}
-                />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <p className="text-foreground mb-4">{project.detailedDescription}</p>
+        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2">
+            <Calendar className="h-4 w-4" />
+            <span>Created: <span className="text-foreground font-medium">{project.createdDate}</span></span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Calendar className="h-4 w-4" />
+            <span>Due: <span className="text-foreground font-medium">{project.dueDate}</span></span>
+          </div>
+        </div>
       </div>
 
       <Card className="bg-gradient-card border-border shadow-card">
         <CardHeader>
-          <CardTitle className="text-xl">Team Members</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-xl">Team Members</CardTitle>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Users className="h-4 w-4" />
+              <span>{project.team} members</span>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -138,7 +98,20 @@ export default function ProjectDetail() {
 
       <Card className="bg-gradient-card border-border shadow-card">
         <CardHeader>
-          <CardTitle className="text-xl">Tasks</CardTitle>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-xl">Tasks</CardTitle>
+              <span className="text-sm text-muted-foreground">
+                {project.tasks.filter(t => t.status === "completed").length} / {project.tasks.length} completed
+              </span>
+            </div>
+            <div className="w-full bg-secondary rounded-full h-2">
+              <div 
+                className="bg-primary h-2 rounded-full transition-all"
+                style={{ width: `${(project.tasks.filter(t => t.status === "completed").length / project.tasks.length) * 100}%` }}
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">

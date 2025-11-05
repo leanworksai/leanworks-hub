@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, Settings, LogOut } from "lucide-react";
+import { Users, Puzzle, FolderKanban, Settings, LogOut, CheckSquare } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -15,6 +15,7 @@ import {
 
 const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
+  { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Teams", url: "/teams", icon: Users },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
   { title: "Settings", url: "/settings", icon: Settings },
