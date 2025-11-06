@@ -6,6 +6,7 @@ import { Plus, MoreVertical } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
+import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import {
   Dialog,
   DialogContent,
@@ -22,6 +23,7 @@ import { toast } from "@/components/ui/sonner";
 export default function Teams() {
   const navigate = useNavigate();
   const { toggleTeam, isTeamSelected, selectedTeams } = useSelectedTeams();
+  const { isSelectionMode } = useSelectionMode();
   const [teams, setTeams] = useState<Team[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -174,16 +176,23 @@ export default function Teams() {
             className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
               isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
             }`}
-            onClick={() => navigate(`/teams/${team.name}`)}
+            onClick={() => {
+              // Don't navigate if in selection mode
+              if (!isSelectionMode) {
+                navigate(`/teams/${team.name}`);
+              }
+            }}
           >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-3">
-                <Checkbox
-                  checked={isTeamSelected(team.name)}
-                  onCheckedChange={() => toggleTeam(team)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex-shrink-0"
-                />
+                {isSelectionMode && (
+                  <Checkbox
+                    checked={isTeamSelected(team.name)}
+                    onCheckedChange={() => toggleTeam(team)}
+                    onClick={(e) => e.stopPropagation()}
+                    className="flex-shrink-0"
+                  />
+                )}
                 <Avatar className="h-10 w-10 bg-primary">
                   <AvatarFallback className="bg-primary text-primary-foreground">
                     {team.avatar}

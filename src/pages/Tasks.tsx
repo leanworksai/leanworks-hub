@@ -17,6 +17,7 @@ import { useNavigate } from "react-router-dom";
 import { tasks, Task } from "@/data/tasksData";
 import { useState } from "react";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
+import { useSelectionMode } from "@/contexts/SelectionModeContext";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -64,6 +65,7 @@ const getPriorityColor = (priority: Task["priority"]) => {
 export default function Tasks() {
   const navigate = useNavigate();
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
+  const { isSelectionMode } = useSelectionMode();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
 
@@ -74,6 +76,8 @@ export default function Tasks() {
   });
 
   const handleTaskClick = (taskId: string) => {
+    // Don't navigate if in selection mode
+    if (isSelectionMode) return;
     navigate(`/tasks/${taskId}`);
   };
 
@@ -164,12 +168,14 @@ export default function Tasks() {
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
-                  <Checkbox
-                    checked={isTaskSelected(task.id)}
-                    onCheckedChange={() => toggleTask(task)}
-                    onClick={handleCheckboxClick}
-                    className="mt-1 flex-shrink-0"
-                  />
+                  {isSelectionMode && (
+                    <Checkbox
+                      checked={isTaskSelected(task.id)}
+                      onCheckedChange={() => toggleTask(task)}
+                      onClick={handleCheckboxClick}
+                      className="mt-1 flex-shrink-0"
+                    />
+                  )}
                   <div className="mt-1 flex-shrink-0">
                     {getStatusIcon(task.status)}
                   </div>

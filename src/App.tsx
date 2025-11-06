@@ -7,6 +7,7 @@ import { ThemeProvider } from "next-themes";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
+import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { Chatbot } from "./components/Chatbot";
 import Teams from "./pages/Teams";
@@ -25,12 +26,13 @@ const App = () => (
   <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <SelectedProjectsProvider>
-          <SelectedTasksProvider>
-            <SelectedTeamsProvider>
-              <Toaster />
-              <Sonner />
-              <BrowserRouter>
+        <SelectionModeProvider>
+          <SelectedProjectsProvider>
+            <SelectedTasksProvider>
+              <SelectedTeamsProvider>
+                <Toaster />
+                <Sonner />
+                <BrowserRouter>
         <Routes>
           <Route path="/" element={<Navigate to="/projects" replace />} />
           <Route
@@ -102,9 +104,10 @@ const App = () => (
         </Routes>
         <Chatbot />
       </BrowserRouter>
-            </SelectedTeamsProvider>
-          </SelectedTasksProvider>
-        </SelectedProjectsProvider>
+              </SelectedTeamsProvider>
+            </SelectedTasksProvider>
+          </SelectedProjectsProvider>
+        </SelectionModeProvider>
     </TooltipProvider>
   </QueryClientProvider>
   </ThemeProvider>

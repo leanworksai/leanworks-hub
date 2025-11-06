@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, Moon, Sun, X } from "lucide-react";
+import { Bell, Search, Moon, Sun, X, CheckSquare } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
+import { useSelectionMode } from "@/contexts/SelectionModeContext";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -20,6 +21,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
   const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
+  const { isSelectionMode, toggleSelectionMode } = useSelectionMode();
 
   useEffect(() => {
     setMounted(true);
@@ -31,6 +33,14 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     clearProjects();
     clearTasks();
     clearTeams();
+  };
+
+  const handleToggleSelectionMode = () => {
+    toggleSelectionMode();
+    // If disabling selection mode, clear all selections
+    if (isSelectionMode) {
+      handleClearAllSelections();
+    }
   };
 
   return (
@@ -51,7 +61,15 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {totalSelections > 0 && (
+                <Button
+                  variant={isSelectionMode ? "default" : "outline"}
+                  size="sm"
+                  onClick={handleToggleSelectionMode}
+                >
+                  <CheckSquare className="mr-2 h-4 w-4" />
+                  Select
+                </Button>
+                {isSelectionMode && totalSelections > 0 && (
                   <Button
                     variant="outline"
                     size="sm"
