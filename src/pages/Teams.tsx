@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, MoreVertical } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
+import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +21,7 @@ import { toast } from "@/components/ui/sonner";
 
 export default function Teams() {
   const navigate = useNavigate();
+  const { toggleTeam, isTeamSelected, selectedTeams } = useSelectedTeams();
   const [teams, setTeams] = useState<Team[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -79,6 +82,11 @@ export default function Teams() {
           <h1 className="text-3xl font-bold tracking-tight">Teams</h1>
           <p className="text-muted-foreground">
             Manage your teams and members
+            {selectedTeams.length > 0 && (
+              <span className="ml-2 text-primary">
+                ({selectedTeams.length} selected)
+              </span>
+            )}
           </p>
         </div>
         <Button 
@@ -163,11 +171,19 @@ export default function Teams() {
         {teams.map((team) => (
           <Card 
             key={team.name} 
-            className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105"
+            className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
+              isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
+            }`}
             onClick={() => navigate(`/teams/${team.name}`)}
           >
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-3">
+                <Checkbox
+                  checked={isTeamSelected(team.name)}
+                  onCheckedChange={() => toggleTeam(team)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex-shrink-0"
+                />
                 <Avatar className="h-10 w-10 bg-primary">
                   <AvatarFallback className="bg-primary text-primary-foreground">
                     {team.avatar}

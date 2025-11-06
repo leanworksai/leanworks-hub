@@ -1,9 +1,11 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, MoreVertical, Users, Calendar } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { projects } from "@/data/projectsData";
+import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
@@ -12,10 +14,15 @@ const truncateText = (text: string, maxLength: number) => {
 
 export default function Projects() {
   const navigate = useNavigate();
+  const { toggleProject, isProjectSelected, selectedProjects } = useSelectedProjects();
 
   const handleCardClick = (projectName: string) => {
     const slug = projectName.toLowerCase().replace(/\s+/g, '-');
     navigate(`/projects/${slug}`);
+  };
+
+  const handleCheckboxClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
   };
 
   return (
@@ -25,6 +32,11 @@ export default function Projects() {
           <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
           <p className="text-muted-foreground">
             Manage and track your active projects
+            {selectedProjects.length > 0 && (
+              <span className="ml-2 text-primary">
+                ({selectedProjects.length} selected)
+              </span>
+            )}
           </p>
         </div>
         <Button className="bg-primary hover:bg-primary/90">
@@ -37,14 +49,24 @@ export default function Projects() {
         {projects.map((project) => (
           <Card 
             key={project.name} 
-            className="bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow"
+            className={`bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow ${
+              isProjectSelected(project.name) ? 'ring-2 ring-primary' : ''
+            }`}
             onClick={() => handleCardClick(project.name)}
           >
             <CardHeader>
               <div className="flex items-start justify-between">
                 <div className="space-y-1 flex-1 mr-2">
-                  <CardTitle className="text-xl">{project.name}</CardTitle>
-                  <CardDescription className="line-clamp-2">{project.description}</CardDescription>
+                  <div className="flex items-center gap-3">
+                    <Checkbox
+                      checked={isProjectSelected(project.name)}
+                      onCheckedChange={() => toggleProject(project)}
+                      onClick={handleCheckboxClick}
+                      className="mt-1"
+                    />
+                    <CardTitle className="text-xl">{project.name}</CardTitle>
+                  </div>
+                  <CardDescription className="line-clamp-2 ml-7">{project.description}</CardDescription>
                 </div>
                 <Button 
                   variant="ghost" 
@@ -59,7 +81,7 @@ export default function Projects() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="pt-2 border-t border-border">
+              <div className="pt-2 border-t border-border ml-7">
                 <p className="text-xs font-medium text-muted-foreground/70 mb-3">PROGRESS SUMMARY</p>
                 <ul className="list-disc list-inside space-y-2 text-sm text-muted-foreground">
                   <li>{truncateText(project.summary.accomplishment, 80)}</li>
@@ -68,7 +90,7 @@ export default function Projects() {
                   <li>{truncateText(project.summary.direction, 80)}</li>
                 </ul>
               </div>
-              <div className="flex items-center justify-between text-sm pt-2 border-t border-border">
+              <div className="flex items-center justify-between text-sm pt-2 border-t border-border ml-7">
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Users className="h-4 w-4" />
                   <span>{project.team} members</span>

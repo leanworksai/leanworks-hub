@@ -1,6 +1,7 @@
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { 
   Plus, 
   CheckCircle2, 
@@ -15,6 +16,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { tasks, Task } from "@/data/tasksData";
 import { useState } from "react";
+import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -61,6 +63,7 @@ const getPriorityColor = (priority: Task["priority"]) => {
 
 export default function Tasks() {
   const navigate = useNavigate();
+  const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
 
@@ -80,6 +83,10 @@ export default function Tasks() {
     navigate(`/projects/${slug}`);
   };
 
+  const handleCheckboxClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -87,6 +94,11 @@ export default function Tasks() {
           <h1 className="text-3xl font-bold tracking-tight">Tasks</h1>
           <p className="text-muted-foreground">
             Track tasks with progress updates and timeline
+            {selectedTasks.length > 0 && (
+              <span className="ml-2 text-primary">
+                ({selectedTasks.length} selected)
+              </span>
+            )}
           </p>
         </div>
         <Button className="bg-primary hover:bg-primary/90">
@@ -144,12 +156,20 @@ export default function Tasks() {
         {filteredTasks.map((task) => (
           <Card 
             key={task.id} 
-            className="bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer"
+            className={`bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer ${
+              isTaskSelected(task.id) ? 'ring-2 ring-primary' : ''
+            }`}
             onClick={() => handleTaskClick(task.id)}
           >
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <Checkbox
+                    checked={isTaskSelected(task.id)}
+                    onCheckedChange={() => toggleTask(task)}
+                    onClick={handleCheckboxClick}
+                    className="mt-1 flex-shrink-0"
+                  />
                   <div className="mt-1 flex-shrink-0">
                     {getStatusIcon(task.status)}
                   </div>
