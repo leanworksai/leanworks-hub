@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users } from "lucide-react";
+import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getTeamData } from "@/data/teamsData";
+import { projects, Project } from "@/data/projectsData";
 
 interface Message {
   id: string;
@@ -31,6 +32,25 @@ interface TeamMember {
   role: string;
   avatar: string;
   email?: string;
+}
+
+interface ChannelMessage {
+  id: string;
+  memberName: string;
+  memberAvatar: string;
+  content: string;
+  timestamp: Date;
+  projectId: string;
+}
+
+interface SearchResult {
+  id: string;
+  type: "activity" | "task" | "comment" | "update" | "channel-message";
+  title: string;
+  content: string;
+  memberName: string;
+  memberAvatar: string;
+  date: string;
 }
 
 // Get all team members from teams data
@@ -69,14 +89,25 @@ export function Chatbot() {
       timestamp: new Date(),
     },
   ]);
+  const [channelMessages, setChannelMessages] = useState<Map<string, ChannelMessage[]>>(new Map());
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [filterType, setFilterType] = useState<"all" | "activities" | "tasks" | "comments">("all");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
 
   const allTeamMembers = getAllTeamMembers();
+  
+  // Check if selected member is a project channel
+  const isProjectChannel = selectedMember.startsWith("project-");
+  const selectedProjectId = isProjectChannel ? selectedMember.replace("project-", "") : null;
+  const selectedProject = selectedProjectId 
+    ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === selectedProjectId)
+    : null;
   
   // Filter team members based on search query
   const filteredTeamMembers = memberSearchQuery.trim() === ""
@@ -86,8 +117,18 @@ export function Chatbot() {
         member.role.toLowerCase().includes(memberSearchQuery.toLowerCase())
       );
 
+  // Filter projects based on search query
+  const filteredProjects = memberSearchQuery.trim() === ""
+    ? projects
+    : projects.filter((project) =>
+        project.name.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+        project.description.toLowerCase().includes(memberSearchQuery.toLowerCase())
+      );
+
   const currentMember = selectedMember === "ai-assistant" 
     ? { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" }
+    : isProjectChannel && selectedProject
+    ? { id: selectedMember, name: selectedProject.name, role: "Project Channel", avatar: "#" }
     : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" };
 
   // Check if AI Assistant matches search query
@@ -99,22 +140,129 @@ export function Chatbot() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // Perform search through project activities when in project channel mode
+  useEffect(() => {
+    if (!isProjectChannel || !selectedProject || !memberSearchQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    const query = memberSearchQuery.toLowerCase();
+    const results: SearchResult[] = [];
+
+    // Search through progress updates
+    if (filterType === "all" || filterType === "activities") {
+      selectedProject.progressUpdates.forEach((update) => {
+        if (
+          update.update.toLowerCase().includes(query) ||
+          update.memberName.toLowerCase().includes(query)
+        ) {
+          results.push({
+            id: update.id,
+            type: "update",
+            title: `Progress Update by ${update.memberName}`,
+            content: update.update,
+            memberName: update.memberName,
+            memberAvatar: update.memberAvatar,
+            date: update.date,
+          });
+        }
+      });
+    }
+
+    // Search through comments
+    if (filterType === "all" || filterType === "comments") {
+      selectedProject.comments.forEach((comment) => {
+        if (
+          comment.comment.toLowerCase().includes(query) ||
+          comment.memberName.toLowerCase().includes(query)
+        ) {
+          results.push({
+            id: comment.id,
+            type: "comment",
+            title: `Comment by ${comment.memberName}`,
+            content: comment.comment,
+            memberName: comment.memberName,
+            memberAvatar: comment.memberAvatar,
+            date: comment.date,
+          });
+        }
+      });
+    }
+
+    // Search through tasks
+    if (filterType === "all" || filterType === "tasks") {
+      selectedProject.tasks.forEach((task) => {
+        if (
+          task.title.toLowerCase().includes(query) ||
+          task.assignee.toLowerCase().includes(query) ||
+          task.status.toLowerCase().includes(query)
+        ) {
+          results.push({
+            id: task.id,
+            type: "task",
+            title: task.title,
+            content: `Status: ${task.status} | Assignee: ${task.assignee} | Due: ${task.dueDate}`,
+            memberName: task.assignee,
+            memberAvatar: task.assignee.charAt(0).toUpperCase(),
+            date: task.dueDate,
+          });
+        }
+      });
+    }
+
+    // Search through channel messages
+    if (filterType === "all" || filterType === "comments") {
+      const projectMessages = channelMessages.get(selectedProjectId!) || [];
+      projectMessages.forEach((message) => {
+        if (
+          message.content.toLowerCase().includes(query) ||
+          message.memberName.toLowerCase().includes(query)
+        ) {
+          results.push({
+            id: message.id,
+            type: "channel-message",
+            title: `Channel message by ${message.memberName}`,
+            content: message.content,
+            memberName: message.memberName,
+            memberAvatar: message.memberAvatar,
+            date: message.timestamp.toLocaleDateString(),
+          });
+        }
+      });
+    }
+
+    // Sort by relevance
+    results.sort((a, b) => {
+      const aExact = a.content.toLowerCase() === query || a.title.toLowerCase() === query;
+      const bExact = b.content.toLowerCase() === query || b.title.toLowerCase() === query;
+      if (aExact && !bExact) return -1;
+      if (!aExact && bExact) return 1;
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+
+    setSearchResults(results);
+    setIsSearching(results.length > 0 || memberSearchQuery.trim().length > 0);
+  }, [memberSearchQuery, isProjectChannel, selectedProject, filterType, selectedProjectId, channelMessages]);
+
   useEffect(() => {
     if (isOpen) {
       // Small delay to ensure DOM is updated
       setTimeout(() => {
         scrollToBottom();
-        inputRef.current?.focus();
+        if (isProjectChannel && isSearching) {
+          memberSearchRef.current?.focus();
+        } else {
+          inputRef.current?.focus();
+        }
       }, 100);
     }
-  }, [messages, isOpen, selectedProjects, selectedTasks, selectedTeams]);
+  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isSearching]);
 
-  // Clear messages when switching to a team member (but keep when switching back to AI Assistant)
+  // Clear messages when switching between different chat types
   useEffect(() => {
-    if (selectedMember !== "ai-assistant") {
-      // Clear all messages when switching to a team member
-      setMessages([]);
-    } else if (selectedMember === "ai-assistant") {
+    if (selectedMember === "ai-assistant") {
       // Restore AI Assistant greeting when switching back to AI Assistant (only if messages are empty)
       setMessages((prev) => {
         if (prev.length === 0) {
@@ -129,8 +277,12 @@ export function Chatbot() {
         }
         return prev;
       });
+    } else if (!isProjectChannel) {
+      // Clear messages when switching to a team member (not project channel)
+      setMessages([]);
     }
-  }, [selectedMember]);
+    // Don't clear messages when switching between project channels or team members
+  }, [selectedMember, isProjectChannel]);
 
   const generateResponse = async (userMessage: string): Promise<string> => {
     // Simulate API call delay
@@ -284,6 +436,28 @@ export function Chatbot() {
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
 
+    // Handle project channel messages
+    if (isProjectChannel && selectedProjectId) {
+      const newChannelMessage: ChannelMessage = {
+        id: `channel-${Date.now()}`,
+        memberName: "You", // In a real app, this would be the current user
+        memberAvatar: "U",
+        content: input.trim(),
+        timestamp: new Date(),
+        projectId: selectedProjectId,
+      };
+
+      setChannelMessages((prev) => {
+        const projectMessages = prev.get(selectedProjectId) || [];
+        const newMap = new Map(prev);
+        newMap.set(selectedProjectId, [...projectMessages, newChannelMessage]);
+        return newMap;
+      });
+      setInput("");
+      return;
+    }
+
+    // Handle AI Assistant or team member messages
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -351,10 +525,12 @@ export function Chatbot() {
             <Avatar className="h-8 w-8 flex-shrink-0">
               <AvatarFallback className={cn(
                 "text-primary-foreground",
-                selectedMember === "ai-assistant" ? "bg-primary" : "bg-muted"
+                selectedMember === "ai-assistant" ? "bg-primary" : isProjectChannel ? "bg-primary/10" : "bg-muted"
               )}>
                 {selectedMember === "ai-assistant" ? (
                   <Bot className="h-4 w-4" />
+                ) : isProjectChannel ? (
+                  <Hash className="h-4 w-4 text-primary" />
                 ) : (
                   <span className="text-xs">{currentMember.avatar}</span>
                 )}
@@ -393,7 +569,7 @@ export function Chatbot() {
                   <input
                     ref={memberSearchRef}
                     type="text"
-                    placeholder="Search team members..."
+                    placeholder="Search team members or projects..."
                     value={memberSearchQuery}
                     onChange={(e) => setMemberSearchQuery(e.target.value)}
                     onClick={(e) => e.stopPropagation()}
@@ -414,27 +590,55 @@ export function Chatbot() {
                       </div>
                     </SelectItem>
                   )}
-                  {/* Team Members */}
-                  {filteredTeamMembers.length > 0 ? (
-                    filteredTeamMembers.map((member) => (
-                      <SelectItem key={member.id} value={member.id} className="py-2">
-                        <div className="flex items-center gap-2">
-                          <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
-                            <span className="text-xs font-medium">{member.avatar}</span>
-                          </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="font-medium truncate">{member.name}</span>
-                            <span className="text-xs text-muted-foreground truncate">{member.role}</span>
-                          </div>
-                        </div>
-                      </SelectItem>
-                    ))
-                  ) : (
-                    memberSearchQuery.trim() !== "" && (
-                      <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-                        No team members found
+                  {/* Project Channels */}
+                  {filteredProjects.length > 0 && (
+                    <>
+                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase">
+                        Project Channels
                       </div>
-                    )
+                      {filteredProjects.map((project) => {
+                        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+                        return (
+                          <SelectItem key={`project-${projectId}`} value={`project-${projectId}`} className="py-2">
+                            <div className="flex items-center gap-2">
+                              <div className="h-6 w-6 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                                <Hash className="h-3 w-3 text-primary" />
+                              </div>
+                              <div className="flex flex-col min-w-0">
+                                <span className="font-medium truncate">{project.name}</span>
+                                <span className="text-xs text-muted-foreground truncate">Project Channel</span>
+                              </div>
+                            </div>
+                          </SelectItem>
+                        );
+                      })}
+                    </>
+                  )}
+                  {/* Team Members */}
+                  {filteredTeamMembers.length > 0 && (
+                    <>
+                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase">
+                        Team Members
+                      </div>
+                      {filteredTeamMembers.map((member) => (
+                        <SelectItem key={member.id} value={member.id} className="py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
+                              <span className="text-xs font-medium">{member.avatar}</span>
+                            </div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="font-medium truncate">{member.name}</span>
+                              <span className="text-xs text-muted-foreground truncate">{member.role}</span>
+                            </div>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </>
+                  )}
+                  {memberSearchQuery.trim() !== "" && filteredTeamMembers.length === 0 && filteredProjects.length === 0 && !aiAssistantMatches && (
+                    <div className="px-2 py-6 text-center text-sm text-muted-foreground">
+                      No results found
+                    </div>
                   )}
                 </div>
               </SelectContent>
@@ -450,9 +654,138 @@ export function Chatbot() {
           </Button>
         </div>
 
+        {/* Search Bar for Project Channels */}
+        {isProjectChannel && (
+          <div className="border-b bg-background p-3">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  ref={memberSearchRef}
+                  placeholder="Search activities, tasks, comments..."
+                  value={memberSearchQuery}
+                  onChange={(e) => {
+                    setMemberSearchQuery(e.target.value);
+                  }}
+                  className="pl-9"
+                />
+              </div>
+              <Select value={filterType} onValueChange={(value: any) => setFilterType(value)}>
+                <SelectTrigger className="w-[140px]">
+                  <Filter className="h-4 w-4 mr-2" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="activities">Activities</SelectItem>
+                  <SelectItem value="tasks">Tasks</SelectItem>
+                  <SelectItem value="comments">Comments</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+
         {/* Messages */}
         <CardContent className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((message) => (
+          {/* Search Results for Project Channels */}
+          {isProjectChannel && isSearching && memberSearchQuery.trim() && (
+            <div className="space-y-3 mb-4">
+              <div className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                <Search className="h-4 w-4" />
+                {searchResults.length > 0 
+                  ? `Found ${searchResults.length} result${searchResults.length > 1 ? 's' : ''}`
+                  : "No results found"}
+              </div>
+              {searchResults.map((result) => (
+                <div
+                  key={result.id}
+                  className="p-3 rounded-lg bg-muted/50 border border-border hover:bg-muted transition-colors cursor-pointer"
+                  onClick={() => {
+                    setMemberSearchQuery("");
+                    setIsSearching(false);
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5">
+                      {result.type === "update" && <Activity className="h-3 w-3" />}
+                      {result.type === "comment" && <MessageSquare className="h-3 w-3" />}
+                      {result.type === "task" && <CheckSquare className="h-3 w-3" />}
+                      {result.type === "channel-message" && <Hash className="h-3 w-3" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <p className="font-medium text-sm">{result.title}</p>
+                        <Badge variant="outline" className="text-xs">
+                          {result.type}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">{result.date}</span>
+                      </div>
+                      <p className="text-sm text-muted-foreground line-clamp-2">{result.content}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Avatar className="h-5 w-5">
+                          <AvatarFallback className="text-xs bg-primary/10 text-primary">
+                            {result.memberAvatar}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-xs text-muted-foreground">{result.memberName}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Project Channel Messages */}
+          {isProjectChannel && !isSearching && selectedProjectId && (
+            <>
+              {(() => {
+                const projectMessages = channelMessages.get(selectedProjectId) || [];
+                if (projectMessages.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                      <Hash className="h-12 w-12 text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-semibold mb-2">{selectedProject?.name} Channel</h3>
+                      <p className="text-sm text-muted-foreground max-w-sm">
+                        Start a conversation about this project. Your messages will be linked to project activities.
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-4">
+                    {projectMessages.map((message) => (
+                      <div key={message.id} className="flex gap-3">
+                        <Avatar className="h-8 w-8 flex-shrink-0">
+                          <AvatarFallback className="bg-primary text-primary-foreground">
+                            {message.memberAvatar}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="font-medium text-sm">{message.memberName}</p>
+                            <span className="text-xs text-muted-foreground">
+                              {message.timestamp.toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </span>
+                          </div>
+                          <div className="bg-muted rounded-lg px-4 py-2">
+                            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </>
+          )}
+
+          {/* Regular Messages (AI Assistant or Team Members) */}
+          {!isProjectChannel && messages.map((message) => (
             <div
               key={message.id}
               className={cn(
@@ -492,7 +825,7 @@ export function Chatbot() {
               )}
             </div>
           ))}
-          {isLoading && (
+          {isLoading && !isProjectChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
                 <AvatarFallback className="bg-primary text-primary-foreground">
@@ -562,7 +895,7 @@ export function Chatbot() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyPress={handleKeyPress}
-                placeholder="Type your message..."
+                placeholder={isProjectChannel ? "Type a message in the project channel..." : "Type your message..."}
                 disabled={isLoading}
                 className="flex-1"
               />
@@ -574,6 +907,11 @@ export function Chatbot() {
                 <Send className="h-4 w-4" />
               </Button>
             </div>
+            {isProjectChannel && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Messages in this channel are linked to project activities
+              </p>
+            )}
           </div>
         </div>
       </Card>

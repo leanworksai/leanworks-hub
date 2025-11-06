@@ -1,11 +1,14 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, Moon, Sun } from "lucide-react";
+import { Bell, Search, Moon, Sun, X } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
+import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
+import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -14,10 +17,21 @@ interface DashboardLayoutProps {
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
+  const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
+  const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  const totalSelections = selectedProjects.length + selectedTasks.length + selectedTeams.length;
+
+  const handleClearAllSelections = () => {
+    clearProjects();
+    clearTasks();
+    clearTeams();
+  };
 
   return (
     <SidebarProvider>
@@ -37,6 +51,17 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {totalSelections > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleClearAllSelections}
+                    className="hover:bg-destructive/10 hover:text-destructive hover:border-destructive"
+                  >
+                    <X className="mr-2 h-4 w-4" />
+                    Clear All ({totalSelections})
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"
