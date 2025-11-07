@@ -20,7 +20,7 @@ export interface TeamDetailData {
   members: TeamMember[];
 }
 
-const defaultTeams: Team[] = [
+export const defaultTeams: Team[] = [
   {
     name: "Engineering",
     members: 24,
@@ -58,7 +58,7 @@ const defaultTeams: Team[] = [
   },
 ];
 
-const defaultTeamData: Record<string, TeamDetailData> = {
+export const defaultTeamData: Record<string, TeamDetailData> = {
   Engineering: {
     name: "Engineering",
     description: "Core development team",

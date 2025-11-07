@@ -10,14 +10,27 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { getTeamData } from "@/data/teamsData";
+import { useTeam } from "@/hooks/useTeams";
 
 export default function TeamDetail() {
   const { teamName } = useParams<{ teamName: string }>();
   const navigate = useNavigate();
   
-  const teamData = getTeamData();
-  const team = teamName ? teamData[teamName] : null;
+  const { data: team, isLoading } = useTeam(teamName || '');
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/teams")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Teams
+        </Button>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Loading team...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!team) {
     return (

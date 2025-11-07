@@ -27,6 +27,7 @@ export interface Task {
   projectId: string;
   dueDate: string;
   createdDate: string;
+  createdAt?: number; // Timestamp in milliseconds for sorting
   estimatedHours?: number;
   actualHours?: number;
   tags: string[];

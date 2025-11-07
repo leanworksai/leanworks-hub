@@ -4,6 +4,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
+import { useEffect } from "react";
+import { initFirestore } from "@/services/firestore";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
@@ -22,8 +24,19 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
-const App = () => (
-  <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+const App = () => {
+  // Initialize Firestore when app starts
+  useEffect(() => {
+    try {
+      initFirestore();
+      console.log('Firestore initialized successfully');
+    } catch (error) {
+      console.error('Failed to initialize Firestore:', error);
+    }
+  }, []);
+
+  return (
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <SelectionModeProvider>
@@ -111,6 +124,7 @@ const App = () => (
     </TooltipProvider>
   </QueryClientProvider>
   </ThemeProvider>
-);
+  );
+};
 
 export default App;

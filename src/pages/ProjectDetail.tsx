@@ -4,19 +4,71 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare } from "lucide-react";
-import { projects } from "@/data/projectsData";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
+import { useProjects, useDeleteProject } from "@/hooks/useProjects";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState } from "react";
+import { useToast } from "@/hooks/use-toast";
 
 export default function ProjectDetail() {
   const { projectName } = useParams();
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const deleteProject = useDeleteProject();
+  const { toast } = useToast();
   
-  const project = projects.find(
-    (p) => p.name.toLowerCase().replace(/\s+/g, '-') === projectName
-  );
+  // Convert URL slug back to project name
+  // Project names in Firestore are stored with original casing
+  // We need to fetch all projects and find the matching one by slug
+  const { data: projects = [], isLoading: isLoadingProjects } = useProjects();
+  const project = projectName 
+    ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === projectName)
+    : null;
+  const isLoading = isLoadingProjects;
+
+  const handleDelete = async () => {
+    if (!project) return;
+
+    try {
+      await deleteProject.mutateAsync(project.name);
+      toast({
+        title: "Project deleted",
+        description: `"${project.name}" has been deleted successfully.`,
+      });
+      navigate("/projects");
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete project",
+        variant: "destructive",
+      });
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Loading project...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!project) {
     return (
@@ -93,6 +145,14 @@ export default function ProjectDetail() {
       <div>
         <div className="flex items-start justify-between mb-2">
           <h1 className="text-3xl font-bold tracking-tight">{project.name}</h1>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setShowDeleteDialog(true)}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete Project
+          </Button>
         </div>
         <p className="text-muted-foreground text-lg mb-4">{project.description}</p>
         <p className="text-foreground mb-4">{project.detailedDescription}</p>
@@ -288,6 +348,26 @@ export default function ProjectDetail() {
           </CollapsibleContent>
         </Collapsible>
       </Card>
+
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Project</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{project?.name}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

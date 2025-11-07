@@ -109,3 +109,15 @@ All colors MUST be HSL.
     background-attachment: fixed;
   }
 }
+
+@layer utilities {
+  /* Ensure text is visible when CommandItem is selected/hovered */
+  [data-selected='true'] span,
+  [data-selected='true'] .text-muted-foreground {
+    color: hsl(var(--accent-foreground)) !important;
+  }
+  
+  [data-selected='true'] .text-muted-foreground {
+    opacity: 0.7;
+  }
+}

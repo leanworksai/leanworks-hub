@@ -14,10 +14,12 @@ import {
   ArrowRight
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { tasks, Task } from "@/data/tasksData";
+import { Task } from "@/data/tasksData";
 import { useState } from "react";
+import { useTasks } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
+import { NewTaskDialog } from "@/components/NewTaskDialog";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -66,14 +68,24 @@ export default function Tasks() {
   const navigate = useNavigate();
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
   const { isSelectionMode } = useSelectionMode();
+  const { data: tasks = [], isLoading } = useTasks();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
+  const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
 
-  const filteredTasks = tasks.filter((task) => {
-    if (filterStatus !== "all" && task.status !== filterStatus) return false;
-    if (filterPriority !== "all" && task.priority !== filterPriority) return false;
-    return true;
-  });
+  const filteredTasks = tasks
+    .filter((task) => {
+      if (filterStatus !== "all" && task.status !== filterStatus) return false;
+      if (filterPriority !== "all" && task.priority !== filterPriority) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      // Sort by creation time (newest first)
+      // If createdAt is not available, fall back to createdDate parsing
+      const timeA = a.createdAt || (a.createdDate ? new Date(a.createdDate).getTime() : 0);
+      const timeB = b.createdAt || (b.createdDate ? new Date(b.createdDate).getTime() : 0);
+      return timeB - timeA; // Descending order (newest first)
+    });
 
   const handleTaskClick = (taskId: string) => {
     // Don't navigate if in selection mode
@@ -91,6 +103,16 @@ export default function Tasks() {
     e.stopPropagation();
   };
 
+  if (isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Loading tasks...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -105,7 +127,10 @@ export default function Tasks() {
             )}
           </p>
         </div>
-        <Button className="bg-primary hover:bg-primary/90">
+        <Button 
+          className="bg-primary hover:bg-primary/90"
+          onClick={() => setIsNewTaskDialogOpen(true)}
+        >
           <Plus className="mr-2 h-4 w-4" />
           New Task
         </Button>
@@ -227,6 +252,11 @@ export default function Tasks() {
           <p className="text-muted-foreground">No tasks found matching your filters.</p>
         </div>
       )}
+
+      <NewTaskDialog 
+        open={isNewTaskDialogOpen} 
+        onOpenChange={setIsNewTaskDialogOpen} 
+      />
     </div>
   );
 }

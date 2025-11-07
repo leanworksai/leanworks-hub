@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -17,14 +17,16 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getTeams, addTeam, type Team, type TeamDetailData } from "@/data/teamsData";
+import { useTeams, useCreateTeam } from "@/hooks/useTeams";
+import type { Team, TeamDetailData } from "@/data/teamsData";
 import { toast } from "@/components/ui/sonner";
 
 export default function Teams() {
   const navigate = useNavigate();
   const { toggleTeam, isTeamSelected, selectedTeams } = useSelectedTeams();
   const { isSelectionMode } = useSelectionMode();
-  const [teams, setTeams] = useState<Team[]>([]);
+  const { data: teams = [], isLoading } = useTeams();
+  const createTeamMutation = useCreateTeam();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
     name: "",
@@ -33,11 +35,7 @@ export default function Teams() {
     projects: "0",
   });
 
-  useEffect(() => {
-    setTeams(getTeams());
-  }, []);
-
-  const handleCreateTeam = () => {
+  const handleCreateTeam = async () => {
     if (!formData.name.trim()) {
       toast.error("Team name is required");
       return;
@@ -67,8 +65,7 @@ export default function Teams() {
     };
 
     try {
-      addTeam(newTeam, newTeamDetail);
-      setTeams(getTeams());
+      await createTeamMutation.mutateAsync({ team: newTeam, teamDetail: newTeamDetail });
       setIsDialogOpen(false);
       setFormData({ name: "", description: "", members: "0", projects: "0" });
       toast.success("Team created successfully!");
@@ -76,6 +73,16 @@ export default function Teams() {
       toast.error(error instanceof Error ? error.message : "Failed to create team");
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Loading teams...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">

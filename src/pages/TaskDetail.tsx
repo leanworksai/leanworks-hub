@@ -47,8 +47,9 @@ import {
   Check,
   ChevronsUpDown
 } from "lucide-react";
-import { tasks, Task, updateTask } from "@/data/tasksData";
-import { projects } from "@/data/projectsData";
+import { Task } from "@/data/tasksData";
+import { useTask, useUpdateTask } from "@/hooks/useTasks";
+import { useProjects } from "@/hooks/useProjects";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { format, parse } from "date-fns";
@@ -124,12 +125,12 @@ const getUpdateTypeColor = (type?: string) => {
 };
 
 // Get all unique team members from projects
-const getAllTeamMembers = () => {
+const getAllTeamMembers = (projects: any[]) => {
   const memberMap = new Map<string, { name: string; avatar: string; role: string }>();
   
   // Collect from project members
   projects.forEach(project => {
-    project.members.forEach(member => {
+    project.members?.forEach((member: any) => {
       if (!memberMap.has(member.name)) {
         memberMap.set(member.name, {
           name: member.name,
@@ -168,24 +169,37 @@ export default function TaskDetail() {
   const { taskId } = useParams();
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
-  const [currentTask, setCurrentTask] = useState<Task | undefined>(undefined);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedTask, setEditedTask] = useState<Task | null>(null);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeJustSelected, setAssigneeJustSelected] = useState(false);
   const [dueDateOpen, setDueDateOpen] = useState(false);
-  const teamMembers = getAllTeamMembers();
   
-  // Find task and update currentTask when taskId changes
+  const { data: task, isLoading } = useTask(taskId || '');
+  const { data: projects = [] } = useProjects();
+  const updateTaskMutation = useUpdateTask();
+  const teamMembers = getAllTeamMembers(projects);
+  
+  // Update editedTask when task changes
   useEffect(() => {
-    const foundTask = tasks.find((t) => t.id === taskId);
-    setCurrentTask(foundTask);
-    if (foundTask) {
-      setEditedTask({ ...foundTask });
+    if (task) {
+      setEditedTask({ ...task });
     }
-  }, [taskId]);
+  }, [task]);
 
-  const task = currentTask || tasks.find((t) => t.id === taskId);
+  if (isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/tasks")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Tasks
+        </Button>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Loading task...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!task) {
     return (
@@ -215,20 +229,21 @@ export default function TaskDetail() {
     navigate(`/projects/${slug}`);
   };
 
-  const handleFieldSave = (field: keyof Task, value: any, additionalData?: Record<string, any>) => {
+  const handleFieldSave = async (field: keyof Task, value: any, additionalData?: Record<string, any>) => {
     if (!editedTask || !taskId) return;
     
     const updatedTask = { ...editedTask, [field]: value, ...additionalData };
     setEditedTask(updatedTask);
-    setCurrentTask(updatedTask as Task);
-    updateTask(taskId, { [field]: value, ...additionalData });
+    await updateTaskMutation.mutateAsync({ 
+      taskId, 
+      updates: { [field]: value, ...additionalData } 
+    });
     setEditingField(null);
   };
 
   const handleFieldCancel = () => {
     if (task) {
       setEditedTask({ ...task });
-      setCurrentTask(task);
     }
     setEditingField(null);
   };
