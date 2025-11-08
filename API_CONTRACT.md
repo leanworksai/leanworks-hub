@@ -2,11 +2,67 @@
 
 ## Base Information
 
-- **Base URL**: `http://localhost:3001` (development)
 - **Content-Type**: `application/json`
 - **Authentication**: Bearer token in `Authorization` header
 - **Database**: Firestore (project: `leanworks-test`)
 - **Data Isolation**: All data is domain-based (isolated by user email domain)
+
+## API Access Methods
+
+The APIs can be accessed in different ways depending on your context:
+
+### External Access (Production/Deployed)
+
+When accessing the APIs from outside the Kubernetes cluster or from external clients:
+
+- **Base URL**: `https://<your-domain.com>/api` or `http://<external-ip>/api`
+- **Port**: 80 (HTTP) or 443 (HTTPS)
+- **Access**: Through nginx reverse proxy
+- **Example**: 
+  ```
+  GET https://leanworks-hub.example.com/api/projects
+  POST https://leanworks-hub.example.com/api/auth/login
+  ```
+
+**Note**: The external IP can be obtained by running:
+```bash
+kubectl get service leanworks-hub-service
+```
+
+### Internal Access (Within Container/Pod)
+
+When accessing from within the same container or pod (e.g., from the frontend application):
+
+- **Base URL**: `http://localhost:3001/api` or `/api` (relative path)
+- **Port**: 3001 (direct backend access) or 80 (via nginx)
+- **Access**: Direct to Express server or through nginx proxy
+- **Example**:
+  ```
+  GET http://localhost:3001/api/projects
+  POST /api/auth/login  (relative path, proxied by nginx)
+  ```
+
+**Note**: In production, the frontend typically uses relative paths (`/api/*`) which are automatically proxied by nginx to the backend server.
+
+### Internal Kubernetes Access (Service-to-Service)
+
+When accessing from other pods/services within the Kubernetes cluster:
+
+- **Base URL**: `http://leanworks-hub-service.default.svc.cluster.local/api` or `http://leanworks-hub-service/api`
+- **Port**: 80
+- **Access**: Through Kubernetes service DNS
+- **Example**:
+  ```
+  GET http://leanworks-hub-service/api/projects
+  ```
+
+### Local Development
+
+When running locally for development:
+
+- **Backend Direct**: `http://localhost:3001/api`
+- **Frontend Dev Server**: `http://localhost:8080` (Vite dev server)
+- **Note**: In development, you may need to configure the frontend to proxy API requests to `http://localhost:3001`
 
 ## Authentication
 
@@ -19,6 +75,257 @@ Authorization: Bearer <token>
 The token can be either:
 - Firebase ID token (from Firebase Auth)
 - Custom token (from `/api/auth/login`)
+
+---
+
+## How to Get a Bearer Token
+
+There are two ways to obtain a bearer token for API authentication:
+
+### Method 1: Login Endpoint (Recommended)
+
+The primary method is to use the `/api/auth/login` endpoint, which returns a custom token that can be used directly as a bearer token.
+
+#### Step 1: Call the Login Endpoint
+
+**Request:**
+```bash
+curl -X POST "https://your-domain.com/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "your-password"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "customToken": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "uid": "firebase-uid-123",
+    "email": "user@example.com",
+    "emailVerified": true
+  }
+}
+```
+
+#### Step 2: Use the Custom Token
+
+The `customToken` from the response is your bearer token. Use it in subsequent API requests:
+
+```bash
+curl -X GET "https://your-domain.com/api/projects" \
+  -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json"
+```
+
+#### Complete Example (JavaScript/TypeScript)
+
+```typescript
+// Step 1: Login and get token
+async function login(email: string, password: string) {
+  const response = await fetch('https://your-domain.com/api/auth/login', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, password }),
+  });
+  
+  if (!response.ok) {
+    throw new Error('Login failed');
+  }
+  
+  const data = await response.json();
+  return data.customToken; // This is your bearer token
+}
+
+// Step 2: Use the token for authenticated requests
+async function getProjects(token: string) {
+  const response = await fetch('https://your-domain.com/api/projects', {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  
+  return response.json();
+}
+
+// Usage
+const token = await login('user@example.com', 'password123');
+const projects = await getProjects(token);
+```
+
+#### Complete Example (Python)
+
+```python
+import requests
+
+API_BASE = "https://your-domain.com/api"
+
+# Step 1: Login and get token
+def login(email: str, password: str) -> str:
+    response = requests.post(
+        f"{API_BASE}/auth/login",
+        json={"email": email, "password": password}
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data["customToken"]  # This is your bearer token
+
+# Step 2: Use the token for authenticated requests
+def get_projects(token: str):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    response = requests.get(f"{API_BASE}/projects", headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+# Usage
+token = login("user@example.com", "password123")
+projects = get_projects(token)
+```
+
+#### Complete Example (cURL)
+
+```bash
+# Step 1: Login and save token
+TOKEN=$(curl -s -X POST "https://your-domain.com/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "password123"
+  }' | jq -r '.customToken')
+
+# Step 2: Use token for authenticated requests
+curl -X GET "https://your-domain.com/api/projects" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+### Method 2: Firebase ID Token (Alternative)
+
+If you're using Firebase Auth in your application, you can also use Firebase ID tokens:
+
+```typescript
+import { auth } from 'firebase/auth';
+
+// Get Firebase ID token
+const user = auth.currentUser;
+if (user) {
+  const idToken = await user.getIdToken();
+  
+  // Use as bearer token
+  const response = await fetch('https://your-domain.com/api/projects', {
+    headers: {
+      'Authorization': `Bearer ${idToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+}
+```
+
+**Note:** The backend accepts both custom tokens (from login) and Firebase ID tokens. Custom tokens are simpler for API-only clients.
+
+---
+
+## Token Storage and Management
+
+### Frontend Applications
+
+In frontend applications, tokens are typically stored securely:
+
+1. **In Memory**: Store token in a variable during the session
+2. **localStorage**: Persist token across page refreshes (less secure)
+3. **Session Storage**: Store token for the browser session only
+4. **HttpOnly Cookies**: Most secure (requires server-side setup)
+
+**Example (localStorage):**
+```typescript
+// After login
+const { customToken } = await login(email, password);
+localStorage.setItem('auth_token', customToken);
+
+// For subsequent requests
+const token = localStorage.getItem('auth_token');
+```
+
+### Backend/Server Applications
+
+For server-side applications:
+
+1. Store tokens securely (environment variables, secret managers)
+2. Implement token refresh logic
+3. Never log or expose tokens
+
+**Example:**
+```python
+import os
+from google.cloud import secretmanager
+
+# Store token securely
+def store_token(token):
+    # Use secret manager or environment variable
+    os.environ['API_TOKEN'] = token
+
+# Retrieve token
+def get_token():
+    return os.environ.get('API_TOKEN')
+```
+
+---
+
+## Token Expiration and Refresh
+
+**Custom Tokens**: Custom tokens from `/api/auth/login` are JWT tokens that don't expire automatically. However, for security:
+
+1. **Re-authenticate periodically**: Call login again to get a fresh token
+2. **Handle 401 errors**: If you receive a 401 Unauthorized, the token may be invalid - re-authenticate
+3. **Token refresh**: Implement logic to refresh tokens before they expire
+
+**Example Error Handling:**
+```typescript
+async function authenticatedRequest(url: string, token: string) {
+  let response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  
+  // If unauthorized, token may be expired - re-authenticate
+  if (response.status === 401) {
+    // Re-login to get new token
+    const newToken = await login(email, password);
+    // Retry request with new token
+    response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${newToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+  }
+  
+  return response;
+}
+```
+
+---
+
+## Example Request with Bearer Token
+
+**Example Request:**
+```bash
+curl -X GET "https://your-domain.com/api/projects" \
+  -H "Authorization: Bearer your-token-here" \
+  -H "Content-Type: application/json"
+```
 
 ---
 
@@ -1269,4 +1576,261 @@ or
 4. **Secret Storage**: Integration credentials (Slack, Atlassian) are stored securely in GCP Secret Manager, not in Firestore.
 
 5. **Firestore Timestamps**: Timestamps are automatically converted to appropriate formats (milliseconds for `createdAt`, ISO strings for dates).
+
+---
+
+## API Calling Examples
+
+### External Access Examples
+
+#### Using cURL (External)
+```bash
+# Login
+curl -X POST "https://leanworks-hub.example.com/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "password123"
+  }'
+
+# Get projects (with token)
+curl -X GET "https://leanworks-hub.example.com/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json"
+
+# Create a project
+curl -X POST "https://leanworks-hub.example.com/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "New Project",
+    "description": "Project description",
+    "status": "In Progress"
+  }'
+```
+
+#### Using JavaScript/TypeScript (External)
+```typescript
+// External API client
+const API_BASE_URL = 'https://leanworks-hub.example.com/api';
+
+async function login(email: string, password: string) {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, password }),
+  });
+  return response.json();
+}
+
+async function getProjects(token: string) {
+  const response = await fetch(`${API_BASE_URL}/projects`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  return response.json();
+}
+```
+
+#### Using Python (External)
+```python
+import requests
+
+API_BASE_URL = "https://leanworks-hub.example.com/api"
+
+# Login
+response = requests.post(
+    f"{API_BASE_URL}/auth/login",
+    json={
+        "email": "user@example.com",
+        "password": "password123"
+    }
+)
+token = response.json()["customToken"]
+
+# Get projects
+headers = {
+    "Authorization": f"Bearer {token}",
+    "Content-Type": "application/json"
+}
+projects = requests.get(f"{API_BASE_URL}/projects", headers=headers)
+print(projects.json())
+```
+
+### Internal Access Examples (Frontend Application)
+
+#### Using JavaScript/TypeScript (Internal - Relative Paths)
+```typescript
+// Internal API client (from frontend app)
+// Uses relative paths - automatically proxied by nginx
+const API_BASE_URL = '/api';  // Relative path
+
+async function login(email: string, password: string) {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, password }),
+  });
+  return response.json();
+}
+
+async function getProjects(token: string) {
+  const response = await fetch(`${API_BASE_URL}/projects`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  return response.json();
+}
+```
+
+#### Using cURL (Internal - Direct Backend)
+```bash
+# From within the container/pod
+# Direct access to backend (bypassing nginx)
+curl -X GET "http://localhost:3001/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json"
+
+# Or through nginx proxy
+curl -X GET "http://localhost/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json"
+```
+
+### Kubernetes Service-to-Service Examples
+
+#### Using cURL (Kubernetes Internal)
+```bash
+# From another pod in the same cluster
+curl -X GET "http://leanworks-hub-service/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json"
+
+# With full DNS name
+curl -X GET "http://leanworks-hub-service.default.svc.cluster.local/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json"
+```
+
+#### Using Python (Kubernetes Internal)
+```python
+import requests
+import os
+
+# Kubernetes service DNS
+API_BASE_URL = os.getenv(
+    "API_BASE_URL", 
+    "http://leanworks-hub-service/api"
+)
+
+response = requests.get(
+    f"{API_BASE_URL}/projects",
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+)
+```
+
+### Local Development Examples
+
+#### Frontend Development (Vite)
+```typescript
+// In vite.config.ts or environment variable
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+
+// Or configure proxy in vite.config.ts:
+// server: {
+//   proxy: {
+//     '/api': {
+//       target: 'http://localhost:3001',
+//       changeOrigin: true,
+//     }
+//   }
+// }
+// Then use: const API_BASE_URL = '/api';
+```
+
+#### Backend Development
+```bash
+# Start backend server
+npm run dev  # or: npx tsx server/index.ts
+
+# Backend runs on http://localhost:3001
+# Test directly:
+curl -X GET "http://localhost:3001/api/projects" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+```
+
+---
+
+## Network Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    External Clients                         │
+│  (Web browsers, mobile apps, external services)            │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         │ HTTPS/HTTP
+                         │
+┌────────────────────────▼────────────────────────────────────┐
+│              Kubernetes LoadBalancer Service                 │
+│              (External IP: <your-external-ip>)              │
+│              Port: 80/443                                    │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         │
+┌────────────────────────▼────────────────────────────────────┐
+│                    Nginx Container                          │
+│              Port: 80 (listening)                           │
+│              - Serves static frontend files                  │
+│              - Proxies /api/* to backend                    │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         │ Proxy: /api/* → localhost:3001
+                         │
+┌────────────────────────▼────────────────────────────────────┐
+│              Express Backend Server                          │
+│              Port: 3001 (listening on 0.0.0.0)              │
+│              - Handles all /api/* requests                   │
+│              - Connects to Firestore                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Internal Access Paths:**
+- Frontend → `/api/*` → Nginx → `localhost:3001/api/*` → Express
+- Direct Backend → `localhost:3001/api/*` → Express
+
+**External Access Paths:**
+- External Client → `https://domain.com/api/*` → LoadBalancer → Nginx → `localhost:3001/api/*` → Express
+
+---
+
+## Best Practices
+
+1. **Use Relative Paths in Frontend**: When calling from the frontend application, use relative paths (`/api/*`) instead of absolute URLs. This ensures the requests are automatically proxied by nginx and works in all environments.
+
+2. **Environment Variables**: Use environment variables for API base URLs:
+   ```typescript
+   const API_BASE_URL = process.env.REACT_APP_API_URL || '/api';
+   ```
+
+3. **Error Handling**: Always handle authentication errors (401) and implement token refresh logic.
+
+4. **HTTPS in Production**: Always use HTTPS for external access in production. Configure TLS/SSL at the load balancer or ingress level.
+
+5. **CORS Configuration**: Currently, CORS allows all origins. For production, restrict CORS to specific domains.
+
+6. **Token Storage**: Store authentication tokens securely (e.g., httpOnly cookies or secure storage) and never expose them in logs or client-side code.
 
