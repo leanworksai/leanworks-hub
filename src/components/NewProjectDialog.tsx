@@ -4,17 +4,32 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useCreateProject } from "@/hooks/useProjects";
-import { useTeams, useTeam } from "@/hooks/useTeams";
+import { useUserTeams } from "@/hooks/useTeams";
+import { useUsers } from "@/hooks/useUsers";
+import { useAuth } from "@/contexts/AuthContext";
 import { teamsService } from "@/services/firestore";
 import type { Project, ProjectMember } from "@/data/projectsData";
-import type { Team, TeamMember } from "@/data/teamsData";
+import type { TeamMember } from "@/data/teamsData";
 import { useToast } from "@/hooks/use-toast";
-import { ChevronDown, Users } from "lucide-react";
+import { Check, ChevronsUpDown } from "lucide-react";
+import { useQueries } from "@tanstack/react-query";
 
 interface NewProjectDialogProps {
   open: boolean;
@@ -37,99 +52,27 @@ const formatDate = (date: Date): string => {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
-interface TeamMemberSelectorProps {
-  team: Team;
-  selectedMembers: Set<string>;
-  onSelectionChange: (selected: Set<string>) => void;
-  expanded: boolean;
-  onToggleExpand: (expanded: boolean) => void;
-}
-
-function TeamMemberSelector({ 
-  team, 
-  selectedMembers, 
-  onSelectionChange, 
-  expanded, 
-  onToggleExpand 
-}: TeamMemberSelectorProps) {
-  const { data: teamDetail, isLoading } = useTeam(team.name);
-
-  const handleMemberToggle = (memberKey: string, checked: boolean) => {
-    const newSelected = new Set(selectedMembers);
-    if (checked) {
-      newSelected.add(memberKey);
-    } else {
-      newSelected.delete(memberKey);
-    }
-    onSelectionChange(newSelected);
-  };
-
-  const teamSelectedCount = teamDetail?.members?.filter(member => 
-    selectedMembers.has(`${team.name}:${member.name}`)
-  ).length || 0;
-
-  return (
-    <Collapsible open={expanded} onOpenChange={onToggleExpand}>
-      <CollapsibleTrigger className="flex w-full items-center justify-between p-2 hover:bg-accent rounded-md transition-colors">
-        <div className="flex items-center gap-2">
-          <ChevronDown 
-            className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`} 
-          />
-          <Users className="h-4 w-4" />
-          <span className="font-medium">{team.name}</span>
-          <span className="text-sm text-muted-foreground">
-            ({teamDetail?.members?.length || 0} members)
-          </span>
-          {teamSelectedCount > 0 && (
-            <span className="text-sm text-primary font-medium">
-              ({teamSelectedCount} selected)
-            </span>
-          )}
-        </div>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="pt-2 pl-6">
-        {isLoading ? (
-          <p className="text-sm text-muted-foreground">Loading members...</p>
-        ) : teamDetail?.members && teamDetail.members.length > 0 ? (
-          <div className="space-y-2">
-            {teamDetail.members.map((member) => {
-              const memberKey = `${team.name}:${member.name}`;
-              const isSelected = selectedMembers.has(memberKey);
-              return (
-                <div key={memberKey} className="flex items-center gap-2 py-1">
-                  <Checkbox
-                    id={memberKey}
-                    checked={isSelected}
-                    onCheckedChange={(checked) => 
-                      handleMemberToggle(memberKey, checked === true)
-                    }
-                  />
-                  <label
-                    htmlFor={memberKey}
-                    className="flex-1 text-sm cursor-pointer flex items-center gap-2"
-                  >
-                    <span className="font-medium">{member.name}</span>
-                    <span className="text-muted-foreground">- {member.role}</span>
-                  </label>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">No members in this team</p>
-        )}
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
+const getInitials = (name: string): string => {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+};
 
 export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) {
   const { toast } = useToast();
   const createProject = useCreateProject();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
-  const { data: teams = [] } = useTeams();
-  const [expandedTeams, setExpandedTeams] = useState<Set<string>>(new Set());
+  const { data: teams = [] } = useUserTeams();
+  const { data: users = [] } = useUsers();
+  const { user } = useAuth();
+  const [membersOpen, setMembersOpen] = useState(false);
+  const [allTeamMembers, setAllTeamMembers] = useState<TeamMember[]>([]);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const [memberToTeamMap, setMemberToTeamMap] = useState<Map<string, string>>(new Map());
 
   type FormData = {
     name: string;
@@ -145,11 +88,133 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
     },
   });
 
+  // Fetch team details for all user teams to get member emails
+  const teamDetailsQueries = useQueries({
+    queries: teams.map((team) => ({
+      queryKey: ['teams', team.name],
+      queryFn: () => teamsService.getById(team.name),
+      enabled: !!team.name && !!user?.email && open,
+      staleTime: 1000 * 60 * 5,
+    })),
+  });
+
+  // Extract team details data and loading states
+  const isLoadingDetails = teamDetailsQueries.some((query) => query.isLoading);
+  const allQueriesCompleted = teamDetailsQueries.length === 0 || teamDetailsQueries.every(
+    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
+  );
+  
+  // Create a stable key from team details data for dependency tracking
+  const teamDetailsKey = teamDetailsQueries
+    .map((query, index) => query.data ? `${teams[index]?.name}-${query.data.members?.length || 0}` : null)
+    .filter(Boolean)
+    .join('|');
+
+  // Load all team members when dialog opens or teams/team details change
+  useEffect(() => {
+    if (!open) {
+      setAllTeamMembers([]);
+      setMemberToTeamMap(new Map());
+      setIsLoadingMembers(false);
+      return;
+    }
+
+    if (teams.length === 0) {
+      setAllTeamMembers([]);
+      setMemberToTeamMap(new Map());
+      setIsLoadingMembers(false);
+      return;
+    }
+
+    if (users.length === 0) {
+      setIsLoadingMembers(true);
+      return;
+    }
+
+    if (isLoadingDetails || !allQueriesCompleted) {
+      setIsLoadingMembers(true);
+      return;
+    }
+
+    setIsLoadingMembers(true);
+    try {
+      // Get all team member emails from user's teams
+      const teamMemberEmails = new Set<string>();
+      const emailToTeamMap = new Map<string, string>();
+      
+      console.log('Loading team members:', {
+        teamsCount: teams.length,
+        usersCount: users.length,
+        queriesCount: teamDetailsQueries.length,
+        queriesData: teamDetailsQueries.map((q, i) => ({
+          team: teams[i]?.name,
+          hasData: !!q.data,
+          membersCount: q.data?.members?.length || 0,
+          isLoading: q.isLoading,
+          error: q.error
+        }))
+      });
+      
+      teamDetailsQueries.forEach((query, index) => {
+        if (query.data?.members && teams[index]) {
+          query.data.members.forEach(member => {
+            if (member.email) {
+              teamMemberEmails.add(member.email.toLowerCase());
+              emailToTeamMap.set(member.email.toLowerCase(), teams[index].name);
+            }
+          });
+        }
+      });
+      
+      console.log('Team member emails found:', teamMemberEmails.size);
+
+      // Filter users to only those in user's teams
+      const filteredUsers = users.filter(user => 
+        teamMemberEmails.has(user.email.toLowerCase())
+      );
+
+      // Convert users to TeamMember format and create member-to-team mapping
+      const memberMap = new Map<string, TeamMember>();
+      const memberTeamMap = new Map<string, string>();
+      
+      filteredUsers.forEach(user => {
+        const fullName = `${user.firstName} ${user.lastName}`;
+        const teamName = emailToTeamMap.get(user.email.toLowerCase()) || '';
+        
+        if (!memberMap.has(fullName)) {
+          const avatar = `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`.toUpperCase();
+          memberMap.set(fullName, {
+            name: fullName,
+            role: user.jobTitle || "Member",
+            email: user.email,
+            avatar: avatar,
+          });
+          memberTeamMap.set(fullName, teamName);
+        }
+      });
+
+      // Sort by name
+      const sortedMembers = Array.from(memberMap.values()).sort((a, b) => 
+        a.name.localeCompare(b.name)
+      );
+
+      setAllTeamMembers(sortedMembers);
+      setMemberToTeamMap(memberTeamMap);
+    } catch (error) {
+      console.error('Failed to load team members:', error);
+      setAllTeamMembers([]);
+      setMemberToTeamMap(new Map());
+    } finally {
+      setIsLoadingMembers(false);
+    }
+  }, [open, teams.length, users.length, isLoadingDetails, allQueriesCompleted, teamDetailsKey]);
+
   // Reset selected members when dialog opens/closes
   useEffect(() => {
     if (open) {
       setSelectedMembers(new Set());
-      setExpandedTeams(new Set());
+      setMembersOpen(false);
+      setMemberToTeamMap(new Map());
     }
   }, [open]);
 
@@ -194,6 +259,33 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
     }
 
     return members;
+  };
+
+  // Toggle member selection
+  const toggleMemberSelection = (memberName: string) => {
+    const teamName = memberToTeamMap.get(memberName);
+    if (!teamName) return;
+
+    const memberKey = `${teamName}:${memberName}`;
+    const newSelected = new Set(selectedMembers);
+    if (newSelected.has(memberKey)) {
+      newSelected.delete(memberKey);
+    } else {
+      newSelected.add(memberKey);
+    }
+    setSelectedMembers(newSelected);
+  };
+
+  // Check if a member is selected
+  const isMemberSelected = (memberName: string): boolean => {
+    return Array.from(selectedMembers).some(key => key.endsWith(`:${memberName}`));
+  };
+
+  // Get selected member names for display
+  const getSelectedMemberNames = (): string[] => {
+    return allTeamMembers
+      .filter(member => isMemberSelected(member.name))
+      .map(member => member.name);
   };
 
   const onSubmit = async (data: FormData) => {
@@ -302,30 +394,96 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
               <FormDescription>
                 Select team members to add to this project
               </FormDescription>
-              <div className="mt-2 space-y-2 max-h-[300px] overflow-y-auto border rounded-md p-4">
-                {teams.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No teams available</p>
-                ) : (
-                  teams.map((team) => (
-                    <TeamMemberSelector
-                      key={team.name}
-                      team={team}
-                      selectedMembers={selectedMembers}
-                      onSelectionChange={setSelectedMembers}
-                      expanded={expandedTeams.has(team.name)}
-                      onToggleExpand={(expanded) => {
-                        const newExpanded = new Set(expandedTeams);
-                        if (expanded) {
-                          newExpanded.add(team.name);
-                        } else {
-                          newExpanded.delete(team.name);
-                        }
-                        setExpandedTeams(newExpanded);
-                      }}
-                    />
-                  ))
-                )}
-              </div>
+              <Popover open={membersOpen} onOpenChange={setMembersOpen}>
+                <PopoverTrigger asChild>
+                  <FormControl>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={membersOpen}
+                      className="w-full justify-between"
+                    >
+                      {selectedMembers.size > 0 ? (
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                            {getSelectedMemberNames().slice(0, 3).map((name, idx) => {
+                              const member = allTeamMembers.find(m => m.name === name);
+                              return (
+                                <Avatar key={idx} className="h-5 w-5 shrink-0">
+                                  <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                    {member?.avatar || getInitials(name)}
+                                  </AvatarFallback>
+                                </Avatar>
+                              );
+                            })}
+                            {selectedMembers.size > 3 && (
+                              <span className="text-sm text-muted-foreground">
+                                +{selectedMembers.size - 3} more
+                              </span>
+                            )}
+                            {selectedMembers.size <= 3 && selectedMembers.size > 0 && (
+                              <span className="text-sm truncate">
+                                {getSelectedMemberNames().join(", ")}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        "Select members..."
+                      )}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </FormControl>
+                </PopoverTrigger>
+                <PopoverContent className="w-[400px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Search team members..." />
+                    <CommandList>
+                      {isLoadingMembers ? (
+                        <div className="p-4 text-sm text-muted-foreground">Loading members...</div>
+                      ) : allTeamMembers.length === 0 ? (
+                        <CommandEmpty>No team members found.</CommandEmpty>
+                      ) : (
+                        <CommandGroup>
+                          {allTeamMembers.map((member) => {
+                            const isSelected = isMemberSelected(member.name);
+                            return (
+                              <CommandItem
+                                key={member.name}
+                                value={member.name}
+                                onSelect={() => {
+                                  toggleMemberSelection(member.name);
+                                }}
+                              >
+                                <Check
+                                  className={`mr-2 h-4 w-4 shrink-0 ${
+                                    isSelected ? "opacity-100" : "opacity-0"
+                                  }`}
+                                />
+                                <div className="flex items-center gap-2 flex-1 min-w-0">
+                                  <Avatar className="h-6 w-6 shrink-0">
+                                    <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                      {member.avatar}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                  <div className="flex flex-col min-w-0">
+                                    <span className="font-medium truncate">
+                                      {member.name}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground truncate">
+                                      {member.role}
+                                    </span>
+                                  </div>
+                                </div>
+                              </CommandItem>
+                            );
+                          })}
+                        </CommandGroup>
+                      )}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
               {selectedMembers.size > 0 && (
                 <FormDescription className="mt-2">
                   {selectedMembers.size} member{selectedMembers.size !== 1 ? 's' : ''} selected

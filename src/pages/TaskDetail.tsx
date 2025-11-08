@@ -26,6 +26,16 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { 
   ArrowLeft, 
   CheckCircle2, 
@@ -45,11 +55,15 @@ import {
   Activity,
   ArrowRight,
   Check,
-  ChevronsUpDown
+  ChevronsUpDown,
+  Trash2
 } from "lucide-react";
 import { Task } from "@/data/tasksData";
-import { useTask, useUpdateTask } from "@/hooks/useTasks";
-import { useProjects } from "@/hooks/useProjects";
+import { useTask, useUpdateTask, useDeleteTask } from "@/hooks/useTasks";
+import { useToast } from "@/hooks/use-toast";
+import { useUserProjects } from "@/hooks/useProjects";
+import { useUserTeams } from "@/hooks/useTeams";
+import { useUsers } from "@/hooks/useUsers";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { format, parse } from "date-fns";
@@ -174,11 +188,67 @@ export default function TaskDetail() {
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeJustSelected, setAssigneeJustSelected] = useState(false);
   const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   
   const { data: task, isLoading } = useTask(taskId || '');
-  const { data: projects = [] } = useProjects();
+  const { data: projects = [] } = useUserProjects();
+  const { data: userTeams = [] } = useUserTeams();
+  const { data: users = [] } = useUsers();
+  
+  // Check if user has access to the task
+  const hasAccess = task ? (() => {
+    // If task has a project, check if user has access to that project
+    if (task.project || task.projectId) {
+      return projects.some((project) => {
+        const projectName = project.name.toLowerCase();
+        const taskProjectName = (task.project?.toLowerCase() || task.projectId?.toLowerCase());
+        return taskProjectName && projectName === taskProjectName;
+      });
+    }
+    
+    // If task has no project, check if it's associated with user's teams
+    if (task.teams && task.teams.length > 0) {
+      const userTeamNames = new Set(userTeams.map(team => team.name.toLowerCase()));
+      return task.teams.some(teamName => userTeamNames.has(teamName.toLowerCase()));
+    }
+    
+    return false;
+  })() : false;
+  
+  // Redirect if user doesn't have access
+  useEffect(() => {
+    if (!isLoading && task && !hasAccess) {
+      navigate("/tasks");
+    }
+  }, [isLoading, task, hasAccess, navigate]);
   const updateTaskMutation = useUpdateTask();
+  const deleteTask = useDeleteTask();
+  const { toast } = useToast();
   const teamMembers = getAllTeamMembers(projects);
+
+  // Find creator user from users list
+  const creator = task?.createdBy 
+    ? users.find(user => user.email === task.createdBy)
+    : null;
+  
+  const getCreatorInitials = () => {
+    if (creator) {
+      const first = creator.firstName?.charAt(0).toUpperCase() || '';
+      const last = creator.lastName?.charAt(0).toUpperCase() || '';
+      return first + last || 'U';
+    }
+    return 'U';
+  };
+  
+  const getCreatorDisplayName = () => {
+    if (creator) {
+      if (creator.firstName && creator.lastName) {
+        return `${creator.firstName} ${creator.lastName}`;
+      }
+      return creator.email;
+    }
+    return task?.createdBy || 'Unknown';
+  };
   
   // Update editedTask when task changes
   useEffect(() => {
@@ -215,6 +285,21 @@ export default function TaskDetail() {
     );
   }
 
+  // Show access denied if user doesn't have access
+  if (task && projects.length > 0 && !hasAccess && !isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/tasks")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Tasks
+        </Button>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">You don't have access to this task.</p>
+        </div>
+      </div>
+    );
+  }
+
   const handleAddComment = () => {
     const comment = commentInput.trim();
     if (!comment) return;
@@ -227,6 +312,25 @@ export default function TaskDetail() {
   const handleProjectClick = () => {
     const slug = task.projectId.toLowerCase().replace(/\s+/g, '-');
     navigate(`/projects/${slug}`);
+  };
+
+  const handleDelete = async () => {
+    if (!task || !taskId) return;
+
+    try {
+      await deleteTask.mutateAsync(taskId);
+      toast({
+        title: "Task deleted",
+        description: `"${task.title}" has been deleted successfully.`,
+      });
+      navigate("/tasks");
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete task",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleFieldSave = async (field: keyof Task, value: any, additionalData?: Record<string, any>) => {
@@ -356,6 +460,14 @@ export default function TaskDetail() {
             >
               {task.status.replace("-", " ")}
             </Badge>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowDeleteDialog(true)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete Task
+            </Button>
           </div>
         </div>
         {editingField === 'description' && editedTask ? (
@@ -518,6 +630,20 @@ export default function TaskDetail() {
             <span className="mr-2">Created:</span>
             <span className="text-foreground font-medium">{task.createdDate}</span>
           </div>
+          {task.createdBy && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <User className="h-4 w-4" />
+              <span className="mr-2">Created by:</span>
+              <div className="flex items-center gap-2">
+                <Avatar className="h-6 w-6">
+                  <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                    {getCreatorInitials()}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="text-foreground font-medium">{getCreatorDisplayName()}</span>
+              </div>
+            </div>
+          )}
           {task.estimatedHours && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Clock className="h-4 w-4" />
@@ -781,6 +907,26 @@ export default function TaskDetail() {
           </CollapsibleContent>
         </Collapsible>
       </Card>
+
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Task</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{task?.title}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

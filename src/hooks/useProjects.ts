@@ -1,6 +1,9 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { projectsService } from '@/services/firestore';
 import type { Project } from '@/data/projectsData';
+import { useUserTeams } from './useTeams';
+import { useAuth } from '@/contexts/AuthContext';
+import { teamsService } from '@/services/firestore';
 
 export const useProjects = () => {
   return useQuery({
@@ -8,6 +11,58 @@ export const useProjects = () => {
     queryFn: () => projectsService.getAll(),
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
+};
+
+// Hook to get projects filtered by current user's team membership
+export const useUserProjects = () => {
+  const { user } = useAuth();
+  const { data: allProjects = [], isLoading: isLoadingProjects } = useProjects();
+  const { data: userTeams = [], isLoading: isLoadingTeams } = useUserTeams();
+
+  // Fetch team details for all user teams to get member names
+  const teamDetailsQueries = useQueries({
+    queries: userTeams.map((team) => ({
+      queryKey: ['teams', team.name],
+      queryFn: () => teamsService.getById(team.name),
+      enabled: !!team.name && !!user?.email,
+      staleTime: 1000 * 60 * 5,
+    })),
+  });
+
+  // Check if all team details are loaded
+  const isLoadingDetails = teamDetailsQueries.some((query) => query.isLoading);
+  
+  // Check if all queries have completed
+  const allQueriesCompleted = teamDetailsQueries.length === 0 || teamDetailsQueries.every(
+    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
+  );
+
+  // Get all team member names from user's teams
+  const userTeamMemberNames = new Set<string>();
+  if (allQueriesCompleted && !isLoadingDetails) {
+    teamDetailsQueries.forEach((query) => {
+      if (query.data?.members) {
+        query.data.members.forEach((member) => {
+          userTeamMemberNames.add(member.name.toLowerCase());
+        });
+      }
+    });
+  }
+
+  // Filter projects where at least one member is from user's teams
+  const userProjects = allQueriesCompleted && !isLoadingDetails && userTeamMemberNames.size > 0
+    ? allProjects.filter((project) => {
+        // Check if any project member is from user's teams
+        return project.members.some((member) =>
+          userTeamMemberNames.has(member.name.toLowerCase())
+        );
+      })
+    : [];
+
+  return {
+    data: userProjects,
+    isLoading: isLoadingProjects || isLoadingTeams || isLoadingDetails || !allQueriesCompleted,
+  };
 };
 
 export const useProject = (projectName: string) => {

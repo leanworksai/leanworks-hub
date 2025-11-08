@@ -2,6 +2,22 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { 
   Plus, 
   CheckCircle2, 
@@ -11,15 +27,18 @@ import {
   FileCheck,
   Calendar,
   User,
-  ArrowRight
+  ArrowRight,
+  MoreVertical,
+  Trash2
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
 import { useState } from "react";
-import { useTasks } from "@/hooks/useTasks";
+import { useUserTasks, useDeleteTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
+import { useToast } from "@/hooks/use-toast";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -68,10 +87,13 @@ export default function Tasks() {
   const navigate = useNavigate();
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
   const { isSelectionMode } = useSelectionMode();
-  const { data: tasks = [], isLoading } = useTasks();
+  const { data: tasks = [], isLoading } = useUserTasks();
+  const deleteTask = useDeleteTask();
+  const { toast } = useToast();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
+  const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -101,6 +123,30 @@ export default function Tasks() {
 
   const handleCheckboxClick = (e: React.MouseEvent) => {
     e.stopPropagation();
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, taskId: string) => {
+    e.stopPropagation();
+    setTaskToDelete(taskId);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!taskToDelete) return;
+
+    try {
+      await deleteTask.mutateAsync(taskToDelete);
+      toast({
+        title: "Task deleted",
+        description: "Task has been deleted successfully.",
+      });
+      setTaskToDelete(null);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete task",
+        variant: "destructive",
+      });
+    }
   };
 
   if (isLoading) {
@@ -241,6 +287,28 @@ export default function Tasks() {
                     </div>
                   </div>
                 </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button 
+                      variant="ghost" 
+                      size="icon"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
+                    >
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onClick={(e) => handleDeleteClick(e, task.id)}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </CardHeader>
           </Card>
@@ -257,6 +325,26 @@ export default function Tasks() {
         open={isNewTaskDialogOpen} 
         onOpenChange={setIsNewTaskDialogOpen} 
       />
+
+      <AlertDialog open={!!taskToDelete} onOpenChange={(open) => !open && setTaskToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Task</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this task? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -40,17 +40,30 @@ gcloud auth configure-docker
 echo -e "${YELLOW}Getting GKE cluster credentials...${NC}"
 gcloud container clusters get-credentials "$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID"
 
+# Generate a unique tag based on timestamp
+IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
+FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
+
 # Build the Docker image for linux/amd64 platform (GKE standard)
 echo -e "${YELLOW}Building Docker image for linux/amd64 platform...${NC}"
-docker build --platform linux/amd64 -t "$IMAGE_NAME:latest" .
+docker build --platform linux/amd64 -t "$FULL_IMAGE_NAME" -t "$IMAGE_NAME:latest" .
 
-# Push the image to Google Container Registry
+# Push the image to Google Container Registry (both tagged and latest)
 echo -e "${YELLOW}Pushing image to GCR...${NC}"
+docker push "$FULL_IMAGE_NAME"
 docker push "$IMAGE_NAME:latest"
 
-# Apply Kubernetes manifests
-echo -e "${YELLOW}Deploying to Kubernetes...${NC}"
+# Apply Kubernetes manifests (for initial deployment or config changes)
+echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/deployment.yaml
+
+# Update the deployment with the new image tag
+echo -e "${YELLOW}Updating Kubernetes deployment with new image tag...${NC}"
+kubectl set image deployment/leanworks-hub leanworks-hub="$FULL_IMAGE_NAME" -n default
+
+# Force a rollout restart to ensure the new image is pulled
+echo -e "${YELLOW}Forcing deployment rollout...${NC}"
+kubectl rollout restart deployment/leanworks-hub
 
 # Wait for deployment to be ready
 echo -e "${YELLOW}Waiting for deployment to be ready...${NC}"

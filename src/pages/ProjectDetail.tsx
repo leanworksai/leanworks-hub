@@ -15,27 +15,128 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
-import { useProjects, useDeleteProject } from "@/hooks/useProjects";
+import { useUserProjects, useDeleteProject } from "@/hooks/useProjects";
+import { useAuth } from "@/contexts/AuthContext";
+import { useUserTeams } from "@/hooks/useTeams";
+import { teamsService } from "@/services/firestore";
+import { useQueries } from "@tanstack/react-query";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 
+// Helper function to safely convert date values to strings
+// Handles Firestore Timestamps, Date objects, strings, and numbers
+const formatDate = (dateValue: any): string => {
+  if (!dateValue) return '';
+  
+  // If it's already a string, return it
+  if (typeof dateValue === 'string') {
+    return dateValue;
+  }
+  
+  // If it's a Firestore Timestamp object (has _seconds and _nanoseconds)
+  if (dateValue && typeof dateValue === 'object' && '_seconds' in dateValue) {
+    const seconds = dateValue._seconds || 0;
+    const date = new Date(seconds * 1000);
+    return date.toISOString().split('T')[0];
+  }
+  
+  // If it's a Date object
+  if (dateValue instanceof Date) {
+    return dateValue.toISOString().split('T')[0];
+  }
+  
+  // If it's a number (timestamp in milliseconds)
+  if (typeof dateValue === 'number') {
+    return new Date(dateValue).toISOString().split('T')[0];
+  }
+  
+  // Fallback: try to convert to string
+  return String(dateValue);
+};
+
 export default function ProjectDetail() {
-  const { projectName } = useParams();
+  const { projectName: projectNameParam } = useParams();
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   
+  // Log that component is rendering
+  useEffect(() => {
+    console.log('🔵 ProjectDetail component rendered', { projectNameParam });
+  }, [projectNameParam]);
+  
   // Convert URL slug back to project name
   // Project names in Firestore are stored with original casing
   // We need to fetch all projects and find the matching one by slug
-  const { data: projects = [], isLoading: isLoadingProjects } = useProjects();
-  const project = projectName 
-    ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === projectName)
+  const { data: projects = [], isLoading: isLoadingProjects, error: projectsError } = useUserProjects();
+  const { user } = useAuth();
+  const { data: userTeams = [] } = useUserTeams();
+  
+  // Fetch team details to check project access
+  const teamDetailsQueries = useQueries({
+    queries: userTeams.map((team) => ({
+      queryKey: ['teams', team.name],
+      queryFn: () => teamsService.getById(team.name),
+      enabled: !!team.name && !!user?.email,
+      staleTime: 1000 * 60 * 5,
+    })),
+  });
+  
+  // Get all team member names from user's teams
+  const userTeamMemberNames = new Set<string>();
+  teamDetailsQueries.forEach((query) => {
+    if (query.data?.members) {
+      query.data.members.forEach((member) => {
+        userTeamMemberNames.add(member.name.toLowerCase());
+      });
+    }
+  });
+  
+  // Check if user has access to the project
+  const hasAccess = project ? project.members.some((member) =>
+    userTeamMemberNames.has(member.name.toLowerCase())
+  ) : false;
+  
+  // Redirect if user doesn't have access
+  useEffect(() => {
+    if (!isLoadingProjects && project && userTeamMemberNames.size > 0 && !hasAccess) {
+      navigate("/projects");
+    }
+  }, [isLoadingProjects, project, hasAccess, userTeamMemberNames.size, navigate]);
+  
+  // Normalize the URL parameter (React Router already decodes it)
+  const normalizedSlug = projectNameParam 
+    ? projectNameParam.toLowerCase()
+    : null;
+  
+  // Helper function to create slug from project name (must match Projects.tsx)
+  const createSlug = (name: string) => {
+    return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  };
+  
+  const project = normalizedSlug && projects.length > 0
+    ? projects.find(p => createSlug(p.name) === normalizedSlug)
     : null;
   const isLoading = isLoadingProjects;
+
+  // Debug logging (remove in production)
+  useEffect(() => {
+    console.log('🟢 ProjectDetail State:', {
+      projectNameParam,
+      normalizedSlug,
+      isLoading,
+      projectsCount: projects.length,
+      hasError: !!projectsError,
+      error: projectsError,
+      projectNames: projects.map(p => p.name),
+      projectSlugs: projects.map(p => createSlug(p.name)),
+      foundProject: project?.name || 'NOT FOUND',
+      projectMatch: project ? '✅' : '❌'
+    });
+  }, [projectNameParam, normalizedSlug, isLoading, projects, project, projectsError]);
 
   const handleDelete = async () => {
     if (!project) return;
@@ -56,6 +157,7 @@ export default function ProjectDetail() {
     }
   };
 
+  // Show loading state
   if (isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
@@ -70,7 +172,26 @@ export default function ProjectDetail() {
     );
   }
 
-  if (!project) {
+  // Show error if projects failed to load
+  if (projectsError) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12 space-y-4">
+          <h1 className="text-2xl font-bold text-destructive">Error loading projects</h1>
+          <p className="text-muted-foreground">
+            {projectsError instanceof Error ? projectsError.message : 'Failed to load projects'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show not found if no projectNameParam
+  if (!projectNameParam) {
     return (
       <div className="space-y-6 animate-fade-in">
         <Button variant="ghost" onClick={() => navigate("/projects")}>
@@ -78,7 +199,57 @@ export default function ProjectDetail() {
           Back to Projects
         </Button>
         <div className="text-center py-12">
+          <h1 className="text-2xl font-bold">Invalid project URL</h1>
+          <p className="text-muted-foreground">No project specified in the URL</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show access denied if user doesn't have access
+  if (project && userTeamMemberNames.size > 0 && !hasAccess && !isLoadingProjects) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">You don't have access to this project.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show not found if project doesn't exist
+  if (!project && !isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12 space-y-4">
           <h1 className="text-2xl font-bold">Project not found</h1>
+          <p className="text-muted-foreground">
+            Could not find a project matching "{normalizedSlug}"
+          </p>
+          {projects.length > 0 && (
+            <div className="text-sm text-muted-foreground mt-4 max-w-md mx-auto">
+              <p className="font-medium mb-2">Available projects:</p>
+              <ul className="list-disc list-inside mt-2 space-y-1 text-left">
+                {projects.slice(0, 5).map(p => (
+                  <li key={p.name}>
+                    <span className="font-medium">{p.name}</span> → slug: <code className="bg-secondary px-1 rounded">{createSlug(p.name)}</code>
+                  </li>
+                ))}
+              </ul>
+              {projects.length > 5 && <p className="mt-2">... and {projects.length - 5} more</p>}
+            </div>
+          )}
+          {projects.length === 0 && (
+            <p className="text-sm text-muted-foreground">No projects available</p>
+          )}
         </div>
       </div>
     );
@@ -129,8 +300,22 @@ export default function ProjectDetail() {
     
     // Sort by date (newest first)
     return activities.sort((a, b) => {
-      const dateA = new Date(a.date).getTime();
-      const dateB = new Date(b.date).getTime();
+      // Safely convert dates to timestamps for comparison
+      const getDateTimestamp = (dateValue: any): number => {
+        if (!dateValue) return 0;
+        
+        // If it's a Firestore Timestamp object
+        if (dateValue && typeof dateValue === 'object' && '_seconds' in dateValue) {
+          return (dateValue._seconds || 0) * 1000;
+        }
+        
+        // Try to parse as Date
+        const date = new Date(dateValue);
+        return isNaN(date.getTime()) ? 0 : date.getTime();
+      };
+      
+      const dateA = getDateTimestamp(a.date);
+      const dateB = getDateTimestamp(b.date);
       return dateB - dateA;
     });
   };
@@ -159,11 +344,11 @@ export default function ProjectDetail() {
         <div className="flex items-center gap-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
-            <span>Created: <span className="text-foreground font-medium">{project.createdDate}</span></span>
+            <span>Created: <span className="text-foreground font-medium">{formatDate(project.createdDate)}</span></span>
           </div>
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
-            <span>Due: <span className="text-foreground font-medium">{project.dueDate}</span></span>
+            <span>Due: <span className="text-foreground font-medium">{formatDate(project.dueDate)}</span></span>
           </div>
         </div>
       </div>
@@ -241,7 +426,7 @@ export default function ProjectDetail() {
                       <p className="font-medium text-sm mb-1">{task.title}</p>
                       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                         <span>Assignee: {task.assignee}</span>
-                        <span>Due: {task.dueDate}</span>
+                        <span>Due: {formatDate(task.dueDate)}</span>
                       </div>
                     </div>
                     <Badge variant="outline" className="text-xs capitalize">
@@ -312,7 +497,7 @@ export default function ProjectDetail() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <p className="font-medium text-sm">{activity.memberName}</p>
-                              <span className="text-xs text-muted-foreground">{activity.date}</span>
+                              <span className="text-xs text-muted-foreground">{formatDate(activity.date)}</span>
                               {activity.type === "comment" && (
                                 <Badge 
                                   className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"

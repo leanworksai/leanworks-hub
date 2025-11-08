@@ -6,19 +6,25 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { useEffect } from "react";
 import { initFirestore } from "@/services/firestore";
+import { AuthProvider } from "@/contexts/AuthContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
 import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Chatbot } from "./components/Chatbot";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
 import Teams from "./pages/Teams";
 import TeamDetail from "./pages/TeamDetail";
+import Users from "./pages/Users";
 import Integrations from "./pages/Integrations";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
+import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -36,94 +42,141 @@ const App = () => {
   }, []);
 
   return (
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <SelectionModeProvider>
-          <SelectedProjectsProvider>
-            <SelectedTasksProvider>
-              <SelectedTeamsProvider>
-                <Toaster />
-                <Sonner />
-                <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Navigate to="/projects" replace />} />
-          <Route
-            path="/teams"
-            element={
-              <DashboardLayout>
-                <Teams />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/teams/:teamName"
-            element={
-              <DashboardLayout>
-                <TeamDetail />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/integrations"
-            element={
-              <DashboardLayout>
-                <Integrations />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/projects"
-            element={
-              <DashboardLayout>
-                <Projects />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/projects/:projectName"
-            element={
-              <DashboardLayout>
-                <ProjectDetail />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/tasks"
-            element={
-              <DashboardLayout>
-                <Tasks />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/tasks/:taskId"
-            element={
-              <DashboardLayout>
-                <TaskDetail />
-              </DashboardLayout>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <DashboardLayout>
-                <Settings />
-              </DashboardLayout>
-            }
-          />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-        <Chatbot />
-      </BrowserRouter>
-              </SelectedTeamsProvider>
-            </SelectedTasksProvider>
-          </SelectedProjectsProvider>
-        </SelectionModeProvider>
-    </TooltipProvider>
-  </QueryClientProvider>
-  </ThemeProvider>
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthProvider>
+            <SelectionModeProvider>
+              <SelectedProjectsProvider>
+                <SelectedTasksProvider>
+                  <SelectedTeamsProvider>
+                    <Toaster />
+                    <Sonner />
+                    <BrowserRouter>
+                      <Routes>
+                        <Route path="/login" element={<Login />} />
+                        <Route path="/signup" element={<Signup />} />
+                        <Route
+                          path="/"
+                          element={
+                            <ProtectedRoute>
+                              <Navigate to="/projects" replace />
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/teams"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Teams />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/teams/:teamName"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <TeamDetail />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/users"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Users />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/integrations"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Integrations />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/projects"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Projects />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/projects/:projectName"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <ProjectDetail />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/tasks"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Tasks />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/tasks/:taskId"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <TaskDetail />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/profile"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Profile />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="/settings"
+                          element={
+                            <ProtectedRoute>
+                              <DashboardLayout>
+                                <Settings />
+                              </DashboardLayout>
+                            </ProtectedRoute>
+                          }
+                        />
+                        {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                        <Route path="*" element={<NotFound />} />
+                      </Routes>
+                      <Chatbot />
+                    </BrowserRouter>
+                  </SelectedTeamsProvider>
+                </SelectedTasksProvider>
+              </SelectedProjectsProvider>
+            </SelectionModeProvider>
+          </AuthProvider>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 };
 

@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, Settings, LogOut, CheckSquare } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, UserCircle } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -17,8 +17,8 @@ const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Teams", url: "/teams", icon: Users },
+  { title: "Users", url: "/users", icon: UserCircle },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
-  { title: "Settings", url: "/settings", icon: Settings },
 ];
 
 export function AppSidebar() {
@@ -69,10 +69,9 @@ export function AppSidebar() {
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton>
-              <LogOut className="h-4 w-4" />
-              <span>Logout</span>
-            </SidebarMenuButton>
+            <div className="px-2 py-1.5 text-xs text-sidebar-foreground/70">
+              LeanWorks Hub
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

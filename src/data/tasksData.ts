@@ -21,10 +21,12 @@ export interface Task {
   description: string;
   status: "todo" | "in-progress" | "review" | "completed" | "blocked";
   priority: "low" | "medium" | "high" | "urgent";
-  assignee: string;
-  assigneeAvatar: string;
-  project: string;
-  projectId: string;
+  assignee?: string;
+  assigneeAvatar?: string;
+  project?: string;
+  projectId?: string;
+  teams?: string[]; // Teams that can see this task (for tasks without projects)
+  createdBy?: string; // Email of the user who created the task
   dueDate: string;
   createdDate: string;
   createdAt?: number; // Timestamp in milliseconds for sorting

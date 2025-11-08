@@ -2,51 +2,410 @@ import express from 'express';
 import cors from 'cors';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
-import * as serviceAccount from '../gcp_credential.json';
+import { getAuth } from 'firebase-admin/auth';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import bcrypt from 'bcrypt';
+
+// Get __dirname equivalent for ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Read service account credentials
+// Using fs.readFileSync to avoid module import issues with JSON files
+const serviceAccountPath = join(__dirname, '../gcp_credential.json');
+const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
 
 // Initialize Firebase Admin SDK
+let firebaseApp;
 if (getApps().length === 0) {
-  initializeApp({
-    credential: cert(serviceAccount as any),
+  firebaseApp = initializeApp({
+    credential: cert(serviceAccount),
     projectId: serviceAccount.project_id,
   });
+} else {
+  firebaseApp = getApps()[0];
 }
 
-const db = getFirestore(undefined, 'leanworks-test');
+const db = getFirestore(firebaseApp, 'leanworks-test');
+const auth = getAuth(firebaseApp);
 const app = express();
 const PORT = 3001;
 
 app.use(cors());
 app.use(express.json());
 
+// Extract domain from email
+function extractDomain(email: string): string {
+  return email.split('@')[1]?.toLowerCase() || '';
+}
+
+// Validate business email (not personal email domain)
+const PERSONAL_EMAIL_DOMAINS = [
+  'gmail.com',
+  'yahoo.com',
+  'hotmail.com',
+  'outlook.com',
+  'icloud.com',
+  'aol.com',
+  'mail.com',
+  'protonmail.com',
+  'yandex.com',
+  'zoho.com',
+  'gmx.com',
+  'live.com',
+  'msn.com',
+  'me.com',
+  'mac.com',
+];
+
+function isBusinessEmail(email: string): boolean {
+  const domain = extractDomain(email);
+  return !PERSONAL_EMAIL_DOMAINS.includes(domain);
+}
+
+// Authentication middleware
+async function authenticateUser(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized: No token provided' });
+    }
+
+    const token = authHeader.split('Bearer ')[1];
+    
+    // Try to verify as ID token first (normal flow when Firebase Auth works)
+    try {
+      const decodedToken = await auth.verifyIdToken(token);
+      // Attach user info to request
+      (req as any).user = decodedToken;
+      (req as any).userDomain = extractDomain(decodedToken.email || '');
+      next();
+      return;
+    } catch (idTokenError: any) {
+      // If ID token verification fails, try to verify as custom token
+      // Custom tokens from createCustomToken are JWTs that can be verified
+      // by decoding and checking the UID
+      try {
+        // Decode the JWT without verification first to get the UID
+        // Custom tokens have the format: {uid: "...", ...}
+        const parts = token.split('.');
+        if (parts.length === 3) {
+          // It's a JWT, try to decode it
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+          
+          // If it has a uid, it's likely a custom token
+          if (payload.uid) {
+            // Verify the user exists and get their info
+            const userRecord = await auth.getUser(payload.uid);
+            
+            // Create a decoded token-like object
+            (req as any).user = {
+              uid: userRecord.uid,
+              email: userRecord.email,
+              email_verified: userRecord.emailVerified,
+            };
+            (req as any).userDomain = extractDomain(userRecord.email || '');
+            next();
+            return;
+          }
+        }
+        
+        // If we can't decode it, reject
+        throw new Error('Invalid token format');
+      } catch (customTokenError: any) {
+        console.error('Token verification failed:', customTokenError.message);
+        return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+      }
+    }
+  } catch (error) {
+    console.error('Authentication error:', error);
+    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+  }
+}
+
+// Helper to get domain-based collection path
+function getCollectionPath(collectionName: string, domain: string): string {
+  return `domains/${domain}/${collectionName}`;
+}
+
+// Email whitelist - only these emails can signup and login
+const EMAIL_WHITELIST = [
+  'testuser@leanworks.ai',
+  'yanfu@leanworks.ai',
+  'vijay@leanworks.ai',
+  'qian@leanworks.ai',
+  // Add more whitelisted emails here
+];
+
+function isEmailWhitelisted(email: string): boolean {
+  return EMAIL_WHITELIST.includes(email.toLowerCase());
+}
+
+// Authentication endpoints
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { email, password, firstName, lastName, jobTitle, responsibilities } = req.body;
+
+    if (!email || !password || !firstName || !lastName || !jobTitle) {
+      return res.status(400).json({ error: 'Email, password, first name, last name, and job title are required' });
+    }
+
+    // Check if email is whitelisted
+    if (!isEmailWhitelisted(email)) {
+      return res.status(403).json({ error: 'Your email is not authorized to sign up. Please contact your administrator.' });
+    }
+
+    // Get domain and collection path
+    const domain = extractDomain(email);
+    const usersCollectionPath = getCollectionPath('users', domain);
+    
+    // Check if user already exists in Firestore
+    const usersCollection = db.collection(usersCollectionPath);
+    const userDoc = await usersCollection.doc(email.toLowerCase()).get();
+    
+    if (userDoc.exists) {
+      return res.status(400).json({ error: 'Account already exists. Please sign in instead.' });
+    }
+
+    // Hash password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Store user in Firestore users collection (domain-based)
+    const userData = {
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      firstName,
+      lastName,
+      jobTitle,
+      responsibilities: responsibilities || '',
+      createdAt: new Date(),
+      domain: domain,
+    };
+
+    await usersCollection.doc(email.toLowerCase()).set(userData);
+
+    // Create Firebase Auth user (for custom token generation)
+    let userRecord;
+    try {
+      userRecord = await auth.createUser({
+        email: email.toLowerCase(),
+        password,
+        emailVerified: true, // No email verification needed
+      });
+    } catch (error: any) {
+      // If user already exists in Firebase Auth, get it
+      if (error.code === 'auth/email-already-exists') {
+        userRecord = await auth.getUserByEmail(email.toLowerCase());
+      } else {
+        throw error;
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Account created successfully!',
+      userId: userRecord.uid,
+    });
+  } catch (error: any) {
+    console.error('Signup error:', error);
+    res.status(500).json({ error: error.message || 'Failed to create account' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // Check if email is whitelisted
+    if (!isEmailWhitelisted(email)) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Get domain and collection path
+    const domain = extractDomain(email);
+    const usersCollectionPath = getCollectionPath('users', domain);
+    
+    // Get user from Firestore users collection (domain-based)
+    const usersCollection = db.collection(usersCollectionPath);
+    const userDoc = await usersCollection.doc(email.toLowerCase()).get();
+    
+    if (!userDoc.exists) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const userData = userDoc.data();
+    if (!userData) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Verify password
+    const isPasswordValid = await bcrypt.compare(password, userData.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Get or create Firebase Auth user (for custom token generation)
+    let userRecord;
+    try {
+      userRecord = await auth.getUserByEmail(email.toLowerCase());
+    } catch (error: any) {
+      if (error.code === 'auth/user-not-found') {
+        // Create user in Firebase Auth if it doesn't exist
+        userRecord = await auth.createUser({
+          email: email.toLowerCase(),
+          password,
+          emailVerified: true,
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    // Ensure user is verified (no email verification needed, but keep it true)
+    if (!userRecord.emailVerified) {
+      await auth.updateUser(userRecord.uid, { emailVerified: true });
+      // Fetch updated user record to get the latest emailVerified value
+      userRecord = await auth.getUser(userRecord.uid);
+    }
+
+    // Create custom token for the user
+    const customToken = await auth.createCustomToken(userRecord.uid);
+
+    res.json({ 
+      success: true,
+      customToken,
+      user: {
+        uid: userRecord.uid,
+        email: userRecord.email,
+        emailVerified: userRecord.emailVerified,
+      }
+    });
+  } catch (error: any) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: error.message || 'Failed to sign in' });
+  }
+});
+
+// Email verification endpoints removed - no email verification required
+
+// User profile endpoint
+app.get('/api/users/profile', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).user.email;
+    if (!userEmail) {
+      return res.status(400).json({ error: 'User email not found' });
+    }
+
+    const domain = (req as any).userDomain;
+    const usersCollectionPath = getCollectionPath('users', domain);
+    const userDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User profile not found' });
+    }
+
+    const userData = userDoc.data();
+    if (!userData) {
+      return res.status(404).json({ error: 'User profile not found' });
+    }
+
+    // Remove password from response
+    const { password, ...profileData } = userData;
+    
+    // Convert createdAt timestamp if it exists
+    const profile = {
+      ...profileData,
+      createdAt: userData.createdAt?.toDate ? userData.createdAt.toDate().toISOString() : userData.createdAt,
+    };
+
+    res.json(profile);
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch profile' });
+  }
+});
+
+// Get all users endpoint
+app.get('/api/users', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const usersCollectionPath = getCollectionPath('users', domain);
+    const snapshot = await db.collection(usersCollectionPath).get();
+    
+    const users = snapshot.docs.map(doc => {
+      const userData = doc.data();
+      // Remove password from response
+      const { password, ...userWithoutPassword } = userData;
+      
+      // Convert createdAt timestamp if it exists
+      return {
+        ...userWithoutPassword,
+        createdAt: userData.createdAt?.toDate ? userData.createdAt.toDate().toISOString() : userData.createdAt,
+      };
+    });
+    
+    res.json(users);
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch users' });
+  }
+});
+
 // Helper to convert Firestore timestamps
+// Helper function to convert Firestore timestamps recursively
+const convertTimestamp = (value: any): any => {
+  // Check if it's a Firestore Timestamp
+  if (value && typeof value === 'object' && 'toDate' in value && typeof (value as any).toDate === 'function') {
+    const date = (value as any).toDate();
+    // Convert to date string (YYYY-MM-DD format)
+    return date.toISOString().split('T')[0];
+  }
+  
+  // Check if it's an array
+  if (Array.isArray(value)) {
+    return value.map(item => convertTimestamp(item));
+  }
+  
+  // Check if it's a plain object (not null, not Date, not Array)
+  if (value && typeof value === 'object' && value.constructor === Object) {
+    const converted: any = {};
+    for (const [key, val] of Object.entries(value)) {
+      // For createdAt, preserve as timestamp in milliseconds if it's a timestamp
+      if (key === 'createdAt' && val && typeof val === 'object' && 'toDate' in val) {
+        const date = (val as any).toDate();
+        converted[key] = date.getTime();
+      } else {
+        converted[key] = convertTimestamp(val);
+      }
+    }
+    return converted;
+  }
+  
+  // Return primitive values as-is
+  return value;
+};
+
 const convertDoc = (doc: any) => {
   const data = doc.data();
   if (!data) return null;
   
-  // Convert Firestore timestamps
-  const converted: any = {};
-  for (const [key, value] of Object.entries(data)) {
-    if (value && typeof value === 'object' && 'toDate' in value) {
-      const date = (value as any).toDate();
-      // For createdAt, preserve as timestamp in milliseconds
-      if (key === 'createdAt') {
-        converted[key] = date.getTime();
-      } else {
-        // For other date fields, convert to date string
-        converted[key] = date.toISOString().split('T')[0];
-      }
-    } else {
-      converted[key] = value;
-    }
-  }
-  return converted;
+  // Convert Firestore timestamps recursively
+  return convertTimestamp(data);
 };
 
 // Projects endpoints
-app.get('/api/projects', async (req, res) => {
+app.get('/api/projects', authenticateUser, async (req, res) => {
   try {
-    const snapshot = await db.collection('projects').get();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('projects', domain);
+    const snapshot = await db.collection(collectionPath).get();
     const projects = snapshot.docs.map(doc => convertDoc(doc));
     res.json(projects);
   } catch (error) {
@@ -54,9 +413,11 @@ app.get('/api/projects', async (req, res) => {
   }
 });
 
-app.get('/api/projects/:name', async (req, res) => {
+app.get('/api/projects/:name', authenticateUser, async (req, res) => {
   try {
-    const doc = await db.collection('projects').doc(req.params.name).get();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('projects', domain);
+    const doc = await db.collection(collectionPath).doc(req.params.name).get();
     if (!doc.exists) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -66,28 +427,34 @@ app.get('/api/projects/:name', async (req, res) => {
   }
 });
 
-app.post('/api/projects', async (req, res) => {
+app.post('/api/projects', authenticateUser, async (req, res) => {
   try {
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('projects', domain);
     const project = req.body;
-    await db.collection('projects').doc(project.name).set(project);
+    await db.collection(collectionPath).doc(project.name).set(project);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/projects/:name', async (req, res) => {
+app.patch('/api/projects/:name', authenticateUser, async (req, res) => {
   try {
-    await db.collection('projects').doc(req.params.name).update(req.body);
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('projects', domain);
+    await db.collection(collectionPath).doc(req.params.name).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.delete('/api/projects/:name', async (req, res) => {
+app.delete('/api/projects/:name', authenticateUser, async (req, res) => {
   try {
-    await db.collection('projects').doc(req.params.name).delete();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('projects', domain);
+    await db.collection(collectionPath).doc(req.params.name).delete();
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
@@ -95,9 +462,11 @@ app.delete('/api/projects/:name', async (req, res) => {
 });
 
 // Tasks endpoints
-app.get('/api/tasks', async (req, res) => {
+app.get('/api/tasks', authenticateUser, async (req, res) => {
   try {
-    const snapshot = await db.collection('tasks').get();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('tasks', domain);
+    const snapshot = await db.collection(collectionPath).get();
     const tasks = snapshot.docs.map(doc => convertDoc(doc));
     res.json(tasks);
   } catch (error) {
@@ -105,9 +474,11 @@ app.get('/api/tasks', async (req, res) => {
   }
 });
 
-app.get('/api/tasks/:id', async (req, res) => {
+app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
   try {
-    const doc = await db.collection('tasks').doc(req.params.id).get();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('tasks', domain);
+    const doc = await db.collection(collectionPath).doc(req.params.id).get();
     if (!doc.exists) {
       return res.status(404).json({ error: 'Task not found' });
     }
@@ -117,9 +488,11 @@ app.get('/api/tasks/:id', async (req, res) => {
   }
 });
 
-app.get('/api/tasks/project/:projectId', async (req, res) => {
+app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
   try {
-    const snapshot = await db.collection('tasks')
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('tasks', domain);
+    const snapshot = await db.collection(collectionPath)
       .where('projectId', '==', req.params.projectId)
       .get();
     const tasks = snapshot.docs.map(doc => convertDoc(doc));
@@ -129,28 +502,34 @@ app.get('/api/tasks/project/:projectId', async (req, res) => {
   }
 });
 
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', authenticateUser, async (req, res) => {
   try {
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('tasks', domain);
     const task = req.body;
-    await db.collection('tasks').doc(task.id).set(task);
+    await db.collection(collectionPath).doc(task.id).set(task);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/tasks/:id', async (req, res) => {
+app.patch('/api/tasks/:id', authenticateUser, async (req, res) => {
   try {
-    await db.collection('tasks').doc(req.params.id).update(req.body);
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('tasks', domain);
+    await db.collection(collectionPath).doc(req.params.id).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.delete('/api/tasks/:id', async (req, res) => {
+app.delete('/api/tasks/:id', authenticateUser, async (req, res) => {
   try {
-    await db.collection('tasks').doc(req.params.id).delete();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('tasks', domain);
+    await db.collection(collectionPath).doc(req.params.id).delete();
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
@@ -158,9 +537,11 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 // Teams endpoints
-app.get('/api/teams', async (req, res) => {
+app.get('/api/teams', authenticateUser, async (req, res) => {
   try {
-    const snapshot = await db.collection('teams').get();
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('teams', domain);
+    const snapshot = await db.collection(collectionPath).get();
     const teams = snapshot.docs.map(doc => doc.data());
     res.json(teams);
   } catch (error) {
@@ -168,9 +549,132 @@ app.get('/api/teams', async (req, res) => {
   }
 });
 
-app.get('/api/teams/:name', async (req, res) => {
+// Team join request endpoints - must come before /api/teams/:name to avoid route conflicts
+app.post('/api/teams/:teamName/join-request', authenticateUser, async (req, res) => {
   try {
-    const doc = await db.collection('teamDetails').doc(req.params.name).get();
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const teamName = req.params.teamName;
+    
+    // Get team details to find owner
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    
+    if (!teamDetailDoc.exists) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const teamDetail = teamDetailDoc.data();
+    if (!teamDetail) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    // Check if user is already a member
+    const isMember = teamDetail.members?.some(
+      (member: any) => member.email?.toLowerCase() === userEmail.toLowerCase()
+    );
+    
+    if (isMember) {
+      return res.status(400).json({ error: 'You are already a member of this team' });
+    }
+    
+    // Check if there's already a pending request
+    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    const existingRequests = await db.collection(joinRequestsPath)
+      .where('teamName', '==', teamName)
+      .where('userEmail', '==', userEmail.toLowerCase())
+      .where('status', '==', 'pending')
+      .get();
+    
+    if (!existingRequests.empty) {
+      return res.status(400).json({ error: 'You already have a pending request for this team' });
+    }
+    
+    // Get user info for the request
+    const usersCollectionPath = getCollectionPath('users', domain);
+    const userDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
+    const userData = userDoc.data();
+    const userName = userData 
+      ? `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || userEmail
+      : userEmail;
+    
+    // Create join request
+    const requestData = {
+      teamName,
+      userEmail: userEmail.toLowerCase(),
+      userName,
+      status: 'pending',
+      ownerEmail: teamDetail.ownerEmail || teamDetail.members?.[0]?.email || '',
+      createdAt: new Date(),
+    };
+    
+    const requestRef = await db.collection(joinRequestsPath).add(requestData);
+    
+    res.json({ 
+      success: true, 
+      requestId: requestRef.id,
+      message: 'Join request sent successfully'
+    });
+  } catch (error) {
+    console.error('Create join request error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to create join request' });
+  }
+});
+
+// Get join requests for teams owned by the user
+app.get('/api/teams/join-requests', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    
+    // Get all pending requests for teams owned by this user
+    // Note: If orderBy fails due to missing index, remove it and sort in memory
+    let snapshot;
+    try {
+      snapshot = await db.collection(joinRequestsPath)
+        .where('ownerEmail', '==', userEmail.toLowerCase())
+        .where('status', '==', 'pending')
+        .orderBy('createdAt', 'desc')
+        .get();
+    } catch (error: any) {
+      // If index error, fetch without orderBy and sort in memory
+      if (error.code === 9 || error.message?.includes('index')) {
+        snapshot = await db.collection(joinRequestsPath)
+          .where('ownerEmail', '==', userEmail.toLowerCase())
+          .where('status', '==', 'pending')
+          .get();
+        // Sort in memory
+        const docs = snapshot.docs.sort((a, b) => {
+          const aTime = a.data().createdAt?.toDate?.()?.getTime() || 0;
+          const bTime = b.data().createdAt?.toDate?.()?.getTime() || 0;
+          return bTime - aTime; // Descending
+        });
+        // Create a new QuerySnapshot-like object
+        snapshot = { docs, empty: docs.length === 0 };
+      } else {
+        throw error;
+      }
+    }
+    
+    const requests = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate ? doc.data().createdAt.toDate().toISOString() : doc.data().createdAt,
+    }));
+    
+    res.json(requests);
+  } catch (error) {
+    console.error('Get join requests error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch join requests' });
+  }
+});
+
+app.get('/api/teams/:name', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('teamDetails', domain);
+    const doc = await db.collection(collectionPath).doc(req.params.name).get();
     if (!doc.exists) {
       return res.status(404).json({ error: 'Team not found' });
     }
@@ -180,42 +684,417 @@ app.get('/api/teams/:name', async (req, res) => {
   }
 });
 
-app.post('/api/teams', async (req, res) => {
+app.post('/api/teams', authenticateUser, async (req, res) => {
   try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
     const { team, teamDetail } = req.body;
-    await db.collection('teams').doc(team.name).set(team);
-    await db.collection('teamDetails').doc(team.name).set(teamDetail);
+    
+    // Add owner email to team and team detail
+    const teamWithOwner = { ...team, ownerEmail: userEmail };
+    const teamDetailWithOwner = { ...teamDetail, ownerEmail: userEmail };
+    
+    await db.collection(teamsPath).doc(team.name).set(teamWithOwner);
+    await db.collection(teamDetailsPath).doc(team.name).set(teamDetailWithOwner);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/teams/:name', async (req, res) => {
+app.patch('/api/teams/:name', authenticateUser, async (req, res) => {
   try {
-    await db.collection('teams').doc(req.params.name).update(req.body);
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('teams', domain);
+    await db.collection(collectionPath).doc(req.params.name).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/teams/:name/detail', async (req, res) => {
+app.patch('/api/teams/:name/detail', authenticateUser, async (req, res) => {
   try {
-    await db.collection('teamDetails').doc(req.params.name).update(req.body);
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('teamDetails', domain);
+    await db.collection(collectionPath).doc(req.params.name).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.delete('/api/teams/:name', async (req, res) => {
+app.delete('/api/teams/:name', authenticateUser, async (req, res) => {
   try {
-    await db.collection('teams').doc(req.params.name).delete();
-    await db.collection('teamDetails').doc(req.params.name).delete();
+    const domain = (req as any).userDomain;
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    await db.collection(teamsPath).doc(req.params.name).delete();
+    await db.collection(teamDetailsPath).doc(req.params.name).delete();
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Approve join request
+app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const requestId = req.params.requestId;
+    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    
+    // Get the request
+    const requestDoc = await db.collection(joinRequestsPath).doc(requestId).get();
+    if (!requestDoc.exists) {
+      return res.status(404).json({ error: 'Join request not found' });
+    }
+    
+    const requestData = requestDoc.data();
+    if (!requestData) {
+      return res.status(404).json({ error: 'Join request not found' });
+    }
+    
+    // Verify the user is the owner
+    if (requestData.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the team owner can approve requests' });
+    }
+    
+    // Check if already processed
+    if (requestData.status !== 'pending') {
+      return res.status(400).json({ error: 'This request has already been processed' });
+    }
+    
+    // Get user info to add to team
+    const usersCollectionPath = getCollectionPath('users', domain);
+    const userDoc = await db.collection(usersCollectionPath).doc(requestData.userEmail).get();
+    const userData = userDoc.data();
+    
+    if (!userData) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Add user to team
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(requestData.teamName).get();
+    
+    if (!teamDetailDoc.exists) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const teamDetail = teamDetailDoc.data();
+    if (!teamDetail) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    // Check if user is already a member
+    const isAlreadyMember = teamDetail.members?.some(
+      (member: any) => member.email?.toLowerCase() === requestData.userEmail.toLowerCase()
+    );
+    
+    if (isAlreadyMember) {
+      // Just mark request as approved
+      await db.collection(joinRequestsPath).doc(requestId).update({ status: 'approved' });
+      return res.json({ success: true, message: 'User is already a member' });
+    }
+    
+    // Add new member
+    const firstName = userData.firstName || '';
+    const lastName = userData.lastName || '';
+    const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || requestData.userEmail.charAt(0).toUpperCase();
+    
+    const newMember = {
+      name: `${firstName} ${lastName}`.trim() || requestData.userEmail,
+      role: userData.jobTitle || 'Member',
+      email: requestData.userEmail,
+      avatar: initials,
+    };
+    
+    const updatedMembers = [...(teamDetail.members || []), newMember];
+    
+    // Update team detail
+    await db.collection(teamDetailsPath).doc(requestData.teamName).update({
+      members: updatedMembers,
+    });
+    
+    // Update team member count
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDoc = await db.collection(teamsPath).doc(requestData.teamName).get();
+    if (teamDoc.exists) {
+      await db.collection(teamsPath).doc(requestData.teamName).update({
+        members: updatedMembers.length,
+      });
+    }
+    
+    // Update request status
+    await db.collection(joinRequestsPath).doc(requestId).update({ status: 'approved' });
+    
+    res.json({ success: true, message: 'Join request approved successfully' });
+  } catch (error) {
+    console.error('Approve join request error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to approve join request' });
+  }
+});
+
+// Reject join request
+app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const requestId = req.params.requestId;
+    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    
+    // Get the request
+    const requestDoc = await db.collection(joinRequestsPath).doc(requestId).get();
+    if (!requestDoc.exists) {
+      return res.status(404).json({ error: 'Join request not found' });
+    }
+    
+    const requestData = requestDoc.data();
+    if (!requestData) {
+      return res.status(404).json({ error: 'Join request not found' });
+    }
+    
+    // Verify the user is the owner
+    if (requestData.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the team owner can reject requests' });
+    }
+    
+    // Check if already processed
+    if (requestData.status !== 'pending') {
+      return res.status(400).json({ error: 'This request has already been processed' });
+    }
+    
+    // Update request status
+    await db.collection(joinRequestsPath).doc(requestId).update({ status: 'rejected' });
+    
+    res.json({ success: true, message: 'Join request rejected' });
+  } catch (error) {
+    console.error('Reject join request error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to reject join request' });
+  }
+});
+
+// Remove a member from a team (only for owners)
+app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const teamName = req.params.name;
+    const memberEmail = decodeURIComponent(req.params.memberEmail);
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    
+    // Get team to verify ownership
+    const teamDoc = await db.collection(teamsPath).doc(teamName).get();
+    if (!teamDoc.exists) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const team = teamDoc.data();
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    // Verify the user is the owner
+    if (team.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the team owner can remove members' });
+    }
+    
+    // Prevent owner from removing themselves
+    if (memberEmail.toLowerCase() === userEmail.toLowerCase()) {
+      return res.status(400).json({ error: 'Team owner cannot remove themselves. Transfer ownership first or delete the team.' });
+    }
+    
+    // Get team details
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    if (!teamDetailDoc.exists) {
+      return res.status(404).json({ error: 'Team details not found' });
+    }
+    
+    const teamDetail = teamDetailDoc.data();
+    if (!teamDetail) {
+      return res.status(404).json({ error: 'Team details not found' });
+    }
+    
+    // Check if member exists
+    const members = teamDetail.members || [];
+    const memberIndex = members.findIndex(
+      (member: any) => member.email?.toLowerCase() === memberEmail.toLowerCase()
+    );
+    
+    if (memberIndex === -1) {
+      return res.status(404).json({ error: 'Member not found in team' });
+    }
+    
+    // Remove member
+    const updatedMembers = members.filter(
+      (member: any) => member.email?.toLowerCase() !== memberEmail.toLowerCase()
+    );
+    
+    // Update team details
+    await db.collection(teamDetailsPath).doc(teamName).update({
+      members: updatedMembers,
+    });
+    
+    // Update team member count
+    await db.collection(teamsPath).doc(teamName).update({
+      members: updatedMembers.length,
+    });
+    
+    res.json({ success: true, message: 'Member removed successfully' });
+  } catch (error) {
+    console.error('Remove member error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to remove member' });
+  }
+});
+
+// Leave a team (for members)
+app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const teamName = req.params.name;
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    
+    // Get team to check ownership
+    const teamDoc = await db.collection(teamsPath).doc(teamName).get();
+    if (!teamDoc.exists) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const team = teamDoc.data();
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    // Prevent owner from leaving (they should transfer ownership or delete team)
+    if (team.ownerEmail?.toLowerCase() === userEmail.toLowerCase()) {
+      return res.status(400).json({ error: 'Team owner cannot leave the team. Transfer ownership first or delete the team.' });
+    }
+    
+    // Get team details
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    if (!teamDetailDoc.exists) {
+      return res.status(404).json({ error: 'Team details not found' });
+    }
+    
+    const teamDetail = teamDetailDoc.data();
+    if (!teamDetail) {
+      return res.status(404).json({ error: 'Team details not found' });
+    }
+    
+    // Check if user is a member
+    const members = teamDetail.members || [];
+    const isMember = members.some(
+      (member: any) => member.email?.toLowerCase() === userEmail.toLowerCase()
+    );
+    
+    if (!isMember) {
+      return res.status(400).json({ error: 'You are not a member of this team' });
+    }
+    
+    // Remove user from members
+    const updatedMembers = members.filter(
+      (member: any) => member.email?.toLowerCase() !== userEmail.toLowerCase()
+    );
+    
+    // Update team details
+    await db.collection(teamDetailsPath).doc(teamName).update({
+      members: updatedMembers,
+    });
+    
+    // Update team member count
+    await db.collection(teamsPath).doc(teamName).update({
+      members: updatedMembers.length,
+    });
+    
+    res.json({ success: true, message: 'Left team successfully' });
+  } catch (error) {
+    console.error('Leave team error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to leave team' });
+  }
+});
+
+// Migration endpoint to backfill ownerEmail for teams
+app.post('/api/teams/migrate-owners', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    
+    // Get all teams
+    const teamsSnapshot = await db.collection(teamsPath).get();
+    const teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+    
+    const results = {
+      updated: [] as string[],
+      skipped: [] as string[],
+      errors: [] as string[],
+    };
+    
+    // Process each team
+    for (const team of teams) {
+      try {
+        const teamName = team.name || team.id;
+        
+        // Skip if team already has an ownerEmail
+        if (team.ownerEmail) {
+          results.skipped.push(teamName);
+          continue;
+        }
+        
+        // Get team details to find members
+        const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+        
+        if (!teamDetailDoc.exists) {
+          results.errors.push(`${teamName}: Team details not found`);
+          continue;
+        }
+        
+        const teamDetail = teamDetailDoc.data();
+        
+        // Find the first member to set as owner
+        let ownerEmail: string | null = null;
+        
+        if (teamDetail?.members && Array.isArray(teamDetail.members) && teamDetail.members.length > 0) {
+          // Use the first member's email as the owner
+          ownerEmail = teamDetail.members[0].email;
+        }
+        
+        if (!ownerEmail) {
+          results.errors.push(`${teamName}: No members found to set as owner`);
+          continue;
+        }
+        
+        // Update both teams and teamDetails collections
+        await db.collection(teamsPath).doc(teamName).update({
+          ownerEmail: ownerEmail,
+        });
+        
+        await db.collection(teamDetailsPath).doc(teamName).update({
+          ownerEmail: ownerEmail,
+        });
+        
+        results.updated.push(teamName);
+      } catch (error: any) {
+        const teamName = team.name || team.id;
+        results.errors.push(`${teamName}: ${error.message}`);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Migration completed. Updated: ${results.updated.length}, Skipped: ${results.skipped.length}, Errors: ${results.errors.length}`,
+      results,
+    });
+  } catch (error) {
+    console.error('Migrate owners error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to migrate team owners' });
   }
 });
 

@@ -17,7 +17,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getTeamData } from "@/data/teamsData";
-import { projects, Project } from "@/data/projectsData";
+import { Project } from "@/data/projectsData";
+import { useUserProjects } from "@/hooks/useProjects";
 
 interface Message {
   id: string;
@@ -79,6 +80,7 @@ export function Chatbot() {
   const { selectedProjects } = useSelectedProjects();
   const { selectedTasks } = useSelectedTasks();
   const { selectedTeams } = useSelectedTeams();
+  const { data: projects = [] } = useUserProjects();
   const [isOpen, setIsOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<string>("ai-assistant");
   const [messages, setMessages] = useState<Message[]>([

@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Plus, MoreVertical, Users, Calendar, Trash2, Star } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useProjects, useDeleteProject } from "@/hooks/useProjects";
+import { useUserProjects, useDeleteProject } from "@/hooks/useProjects";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
@@ -41,7 +41,7 @@ export default function Projects() {
   const navigate = useNavigate();
   const { toggleProject, isProjectSelected, selectedProjects } = useSelectedProjects();
   const { isSelectionMode } = useSelectionMode();
-  const { data: projects = [], isLoading } = useProjects();
+  const { data: projects = [], isLoading } = useUserProjects();
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
@@ -51,7 +51,9 @@ export default function Projects() {
   const handleCardClick = (projectName: string) => {
     // Don't navigate if in selection mode
     if (isSelectionMode) return;
-    const slug = projectName.toLowerCase().replace(/\s+/g, '-');
+    // Create slug: lowercase, replace spaces with hyphens, remove special chars
+    const slug = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    // Navigate with slug (React Router handles URL encoding automatically)
     navigate(`/projects/${slug}`);
   };
 

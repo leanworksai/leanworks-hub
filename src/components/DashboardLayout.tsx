@@ -1,31 +1,82 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, Moon, Sun, X, CheckSquare } from "lucide-react";
+import { Bell, Search, Moon, Sun, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
+import { Badge } from "./ui/badge";
+import { toast } from "./ui/sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import { usersService } from "@/services/firestore";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
+import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest } from "@/hooks/useTeams";
+import type { TeamJoinRequest } from "@/data/teamsData";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
 }
 
+interface UserProfile {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}
+
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
   const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
   const { isSelectionMode, toggleSelectionMode } = useSelectionMode();
+  const { data: joinRequests = [], isLoading: isLoadingRequests } = useJoinRequests();
+  const approveRequestMutation = useApproveJoinRequest();
+  const rejectRequestMutation = useRejectJoinRequest();
+
+  // Filter requests where current user is the owner (can manage)
+  const manageableRequests = joinRequests.filter(
+    (request: TeamJoinRequest) => 
+      request.ownerEmail?.toLowerCase() === user?.email?.toLowerCase() && 
+      request.status === 'pending'
+  );
+
+  // Get pending requests count
+  const pendingRequestsCount = manageableRequests.length;
 
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      if (user) {
+        try {
+          const profile = await usersService.getProfile();
+          setUserProfile(profile);
+        } catch (error) {
+          console.error('Failed to fetch user profile:', error);
+        }
+      }
+    };
+    fetchProfile();
+  }, [user]);
 
   const totalSelections = selectedProjects.length + selectedTasks.length + selectedTeams.length;
 
@@ -40,6 +91,71 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     // If disabling selection mode, clear all selections
     if (isSelectionMode) {
       handleClearAllSelections();
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      navigate('/login', { replace: true });
+    } catch (error) {
+      console.error('Failed to logout:', error);
+      navigate('/login', { replace: true });
+    }
+  };
+
+  const getInitials = (firstName?: string, lastName?: string) => {
+    if (!firstName && !lastName) return 'U';
+    const first = firstName?.charAt(0).toUpperCase() || '';
+    const last = lastName?.charAt(0).toUpperCase() || '';
+    return first + last || 'U';
+  };
+
+  // Helper to get user avatar initials for notifications
+  const getUserInitials = (name: string, email: string) => {
+    if (name) {
+      const parts = name.split(' ');
+      if (parts.length >= 2) {
+        return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+      }
+      return name[0].toUpperCase();
+    }
+    return email[0].toUpperCase();
+  };
+
+  // Format date for notifications
+  const formatDate = (date: string | Date) => {
+    const d = new Date(date);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    return d.toLocaleDateString();
+  };
+
+  // Handle approve request
+  const handleApproveRequest = async (requestId: string) => {
+    try {
+      await approveRequestMutation.mutateAsync(requestId);
+      toast.success('Join request approved!');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to approve request');
+    }
+  };
+
+  // Handle reject request
+  const handleRejectRequest = async (requestId: string) => {
+    try {
+      await rejectRequestMutation.mutateAsync(requestId);
+      toast.success('Join request rejected');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to reject request');
     }
   };
 
@@ -92,15 +208,139 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                     <Moon className="h-5 w-5" />
                   )}
                 </Button>
-                <Button variant="ghost" size="icon" className="relative">
-                  <Bell className="h-5 w-5" />
-                  <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-primary" />
-                </Button>
-                <Avatar>
-                  <AvatarFallback className="bg-primary text-primary-foreground">
-                    JD
-                  </AvatarFallback>
-                </Avatar>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="relative">
+                      <Bell className="h-5 w-5" />
+                      {pendingRequestsCount > 0 && (
+                        <span className="absolute top-1 right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground text-xs flex items-center justify-center font-medium">
+                          {pendingRequestsCount > 9 ? '9+' : pendingRequestsCount}
+                        </span>
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="w-80" align="end" forceMount>
+                    <DropdownMenuLabel className="flex items-center justify-between">
+                      <span>Notifications</span>
+                      {pendingRequestsCount > 0 && (
+                        <Badge variant="secondary" className="text-xs">
+                          {pendingRequestsCount} pending
+                        </Badge>
+                      )}
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {isLoadingRequests ? (
+                      <div className="p-4 text-center text-sm text-muted-foreground">
+                        Loading notifications...
+                      </div>
+                    ) : manageableRequests.length === 0 ? (
+                      <div className="p-6 text-center">
+                        <Bell className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+                        <p className="text-sm text-muted-foreground">No pending requests</p>
+                      </div>
+                    ) : (
+                      <div className="max-h-96 overflow-y-auto">
+                        {manageableRequests.map((request: TeamJoinRequest) => (
+                          <div
+                            key={request.id}
+                            className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"
+                          >
+                            <div className="flex items-start gap-3 mb-3">
+                              <Avatar className="h-10 w-10 flex-shrink-0">
+                                <AvatarFallback className="bg-primary text-primary-foreground text-xs">
+                                  {getUserInitials(request.userName, request.userEmail)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className="font-semibold text-sm truncate">{request.userName}</p>
+                                  <Badge variant="outline" className="text-xs flex-shrink-0">
+                                    <Clock className="mr-1 h-3 w-3" />
+                                    Pending
+                                  </Badge>
+                                </div>
+                                <p className="text-xs text-muted-foreground truncate mb-1">
+                                  {request.userEmail}
+                                </p>
+                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  <Users className="h-3 w-3 flex-shrink-0" />
+                                  <span className="truncate">
+                                    Wants to join <span className="font-medium text-foreground">{request.teamName}</span>
+                                  </span>
+                                </div>
+                                {request.createdAt && (
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {formatDate(request.createdAt)}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => handleRejectRequest(request.id)}
+                                disabled={rejectRequestMutation.isPending}
+                              >
+                                <X className="mr-2 h-3 w-3" />
+                                Reject
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="flex-1 bg-primary hover:bg-primary/90"
+                                onClick={() => handleApproveRequest(request.id)}
+                                disabled={approveRequestMutation.isPending}
+                              >
+                                <Check className="mr-2 h-3 w-3" />
+                                Approve
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" className="relative h-10 w-10 rounded-full">
+                      <Avatar>
+                        <AvatarFallback className="bg-primary text-primary-foreground">
+                          {getInitials(userProfile?.firstName, userProfile?.lastName)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="w-56" align="end" forceMount>
+                    <DropdownMenuLabel className="font-normal">
+                      <div className="flex flex-col space-y-1">
+                        <p className="text-sm font-medium leading-none">
+                          {userProfile?.firstName && userProfile?.lastName
+                            ? `${userProfile.firstName} ${userProfile.lastName}`
+                            : user?.email}
+                        </p>
+                        {userProfile?.firstName && userProfile?.lastName && (
+                          <p className="text-xs text-muted-foreground">{user?.email}</p>
+                        )}
+                      </div>
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => navigate('/profile')}>
+                      <User className="mr-2 h-4 w-4" />
+                      <span>Profile</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => navigate('/settings')}>
+                      <Settings className="mr-2 h-4 w-4" />
+                      <span>Settings</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+                      <LogOut className="mr-2 h-4 w-4" />
+                      <span>Logout</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
           </header>

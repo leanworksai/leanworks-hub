@@ -21,11 +21,11 @@ import {
 } from "@/components/ui/command";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useCreateTask } from "@/hooks/useTasks";
-import { useProjects } from "@/hooks/useProjects";
-import { useTeams } from "@/hooks/useTeams";
-import { teamsService } from "@/services/firestore";
+import { useUserProjects } from "@/hooks/useProjects";
+import { useUserTeams } from "@/hooks/useTeams";
+import { useAuth } from "@/contexts/AuthContext";
 import type { Task } from "@/data/tasksData";
-import type { TeamMember } from "@/data/teamsData";
+import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown } from "lucide-react";
 
@@ -71,13 +71,13 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
   const { toast } = useToast();
   const createTask = useCreateTask();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { data: projects = [] } = useProjects();
-  const { data: teams = [] } = useTeams();
+  const { data: projects = [] } = useUserProjects();
+  const { data: userTeams = [] } = useUserTeams();
+  const { user } = useAuth();
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
-  const [allTeamMembers, setAllTeamMembers] = useState<TeamMember[]>([]);
-  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
 
   type FormData = {
     title: string;
@@ -115,56 +115,33 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
     }
   }, [selectedAssignee, form]);
 
-  // Load all team members when dialog opens or teams change
+  // Load project members when project is selected
   useEffect(() => {
-    const loadAllTeamMembers = async () => {
-      if (teams.length === 0) {
-        setAllTeamMembers([]);
-        return;
+    if (selectedProjectId && projects.length > 0) {
+      // Find the selected project
+      const selectedProject = projects.find(p => {
+        const slug = p.name.toLowerCase().replace(/\s+/g, '-');
+        return slug === selectedProjectId;
+      });
+
+      if (selectedProject && selectedProject.members) {
+        // Set project members for assignee selection
+        setProjectMembers(selectedProject.members);
+      } else {
+        setProjectMembers([]);
       }
-
-      setIsLoadingMembers(true);
-      try {
-        // Fetch all team details in parallel
-        const teamDetailsPromises = teams.map(team => 
-          teamsService.getById(team.name).catch(error => {
-            console.error(`Failed to fetch team ${team.name}:`, error);
-            return null;
-          })
-        );
-
-        const teamDetails = await Promise.all(teamDetailsPromises);
-
-        // Aggregate all members from all teams
-        const memberMap = new Map<string, TeamMember>();
-        teamDetails.forEach(teamDetail => {
-          if (teamDetail?.members) {
-            teamDetail.members.forEach(member => {
-              if (!memberMap.has(member.name)) {
-                memberMap.set(member.name, member);
-              }
-            });
-          }
-        });
-
-        // Sort by name
-        const sortedMembers = Array.from(memberMap.values()).sort((a, b) => 
-          a.name.localeCompare(b.name)
-        );
-
-        setAllTeamMembers(sortedMembers);
-      } catch (error) {
-        console.error('Failed to load team members:', error);
-        setAllTeamMembers([]);
-      } finally {
-        setIsLoadingMembers(false);
-      }
-    };
-
-    if (open) {
-      loadAllTeamMembers();
+    } else {
+      setProjectMembers([]);
     }
-  }, [open, teams]);
+  }, [selectedProjectId, projects]);
+
+  // Reset assignee when project changes
+  useEffect(() => {
+    if (selectedProjectId) {
+      setSelectedAssignee(null);
+      form.setValue("assignee", "");
+    }
+  }, [selectedProjectId, form]);
 
   // Reset form when dialog opens/closes
   useEffect(() => {
@@ -173,6 +150,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
       setSelectedProjectId("");
       setSelectedAssignee(null);
       setAssigneeOpen(false);
+      setProjectMembers([]);
     }
   }, [open, form]);
 
@@ -181,13 +159,13 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
     try {
       const now = new Date();
       
-      // Find the selected project
-      const project = projects.find((p) => {
+      // Find the selected project (if provided)
+      const project = data.projectId ? projects.find((p) => {
         const slug = p.name.toLowerCase().replace(/\s+/g, '-');
         return slug === data.projectId || p.name === data.projectId;
-      });
+      }) : null;
 
-      if (!project) {
+      if (data.projectId && !project) {
         throw new Error("Selected project not found");
       }
 
@@ -206,8 +184,13 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
         ? data.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0)
         : [];
 
-      // Get assignee avatar
-      const assigneeAvatar = getInitials(data.assignee);
+      // Get assignee avatar if assignee is provided
+      const assigneeAvatar = data.assignee ? getInitials(data.assignee) : undefined;
+
+      // If no project, associate task with user's teams
+      const teams = !project && userTeams.length > 0 
+        ? userTeams.map(team => team.name)
+        : undefined;
 
       const task: Task = {
         id: generateTaskId(),
@@ -215,10 +198,12 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
         description: data.description,
         status: data.status,
         priority: data.priority,
-        assignee: data.assignee,
+        assignee: data.assignee || undefined,
         assigneeAvatar: assigneeAvatar,
-        project: project.name,
-        projectId: data.projectId,
+        project: project?.name,
+        projectId: data.projectId || undefined,
+        teams: teams,
+        createdBy: user?.email || undefined,
         dueDate: formattedDueDate,
         createdDate: formatDate(now),
         createdAt: now.getTime(), // Timestamp in milliseconds for sorting
@@ -296,23 +281,31 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
             <FormField
               control={form.control}
               name="projectId"
-              rules={{ required: "Project is required" }}
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Project</FormLabel>
+                  <FormLabel>Project (Optional)</FormLabel>
+                  <FormDescription>
+                    Leave empty to create a team-wide task visible to all your team members
+                  </FormDescription>
                   <Select
                     onValueChange={(value) => {
-                      field.onChange(value);
-                      setSelectedProjectId(value);
+                      if (value === "none") {
+                        field.onChange("");
+                        setSelectedProjectId("");
+                      } else {
+                        field.onChange(value);
+                        setSelectedProjectId(value);
+                      }
                     }}
-                    value={field.value}
+                    value={field.value || "none"}
                   >
                     <FormControl>
                       <SelectTrigger>
-                        <SelectValue placeholder="Select a project" />
+                        <SelectValue placeholder="Select a project (optional)" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
+                      <SelectItem value="none">No Project (Team-wide task)</SelectItem>
                       {projects.map((project) => {
                         const slug = project.name.toLowerCase().replace(/\s+/g, '-');
                         return (
@@ -331,12 +324,13 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
             <FormField
               control={form.control}
               name="assignee"
-              rules={{ required: "Assignee is required" }}
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Assignee</FormLabel>
+                  <FormLabel>Assignee (Optional)</FormLabel>
                   <FormDescription>
-                    Select a team member to assign this task to
+                    {selectedProjectId 
+                      ? "Select a project member to assign this task to"
+                      : "Select a team member to assign this task to (optional)"}
                   </FormDescription>
                   <Popover open={assigneeOpen} onOpenChange={setAssigneeOpen}>
                     <PopoverTrigger asChild>
@@ -351,13 +345,13 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                             <div className="flex items-center gap-2">
                               <Avatar className="h-5 w-5">
                                 <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                                  {allTeamMembers.find(m => m.name === selectedAssignee)?.avatar || getInitials(selectedAssignee)}
+                                  {projectMembers.find(m => m.name === selectedAssignee)?.avatar || getInitials(selectedAssignee)}
                                 </AvatarFallback>
                               </Avatar>
                               <span>{selectedAssignee}</span>
                             </div>
                           ) : (
-                            "Select assignee..."
+                            "Select assignee (optional)..."
                           )}
                           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                         </Button>
@@ -365,17 +359,17 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                     </PopoverTrigger>
                     <PopoverContent className="w-[400px] p-0">
                       <Command>
-                        <CommandInput placeholder="Search team members..." />
+                        <CommandInput placeholder="Search project members..." />
                         <CommandList>
-                          {isLoadingMembers ? (
-                            <div className="p-4 text-sm text-muted-foreground">Loading members...</div>
-                          ) : allTeamMembers.length === 0 ? (
-                            <CommandEmpty>No team members found.</CommandEmpty>
+                          {selectedProjectId && projectMembers.length === 0 ? (
+                            <CommandEmpty>No project members found.</CommandEmpty>
+                          ) : !selectedProjectId ? (
+                            <CommandEmpty>Select a project to see project members, or leave unassigned for a team-wide task.</CommandEmpty>
                           ) : (
                             <CommandGroup>
-                              {allTeamMembers.map((member) => (
+                              {projectMembers.map((member) => (
                                 <CommandItem
-                                  key={member.name}
+                                  key={member.id || member.name}
                                   value={member.name}
                                   onSelect={() => {
                                     setSelectedAssignee(member.name);

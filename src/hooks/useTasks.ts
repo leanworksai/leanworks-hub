@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksService } from '@/services/firestore';
 import type { Task } from '@/data/tasksData';
+import { useUserProjects } from './useProjects';
+import { useUserTeams } from './useTeams';
 
 export const useTasks = () => {
   return useQuery({
@@ -8,6 +10,48 @@ export const useTasks = () => {
     queryFn: () => tasksService.getAll(),
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
+};
+
+// Hook to get tasks filtered by current user's team membership (via projects or teams)
+export const useUserTasks = () => {
+  const { data: allTasks = [], isLoading: isLoadingTasks } = useTasks();
+  const { data: userProjects = [], isLoading: isLoadingProjects } = useUserProjects();
+  const { data: userTeams = [], isLoading: isLoadingTeams } = useUserTeams();
+
+  // Create a set of project names from user's projects
+  const userProjectNames = new Set(
+    userProjects.map((project) => project.name.toLowerCase())
+  );
+
+  // Create a set of team names from user's teams
+  const userTeamNames = new Set(
+    userTeams.map((team) => team.name.toLowerCase())
+  );
+
+  // Filter tasks to show:
+  // 1. Tasks whose project is in user's projects
+  // 2. Tasks without a project but associated with user's teams
+  const userTasks = allTasks.filter((task) => {
+    // If task has a project, check if it's in user's projects
+    if (task.project || task.projectId) {
+      const projectName = (task.project?.toLowerCase() || task.projectId?.toLowerCase());
+      return projectName && userProjectNames.has(projectName);
+    }
+    
+    // If task has no project, check if it's associated with user's teams
+    if (task.teams && task.teams.length > 0) {
+      return task.teams.some(teamName => 
+        userTeamNames.has(teamName.toLowerCase())
+      );
+    }
+    
+    return false;
+  });
+
+  return {
+    data: userTasks,
+    isLoading: isLoadingTasks || isLoadingProjects || isLoadingTeams,
+  };
 };
 
 export const useTask = (taskId: string) => {
@@ -57,8 +101,11 @@ export const useDeleteTask = () => {
   
   return useMutation({
     mutationFn: (taskId: string) => tasksService.delete(taskId),
-    onSuccess: () => {
+    onSuccess: (_, taskId) => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['tasks', taskId] });
+      // Also invalidate all project-specific task queries
+      queryClient.invalidateQueries({ queryKey: ['tasks', 'project'] });
     },
   });
 };
