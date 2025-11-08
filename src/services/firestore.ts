@@ -301,3 +301,57 @@ export const teamJoinRequestsService = {
   },
 };
 
+// Integrations Service
+export interface Integration {
+  id: string;
+  name: string;
+  connected: boolean;
+  connectedAt?: string;
+}
+
+export const integrationsService = {
+  async getAll(): Promise<Integration[]> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/integrations` : `${API_BASE}/integrations`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch integrations');
+    return response.json();
+  },
+
+  async connectSlack(botToken: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/integrations/slack/connect` : `${API_BASE}/integrations/slack/connect`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ botToken }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to connect Slack' }));
+      throw new Error(error.error || 'Failed to connect Slack');
+    }
+  },
+
+  async connectAtlassian(email: string, password: string, apiToken: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/integrations/atlassian/connect` : `${API_BASE}/integrations/atlassian/connect`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ email, password, apiToken }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to connect Atlassian' }));
+      throw new Error(error.error || 'Failed to connect Atlassian');
+    }
+  },
+
+  async disconnect(integrationId: string): Promise<void> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/integrations/${integrationId}/disconnect`
+      : `${API_BASE}/integrations/${integrationId}/disconnect`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to disconnect integration' }));
+      throw new Error(error.error || 'Failed to disconnect integration');
+    }
+  },
+};
+

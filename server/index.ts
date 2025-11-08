@@ -7,6 +7,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -30,6 +31,7 @@ if (getApps().length === 0) {
 
 const db = getFirestore(firebaseApp, 'leanworks-test');
 const auth = getAuth(firebaseApp);
+const secretManagerClient = new SecretManagerServiceClient();
 const app = express();
 const PORT = 3001;
 
@@ -1095,6 +1097,193 @@ app.post('/api/teams/migrate-owners', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('Migrate owners error:', error);
     res.status(500).json({ error: (error as Error).message || 'Failed to migrate team owners' });
+  }
+});
+
+// Helper function to create secret name for domain and integration
+function getSecretName(domain: string, integrationId: string): string {
+  return `integrations-${domain}-${integrationId}`;
+}
+
+// Helper function to save secret to GCP Secret Manager
+async function saveSecret(secretName: string, secretValue: string): Promise<void> {
+  const projectId = serviceAccount.project_id;
+  const parent = `projects/${projectId}`;
+  const fullSecretName = `${parent}/secrets/${secretName}`;
+
+  try {
+    // Check if secret exists
+    try {
+      await secretManagerClient.getSecret({ name: fullSecretName });
+    } catch (error: any) {
+      // If secret doesn't exist, create it
+      if (error.code === 5) { // NOT_FOUND
+        await secretManagerClient.createSecret({
+          parent,
+          secretId: secretName,
+          secret: {
+            replication: {
+              automatic: {},
+            },
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    // Add a new version with the secret value
+    await secretManagerClient.addSecretVersion({
+      parent: fullSecretName,
+      payload: {
+        data: Buffer.from(secretValue, 'utf8'),
+      },
+    });
+  } catch (error: any) {
+    console.error('Error saving secret:', error);
+    throw new Error(`Failed to save secret: ${error.message}`);
+  }
+}
+
+// Helper function to delete secret from GCP Secret Manager
+async function deleteSecret(secretName: string): Promise<void> {
+  const projectId = serviceAccount.project_id;
+  const fullSecretName = `projects/${projectId}/secrets/${secretName}`;
+
+  try {
+    await secretManagerClient.deleteSecret({ name: fullSecretName });
+  } catch (error: any) {
+    // If secret doesn't exist, that's fine
+    if (error.code !== 5) { // NOT_FOUND
+      console.error('Error deleting secret:', error);
+      throw new Error(`Failed to delete secret: ${error.message}`);
+    }
+  }
+}
+
+// Integrations endpoints
+app.get('/api/integrations', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const collectionPath = getCollectionPath('integrations', domain);
+    const snapshot = await db.collection(collectionPath).get();
+    
+    const integrations = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        connected: data.connected || false,
+        connectedAt: data.connectedAt,
+      };
+    });
+
+    // Ensure we return all three integrations with their connection status
+    const allIntegrations = [
+      { id: 'slack', name: 'Slack' },
+      { id: 'atlassian', name: 'Atlassian' },
+      { id: 'github', name: 'GitHub' },
+    ].map(integration => {
+      const existing = integrations.find(i => i.id === integration.id);
+      return {
+        id: integration.id,
+        name: integration.name,
+        connected: existing?.connected || false,
+        connectedAt: existing?.connectedAt,
+      };
+    });
+
+    res.json(allIntegrations);
+  } catch (error) {
+    console.error('Get integrations error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch integrations' });
+  }
+});
+
+app.post('/api/integrations/slack/connect', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const { botToken } = req.body;
+
+    if (!botToken) {
+      return res.status(400).json({ error: 'Bot token is required' });
+    }
+
+    // Save credentials to GCP Secret Manager
+    const secretName = getSecretName(domain, 'slack');
+    await saveSecret(secretName, JSON.stringify({ botToken }));
+
+    // Update Firestore
+    const collectionPath = getCollectionPath('integrations', domain);
+    await db.collection(collectionPath).doc('slack').set({
+      id: 'slack',
+      name: 'Slack',
+      connected: true,
+      connectedAt: new Date(),
+    }, { merge: true });
+
+    res.json({ success: true, message: 'Slack connected successfully' });
+  } catch (error) {
+    console.error('Connect Slack error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to connect Slack' });
+  }
+});
+
+app.post('/api/integrations/atlassian/connect', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const { email, password, apiToken } = req.body;
+
+    if (!email || !password || !apiToken) {
+      return res.status(400).json({ error: 'Email, password, and API token are required' });
+    }
+
+    // Save credentials to GCP Secret Manager
+    const secretName = getSecretName(domain, 'atlassian');
+    await saveSecret(secretName, JSON.stringify({ email, password, apiToken }));
+
+    // Update Firestore
+    const collectionPath = getCollectionPath('integrations', domain);
+    await db.collection(collectionPath).doc('atlassian').set({
+      id: 'atlassian',
+      name: 'Atlassian',
+      connected: true,
+      connectedAt: new Date(),
+    }, { merge: true });
+
+    res.json({ success: true, message: 'Atlassian connected successfully' });
+  } catch (error) {
+    console.error('Connect Atlassian error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to connect Atlassian' });
+  }
+});
+
+app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const integrationId = req.params.integrationId;
+
+    if (!['slack', 'atlassian', 'github'].includes(integrationId)) {
+      return res.status(400).json({ error: 'Invalid integration ID' });
+    }
+
+    // Delete secret from GCP Secret Manager (only for slack and atlassian)
+    if (integrationId === 'slack' || integrationId === 'atlassian') {
+      const secretName = getSecretName(domain, integrationId);
+      await deleteSecret(secretName);
+    }
+
+    // Update Firestore
+    const collectionPath = getCollectionPath('integrations', domain);
+    await db.collection(collectionPath).doc(integrationId).set({
+      id: integrationId,
+      name: integrationId.charAt(0).toUpperCase() + integrationId.slice(1),
+      connected: false,
+    }, { merge: true });
+
+    res.json({ success: true, message: 'Integration disconnected successfully' });
+  } catch (error) {
+    console.error('Disconnect integration error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to disconnect integration' });
   }
 });
 
