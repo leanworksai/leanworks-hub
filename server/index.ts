@@ -1102,7 +1102,10 @@ app.post('/api/teams/migrate-owners', authenticateUser, async (req, res) => {
 
 // Helper function to create secret name for domain and integration
 function getSecretName(domain: string, integrationId: string): string {
-  return `integrations-${domain}-${integrationId}`;
+  // Sanitize domain name: remove all special characters to comply with GCP Secret Manager naming rules
+  // Keep only alphanumeric characters
+  const sanitizedDomain = domain.replace(/[^a-zA-Z0-9]/g, '');
+  return `integrations-${sanitizedDomain}-${integrationId}`;
 }
 
 // Helper function to save secret to GCP Secret Manager
@@ -1266,11 +1269,10 @@ app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async 
       return res.status(400).json({ error: 'Invalid integration ID' });
     }
 
-    // Delete secret from GCP Secret Manager (only for slack and atlassian)
-    if (integrationId === 'slack' || integrationId === 'atlassian') {
-      const secretName = getSecretName(domain, integrationId);
-      await deleteSecret(secretName);
-    }
+    // Delete secret from GCP Secret Manager
+    // deleteSecret handles the case where secret doesn't exist, so it's safe to call for all integrations
+    const secretName = getSecretName(domain, integrationId);
+    await deleteSecret(secretName);
 
     // Update Firestore
     const collectionPath = getCollectionPath('integrations', domain);

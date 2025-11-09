@@ -9,13 +9,8 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { Project } from "@/data/projectsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
@@ -928,207 +923,237 @@ export function Chatbot() {
         </Button>
       </div>
 
-      {/* Chat Window */}
-      <Card
+      {/* Chat Window - Slack-like Layout */}
+      <div
         className={cn(
-          "fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-full max-w-md h-[600px] flex flex-col shadow-2xl transition-all duration-300 border",
-          isOpen ? "opacity-100 scale-100 translate-y-0" : "opacity-0 scale-95 translate-y-4 pointer-events-none"
+          "fixed bottom-6 right-6 z-50 bg-background border rounded-lg shadow-2xl transition-all duration-300 flex flex-col",
+          isOpen ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none",
+          "w-[900px] h-[700px] max-w-[calc(100vw-3rem)] max-h-[calc(100vh-3rem)]"
         )}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b bg-primary/5">
-          <div className="flex items-center gap-3 flex-1 min-w-0">
-            <Avatar className="h-8 w-8 flex-shrink-0">
-              <AvatarFallback className={cn(
-                "text-primary-foreground",
-                selectedMember === "ai-assistant" ? "bg-primary" : isProjectChannel ? "bg-primary/10" : "bg-muted"
-              )}>
-                {selectedMember === "ai-assistant" ? (
-                  <Bot className="h-4 w-4" />
-                ) : isProjectChannel ? (
-                  <Hash className="h-4 w-4 text-primary" />
-                ) : (
-                  <span className="text-xs">{currentMember.avatar}</span>
-                )}
-              </AvatarFallback>
-            </Avatar>
-            <Select 
-              value={selectedMember} 
-              onValueChange={(value) => {
-                setSelectedMember(value);
-                setMemberSearchQuery(""); // Clear search when selection is made
-              }}
-              onOpenChange={(open) => {
-                if (open) {
-                  // Focus search input when dropdown opens
-                  setTimeout(() => {
-                    memberSearchRef.current?.focus();
-                  }, 100);
-                } else {
-                  // Clear search when dropdown closes
-                  setMemberSearchQuery("");
-                }
-              }}
-            >
-              <SelectTrigger className="w-auto min-w-[180px] h-auto border-none bg-transparent shadow-none hover:bg-transparent focus:ring-0 p-0 cursor-pointer">
-                <SelectValue>
-                  <div className="flex flex-col items-start">
-                    <h3 className="font-semibold text-sm">{currentMember.name}</h3>
-                    <p className="text-xs text-muted-foreground">Online</p>
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          {/* Left Sidebar */}
+          <div className="w-64 border-r bg-muted/30 flex flex-col flex-shrink-0">
+            {/* Sidebar Header */}
+            <div className="p-4 border-b flex items-center justify-between">
+              <h2 className="font-semibold text-lg">Chat</h2>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setIsOpen(false)}
+                className="h-8 w-8"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            {/* Search Bar */}
+            <div className="p-3 border-b">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  ref={memberSearchRef}
+                  type="text"
+                  placeholder="Search..."
+                  value={memberSearchQuery}
+                  onChange={(e) => setMemberSearchQuery(e.target.value)}
+                  className="pl-8 h-9"
+                />
+              </div>
+            </div>
+
+            {/* Sidebar Content */}
+            <ScrollArea className="flex-1">
+              <div className="p-2 space-y-1">
+                {/* AI Assistant Section */}
+                {aiAssistantMatches && (
+                  <div className="px-2 py-1.5">
+                    <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
+                      AI Assistant
+                    </div>
+                    <button
+                      onClick={() => {
+                        setSelectedMember("ai-assistant");
+                        setMemberSearchQuery("");
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors",
+                        selectedMember === "ai-assistant"
+                          ? "bg-primary text-primary-foreground"
+                          : "hover:bg-muted"
+                      )}
+                    >
+                      <Bot className="h-4 w-4 flex-shrink-0" />
+                      <span className="font-medium">AI Assistant</span>
+                    </button>
                   </div>
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent className="max-h-[400px] p-0">
-                {/* Search Input */}
-                <div className="flex items-center border-b px-3 py-2 sticky top-0 bg-background z-10">
-                  <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
-                  <input
-                    ref={memberSearchRef}
-                    type="text"
-                    placeholder="Search team members or projects..."
-                    value={memberSearchQuery}
-                    onChange={(e) => setMemberSearchQuery(e.target.value)}
-                    onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    className="flex h-8 w-full rounded-md bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </div>
-                <div className="max-h-[300px] overflow-y-auto">
-                  {/* AI Assistant - always shown if matches search or no search */}
-                  {aiAssistantMatches && (
-                    <SelectItem value="ai-assistant" className="py-2">
-                      <div className="flex items-center gap-2">
-                        <Bot className="h-4 w-4 flex-shrink-0" />
-                        <div className="flex flex-col">
-                          <span className="font-medium">AI Assistant</span>
-                          <span className="text-xs text-muted-foreground">Assistant</span>
-                        </div>
-                      </div>
-                    </SelectItem>
-                  )}
-                  {/* Project Channels */}
-                  {filteredProjects.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase">
-                        Project Channels
-                      </div>
-                      {filteredProjects.map((project) => {
+                )}
+
+                {/* Separator between AI Assistant and Channels */}
+                {(aiAssistantMatches || filteredProjects.length > 0 || filteredTeamMembers.length > 0) && (
+                  <Separator className="my-2" />
+                )}
+
+                {/* Channels Section */}
+                <div className="px-2 py-1.5">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
+                    Channels
+                  </div>
+                  <div className="space-y-1">
+                    {filteredProjects.length > 0 ? (
+                      filteredProjects.map((project) => {
                         const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
                         const projectChatId = `project-${projectId}`;
                         const projectUnreadCount = unreadCounts.get(projectChatId) || 0;
+                        const isSelected = selectedMember === projectChatId;
                         return (
-                          <SelectItem key={`project-${projectId}`} value={`project-${projectId}`} className="py-2">
-                            <div className="flex items-center gap-2 w-full">
-                              <div className="h-6 w-6 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 relative">
-                                <Hash className="h-3 w-3 text-primary" />
-                                {projectUnreadCount > 0 && (
-                                  <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full border border-background" />
-                                )}
-                              </div>
-                              <div className="flex flex-col min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-medium truncate">{project.name}</span>
-                                  {projectUnreadCount > 0 && (
-                                    <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
-                                  )}
-                                </div>
-                                <span className="text-xs text-muted-foreground truncate">Project Channel</span>
-                              </div>
-                            </div>
-                          </SelectItem>
+                          <button
+                            key={`project-${projectId}`}
+                            onClick={() => {
+                              setSelectedMember(projectChatId);
+                              setMemberSearchQuery("");
+                            }}
+                            className={cn(
+                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
+                              isSelected
+                                ? "bg-primary text-primary-foreground"
+                                : "hover:bg-muted"
+                            )}
+                          >
+                            <Hash className="h-4 w-4 flex-shrink-0" />
+                            <span className="flex-1 text-left truncate">{project.name}</span>
+                            {projectUnreadCount > 0 && (
+                              <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
+                            )}
+                          </button>
                         );
-                      })}
-                    </>
-                  )}
-                  {/* Team Members */}
-                  {filteredTeamMembers.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase">
-                        Team Members
+                      })
+                    ) : (
+                      <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                        No channels
                       </div>
-                      {filteredTeamMembers.map((member) => {
-                        // Get chatId for this member to check unread count
+                    )}
+                  </div>
+                </div>
+
+                {/* Team Members Section */}
+                {(filteredProjects.length > 0 || filteredTeamMembers.length > 0) && (
+                  <Separator className="my-2" />
+                )}
+
+                {/* Team Members Section */}
+                <div className="px-2 py-1.5">
+                  <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
+                    Team Members
+                  </div>
+                  <div className="space-y-1">
+                    {filteredTeamMembers.length > 0 ? (
+                      filteredTeamMembers.map((member) => {
                         const memberChatId = user?.email && member.email 
                           ? getDirectMessageChatId(user.email, member.email)
                           : member.id;
                         const memberUnreadCount = unreadCounts.get(memberChatId) || 0;
+                        const isSelected = selectedMember === member.id;
                         return (
-                          <SelectItem key={member.id} value={member.id} className="py-2">
-                            <div className="flex items-center gap-2 w-full">
-                              <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0 relative">
-                                <span className="text-xs font-medium">{member.avatar}</span>
-                                {memberUnreadCount > 0 && (
-                                  <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full border border-background" />
-                                )}
-                              </div>
-                              <div className="flex flex-col min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-medium truncate">{member.name}</span>
-                                  {memberUnreadCount > 0 && (
-                                    <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
-                                  )}
-                                </div>
-                                <span className="text-xs text-muted-foreground truncate">{member.role}</span>
-                              </div>
-                            </div>
-                          </SelectItem>
+                          <button
+                            key={member.id}
+                            onClick={() => {
+                              setSelectedMember(member.id);
+                              setMemberSearchQuery("");
+                            }}
+                            className={cn(
+                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors",
+                              isSelected
+                                ? "bg-primary text-primary-foreground"
+                                : "hover:bg-muted"
+                            )}
+                          >
+                            <Avatar className="h-6 w-6 flex-shrink-0">
+                              <AvatarFallback className="text-xs">
+                                {member.avatar}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="flex-1 text-left truncate">{member.name}</span>
+                            {memberUnreadCount > 0 && (
+                              <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
+                            )}
+                          </button>
                         );
-                      })}
-                    </>
-                  )}
-                  {memberSearchQuery.trim() !== "" && filteredTeamMembers.length === 0 && filteredProjects.length === 0 && !aiAssistantMatches && (
-                    <div className="px-2 py-6 text-center text-sm text-muted-foreground">
-                      No results found
-                    </div>
-                  )}
+                      })
+                    ) : (
+                      <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                        No team members
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </SelectContent>
-            </Select>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setIsOpen(false)}
-            className="h-8 w-8"
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        {/* Search Bar for Project Channels */}
-        {isProjectChannel && (
-          <div className="border-b bg-background p-3">
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  ref={memberSearchRef}
-                  placeholder="Search activities, tasks, comments..."
-                  value={memberSearchQuery}
-                  onChange={(e) => {
-                    setMemberSearchQuery(e.target.value);
-                  }}
-                  className="pl-9"
-                />
               </div>
-              <Select value={filterType} onValueChange={(value: any) => setFilterType(value)}>
-                <SelectTrigger className="w-[140px]">
-                  <Filter className="h-4 w-4 mr-2" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="activities">Activities</SelectItem>
-                  <SelectItem value="tasks">Tasks</SelectItem>
-                  <SelectItem value="comments">Comments</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            </ScrollArea>
           </div>
-        )}
 
-        {/* Messages */}
-        <CardContent className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Main Chat Area */}
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+            {/* Chat Header */}
+            <div className="flex items-center justify-between p-4 border-b bg-primary/5">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <Avatar className="h-8 w-8 flex-shrink-0">
+                  <AvatarFallback className={cn(
+                    "text-primary-foreground",
+                    selectedMember === "ai-assistant" ? "bg-primary" : isProjectChannel ? "bg-primary/10" : "bg-muted"
+                  )}>
+                    {selectedMember === "ai-assistant" ? (
+                      <Bot className="h-4 w-4" />
+                    ) : isProjectChannel ? (
+                      <Hash className="h-4 w-4 text-primary" />
+                    ) : (
+                      <span className="text-xs">{currentMember.avatar}</span>
+                    )}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex flex-col min-w-0">
+                  <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedMember === "ai-assistant" ? "AI Assistant" : isProjectChannel ? "Project Channel" : "Direct Message"}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Search Bar for Project Channels */}
+            {isProjectChannel && (
+              <div className="border-b bg-background p-3">
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      ref={memberSearchRef}
+                      placeholder="Search activities, tasks, comments..."
+                      value={memberSearchQuery}
+                      onChange={(e) => {
+                        setMemberSearchQuery(e.target.value);
+                      }}
+                      className="pl-9"
+                    />
+                  </div>
+                  <Select value={filterType} onValueChange={(value: any) => setFilterType(value)}>
+                    <SelectTrigger className="w-[140px]">
+                      <Filter className="h-4 w-4 mr-2" />
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="activities">Activities</SelectItem>
+                      <SelectItem value="tasks">Tasks</SelectItem>
+                      <SelectItem value="comments">Comments</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
+
+            {/* Messages Area */}
+            <ScrollArea className="flex-1">
+              <div className="p-4 space-y-4">
           {/* Loading indicator */}
           {isLoadingMessages && (
             <div className="flex items-center justify-center py-8">
@@ -1327,80 +1352,83 @@ export function Chatbot() {
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} />
-        </CardContent>
+                <div ref={messagesEndRef} />
+              </div>
+            </ScrollArea>
 
-        {/* Input */}
-        <div className="border-t bg-background">
-          {/* Cited Projects Section */}
-          {selectedProjects.length > 0 && (
-            <div className="px-4 pt-3 pb-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <FolderOpen className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                <span className="text-xs font-medium text-primary">Cited Projects:</span>
-                {selectedProjects.map((project) => (
-                  <Badge key={project.name} variant="secondary" className="text-xs">
-                    {project.name}
-                  </Badge>
-                ))}
+            {/* Input Area */}
+            <div className="border-t bg-background">
+              {/* Cited Projects Section */}
+              {selectedProjects.length > 0 && (
+                <div className="px-4 pt-3 pb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <FolderOpen className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+                    <span className="text-xs font-medium text-primary">Cited Projects:</span>
+                    {selectedProjects.map((project) => (
+                      <Badge key={project.name} variant="secondary" className="text-xs">
+                        {project.name}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Cited Tasks Section */}
+              {selectedTasks.length > 0 && (
+                <div className="px-4 pt-3 pb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <CheckSquare className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+                    <span className="text-xs font-medium text-primary">Cited Tasks:</span>
+                    {selectedTasks.map((task) => (
+                      <Badge key={task.id} variant="secondary" className="text-xs">
+                        {task.title}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Cited Teams Section */}
+              {selectedTeams.length > 0 && (
+                <div className="px-4 pt-3 pb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Users className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+                    <span className="text-xs font-medium text-primary">Cited Teams:</span>
+                    {selectedTeams.map((team) => (
+                      <Badge key={team.name} variant="secondary" className="text-xs">
+                        {team.name}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="p-4">
+                <div className="flex gap-2">
+                  <Input
+                    ref={inputRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder={isProjectChannel ? "Type a message in the project channel..." : "Type your message..."}
+                    disabled={isLoading}
+                    className="flex-1"
+                  />
+                  <Button
+                    onClick={handleSend}
+                    disabled={!input.trim() || isLoading}
+                    size="icon"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                </div>
+                {isProjectChannel && (
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Messages in this channel are linked to project activities
+                  </p>
+                )}
               </div>
             </div>
-          )}
-          {/* Cited Tasks Section */}
-          {selectedTasks.length > 0 && (
-            <div className="px-4 pt-3 pb-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <CheckSquare className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                <span className="text-xs font-medium text-primary">Cited Tasks:</span>
-                {selectedTasks.map((task) => (
-                  <Badge key={task.id} variant="secondary" className="text-xs">
-                    {task.title}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-          {/* Cited Teams Section */}
-          {selectedTeams.length > 0 && (
-            <div className="px-4 pt-3 pb-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Users className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                <span className="text-xs font-medium text-primary">Cited Teams:</span>
-                {selectedTeams.map((team) => (
-                  <Badge key={team.name} variant="secondary" className="text-xs">
-                    {team.name}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="p-4">
-            <div className="flex gap-2">
-              <Input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyPress={handleKeyPress}
-                placeholder={isProjectChannel ? "Type a message in the project channel..." : "Type your message..."}
-                disabled={isLoading}
-                className="flex-1"
-              />
-              <Button
-                onClick={handleSend}
-                disabled={!input.trim() || isLoading}
-                size="icon"
-              >
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-            {isProjectChannel && (
-              <p className="text-xs text-muted-foreground mt-2">
-                Messages in this channel are linked to project activities
-              </p>
-            )}
           </div>
         </div>
-      </Card>
+      </div>
     </>
   );
 }

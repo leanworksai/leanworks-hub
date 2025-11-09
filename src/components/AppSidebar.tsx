@@ -29,9 +29,15 @@ export function AppSidebar() {
       <SidebarContent>
         <div className="px-6 py-4">
           <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
-              <span className="text-primary-foreground font-bold text-lg">L</span>
-            </div>
+            <img 
+              src="/logo.png" 
+              alt="Logo" 
+              className="h-8 w-8 rounded-lg object-contain"
+              onError={(e) => {
+                // Fallback handling if logo fails to load
+                console.error('Failed to load logo:', e);
+              }}
+            />
             {open && (
               <span className="font-semibold text-lg text-sidebar-foreground">
                 LeanWorks

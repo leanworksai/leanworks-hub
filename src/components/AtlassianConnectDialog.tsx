@@ -78,11 +78,11 @@ export function AtlassianConnectDialog({ open, onOpenChange, onSuccess }: Atlass
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">Atlassian Domain URL</Label>
               <Input
                 id="password"
-                type="password"
-                placeholder="Your Atlassian password"
+                type="text"
+                placeholder="{your-domain}.atlassian.net"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={loading}
