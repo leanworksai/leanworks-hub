@@ -6,7 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import { useEffect } from "react";
 import { initFirestore } from "@/services/firestore";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
@@ -30,6 +30,130 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
+const AppRoutes = () => {
+  const { user } = useAuth();
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <Navigate to="/projects" replace />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teams"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Teams />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/teams/:teamName"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <TeamDetail />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/users"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Users />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/integrations"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Integrations />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/projects"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Projects />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/projects/:projectName"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <ProjectDetail />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tasks"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Tasks />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tasks/:taskId"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <TaskDetail />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Profile />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Settings />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+      {user && <Chatbot />}
+    </BrowserRouter>
+  );
+};
+
 const App = () => {
   // Initialize Firestore when app starts
   useEffect(() => {
@@ -52,123 +176,7 @@ const App = () => {
                   <SelectedTeamsProvider>
                     <Toaster />
                     <Sonner />
-                    <BrowserRouter>
-                      <Routes>
-                        <Route path="/login" element={<Login />} />
-                        <Route path="/signup" element={<Signup />} />
-                        <Route
-                          path="/"
-                          element={
-                            <ProtectedRoute>
-                              <Navigate to="/projects" replace />
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/teams"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Teams />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/teams/:teamName"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <TeamDetail />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/users"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Users />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/integrations"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Integrations />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/projects"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Projects />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/projects/:projectName"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <ProjectDetail />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/tasks"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Tasks />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/tasks/:taskId"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <TaskDetail />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/profile"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Profile />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        <Route
-                          path="/settings"
-                          element={
-                            <ProtectedRoute>
-                              <DashboardLayout>
-                                <Settings />
-                              </DashboardLayout>
-                            </ProtectedRoute>
-                          }
-                        />
-                        {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-                        <Route path="*" element={<NotFound />} />
-                      </Routes>
-                      <Chatbot />
-                    </BrowserRouter>
+                    <AppRoutes />
                   </SelectedTeamsProvider>
                 </SelectedTasksProvider>
               </SelectedProjectsProvider>
