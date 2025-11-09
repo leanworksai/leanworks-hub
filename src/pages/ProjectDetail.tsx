@@ -75,6 +75,22 @@ export default function ProjectDetail() {
   const { user } = useAuth();
   const { data: userTeams = [] } = useUserTeams();
   
+  // Normalize the URL parameter (React Router already decodes it)
+  const normalizedSlug = projectNameParam 
+    ? projectNameParam.toLowerCase()
+    : null;
+  
+  // Helper function to create slug from project name (must match Projects.tsx)
+  const createSlug = (name: string) => {
+    return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+  };
+  
+  // Find the project based on the slug
+  const project = normalizedSlug && projects.length > 0
+    ? projects.find(p => createSlug(p.name) === normalizedSlug)
+    : null;
+  const isLoading = isLoadingProjects;
+
   // Fetch team details to check project access
   const teamDetailsQueries = useQueries({
     queries: userTeams.map((team) => ({
@@ -106,21 +122,6 @@ export default function ProjectDetail() {
       navigate("/projects");
     }
   }, [isLoadingProjects, project, hasAccess, userTeamMemberNames.size, navigate]);
-  
-  // Normalize the URL parameter (React Router already decodes it)
-  const normalizedSlug = projectNameParam 
-    ? projectNameParam.toLowerCase()
-    : null;
-  
-  // Helper function to create slug from project name (must match Projects.tsx)
-  const createSlug = (name: string) => {
-    return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-  };
-  
-  const project = normalizedSlug && projects.length > 0
-    ? projects.find(p => createSlug(p.name) === normalizedSlug)
-    : null;
-  const isLoading = isLoadingProjects;
 
   // Debug logging (remove in production)
   useEffect(() => {
