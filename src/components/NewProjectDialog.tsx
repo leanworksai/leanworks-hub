@@ -179,9 +179,10 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       
       filteredUsers.forEach(user => {
         const fullName = `${user.firstName} ${user.lastName}`;
-        const teamName = emailToTeamMap.get(user.email.toLowerCase()) || '';
+        const teamName = emailToTeamMap.get(user.email.toLowerCase());
         
-        if (!memberMap.has(fullName)) {
+        // Only add members that have a valid team name
+        if (teamName && !memberMap.has(fullName)) {
           const avatar = `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`.toUpperCase();
           memberMap.set(fullName, {
             name: fullName,
@@ -190,6 +191,32 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
             avatar: avatar,
           });
           memberTeamMap.set(fullName, teamName);
+        } else if (!teamName) {
+          // Log warning if user doesn't have a team assigned
+          console.warn(`User ${fullName} (${user.email}) found in filtered users but not in any team details`);
+        }
+      });
+      
+      // Also add members directly from team details (in case they're not in users list)
+      teamDetailsQueries.forEach((query, index) => {
+        if (query.data?.members && teams[index]) {
+          const teamName = teams[index].name;
+          query.data.members.forEach(member => {
+            if (member.name && !memberTeamMap.has(member.name)) {
+              // Only add if not already in map
+              memberTeamMap.set(member.name, teamName);
+              
+              // Add to memberMap if not already there
+              if (!memberMap.has(member.name)) {
+                memberMap.set(member.name, {
+                  name: member.name,
+                  role: member.role || "Member",
+                  email: member.email || '',
+                  avatar: member.avatar || getInitials(member.name),
+                });
+              }
+            }
+          });
         }
       });
 
@@ -264,7 +291,52 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   // Toggle member selection
   const toggleMemberSelection = (memberName: string) => {
     const teamName = memberToTeamMap.get(memberName);
-    if (!teamName) return;
+    
+    // If team name not found, try to find it from allTeamMembers
+    if (!teamName) {
+      const member = allTeamMembers.find(m => m.name === memberName);
+      if (member) {
+        // Try to find team name from team details queries
+        for (let i = 0; i < teams.length; i++) {
+          const teamDetail = teamDetailsQueries[i]?.data;
+          if (teamDetail?.members?.some(m => m.name === memberName || m.email === member.email)) {
+            const foundTeamName = teams[i]?.name;
+            if (foundTeamName) {
+              // Update the map for future use
+              setMemberToTeamMap(prev => {
+                const newMap = new Map(prev);
+                newMap.set(memberName, foundTeamName);
+                return newMap;
+              });
+              
+              const memberKey = `${foundTeamName}:${memberName}`;
+              const newSelected = new Set(selectedMembers);
+              if (newSelected.has(memberKey)) {
+                newSelected.delete(memberKey);
+              } else {
+                newSelected.add(memberKey);
+              }
+              setSelectedMembers(newSelected);
+              return;
+            }
+          }
+        }
+      }
+      
+      // If still not found, log error and show toast
+      console.error('Member not found in team map:', {
+        memberName,
+        memberToTeamMapSize: memberToTeamMap.size,
+        allTeamMembersCount: allTeamMembers.length,
+        memberExists: !!allTeamMembers.find(m => m.name === memberName)
+      });
+      toast({
+        title: "Error",
+        description: `Unable to add member "${memberName}". Please try again.`,
+        variant: "destructive",
+      });
+      return;
+    }
 
     const memberKey = `${teamName}:${memberName}`;
     const newSelected = new Set(selectedMembers);

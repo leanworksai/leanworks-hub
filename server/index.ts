@@ -1287,6 +1287,117 @@ app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async 
   }
 });
 
+// Messages endpoints
+app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const chatId = req.params.chatId;
+    const collectionPath = getCollectionPath('messages', domain);
+    
+    // Query messages for this chat, ordered by timestamp
+    // If index doesn't exist, fetch without orderBy and sort in memory
+    let snapshot;
+    try {
+      snapshot = await db.collection(collectionPath)
+        .where('chatId', '==', chatId)
+        .orderBy('timestamp', 'asc')
+        .get();
+    } catch (error: any) {
+      // If index error, fetch without orderBy and sort in memory
+      if (error.code === 9 || error.message?.includes('index')) {
+        snapshot = await db.collection(collectionPath)
+          .where('chatId', '==', chatId)
+          .get();
+        // Sort in memory
+        const docs = snapshot.docs.sort((a, b) => {
+          const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
+          const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
+          return aTime - bTime; // Ascending
+        });
+        // Create a new QuerySnapshot-like object
+        snapshot = { docs, empty: docs.length === 0 };
+      } else {
+        throw error;
+      }
+    }
+    
+    const messages = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
+      };
+    });
+    
+    res.json(messages);
+  } catch (error) {
+    console.error('Get messages error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch messages' });
+  }
+});
+
+app.post('/api/messages', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const { chatId, role, content, memberName, memberAvatar, projectId } = req.body;
+
+    if (!chatId || !content) {
+      return res.status(400).json({ error: 'chatId and content are required' });
+    }
+
+    // Get user info for memberName and memberAvatar if not provided
+    let finalMemberName = memberName || 'You';
+    let finalMemberAvatar = memberAvatar || 'U';
+    
+    if (!memberName || !memberAvatar) {
+      const usersCollectionPath = getCollectionPath('users', domain);
+      const userDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData) {
+          const firstName = userData.firstName || '';
+          const lastName = userData.lastName || '';
+          finalMemberName = `${firstName} ${lastName}`.trim() || userEmail;
+          finalMemberAvatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || userEmail.charAt(0).toUpperCase();
+        }
+      }
+    }
+
+    const collectionPath = getCollectionPath('messages', domain);
+    const messageData: any = {
+      chatId,
+      role: role || 'user',
+      content,
+      timestamp: new Date(),
+      userId: userEmail.toLowerCase(),
+    };
+
+    // Add project-specific fields for project channel messages
+    if (projectId) {
+      messageData.projectId = projectId;
+      messageData.memberName = finalMemberName;
+      messageData.memberAvatar = finalMemberAvatar;
+    }
+
+    const docRef = await db.collection(collectionPath).add(messageData);
+    
+    res.json({
+      success: true,
+      messageId: docRef.id,
+      message: {
+        id: docRef.id,
+        ...messageData,
+        timestamp: messageData.timestamp.toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Create message error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to create message' });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Firestore proxy server running on http://0.0.0.0:${PORT}`);
   console.log(`📊 Using project: ${serviceAccount.project_id}`);

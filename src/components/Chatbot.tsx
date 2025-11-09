@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,15 +16,19 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getTeamData } from "@/data/teamsData";
 import { Project } from "@/data/projectsData";
 import { useUserProjects } from "@/hooks/useProjects";
+import { useUserTeams } from "@/hooks/useTeams";
+import { useQueries } from "@tanstack/react-query";
+import { teamsService, messagesService } from "@/services/firestore";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
   timestamp: Date;
+  userId?: string;
 }
 
 interface TeamMember {
@@ -54,26 +58,41 @@ interface SearchResult {
   date: string;
 }
 
-// Get all team members from teams data
-const getAllTeamMembers = (): TeamMember[] => {
-  const teamData = getTeamData();
+// Get team members from user's teams
+const getUserTeamMembers = (userTeams: Array<{ name: string }>, teamDetails: Array<{ data?: { members: Array<{ name: string; role: string; email: string; avatar: string }> } }>): TeamMember[] => {
   const memberMap = new Map<string, TeamMember>();
   
-  Object.values(teamData).forEach((team) => {
-    team.members.forEach((member) => {
-      if (!memberMap.has(member.name)) {
-        memberMap.set(member.name, {
-          id: member.name.toLowerCase().replace(/\s+/g, '-'),
-          name: member.name,
-          role: member.role,
-          avatar: member.avatar,
-          email: member.email,
-        });
-      }
-    });
+  userTeams.forEach((team) => {
+    const teamDetailQuery = teamDetails.find(
+      (query) => query.data?.name === team.name
+    );
+    const teamDetail = teamDetailQuery?.data;
+    
+    if (teamDetail?.members) {
+      teamDetail.members.forEach((member) => {
+        // Use email as unique identifier to avoid duplicates
+        const key = member.email.toLowerCase();
+        if (!memberMap.has(key)) {
+          memberMap.set(key, {
+            id: member.email.toLowerCase(), // Use email as ID for consistent chatId generation
+            name: member.name,
+            role: member.role,
+            avatar: member.avatar,
+            email: member.email,
+          });
+        }
+      });
+    }
   });
   
   return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+};
+
+// Generate a consistent chatId for direct messages between two users
+// This ensures both users see the same conversation regardless of who initiated it
+const getDirectMessageChatId = (userEmail: string, otherUserEmail: string): string => {
+  const emails = [userEmail.toLowerCase(), otherUserEmail.toLowerCase()].sort();
+  return `dm-${emails[0]}-${emails[1]}`;
 };
 
 export function Chatbot() {
@@ -81,28 +100,41 @@ export function Chatbot() {
   const { selectedTasks } = useSelectedTasks();
   const { selectedTeams } = useSelectedTeams();
   const { data: projects = [] } = useUserProjects();
+  const { data: userTeams = [] } = useUserTeams();
+  const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   const [selectedMember, setSelectedMember] = useState<string>("ai-assistant");
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: "1",
-      role: "assistant",
-      content: "Hello! I'm your AI assistant. How can I help you today?",
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [channelMessages, setChannelMessages] = useState<Map<string, ChannelMessage[]>>(new Map());
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [filterType, setFilterType] = useState<"all" | "activities" | "tasks" | "comments">("all");
+  const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map()); // chatId -> unread count
+  const [lastReadTimestamps, setLastReadTimestamps] = useState<Map<string, number>>(new Map()); // chatId -> last read timestamp
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
 
-  const allTeamMembers = getAllTeamMembers();
+  // Fetch team details for all user teams
+  const teamDetailsQueries = useQueries({
+    queries: userTeams.length > 0
+      ? userTeams.map((team) => ({
+          queryKey: ['teams', team.name],
+          queryFn: () => teamsService.getById(team.name),
+          enabled: !!team.name,
+          staleTime: 1000 * 60 * 5,
+        }))
+      : [],
+  });
+
+  // Get team members from user's teams (memoized to prevent infinite loops)
+  const allTeamMembers = useMemo(() => {
+    return getUserTeamMembers(userTeams, teamDetailsQueries);
+  }, [userTeams, teamDetailsQueries]);
   
   // Check if selected member is a project channel
   const isProjectChannel = selectedMember.startsWith("project-");
@@ -262,29 +294,275 @@ export function Chatbot() {
     }
   }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isSearching]);
 
-  // Clear messages when switching between different chat types
+  // Load messages from Firestore when chat changes
   useEffect(() => {
-    if (selectedMember === "ai-assistant") {
-      // Restore AI Assistant greeting when switching back to AI Assistant (only if messages are empty)
-      setMessages((prev) => {
-        if (prev.length === 0) {
-          return [
+    if (!user || !isOpen || !user.email) return;
+
+    let chatId: string;
+    
+    // Determine chatId
+    if (isProjectChannel && selectedProjectId) {
+      chatId = selectedMember;
+    } else if (selectedMember === "ai-assistant") {
+      chatId = "ai-assistant";
+    } else {
+      if (selectedMember.includes('@')) {
+        chatId = getDirectMessageChatId(user.email, selectedMember);
+      } else {
+        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+        if (selectedMemberData?.email) {
+          chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+        } else {
+          chatId = selectedMember; // Final fallback
+        }
+      }
+    }
+
+    setIsLoadingMessages(true);
+
+    // Initial load
+    const loadMessages = async () => {
+      try {
+        if (isProjectChannel && selectedProjectId) {
+          // Load project channel messages
+          const firestoreMessages = await messagesService.getByChatId(chatId);
+          const channelMsgs: ChannelMessage[] = firestoreMessages
+            .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
+            .map(msg => ({
+              id: msg.id,
+              memberName: msg.memberName || 'You',
+              memberAvatar: msg.memberAvatar || 'U',
+              content: msg.content,
+              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+              projectId: msg.projectId || selectedProjectId,
+            }));
+          
+          setChannelMessages((prev) => {
+            const newMap = new Map(prev);
+            newMap.set(selectedProjectId, channelMsgs);
+            return newMap;
+          });
+        } else {
+          // Load regular messages (AI Assistant or team member)
+          const firestoreMessages = await messagesService.getByChatId(chatId);
+          
+          // For team member chats, only show user messages (no assistant messages)
+          // For AI Assistant, show both user and assistant messages
+          const filteredMessages = chatId === "ai-assistant" 
+            ? firestoreMessages 
+            : firestoreMessages.filter(msg => msg.role === 'user');
+          
+          const regularMsgs: Message[] = filteredMessages.map(msg => ({
+            id: msg.id,
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            userId: msg.userId,
+          }));
+          
+          // If no messages and it's AI Assistant, add greeting
+          if (regularMsgs.length === 0 && chatId === "ai-assistant") {
+            setMessages([
+              {
+                id: "greeting",
+                role: "assistant",
+                content: "Hello! I'm your AI assistant. How can I help you today?",
+                timestamp: new Date(),
+              },
+            ]);
+          } else {
+            setMessages(regularMsgs);
+          }
+        }
+        
+        // Mark messages as read when opening chat
+        const now = Date.now();
+        setLastReadTimestamps((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(chatId, now);
+          return newMap;
+        });
+        // Clear unread count for this chat (since we're viewing it)
+        setUnreadCounts((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(chatId, 0);
+          return newMap;
+        });
+      } catch (error) {
+        console.error('Failed to load messages:', error);
+        // On error, show greeting for AI Assistant
+        if (selectedMember === "ai-assistant" && !isProjectChannel) {
+          setMessages([
             {
-              id: "1",
+              id: "greeting",
               role: "assistant",
               content: "Hello! I'm your AI assistant. How can I help you today?",
               timestamp: new Date(),
             },
-          ];
+          ]);
         }
-        return prev;
-      });
-    } else if (!isProjectChannel) {
-      // Clear messages when switching to a team member (not project channel)
-      setMessages([]);
+      } finally {
+        setIsLoadingMessages(false);
+      }
+    };
+
+    loadMessages();
+  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen]);
+
+  // Set up real-time listener in a separate effect to avoid conflicts
+  useEffect(() => {
+    if (!user || !isOpen || !user.email || isLoadingMessages) return;
+
+    let chatId: string;
+    
+    // Determine chatId (same logic as above)
+    if (isProjectChannel && selectedProjectId) {
+      chatId = selectedMember;
+    } else if (selectedMember === "ai-assistant") {
+      chatId = "ai-assistant";
+    } else {
+      if (selectedMember.includes('@')) {
+        chatId = getDirectMessageChatId(user.email, selectedMember);
+      } else {
+        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+        if (selectedMemberData?.email) {
+          chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+        } else {
+          chatId = selectedMember;
+        }
+      }
     }
-    // Don't clear messages when switching between project channels or team members
-  }, [selectedMember, isProjectChannel]);
+
+    let unsubscribe: (() => void) | null = null;
+    let isInitialLoad = true;
+    
+    // Set up listener after a delay to ensure initial load is complete
+    const timer = setTimeout(() => {
+      unsubscribe = messagesService.subscribeToMessages(chatId, (firestoreMessages) => {
+        // Skip first update since we just loaded messages
+        if (isInitialLoad) {
+          isInitialLoad = false;
+          return;
+        }
+        
+        try {
+          // Calculate unread count for this chat
+          const lastRead = lastReadTimestamps.get(chatId) || 0;
+          // Check if this is the currently open chat
+          let currentChatId: string;
+          if (isProjectChannel && selectedProjectId) {
+            currentChatId = selectedMember;
+          } else if (selectedMember === "ai-assistant") {
+            currentChatId = "ai-assistant";
+          } else {
+            if (selectedMember.includes('@')) {
+              currentChatId = getDirectMessageChatId(user.email, selectedMember);
+            } else {
+              const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+              if (selectedMemberData?.email) {
+                currentChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+              } else {
+                currentChatId = selectedMember;
+              }
+            }
+          }
+          const isCurrentChat = chatId === currentChatId && isOpen;
+          
+          // Count unread messages (messages after last read timestamp and not from current user)
+          const unreadCount = firestoreMessages.filter(msg => {
+            const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+            const isAfterLastRead = msgTime > lastRead;
+            const isNotFromCurrentUser = msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
+            return isAfterLastRead && isNotFromCurrentUser;
+          }).length;
+          
+          // Update unread count (only if not currently viewing this chat)
+          if (!isCurrentChat && unreadCount > 0) {
+            setUnreadCounts((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, unreadCount);
+              return newMap;
+            });
+          } else if (isCurrentChat) {
+            // Clear unread count if viewing this chat
+            setUnreadCounts((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, 0);
+              return newMap;
+            });
+          }
+          
+          if (isProjectChannel && selectedProjectId) {
+            // Update project channel messages
+            const channelMsgs: ChannelMessage[] = firestoreMessages
+              .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
+              .map(msg => ({
+                id: msg.id,
+                memberName: msg.memberName || 'You',
+                memberAvatar: msg.memberAvatar || 'U',
+                content: msg.content,
+                timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+                projectId: msg.projectId || selectedProjectId,
+              }));
+            
+            setChannelMessages((prev) => {
+              const newMap = new Map(prev);
+              const existing = newMap.get(selectedProjectId) || [];
+              const existingIds = new Set(existing.map(m => m.id));
+              const newIds = new Set(channelMsgs.map(m => m.id));
+              
+              // Only update if messages actually changed
+              if (existingIds.size !== newIds.size || 
+                  ![...existingIds].every(id => newIds.has(id))) {
+                newMap.set(selectedProjectId, channelMsgs);
+                return newMap;
+              }
+              return prev;
+            });
+          } else {
+            // Update regular messages
+            const filteredMessages = chatId === "ai-assistant" 
+              ? firestoreMessages 
+              : firestoreMessages.filter(msg => msg.role === 'user');
+            
+            const regularMsgs: Message[] = filteredMessages.map(msg => ({
+              id: msg.id,
+              role: msg.role,
+              content: msg.content,
+              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+              userId: msg.userId,
+            }));
+            
+            // Only update if messages actually changed
+            setMessages((prev) => {
+              const existingIds = new Set(prev.map(m => m.id));
+              const newIds = new Set(regularMsgs.map(m => m.id));
+              const hasNewMessages = regularMsgs.some(msg => !existingIds.has(msg.id));
+              const hasRemovedMessages = prev.some(msg => !newIds.has(msg.id));
+              
+              if (hasNewMessages || hasRemovedMessages || regularMsgs.length !== prev.length) {
+                if (regularMsgs.length > 0 || chatId !== "ai-assistant") {
+                  return regularMsgs;
+                }
+              }
+              return prev;
+            });
+          }
+        } catch (error) {
+          console.error('Error processing real-time message update:', error);
+        }
+      });
+    }, 2000);
+
+    // Cleanup
+    return () => {
+      clearTimeout(timer);
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages]);
 
   const generateResponse = async (userMessage: string): Promise<string> => {
     // Simulate API call delay
@@ -436,50 +714,172 @@ export function Chatbot() {
   };
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+    if (!input.trim() || isLoading || !user) return;
+
+    const messageContent = input.trim();
+    setInput("");
 
     // Handle project channel messages
     if (isProjectChannel && selectedProjectId) {
-      const newChannelMessage: ChannelMessage = {
-        id: `channel-${Date.now()}`,
-        memberName: "You", // In a real app, this would be the current user
+      // Create message and add to state immediately (optimistic update)
+      const tempChannelMessage: ChannelMessage = {
+        id: `temp-channel-${Date.now()}`,
+        memberName: "You",
         memberAvatar: "U",
-        content: input.trim(),
+        content: messageContent,
         timestamp: new Date(),
         projectId: selectedProjectId,
       };
 
+      // Add message to state immediately for instant feedback
       setChannelMessages((prev) => {
         const projectMessages = prev.get(selectedProjectId) || [];
         const newMap = new Map(prev);
-        newMap.set(selectedProjectId, [...projectMessages, newChannelMessage]);
+        newMap.set(selectedProjectId, [...projectMessages, tempChannelMessage]);
         return newMap;
       });
-      setInput("");
+
+      // Save to Firestore and update with saved data
+      try {
+        const savedMessage = await messagesService.create({
+          chatId: selectedMember,
+          role: 'user',
+          content: messageContent,
+          projectId: selectedProjectId,
+        });
+
+        const savedChannelMessage: ChannelMessage = {
+          id: savedMessage.id,
+          memberName: savedMessage.memberName || "You",
+          memberAvatar: savedMessage.memberAvatar || "U",
+          content: savedMessage.content,
+          timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
+          projectId: selectedProjectId,
+        };
+
+        // Update the message in state with saved data
+        setChannelMessages((prev) => {
+          const projectMessages = prev.get(selectedProjectId) || [];
+          const newMap = new Map(prev);
+          const updatedMessages = projectMessages.map(msg => 
+            msg.id === tempChannelMessage.id ? savedChannelMessage : msg
+          );
+          newMap.set(selectedProjectId, updatedMessages);
+          return newMap;
+        });
+      } catch (error) {
+        console.error('Failed to save channel message:', error);
+        // Remove the optimistic message if save failed
+        setChannelMessages((prev) => {
+          const projectMessages = prev.get(selectedProjectId) || [];
+          const newMap = new Map(prev);
+          newMap.set(selectedProjectId, projectMessages.filter(msg => msg.id !== tempChannelMessage.id));
+          return newMap;
+        });
+      }
       return;
     }
 
     // Handle AI Assistant or team member messages
+    // Determine the correct chatId
+    let chatId: string;
+    if (selectedMember === "ai-assistant") {
+      chatId = "ai-assistant";
+    } else {
+      // For team member chats, generate consistent chatId from both users' emails
+      // selectedMember is now the email (since we changed ID to email)
+      // Check if it looks like an email, otherwise fallback
+      if (selectedMember.includes('@') && user.email) {
+        chatId = getDirectMessageChatId(user.email, selectedMember);
+      } else {
+        // Fallback: try to find member by ID
+        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+        if (selectedMemberData?.email && user.email) {
+          chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+        } else {
+          chatId = selectedMember; // Final fallback
+        }
+      }
+    }
+
+    // Create message object and add to state immediately (optimistic update)
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: `temp-${Date.now()}`,
       role: "user",
-      content: input.trim(),
+      content: messageContent,
       timestamp: new Date(),
+      userId: user.email?.toLowerCase(),
     };
 
+    // Add message to state immediately for instant feedback
     setMessages((prev) => [...prev, userMessage]);
-    setInput("");
+
+    // Save user message to Firestore and update with saved data
+    try {
+      const savedUserMessage = await messagesService.create({
+        chatId: chatId,
+        role: 'user',
+        content: messageContent,
+      });
+      
+      // Update the message in state with saved data
+      setMessages((prev) => prev.map(msg => 
+        msg.id === userMessage.id 
+          ? {
+              ...msg,
+              id: savedUserMessage.id,
+              timestamp: savedUserMessage.timestamp instanceof Date ? savedUserMessage.timestamp : new Date(savedUserMessage.timestamp),
+              userId: savedUserMessage.userId || user.email?.toLowerCase(),
+            }
+          : msg
+      ));
+    } catch (error) {
+      console.error('Failed to save user message:', error);
+      // Remove the optimistic message if save failed
+      setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
+    }
+
+    // Only generate AI response for AI Assistant chat
+    if (selectedMember === "ai-assistant") {
     setIsLoading(true);
 
-    try {
-      const response = await generateResponse(userMessage.content);
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: response,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      try {
+        const response = await generateResponse(userMessage.content);
+        
+        // Create assistant message and add to state immediately (optimistic update)
+        const assistantMessage: Message = {
+          id: `temp-assistant-${Date.now()}`,
+          role: "assistant",
+          content: response,
+          timestamp: new Date(),
+        };
+
+        // Add assistant message to state immediately
+        setMessages((prev) => [...prev, assistantMessage]);
+
+        // Save assistant response to Firestore and update with saved data
+        try {
+          const savedAssistantMessage = await messagesService.create({
+            chatId: chatId,
+            role: 'assistant',
+            content: response,
+          });
+          
+          // Update the message in state with saved data
+          setMessages((prev) => prev.map(msg => 
+            msg.id === assistantMessage.id 
+              ? {
+                  ...msg,
+                  id: savedAssistantMessage.id,
+                  timestamp: savedAssistantMessage.timestamp instanceof Date ? savedAssistantMessage.timestamp : new Date(savedAssistantMessage.timestamp),
+                }
+              : msg
+          ));
+        } catch (error) {
+          console.error('Failed to save assistant message:', error);
+          // Remove the optimistic message if save failed
+          setMessages((prev) => prev.filter(msg => msg.id !== assistantMessage.id));
+        }
     } catch (error) {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -491,6 +891,8 @@ export function Chatbot() {
     } finally {
       setIsLoading(false);
     }
+    }
+    // For team member chats, just save the message (no AI response)
   };
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -503,16 +905,28 @@ export function Chatbot() {
   return (
     <>
       {/* Floating Chat Button */}
-      <Button
-        onClick={() => setIsOpen(!isOpen)}
-        className={cn(
-          "fixed bottom-6 left-1/2 -translate-x-1/2 z-50 h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300",
-          isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
-        )}
-        size="icon"
-      >
+      <div className="absolute bottom-6 left-0 right-0 flex justify-center z-50 pointer-events-none">
+        <Button
+          onClick={() => setIsOpen(!isOpen)}
+          className={cn(
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto",
+            isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
+          )}
+          size="icon"
+        >
         <MessageCircle className="h-6 w-6" />
-      </Button>
+        {/* Unread indicator */}
+        {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
+          <span className="absolute top-0 right-0 h-4 w-4 bg-red-500 rounded-full border-2 border-background flex items-center justify-center">
+            <span className="text-[10px] text-white font-bold">
+              {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 99 
+                ? '99+' 
+                : Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0)}
+            </span>
+          </span>
+        )}
+        </Button>
+      </div>
 
       {/* Chat Window */}
       <Card
@@ -600,14 +1014,24 @@ export function Chatbot() {
                       </div>
                       {filteredProjects.map((project) => {
                         const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+                        const projectChatId = `project-${projectId}`;
+                        const projectUnreadCount = unreadCounts.get(projectChatId) || 0;
                         return (
                           <SelectItem key={`project-${projectId}`} value={`project-${projectId}`} className="py-2">
-                            <div className="flex items-center gap-2">
-                              <div className="h-6 w-6 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                            <div className="flex items-center gap-2 w-full">
+                              <div className="h-6 w-6 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 relative">
                                 <Hash className="h-3 w-3 text-primary" />
+                                {projectUnreadCount > 0 && (
+                                  <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full border border-background" />
+                                )}
                               </div>
-                              <div className="flex flex-col min-w-0">
-                                <span className="font-medium truncate">{project.name}</span>
+                              <div className="flex flex-col min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium truncate">{project.name}</span>
+                                  {projectUnreadCount > 0 && (
+                                    <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
+                                  )}
+                                </div>
                                 <span className="text-xs text-muted-foreground truncate">Project Channel</span>
                               </div>
                             </div>
@@ -622,19 +1046,34 @@ export function Chatbot() {
                       <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase">
                         Team Members
                       </div>
-                      {filteredTeamMembers.map((member) => (
-                        <SelectItem key={member.id} value={member.id} className="py-2">
-                          <div className="flex items-center gap-2">
-                            <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
-                              <span className="text-xs font-medium">{member.avatar}</span>
+                      {filteredTeamMembers.map((member) => {
+                        // Get chatId for this member to check unread count
+                        const memberChatId = user?.email && member.email 
+                          ? getDirectMessageChatId(user.email, member.email)
+                          : member.id;
+                        const memberUnreadCount = unreadCounts.get(memberChatId) || 0;
+                        return (
+                          <SelectItem key={member.id} value={member.id} className="py-2">
+                            <div className="flex items-center gap-2 w-full">
+                              <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0 relative">
+                                <span className="text-xs font-medium">{member.avatar}</span>
+                                {memberUnreadCount > 0 && (
+                                  <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 rounded-full border border-background" />
+                                )}
+                              </div>
+                              <div className="flex flex-col min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium truncate">{member.name}</span>
+                                  {memberUnreadCount > 0 && (
+                                    <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
+                                  )}
+                                </div>
+                                <span className="text-xs text-muted-foreground truncate">{member.role}</span>
+                              </div>
                             </div>
-                            <div className="flex flex-col min-w-0">
-                              <span className="font-medium truncate">{member.name}</span>
-                              <span className="text-xs text-muted-foreground truncate">{member.role}</span>
-                            </div>
-                          </div>
-                        </SelectItem>
-                      ))}
+                          </SelectItem>
+                        );
+                      })}
                     </>
                   )}
                   {memberSearchQuery.trim() !== "" && filteredTeamMembers.length === 0 && filteredProjects.length === 0 && !aiAssistantMatches && (
@@ -690,8 +1129,19 @@ export function Chatbot() {
 
         {/* Messages */}
         <CardContent className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Loading indicator */}
+          {isLoadingMessages && (
+            <div className="flex items-center justify-center py-8">
+              <div className="flex gap-1">
+                <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+            </div>
+          )}
+          
           {/* Search Results for Project Channels */}
-          {isProjectChannel && isSearching && memberSearchQuery.trim() && (
+          {!isLoadingMessages && isProjectChannel && isSearching && memberSearchQuery.trim() && (
             <div className="space-y-3 mb-4">
               <div className="text-sm font-medium text-muted-foreground flex items-center gap-2">
                 <Search className="h-4 w-4" />
@@ -740,7 +1190,7 @@ export function Chatbot() {
           )}
 
           {/* Project Channel Messages */}
-          {isProjectChannel && !isSearching && selectedProjectId && (
+          {!isLoadingMessages && isProjectChannel && !isSearching && selectedProjectId && (
             <>
               {(() => {
                 const projectMessages = channelMessages.get(selectedProjectId) || [];
@@ -787,47 +1237,81 @@ export function Chatbot() {
           )}
 
           {/* Regular Messages (AI Assistant or Team Members) */}
-          {!isProjectChannel && messages.map((message) => (
-            <div
-              key={message.id}
-              className={cn(
-                "flex gap-3",
-                message.role === "user" ? "justify-end" : "justify-start"
-              )}
-            >
-              {message.role === "assistant" && (
-                <Avatar className="h-8 w-8 flex-shrink-0">
-                  <AvatarFallback className="bg-primary text-primary-foreground">
-                    <Bot className="h-4 w-4" />
-                  </AvatarFallback>
-                </Avatar>
-              )}
+          {!isLoadingMessages && !isProjectChannel && messages.map((message) => {
+            // Determine if message is from current user (sent) or other user (received)
+            const isSent = message.role === "assistant" 
+              ? false // Assistant messages are always received
+              : message.userId?.toLowerCase() === user?.email?.toLowerCase();
+            
+            // For team member chats, if it's not from current user, it's received
+            const isTeamMemberChat = selectedMember !== "ai-assistant" && !isProjectChannel;
+            const isReceived = isTeamMemberChat && !isSent && message.role === "user";
+            
+            return (
               <div
+                key={message.id}
                 className={cn(
-                  "rounded-lg px-4 py-2 max-w-[80%]",
-                  message.role === "user"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted"
+                  "flex gap-3",
+                  isSent ? "justify-end" : "justify-start"
                 )}
               >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                <p className="text-xs opacity-70 mt-1">
-                  {message.timestamp.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </p>
+                {/* Avatar for received messages (assistant or other team member) */}
+                {!isSent && (
+                  <Avatar className="h-8 w-8 flex-shrink-0">
+                    <AvatarFallback className={cn(
+                      message.role === "assistant" 
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted-foreground/20 text-foreground"
+                    )}>
+                      {message.role === "assistant" ? (
+                        <Bot className="h-4 w-4" />
+                      ) : (
+                        <User className="h-4 w-4" />
+                      )}
+                    </AvatarFallback>
+                  </Avatar>
+                )}
+                
+                {/* Message bubble */}
+                <div
+                  className={cn(
+                    "rounded-lg px-4 py-2 max-w-[80%]",
+                    isSent
+                      ? "bg-primary text-primary-foreground"
+                      : message.role === "assistant"
+                      ? "bg-muted"
+                      : "bg-muted-foreground/10 border border-border"
+                  )}
+                >
+                  <p className={cn(
+                    "text-sm whitespace-pre-wrap",
+                    isSent ? "text-primary-foreground" : "text-foreground"
+                  )}>
+                    {message.content}
+                  </p>
+                  <p className={cn(
+                    "text-xs mt-1",
+                    isSent ? "opacity-80" : "opacity-60"
+                  )}>
+                    {message.timestamp.toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </p>
+                </div>
+                
+                {/* Avatar for sent messages */}
+                {isSent && (
+                  <Avatar className="h-8 w-8 flex-shrink-0">
+                    <AvatarFallback className="bg-primary text-primary-foreground">
+                      <User className="h-4 w-4" />
+                    </AvatarFallback>
+                  </Avatar>
+                )}
               </div>
-              {message.role === "user" && (
-                <Avatar className="h-8 w-8 flex-shrink-0">
-                  <AvatarFallback className="bg-muted">
-                    <User className="h-4 w-4" />
-                  </AvatarFallback>
-                </Avatar>
-              )}
-            </div>
-          ))}
-          {isLoading && !isProjectChannel && (
+            );
+          })}
+          {!isLoadingMessages && isLoading && !isProjectChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
                 <AvatarFallback className="bg-primary text-primary-foreground">

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -113,13 +113,17 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
     } else {
       form.setValue("assignee", "");
     }
-  }, [selectedAssignee, form]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAssignee]);
+
+  // Memoize the projects array to prevent infinite loops
+  const projectsMemo = useMemo(() => projects, [projects.map(p => p.name).join(',')]);
 
   // Load project members when project is selected
   useEffect(() => {
-    if (selectedProjectId && projects.length > 0) {
+    if (selectedProjectId && projectsMemo.length > 0) {
       // Find the selected project
-      const selectedProject = projects.find(p => {
+      const selectedProject = projectsMemo.find(p => {
         const slug = p.name.toLowerCase().replace(/\s+/g, '-');
         return slug === selectedProjectId;
       });
@@ -133,7 +137,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
     } else {
       setProjectMembers([]);
     }
-  }, [selectedProjectId, projects]);
+  }, [selectedProjectId, projectsMemo]);
 
   // Reset assignee when project changes
   useEffect(() => {
@@ -141,7 +145,8 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
       setSelectedAssignee(null);
       form.setValue("assignee", "");
     }
-  }, [selectedProjectId, form]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId]);
 
   // Reset form when dialog opens/closes
   useEffect(() => {
@@ -152,7 +157,8 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
       setAssigneeOpen(false);
       setProjectMembers([]);
     }
-  }, [open, form]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   const onSubmit = async (data: FormData) => {
     setIsSubmitting(true);

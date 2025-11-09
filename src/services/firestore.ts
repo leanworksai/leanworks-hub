@@ -1,7 +1,7 @@
 import type { Project } from '@/data/projectsData';
 import type { Task } from '@/data/tasksData';
 import type { Team, TeamDetailData } from '@/data/teamsData';
-import { auth } from '@/lib/firebase-client';
+import { auth, db } from '@/lib/firebase-client';
 
 // Use proxy API in development (uses gcp_credential.json via Admin SDK)
 // In production, use relative path so nginx can proxy to the backend server
@@ -352,6 +352,183 @@ export const integrationsService = {
       const error = await response.json().catch(() => ({ error: 'Failed to disconnect integration' }));
       throw new Error(error.error || 'Failed to disconnect integration');
     }
+  },
+};
+
+// Messages Service
+export interface ChatMessage {
+  id: string;
+  chatId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string | Date;
+  userId?: string;
+  projectId?: string;
+  memberName?: string;
+  memberAvatar?: string;
+}
+
+export type MessageListener = (messages: ChatMessage[]) => void;
+export type Unsubscribe = () => void;
+
+export const messagesService = {
+  async getByChatId(chatId: string): Promise<ChatMessage[]> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/messages/${encodeURIComponent(chatId)}` : `${API_BASE}/messages/${encodeURIComponent(chatId)}`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch messages');
+    const messages = await response.json();
+    // Convert timestamp strings to Date objects
+    return messages.map((msg: ChatMessage) => ({
+      ...msg,
+      timestamp: typeof msg.timestamp === 'string' ? new Date(msg.timestamp) : msg.timestamp,
+    }));
+  },
+
+  async create(message: {
+    chatId: string;
+    role?: 'user' | 'assistant';
+    content: string;
+    projectId?: string;
+    memberName?: string;
+    memberAvatar?: string;
+  }): Promise<ChatMessage> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/messages` : `${API_BASE}/messages`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify(message),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to create message' }));
+      throw new Error(error.error || 'Failed to create message');
+    }
+    const data = await response.json();
+    return {
+      ...data.message,
+      timestamp: typeof data.message.timestamp === 'string' ? new Date(data.message.timestamp) : data.message.timestamp,
+    };
+  },
+
+  // Subscribe to real-time message updates
+  subscribeToMessages(chatId: string, callback: MessageListener): Unsubscribe {
+    // Try to use Firestore real-time listener if available
+    if (db && auth?.currentUser?.email) {
+      try {
+        // Dynamic import to avoid issues if firebase/firestore is not available
+        import('firebase/firestore').then((firestore) => {
+          const { collection, query, where, orderBy, onSnapshot } = firestore;
+          
+          const userEmail = auth.currentUser?.email;
+          if (!userEmail) {
+            // Fallback to polling if no user
+            return this.subscribeViaPolling(chatId, callback);
+          }
+          
+          const domain = userEmail.split('@')[1]?.toLowerCase() || '';
+          const messagesRef = collection(db, `domains/${domain}/messages`);
+          
+          // Try to create query with orderBy, fallback if index doesn't exist
+          let q;
+          try {
+            q = query(
+              messagesRef,
+              where('chatId', '==', chatId),
+              orderBy('timestamp', 'asc')
+            );
+          } catch (error: any) {
+            // If index error, query without orderBy
+            if (error.code === 9 || error.message?.includes('index')) {
+              q = query(
+                messagesRef,
+                where('chatId', '==', chatId)
+              );
+            } else {
+              throw error;
+            }
+          }
+          
+          const unsubscribe = onSnapshot(
+            q,
+            (snapshot) => {
+              const messages: ChatMessage[] = snapshot.docs.map(doc => {
+                const data = doc.data();
+                return {
+                  id: doc.id,
+                  ...data,
+                  timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : new Date(data.timestamp),
+                } as ChatMessage;
+              });
+              
+              // Sort by timestamp if we didn't use orderBy
+              messages.sort((a, b) => {
+                const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+                const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+                return aTime - bTime;
+              });
+              
+              callback(messages);
+            },
+            (error) => {
+              console.error('Firestore listener error, falling back to polling:', error);
+              // Fallback to polling on error - but we can't return from here
+              // So we'll just let it fall through to polling
+            }
+          );
+          
+          return unsubscribe;
+        }).catch((error) => {
+          console.log('Firestore import failed, using polling:', error);
+          return this.subscribeViaPolling(chatId, callback);
+        });
+      } catch (error) {
+        console.log('Firestore setup error, using polling:', error);
+      }
+    }
+    
+    // Fallback to polling (always use polling for now since dynamic import is async)
+    return this.subscribeViaPolling(chatId, callback);
+  },
+
+  // Polling fallback for when Firestore real-time is not available
+  subscribeViaPolling(chatId: string, callback: MessageListener): Unsubscribe {
+    let lastMessageIds: Set<string> = new Set();
+    let isActive = true;
+    let pollTimeout: NodeJS.Timeout | null = null;
+    
+    const poll = async () => {
+      if (!isActive) return;
+      
+      try {
+        const messages = await this.getByChatId(chatId);
+        const currentIds = new Set(messages.map(m => m.id));
+        
+        // Only call callback if messages actually changed
+        const idsChanged = lastMessageIds.size !== currentIds.size ||
+          ![...lastMessageIds].every(id => currentIds.has(id));
+        
+        if (idsChanged) {
+          lastMessageIds = currentIds;
+          callback(messages);
+        }
+      } catch (error) {
+        console.error('Error polling messages:', error);
+      }
+      
+      // Poll every 3 seconds (less aggressive)
+      if (isActive) {
+        pollTimeout = setTimeout(poll, 3000);
+      }
+    };
+    
+    // Start polling after a short delay
+    pollTimeout = setTimeout(poll, 1000);
+    
+    // Return unsubscribe function
+    return () => {
+      isActive = false;
+      if (pollTimeout) {
+        clearTimeout(pollTimeout);
+      }
+    };
   },
 };
 
