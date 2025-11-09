@@ -3,9 +3,10 @@
 set -e
 
 # Configuration
-CLUSTER_NAME="leanworks-cluster"
-REGION="us-central1"  # Update this to your cluster's region
+CLUSTER_NAME="leanworks-prod"
+REGION="us-west1"  # Update this to your cluster's region
 GCP_CREDENTIAL_FILE="gcp_credential.json"
+ARTIFACT_REGISTRY_REPO="docker-repo"  # Artifact Registry repository name
 
 # Colors for output
 RED='\033[0;31m'
@@ -36,7 +37,7 @@ if [ -z "$PROJECT_ID" ]; then
     exit 1
 fi
 
-IMAGE_NAME="gcr.io/${PROJECT_ID}/leanworks-hub"
+IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/leanworks-hub"
 
 # Set up GCP authentication
 echo -e "${YELLOW}Setting up GCP authentication...${NC}"
@@ -47,9 +48,23 @@ gcloud auth activate-service-account --key-file="$GCP_CREDENTIAL_FILE"
 echo -e "${YELLOW}Setting GCP project to ${PROJECT_ID}...${NC}"
 gcloud config set project "$PROJECT_ID"
 
-# Configure Docker to use gcloud as a credential helper
-echo -e "${YELLOW}Configuring Docker authentication...${NC}"
-gcloud auth configure-docker
+# Configure Docker to use gcloud as a credential helper for Artifact Registry
+echo -e "${YELLOW}Configuring Docker authentication for Artifact Registry...${NC}"
+gcloud auth configure-docker ${REGION}-docker.pkg.dev
+
+# Check if Artifact Registry repository exists, create if it doesn't
+echo -e "${YELLOW}Checking Artifact Registry repository...${NC}"
+if ! gcloud artifacts repositories describe "$ARTIFACT_REGISTRY_REPO" --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+    echo -e "${YELLOW}Repository '$ARTIFACT_REGISTRY_REPO' not found. Creating it...${NC}"
+    gcloud artifacts repositories create "$ARTIFACT_REGISTRY_REPO" \
+        --repository-format=docker \
+        --location="$REGION" \
+        --description="Docker repository for leanworks-hub" \
+        --project="$PROJECT_ID"
+    echo -e "${GREEN}Repository created successfully!${NC}"
+else
+    echo -e "${GREEN}Repository '$ARTIFACT_REGISTRY_REPO' already exists.${NC}"
+fi
 
 # Get cluster credentials
 echo -e "${YELLOW}Getting GKE cluster credentials...${NC}"
@@ -63,14 +78,16 @@ FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"
 echo -e "${YELLOW}Building Docker image for linux/amd64 platform...${NC}"
 docker build --platform linux/amd64 -t "$FULL_IMAGE_NAME" -t "$IMAGE_NAME:latest" .
 
-# Push the image to Google Container Registry (both tagged and latest)
-echo -e "${YELLOW}Pushing image to GCR...${NC}"
+# Push the image to Artifact Registry (both tagged and latest)
+echo -e "${YELLOW}Pushing image to Artifact Registry...${NC}"
 docker push "$FULL_IMAGE_NAME"
 docker push "$IMAGE_NAME:latest"
 
 # Apply Kubernetes manifests (for initial deployment or config changes)
 echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
+kubectl apply -f k8s/backend-config.yaml
 kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/ingress.yaml
 
 # Update the deployment with the new image tag
 echo -e "${YELLOW}Updating Kubernetes deployment with new image tag...${NC}"

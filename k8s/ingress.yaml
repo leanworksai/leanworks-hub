@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: leanworks-hub-ingress
+  annotations:
+    # Static IP name - update if your existing reservation uses a different name
+    kubernetes.io/ingress.global-static-ip-name: "leanworks-hub-ip"
+    networking.gke.io/managed-certificates: "leanworks-hub-ssl-cert"
+    # HTTPS only - disable HTTP
+    kubernetes.io/ingress.allow-http: "false"
+    # Backend config annotation (matches working pattern)
+    kubernetes.io/ingress.backend-config: '{"default": "leanworks-hub-backend-config"}'
+    # Ingress class annotation (alternative to spec.ingressClassName)
+    kubernetes.io/ingress.class: "gce"
+spec:
+  ingressClassName: gce
+  rules:
+  - host: hub.leanworks.ai
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: leanworks-hub-service
+            port:
+              number: 80
+
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: leanworks-hub-ssl-cert
+spec:
+  domains:
+    - hub.leanworks.ai
+
