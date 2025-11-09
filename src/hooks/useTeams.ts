@@ -4,9 +4,12 @@ import type { Team, TeamDetailData, TeamJoinRequest } from '@/data/teamsData';
 import { useAuth } from '@/contexts/AuthContext';
 
 export const useTeams = () => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['teams'],
     queryFn: () => teamsService.getAll(),
+    enabled: !loading && !!user, // Only fetch when user is authenticated
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -69,10 +72,12 @@ export const useUserTeams = () => {
 };
 
 export const useTeam = (teamName: string) => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['teams', teamName],
     queryFn: () => teamsService.getById(teamName),
-    enabled: !!teamName,
+    enabled: !loading && !!user && !!teamName, // Only fetch when user is authenticated and teamName is provided
     staleTime: 1000 * 60 * 5,
   });
 };
@@ -128,9 +133,12 @@ export const useDeleteTeam = () => {
 
 // Team join request hooks
 export const useJoinRequests = () => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['teamJoinRequests'],
     queryFn: () => teamJoinRequestsService.getPendingRequests(),
+    enabled: !loading && !!user, // Only fetch when user is authenticated
     staleTime: 0, // Always consider data stale to allow immediate refetches
     refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
     refetchOnWindowFocus: true, // Refetch when user returns to the tab

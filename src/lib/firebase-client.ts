@@ -4,11 +4,13 @@ import { getFirestore, Firestore } from 'firebase/firestore';
 
 // Firebase web app configuration - using minimal config since we use service account
 // API key is optional - we'll handle initialization errors gracefully
+// Derive authDomain and storageBucket from projectId if available
+const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || '';
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyBypassKeyForServiceAccount',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'leanworks.firebaseapp.com',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'leanworks',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'leanworks.appspot.com',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (projectId ? `${projectId}.firebaseapp.com` : 'leanworks.firebaseapp.com'),
+  projectId: projectId,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || (projectId ? `${projectId}.appspot.com` : 'leanworks.appspot.com'),
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '123456789',
   appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:123456789:web:abcdef',
 };

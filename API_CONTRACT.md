@@ -4,7 +4,7 @@
 
 - **Content-Type**: `application/json`
 - **Authentication**: Bearer token in `Authorization` header
-- **Database**: Firestore (project: `leanworks-test`)
+- **Database**: Firestore (project: `leanworks-prod`)
 - **Data Isolation**: All data is domain-based (isolated by user email domain)
 
 ## API Access Methods

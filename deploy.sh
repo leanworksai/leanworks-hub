@@ -3,10 +3,8 @@
 set -e
 
 # Configuration
-PROJECT_ID="leanworks"
 CLUSTER_NAME="leanworks-cluster"
 REGION="us-central1"  # Update this to your cluster's region
-IMAGE_NAME="gcr.io/${PROJECT_ID}/leanworks-hub"
 GCP_CREDENTIAL_FILE="gcp_credential.json"
 
 # Colors for output
@@ -22,6 +20,23 @@ if [ ! -f "$GCP_CREDENTIAL_FILE" ]; then
     echo -e "${RED}Error: $GCP_CREDENTIAL_FILE not found!${NC}"
     exit 1
 fi
+
+# Read project ID from credentials file
+if command -v jq &> /dev/null; then
+    PROJECT_ID=$(jq -r '.project_id' "$GCP_CREDENTIAL_FILE")
+elif command -v python3 &> /dev/null; then
+    PROJECT_ID=$(python3 -c "import json, sys; print(json.load(open('$GCP_CREDENTIAL_FILE'))['project_id'])")
+else
+    # Fallback: use grep and sed (less robust but works without additional tools)
+    PROJECT_ID=$(grep -o '"project_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$GCP_CREDENTIAL_FILE" | sed 's/.*"project_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+fi
+
+if [ -z "$PROJECT_ID" ]; then
+    echo -e "${RED}Error: Could not extract project_id from $GCP_CREDENTIAL_FILE${NC}"
+    exit 1
+fi
+
+IMAGE_NAME="gcr.io/${PROJECT_ID}/leanworks-hub"
 
 # Set up GCP authentication
 echo -e "${YELLOW}Setting up GCP authentication...${NC}"

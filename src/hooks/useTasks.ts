@@ -3,11 +3,15 @@ import { tasksService } from '@/services/firestore';
 import type { Task } from '@/data/tasksData';
 import { useUserProjects } from './useProjects';
 import { useUserTeams } from './useTeams';
+import { useAuth } from '@/contexts/AuthContext';
 
 export const useTasks = () => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['tasks'],
     queryFn: () => tasksService.getAll(),
+    enabled: !loading && !!user, // Only fetch when user is authenticated
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -55,19 +59,23 @@ export const useUserTasks = () => {
 };
 
 export const useTask = (taskId: string) => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['tasks', taskId],
     queryFn: () => tasksService.getById(taskId),
-    enabled: !!taskId,
+    enabled: !loading && !!user && !!taskId, // Only fetch when user is authenticated and taskId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
 
 export const useTasksByProject = (projectId: string) => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['tasks', 'project', projectId],
     queryFn: () => tasksService.getByProject(projectId),
-    enabled: !!projectId,
+    enabled: !loading && !!user && !!projectId, // Only fetch when user is authenticated and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };

@@ -29,7 +29,7 @@ if (getApps().length === 0) {
   firebaseApp = getApps()[0];
 }
 
-const db = getFirestore(firebaseApp, 'leanworks-test');
+const db = getFirestore(firebaseApp, 'leanworks-prod');
 const auth = getAuth(firebaseApp);
 const secretManagerClient = new SecretManagerServiceClient();
 const app = express();
@@ -260,12 +260,22 @@ app.post('/api/auth/login', async (req, res) => {
     } catch (error: any) {
       if (error.code === 'auth/user-not-found') {
         // Create user in Firebase Auth if it doesn't exist
+        try {
         userRecord = await auth.createUser({
           email: email.toLowerCase(),
           password,
           emailVerified: true,
         });
+        } catch (createError: any) {
+          console.error('Error creating Firebase Auth user:', createError);
+          console.error('Error code:', createError.code);
+          console.error('Error message:', createError.message);
+          throw createError;
+        }
       } else {
+        console.error('Error getting Firebase Auth user:', error);
+        console.error('Error code:', error.code);
+        console.error('Error message:', error.message);
         throw error;
       }
     }
@@ -278,7 +288,16 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // Create custom token for the user
-    const customToken = await auth.createCustomToken(userRecord.uid);
+    let customToken;
+    try {
+      customToken = await auth.createCustomToken(userRecord.uid);
+    } catch (tokenError: any) {
+      console.error('Error creating custom token:', tokenError);
+      console.error('Error code:', tokenError.code);
+      console.error('Error message:', tokenError.message);
+      console.error('Project ID:', serviceAccount.project_id);
+      throw tokenError;
+    }
 
     res.json({ 
       success: true,
@@ -291,6 +310,9 @@ app.post('/api/auth/login', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Login error:', error);
+    console.error('Error code:', error.code);
+    console.error('Error message:', error.message);
+    console.error('Full error:', JSON.stringify(error, null, 2));
     res.status(500).json({ error: error.message || 'Failed to sign in' });
   }
 });
@@ -1403,6 +1425,6 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Firestore proxy server running on http://0.0.0.0:${PORT}`);
   console.log(`📊 Using project: ${serviceAccount.project_id}`);
-  console.log(`🗄️  Database: leanworks-test`);
+  console.log(`🗄️  Database: leanworks-prod`);
 });
 

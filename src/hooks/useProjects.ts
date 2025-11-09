@@ -6,9 +6,12 @@ import { useAuth } from '@/contexts/AuthContext';
 import { teamsService } from '@/services/firestore';
 
 export const useProjects = () => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['projects'],
     queryFn: () => projectsService.getAll(),
+    enabled: !loading && !!user, // Only fetch when user is authenticated
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -66,10 +69,12 @@ export const useUserProjects = () => {
 };
 
 export const useProject = (projectName: string) => {
+  const { user, loading } = useAuth();
+  
   return useQuery({
     queryKey: ['projects', projectName],
     queryFn: () => projectsService.getById(projectName),
-    enabled: !!projectName,
+    enabled: !loading && !!user && !!projectName, // Only fetch when user is authenticated and projectName is provided
     staleTime: 1000 * 60 * 5,
   });
 };
