@@ -107,9 +107,6 @@ export default function Integrations() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
-          <p className="text-muted-foreground">
-            Connect your favorite tools and services
-          </p>
         </div>
       </div>
 

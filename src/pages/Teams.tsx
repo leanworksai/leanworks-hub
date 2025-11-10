@@ -414,14 +414,13 @@ export default function Teams() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Teams</h1>
-          <p className="text-muted-foreground">
-            View and join teams in your organization
-            {selectedTeams.length > 0 && (
-              <span className="ml-2 text-primary">
+          {selectedTeams.length > 0 && (
+            <p className="text-muted-foreground">
+              <span className="text-primary">
                 ({selectedTeams.length} selected)
               </span>
-            )}
-          </p>
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {pendingRequestsCount > 0 && (

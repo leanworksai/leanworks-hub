@@ -10,9 +10,6 @@ export default function Settings() {
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">
-          Manage your account and workspace preferences
-        </p>
       </div>
 
       <div className="grid gap-6">

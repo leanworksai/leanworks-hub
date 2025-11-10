@@ -11,6 +11,7 @@ import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Project } from "@/data/projectsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
@@ -41,6 +42,7 @@ interface ChannelMessage {
   content: string;
   timestamp: Date;
   projectId: string;
+  userId?: string;
 }
 
 interface SearchResult {
@@ -330,6 +332,7 @@ export function Chatbot() {
               content: msg.content,
               timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
               projectId: msg.projectId || selectedProjectId,
+              userId: msg.userId,
             }));
           
           setChannelMessages((prev) => {
@@ -498,6 +501,7 @@ export function Chatbot() {
                 content: msg.content,
                 timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
                 projectId: msg.projectId || selectedProjectId,
+                userId: msg.userId,
               }));
             
             setChannelMessages((prev) => {
@@ -724,6 +728,7 @@ export function Chatbot() {
         content: messageContent,
         timestamp: new Date(),
         projectId: selectedProjectId,
+        userId: user.email?.toLowerCase(),
       };
 
       // Add message to state immediately for instant feedback
@@ -750,6 +755,7 @@ export function Chatbot() {
           content: savedMessage.content,
           timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
           projectId: selectedProjectId,
+          userId: savedMessage.userId || user.email?.toLowerCase(),
         };
 
         // Update the message in state with saved data
@@ -1232,29 +1238,77 @@ export function Chatbot() {
                 }
                 return (
                   <div className="space-y-4">
-                    {projectMessages.map((message) => (
-                      <div key={message.id} className="flex gap-3">
-                        <Avatar className="h-8 w-8 flex-shrink-0">
-                          <AvatarFallback className="bg-primary text-primary-foreground">
-                            {message.memberAvatar}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <p className="font-medium text-sm">{message.memberName}</p>
-                            <span className="text-xs text-muted-foreground">
-                              {message.timestamp.toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                            </span>
+                    {projectMessages.map((message) => {
+                      // Determine if message is from current user
+                      const isSent = message.userId?.toLowerCase() === user?.email?.toLowerCase();
+                      
+                      return (
+                        <div
+                          key={message.id}
+                          className={cn(
+                            "flex gap-3",
+                            isSent ? "justify-end" : "justify-start"
+                          )}
+                        >
+                          {/* Avatar for received messages (other users) */}
+                          {!isSent && (
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                {message.memberAvatar}
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
+                          
+                          {/* Message bubble */}
+                          <div className="flex flex-col min-w-0 max-w-[80%]">
+                            {!isSent && (
+                              <div className="flex items-center gap-2 mb-1 px-1">
+                                <p className="font-medium text-sm">{message.memberName}</p>
+                                <span className="text-xs text-muted-foreground">
+                                  {message.timestamp.toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                            )}
+                            <div
+                              className={cn(
+                                "rounded-lg px-4 py-2",
+                                isSent
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted-foreground/10 border border-border"
+                              )}
+                            >
+                              <p className={cn(
+                                "text-sm whitespace-pre-wrap",
+                                isSent ? "text-primary-foreground" : "text-foreground"
+                              )}>
+                                {message.content}
+                              </p>
+                              <p className={cn(
+                                "text-xs mt-1",
+                                isSent ? "opacity-80" : "opacity-60"
+                              )}>
+                                {message.timestamp.toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </p>
+                            </div>
                           </div>
-                          <div className="bg-muted rounded-lg px-4 py-2">
-                            <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-                          </div>
+                          
+                          {/* Avatar for sent messages (current user) */}
+                          {isSent && (
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-primary text-primary-foreground">
+                                {message.memberAvatar}
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 );
               })()}

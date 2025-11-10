@@ -164,14 +164,13 @@ export default function Tasks() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Tasks</h1>
-          <p className="text-muted-foreground">
-            Track tasks with progress updates and timeline
-            {selectedTasks.length > 0 && (
-              <span className="ml-2 text-primary">
+          {selectedTasks.length > 0 && (
+            <p className="text-muted-foreground">
+              <span className="text-primary">
                 ({selectedTasks.length} selected)
               </span>
-            )}
-          </p>
+            </p>
+          )}
         </div>
         <Button 
           className="bg-primary hover:bg-primary/90"
