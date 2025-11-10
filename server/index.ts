@@ -31,7 +31,11 @@ if (getApps().length === 0) {
 
 const db = getFirestore(firebaseApp, 'leanworks-prod');
 const auth = getAuth(firebaseApp);
-const secretManagerClient = new SecretManagerServiceClient();
+// Initialize Secret Manager client with explicit service account credentials
+const secretManagerClient = new SecretManagerServiceClient({
+  credentials: serviceAccount,
+  projectId: serviceAccount.project_id,
+});
 const app = express();
 const PORT = 3001;
 
@@ -1123,11 +1127,24 @@ app.post('/api/teams/migrate-owners', authenticateUser, async (req, res) => {
 });
 
 // Helper function to create secret name for domain and integration
+// Follows the pattern: integrations-{client-domain}-{tool-name}
+// Domain and tool name contain only alphanumeric characters (no special characters)
+// Example: integrations-examplecom-slack
 function getSecretName(domain: string, integrationId: string): string {
-  // Sanitize domain name: remove all special characters to comply with GCP Secret Manager naming rules
-  // Keep only alphanumeric characters
-  const sanitizedDomain = domain.replace(/[^a-zA-Z0-9]/g, '');
-  return `integrations-${sanitizedDomain}-${integrationId}`;
+  // Sanitize domain name: remove all special characters, keep only alphanumeric
+  // Convert to lowercase for consistency
+  const sanitizedDomain = domain
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, ''); // Remove all non-alphanumeric characters
+  
+  // Sanitize integration ID: remove all special characters, keep only alphanumeric
+  const sanitizedIntegrationId = integrationId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, ''); // Remove all non-alphanumeric characters
+  
+  // Return in format: integrations-{client-domain}-{tool-name}
+  // Only hyphens are used as separators between parts
+  return `integrations-${sanitizedDomain}-${sanitizedIntegrationId}`;
 }
 
 // Helper function to save secret to GCP Secret Manager
@@ -1136,36 +1153,71 @@ async function saveSecret(secretName: string, secretValue: string): Promise<void
   const parent = `projects/${projectId}`;
   const fullSecretName = `${parent}/secrets/${secretName}`;
 
+  console.log(`[Secret Manager] Attempting to save secret: ${secretName}`);
+  console.log(`[Secret Manager] Full secret path: ${fullSecretName}`);
+  console.log(`[Secret Manager] Using service account: ${serviceAccount.client_email}`);
+  console.log(`[Secret Manager] Project ID: ${projectId}`);
+
   try {
-    // Check if secret exists
+    // Try to create the secret first (if it doesn't exist)
+    // This avoids needing secretmanager.secrets.get permission
     try {
-      await secretManagerClient.getSecret({ name: fullSecretName });
-    } catch (error: any) {
-      // If secret doesn't exist, create it
-      if (error.code === 5) { // NOT_FOUND
-        await secretManagerClient.createSecret({
-          parent,
-          secretId: secretName,
-          secret: {
-            replication: {
-              automatic: {},
-            },
+      console.log(`[Secret Manager] Attempting to create secret: ${secretName}`);
+      await secretManagerClient.createSecret({
+        parent,
+        secretId: secretName,
+        secret: {
+          replication: {
+            automatic: {},
           },
-        });
+        },
+      });
+      console.log(`[Secret Manager] Secret created successfully: ${secretName}`);
+    } catch (error: any) {
+      // If secret already exists (error code 6 = ALREADY_EXISTS), that's fine
+      // We'll proceed to add a version
+      if (error.code === 6) { // ALREADY_EXISTS
+        console.log(`[Secret Manager] Secret already exists: ${secretName}`);
       } else {
+        console.error(`[Secret Manager] Error creating secret:`, {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          serviceAccount: serviceAccount.client_email,
+        });
         throw error;
       }
     }
 
     // Add a new version with the secret value
+    console.log(`[Secret Manager] Adding version to secret: ${secretName}`);
     await secretManagerClient.addSecretVersion({
       parent: fullSecretName,
       payload: {
         data: Buffer.from(secretValue, 'utf8'),
       },
     });
+    console.log(`[Secret Manager] Secret version added successfully: ${secretName}`);
   } catch (error: any) {
-    console.error('Error saving secret:', error);
+    console.error('[Secret Manager] Error saving secret:', {
+      secretName,
+      projectId,
+      serviceAccount: serviceAccount.client_email,
+      errorCode: error.code,
+      errorMessage: error.message,
+      errorDetails: error.details,
+      fullError: error,
+    });
+    
+    // Provide more helpful error message
+    if (error.code === 7) { // PERMISSION_DENIED
+      throw new Error(
+        `Permission denied for service account '${serviceAccount.client_email}'. ` +
+        `Please verify that this service account has the 'roles/secretmanager.admin' role. ` +
+        `Error details: ${error.message}`
+      );
+    }
+    
     throw new Error(`Failed to save secret: ${error.message}`);
   }
 }
@@ -1193,16 +1245,22 @@ app.get('/api/integrations', authenticateUser, async (req, res) => {
     const collectionPath = getCollectionPath('integrations', domain);
     const snapshot = await db.collection(collectionPath).get();
     
+    // Map Firestore documents to integration objects
+    // Only return integrations that exist in Firestore (connected integrations)
     const integrations = snapshot.docs.map(doc => {
       const data = doc.data();
       return {
         id: doc.id,
-        connected: data.connected || false,
+        name: data.name || doc.id.charAt(0).toUpperCase() + doc.id.slice(1),
+        connected: data.connected || true, // If record exists, it's connected
+        secretName: data.secretName, // Include secret name for reference
         connectedAt: data.connectedAt,
+        updatedAt: data.updatedAt,
       };
     });
 
     // Ensure we return all three integrations with their connection status
+    // Only show connected integrations from Firestore (which are in sync with Secret Manager)
     const allIntegrations = [
       { id: 'slack', name: 'Slack' },
       { id: 'atlassian', name: 'Atlassian' },
@@ -1212,8 +1270,10 @@ app.get('/api/integrations', authenticateUser, async (req, res) => {
       return {
         id: integration.id,
         name: integration.name,
-        connected: existing?.connected || false,
+        connected: existing ? true : false, // Only connected if record exists in Firestore
+        secretName: existing?.secretName, // Include secret name if connected
         connectedAt: existing?.connectedAt,
+        updatedAt: existing?.updatedAt,
       };
     });
 
@@ -1233,19 +1293,25 @@ app.post('/api/integrations/slack/connect', authenticateUser, async (req, res) =
       return res.status(400).json({ error: 'Bot token is required' });
     }
 
-    // Save credentials to GCP Secret Manager
+    // Generate secret name
     const secretName = getSecretName(domain, 'slack');
+    
+    // Save credentials to GCP Secret Manager first
     await saveSecret(secretName, JSON.stringify({ botToken }));
 
-    // Update Firestore
+    // Only update Firestore if Secret Manager operation succeeds
+    // Store integration record with secret name to keep in sync
     const collectionPath = getCollectionPath('integrations', domain);
     await db.collection(collectionPath).doc('slack').set({
       id: 'slack',
       name: 'Slack',
       connected: true,
+      secretName: secretName, // Store the secret name for reference
       connectedAt: new Date(),
+      updatedAt: new Date(),
     }, { merge: true });
 
+    console.log(`[Integrations] Slack connected for domain ${domain}, secret: ${secretName}`);
     res.json({ success: true, message: 'Slack connected successfully' });
   } catch (error) {
     console.error('Connect Slack error:', error);
@@ -1256,25 +1322,32 @@ app.post('/api/integrations/slack/connect', authenticateUser, async (req, res) =
 app.post('/api/integrations/atlassian/connect', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
-    const { email, password, apiToken } = req.body;
+    const { email, domain: atlassianDomainUrl, apiToken } = req.body;
 
-    if (!email || !password || !apiToken) {
-      return res.status(400).json({ error: 'Email, password, and API token are required' });
+    if (!email || !atlassianDomainUrl || !apiToken) {
+      return res.status(400).json({ error: 'Email, Atlassian domain, and API token are required' });
     }
 
-    // Save credentials to GCP Secret Manager
+    // Generate secret name
     const secretName = getSecretName(domain, 'atlassian');
-    await saveSecret(secretName, JSON.stringify({ email, password, apiToken }));
+    
+    // Save credentials to GCP Secret Manager first
+    // Store domain instead of password for Atlassian integration
+    await saveSecret(secretName, JSON.stringify({ email, domain: atlassianDomainUrl, apiToken }));
 
-    // Update Firestore
+    // Only update Firestore if Secret Manager operation succeeds
+    // Store integration record with secret name to keep in sync
     const collectionPath = getCollectionPath('integrations', domain);
     await db.collection(collectionPath).doc('atlassian').set({
       id: 'atlassian',
       name: 'Atlassian',
       connected: true,
+      secretName: secretName, // Store the secret name for reference
       connectedAt: new Date(),
+      updatedAt: new Date(),
     }, { merge: true });
 
+    console.log(`[Integrations] Atlassian connected for domain ${domain}, secret: ${secretName}`);
     res.json({ success: true, message: 'Atlassian connected successfully' });
   } catch (error) {
     console.error('Connect Atlassian error:', error);
@@ -1291,19 +1364,22 @@ app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async 
       return res.status(400).json({ error: 'Invalid integration ID' });
     }
 
-    // Delete secret from GCP Secret Manager
-    // deleteSecret handles the case where secret doesn't exist, so it's safe to call for all integrations
-    const secretName = getSecretName(domain, integrationId);
+    // Get the secret name from Firestore if it exists, otherwise generate it
+    const collectionPath = getCollectionPath('integrations', domain);
+    const integrationDoc = await db.collection(collectionPath).doc(integrationId).get();
+    const secretName = integrationDoc.exists && integrationDoc.data()?.secretName 
+      ? integrationDoc.data()!.secretName 
+      : getSecretName(domain, integrationId);
+
+    // Delete secret from GCP Secret Manager first
+    // deleteSecret handles the case where secret doesn't exist, so it's safe to call
     await deleteSecret(secretName);
 
-    // Update Firestore
-    const collectionPath = getCollectionPath('integrations', domain);
-    await db.collection(collectionPath).doc(integrationId).set({
-      id: integrationId,
-      name: integrationId.charAt(0).toUpperCase() + integrationId.slice(1),
-      connected: false,
-    }, { merge: true });
+    // Delete the Firestore record to keep in sync with Secret Manager
+    // Only delete if Secret Manager operation succeeds
+    await db.collection(collectionPath).doc(integrationId).delete();
 
+    console.log(`[Integrations] ${integrationId} disconnected for domain ${domain}, secret deleted: ${secretName}`);
     res.json({ success: true, message: 'Integration disconnected successfully' });
   } catch (error) {
     console.error('Disconnect integration error:', error);

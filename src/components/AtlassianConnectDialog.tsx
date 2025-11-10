@@ -21,14 +21,14 @@ interface AtlassianConnectDialogProps {
 
 export function AtlassianConnectDialog({ open, onOpenChange, onSuccess }: AtlassianConnectDialogProps) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [atlassianDomain, setAtlassianDomain] = useState("");
   const [apiToken, setApiToken] = useState("");
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password.trim() || !apiToken.trim()) {
+    if (!email.trim() || !atlassianDomain.trim() || !apiToken.trim()) {
       toast({
         title: "Error",
         description: "Please fill in all fields",
@@ -39,9 +39,9 @@ export function AtlassianConnectDialog({ open, onOpenChange, onSuccess }: Atlass
 
     try {
       setLoading(true);
-      await integrationsService.connectAtlassian(email, password, apiToken);
+      await integrationsService.connectAtlassian(email, atlassianDomain, apiToken);
       setEmail("");
-      setPassword("");
+      setAtlassianDomain("");
       setApiToken("");
       onSuccess();
     } catch (error: any) {
@@ -78,13 +78,13 @@ export function AtlassianConnectDialog({ open, onOpenChange, onSuccess }: Atlass
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Atlassian Domain URL</Label>
+              <Label htmlFor="atlassianDomain">Atlassian Domain URL</Label>
               <Input
-                id="password"
+                id="atlassianDomain"
                 type="text"
                 placeholder="{your-domain}.atlassian.net"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                value={atlassianDomain}
+                onChange={(e) => setAtlassianDomain(e.target.value)}
                 disabled={loading}
               />
             </div>

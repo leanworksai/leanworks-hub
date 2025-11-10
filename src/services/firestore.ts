@@ -329,11 +329,11 @@ export const integrationsService = {
     }
   },
 
-  async connectAtlassian(email: string, password: string, apiToken: string): Promise<void> {
+  async connectAtlassian(email: string, domain: string, apiToken: string): Promise<void> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/integrations/atlassian/connect` : `${API_BASE}/integrations/atlassian/connect`;
     const response = await authenticatedFetch(url, {
       method: 'POST',
-      body: JSON.stringify({ email, password, apiToken }),
+      body: JSON.stringify({ email, domain, apiToken }),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Failed to connect Atlassian' }));
