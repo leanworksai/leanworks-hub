@@ -1733,7 +1733,7 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const userEmail = (req as any).user.email;
-    const { chatId, role, content, memberName, memberAvatar, projectId } = req.body;
+    const { chatId, role, content, memberName, memberAvatar, projectId, teamId } = req.body;
 
     if (!chatId || !content) {
       return res.status(400).json({ error: 'chatId and content are required' });
@@ -1769,6 +1769,13 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
     // Add project-specific fields for project channel messages
     if (projectId) {
       messageData.projectId = projectId;
+      messageData.memberName = finalMemberName;
+      messageData.memberAvatar = finalMemberAvatar;
+    }
+
+    // Add team-specific fields for team channel messages
+    if (teamId) {
+      messageData.teamId = teamId;
       messageData.memberName = finalMemberName;
       messageData.memberAvatar = finalMemberAvatar;
     }

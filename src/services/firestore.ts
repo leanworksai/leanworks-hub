@@ -414,6 +414,7 @@ export interface ChatMessage {
   timestamp: string | Date;
   userId?: string;
   projectId?: string;
+  teamId?: string;
   memberName?: string;
   memberAvatar?: string;
 }
@@ -442,6 +443,7 @@ export const messagesService = {
     role?: 'user' | 'assistant';
     content: string;
     projectId?: string;
+    teamId?: string;
     memberName?: string;
     memberAvatar?: string;
   }): Promise<ChatMessage> {

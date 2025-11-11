@@ -15,8 +15,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Project } from "@/data/projectsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
-import { useQueries } from "@tanstack/react-query";
-import { teamsService, messagesService, type ChatMessage } from "@/services/firestore";
+import { useUsers } from "@/hooks/useUsers";
+import { messagesService, type ChatMessage } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 
 interface Message {
@@ -41,7 +41,8 @@ interface ChannelMessage {
   memberAvatar: string;
   content: string;
   timestamp: Date;
-  projectId: string;
+  projectId?: string;
+  teamId?: string;
   userId?: string;
 }
 
@@ -55,35 +56,6 @@ interface SearchResult {
   date: string;
 }
 
-// Get team members from user's teams
-const getUserTeamMembers = (userTeams: Array<{ name: string }>, teamDetails: Array<{ data?: { members: Array<{ name: string; role: string; email: string; avatar: string }> } }>): TeamMember[] => {
-  const memberMap = new Map<string, TeamMember>();
-  
-  userTeams.forEach((team) => {
-    const teamDetailQuery = teamDetails.find(
-      (query) => query.data?.name === team.name
-    );
-    const teamDetail = teamDetailQuery?.data;
-    
-    if (teamDetail?.members) {
-      teamDetail.members.forEach((member) => {
-        // Use email as unique identifier to avoid duplicates
-        const key = member.email.toLowerCase();
-        if (!memberMap.has(key)) {
-          memberMap.set(key, {
-            id: member.email.toLowerCase(), // Use email as ID for consistent chatId generation
-            name: member.name,
-            role: member.role,
-            avatar: member.avatar,
-            email: member.email,
-          });
-        }
-      });
-    }
-  });
-  
-  return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-};
 
 // Generate a consistent chatId for direct messages between two users
 // This ensures both users see the same conversation regardless of who initiated it
@@ -98,6 +70,7 @@ export function Chatbot() {
   const { selectedTeams } = useSelectedTeams();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
+  const { data: allDomainUsers = [] } = useUsers();
   const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   
@@ -373,13 +346,18 @@ export function Chatbot() {
   const mergeChannelMessages = (
     existing: ChannelMessage[],
     incoming: ChatMessage[],
-    projectId: string,
-    preserveOptimistic: boolean = true
+    projectIdOrTeamId: string,
+    preserveOptimistic: boolean = true,
+    isTeam: boolean = false
   ): ChannelMessage[] => {
-    // Filter incoming messages for this project
-    const projectMessages = incoming.filter(msg => 
-      msg.role === 'user' && msg.projectId === projectId
-    );
+    // Filter incoming messages for this project or team
+    const channelMessages = incoming.filter(msg => {
+      if (isTeam) {
+        return msg.role === 'user' && msg.teamId === projectIdOrTeamId;
+      } else {
+        return msg.role === 'user' && msg.projectId === projectIdOrTeamId;
+      }
+    });
 
     // Create a map of existing messages by ID
     const existingMap = new Map<string, ChannelMessage>();
@@ -397,7 +375,7 @@ export function Chatbot() {
     });
 
     // Process incoming messages
-    projectMessages.forEach(incomingMsg => {
+    channelMessages.forEach(incomingMsg => {
       const incomingId = incomingMsg.id;
       const existingMsg = existingMap.get(incomingId);
       
@@ -414,7 +392,7 @@ export function Chatbot() {
             timestamp: incomingMsg.timestamp instanceof Date 
               ? incomingMsg.timestamp 
               : new Date(incomingMsg.timestamp),
-            projectId: projectId,
+            ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId,
           });
         }
@@ -450,7 +428,7 @@ export function Chatbot() {
             timestamp: incomingMsg.timestamp instanceof Date 
               ? incomingMsg.timestamp 
               : new Date(incomingMsg.timestamp),
-            projectId: projectId,
+            ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId,
           });
         } else {
@@ -463,7 +441,7 @@ export function Chatbot() {
             timestamp: incomingMsg.timestamp instanceof Date 
               ? incomingMsg.timestamp 
               : new Date(incomingMsg.timestamp),
-            projectId: projectId,
+            ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId,
           });
         }
@@ -532,22 +510,30 @@ export function Chatbot() {
     setSelectedMember(lastMember);
   }, [user?.email, getLastSelectedMember]);
 
-  // Fetch team details for all user teams
-  const teamDetailsQueries = useQueries({
-    queries: userTeams.length > 0
-      ? userTeams.map((team) => ({
-          queryKey: ['teams', team.name],
-          queryFn: () => teamsService.getById(team.name),
-          enabled: !!team.name,
-          staleTime: 1000 * 60 * 5,
-        }))
-      : [],
-  });
-
-  // Get team members from user's teams (memoized to prevent infinite loops)
+  // Get all domain users (excluding current user)
   const allTeamMembers = useMemo(() => {
-    return getUserTeamMembers(userTeams, teamDetailsQueries);
-  }, [userTeams, teamDetailsQueries]);
+    return allDomainUsers
+      .filter((domainUser) => {
+        const userEmail = domainUser.email?.toLowerCase();
+        return userEmail && userEmail !== user?.email?.toLowerCase();
+      })
+      .map((domainUser) => {
+        const userEmail = domainUser.email?.toLowerCase() || '';
+        const firstName = domainUser.firstName || '';
+        const lastName = domainUser.lastName || '';
+        const name = `${firstName} ${lastName}`.trim() || userEmail;
+        const avatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || userEmail.charAt(0).toUpperCase();
+        
+        return {
+          id: userEmail,
+          name: name,
+          role: domainUser.jobTitle || 'User',
+          avatar: avatar,
+          email: userEmail,
+        } as TeamMember;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allDomainUsers, user?.email]);
   
   // Check if selected member is a project channel
   const isProjectChannel = selectedMember.startsWith("project-");
@@ -556,13 +542,24 @@ export function Chatbot() {
     ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === selectedProjectId)
     : null;
   
-  // Filter team members based on search query
+  // Check if selected member is a team channel
+  const isTeamChannel = selectedMember.startsWith("team-");
+  const selectedTeamId = isTeamChannel ? selectedMember.replace("team-", "") : null;
+  const selectedTeam = selectedTeamId 
+    ? userTeams.find(t => t.name.toLowerCase().replace(/\s+/g, '-') === selectedTeamId)
+    : null;
+  
+  // Filter team members based on search query (search by name, role, or email)
   const filteredTeamMembers = memberSearchQuery.trim() === ""
     ? allTeamMembers
-    : allTeamMembers.filter((member) =>
-        member.name.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
-        member.role.toLowerCase().includes(memberSearchQuery.toLowerCase())
-      );
+    : allTeamMembers.filter((member) => {
+        const query = memberSearchQuery.toLowerCase();
+        return (
+          member.name.toLowerCase().includes(query) ||
+          member.role.toLowerCase().includes(query) ||
+          member.email?.toLowerCase().includes(query)
+        );
+      });
 
   // Filter projects based on search query
   const filteredProjects = memberSearchQuery.trim() === ""
@@ -572,10 +569,20 @@ export function Chatbot() {
         project.description.toLowerCase().includes(memberSearchQuery.toLowerCase())
       );
 
+  // Filter teams based on search query
+  const filteredTeams = memberSearchQuery.trim() === ""
+    ? userTeams
+    : userTeams.filter((team) =>
+        team.name.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+        (team.description && team.description.toLowerCase().includes(memberSearchQuery.toLowerCase()))
+      );
+
   const currentMember = selectedMember === "ai-assistant" 
     ? { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" }
     : isProjectChannel && selectedProject
     ? { id: selectedMember, name: selectedProject.name, role: "Project Channel", avatar: "#" }
+    : isTeamChannel && selectedTeam
+    ? { id: selectedMember, name: selectedTeam.name, role: "Team Channel", avatar: "👥" }
     : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" };
 
   // Check if AI Assistant matches search query
@@ -588,8 +595,16 @@ export function Chatbot() {
   };
 
   // Perform search through project activities when in project channel mode
+  // Note: Team channels don't have search functionality yet (similar to project channels)
   useEffect(() => {
-    if (!isProjectChannel || !selectedProject || !memberSearchQuery.trim()) {
+    if ((!isProjectChannel && !isTeamChannel) || (!selectedProject && !selectedTeam) || !memberSearchQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    
+    // For now, only project channels have search functionality
+    if (!isProjectChannel || !selectedProject) {
       setSearchResults([]);
       setIsSearching(false);
       return;
@@ -698,14 +713,14 @@ export function Chatbot() {
       // Small delay to ensure DOM is updated
       setTimeout(() => {
         scrollToBottom();
-        if (isProjectChannel && isSearching) {
+        if ((isProjectChannel || isTeamChannel) && isSearching) {
           memberSearchRef.current?.focus();
         } else {
           inputRef.current?.focus();
         }
       }, 100);
     }
-  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isSearching]);
+  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isTeamChannel, isSearching]);
 
   // Calculate unread counts for all chats when chatbot opens or when user/projects/teams change
   useEffect(() => {
@@ -724,7 +739,7 @@ export function Chatbot() {
         allChatIds.push(`project-${projectId}`);
       });
 
-      // Add all team member direct message chats
+      // Add all domain user direct message chats
       allTeamMembers.forEach((member) => {
         if (member.email) {
           const chatId = getDirectMessageChatId(user.email, member.email);
@@ -785,21 +800,21 @@ export function Chatbot() {
       setUnreadCounts((prev) => {
         const merged = new Map(prev);
         newUnreadCounts.forEach((count, chatId) => {
-          // Only update if this chat is not currently open (and chatbot is open)
-          if (isOpen) {
-            let currentChatId: string;
-            if (isProjectChannel && selectedProjectId) {
-              currentChatId = selectedMember;
-            } else if (selectedMember === "ai-assistant") {
-              currentChatId = "ai-assistant";
-            } else {
-              const selectedMemberData = allTeamMembers.find((m) => m.id === selectedMember);
-              if (selectedMemberData?.email) {
-                currentChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
-              } else {
+            // Only update if this chat is not currently open (and chatbot is open)
+            if (isOpen) {
+              let currentChatId: string;
+              if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
                 currentChatId = selectedMember;
+              } else if (selectedMember === "ai-assistant") {
+                currentChatId = "ai-assistant";
+              } else {
+                const selectedMemberData = allTeamMembers.find((m) => m.id === selectedMember);
+                if (selectedMemberData?.email) {
+                  currentChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+                } else {
+                  currentChatId = selectedMember;
+                }
               }
-            }
             if (chatId !== currentChatId) {
               if (count > 0) {
                 merged.set(chatId, count);
@@ -824,7 +839,7 @@ export function Chatbot() {
 
     calculateUnreadCounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, selectedProjectId, lastReadTimestamps]);
+  }, [user?.email, projects, userTeams, allTeamMembers, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, lastReadTimestamps]);
 
   // Load all chat caches upfront - ONLY ONCE per session (on mount/login)
   useEffect(() => {
@@ -843,7 +858,13 @@ export function Chatbot() {
         allChatIds.push(`project-${projectId}`);
       });
 
-      // Add all team member direct message chats
+      // Add all team channels
+      userTeams.forEach((team) => {
+        const teamId = team.name.toLowerCase().replace(/\s+/g, '-');
+        allChatIds.push(`team-${teamId}`);
+      });
+
+      // Add all domain user direct message chats
       allTeamMembers.forEach((member) => {
         if (member.email) {
           const chatId = getDirectMessageChatId(user.email, member.email);
@@ -865,7 +886,7 @@ export function Chatbot() {
 
     loadAllChatCaches();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.email, projects, allTeamMembers, cacheLoadedForSession]);
+  }, [user?.email, projects, userTeams, allTeamMembers, cacheLoadedForSession]);
 
   // Background sync: Fetch new messages for all chats even when chat is closed
   useEffect(() => {
@@ -949,8 +970,8 @@ export function Chatbot() {
                 // Update unread counts if chat is not currently open
                 // IMPORTANT: Never update state for active chats - only update cache and unread counts
                 const isCurrentChat = isOpen && (
-                  (isProjectChannel && selectedProjectId && chatId === selectedMember) ||
-                  (!isProjectChannel && selectedMember === chatId)
+                  ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) && chatId === selectedMember ||
+                  (!isProjectChannel && !isTeamChannel && selectedMember === chatId)
                 );
                 
                 // For active chats, only update cache, don't touch state
@@ -1015,8 +1036,8 @@ export function Chatbot() {
                 
                 // If viewing this chat, make sure unread count is cleared
                 const isCurrentChat = isOpen && (
-                  (isProjectChannel && selectedProjectId && chatId === selectedMember) ||
-                  (!isProjectChannel && selectedMember === chatId)
+                  ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) && chatId === selectedMember ||
+                  (!isProjectChannel && !isTeamChannel && selectedMember === chatId)
                 );
                 if (isCurrentChat) {
                   // Clear unread count if viewing this chat
@@ -1058,7 +1079,7 @@ export function Chatbot() {
     let chatId: string;
     
     // Determine chatId
-    if (isProjectChannel && selectedProjectId) {
+    if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
       chatId = selectedMember;
     } else if (selectedMember === "ai-assistant") {
       chatId = "ai-assistant";
@@ -1081,8 +1102,8 @@ export function Chatbot() {
     
     if (chatHasChanged) {
       // Chat has changed - clear old messages immediately
-      if (isProjectChannel && selectedProjectId) {
-        // For project channels, we keep the Map structure but clear the specific channel
+      if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
+        // For project/team channels, we keep the Map structure but clear the specific channel
         // Actually, we should keep other channels' messages, so don't clear here
       } else {
         // For regular chats, clear messages immediately
@@ -1094,8 +1115,9 @@ export function Chatbot() {
 
     // Check if this is initial load (state is empty OR chat has changed)
     // When chat changes, we treat it as initial load since we just cleared messages
-    const isInitialLoad = chatHasChanged || (isProjectChannel && selectedProjectId
-      ? !channelMessages.has(selectedProjectId) || channelMessages.get(selectedProjectId)?.length === 0
+    const isInitialLoad = chatHasChanged || ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)
+      ? (isProjectChannel && selectedProjectId && (!channelMessages.has(selectedProjectId) || channelMessages.get(selectedProjectId)?.length === 0)) ||
+        (isTeamChannel && selectedTeamId && (!channelMessages.has(selectedTeamId) || channelMessages.get(selectedTeamId)?.length === 0))
       : messages.length === 0);
     
     // Load cached messages ONLY for initial load AND only if cache was loaded for this session
@@ -1126,6 +1148,24 @@ export function Chatbot() {
         setChannelMessages((prev) => {
           const newMap = new Map(prev);
           newMap.set(selectedProjectId, cachedChannelMsgs);
+          return newMap;
+        });
+      } else if (isTeamChannel && selectedTeamId) {
+        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+          .filter(msg => msg.role === 'user' && msg.teamId === selectedTeamId)
+          .map(msg => ({
+            id: msg.id,
+            memberName: msg.memberName || 'You',
+            memberAvatar: msg.memberAvatar || 'U',
+            content: msg.content,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            teamId: msg.teamId || selectedTeamId,
+            userId: msg.userId,
+          }));
+        
+        setChannelMessages((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(selectedTeamId, cachedChannelMsgs);
           return newMap;
         });
       } else {
@@ -1260,6 +1300,70 @@ export function Chatbot() {
             newMap.delete(chatId);
             return newMap;
           });
+        } else if (isTeamChannel && selectedTeamId) {
+          // Load only new team channel messages
+          const newMessages = afterTimestamp 
+            ? await messagesService.getByChatId(chatId, afterTimestamp)
+            : await messagesService.getByChatId(chatId);
+          
+          // Merge with cached messages (prefer new messages if there are duplicates)
+          const messageMap = new Map<string, ChatMessage>();
+          if (cached) {
+            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+          }
+          newMessages.forEach(msg => messageMap.set(msg.id, msg));
+        
+        const allMessages = Array.from(messageMap.values()).sort((a, b) => {
+          const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+          const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+          return aTime - bTime;
+        });
+        
+        const channelMsgs: ChannelMessage[] = allMessages
+          .filter(msg => msg.role === 'user' && msg.teamId === selectedTeamId)
+          .map(msg => ({
+            id: msg.id,
+            memberName: msg.memberName || 'You',
+            memberAvatar: msg.memberAvatar || 'U',
+            content: msg.content,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            teamId: msg.teamId || selectedTeamId,
+            userId: msg.userId,
+          }));
+        
+        // Only update state if it's initial load (state is empty)
+        // Otherwise, real-time listener will handle updates
+        if (isInitialLoad) {
+          setChannelMessages((prev) => {
+            const newMap = new Map(prev);
+            newMap.set(selectedTeamId, channelMsgs);
+            return newMap;
+          });
+        }
+          
+          // Save to cache (after state update) - but don't reload from cache
+          setTimeout(() => saveCachedMessages(chatId, allMessages), 0);
+          
+          // Calculate latest message time for read timestamp
+          if (channelMsgs.length > 0) {
+            const latestTime = Math.max(
+              ...channelMsgs.map(msg => 
+                msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+              )
+            );
+            setLastReadTimestamps((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, latestTime);
+              return newMap;
+            });
+          }
+          
+          // Clear unread count for this chat (since we're viewing it)
+          setUnreadCounts((prev) => {
+            const newMap = new Map(prev);
+            newMap.delete(chatId);
+            return newMap;
+          });
         } else {
           // Load only new regular messages (AI Assistant or team member)
           const newMessages = afterTimestamp 
@@ -1367,7 +1471,7 @@ export function Chatbot() {
         // Keep using cached messages if fetch fails
       });
     }
-  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen]);
+  }, [selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, user?.email, isOpen]);
 
     // Set up real-time listener in a separate effect to avoid conflicts
     useEffect(() => {
@@ -1376,7 +1480,7 @@ export function Chatbot() {
     let chatId: string;
     
     // Determine chatId (same logic as above)
-    if (isProjectChannel && selectedProjectId) {
+    if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
       chatId = selectedMember;
     } else if (selectedMember === "ai-assistant") {
       chatId = "ai-assistant";
@@ -1415,7 +1519,7 @@ export function Chatbot() {
           const lastRead = lastReadTimestamps.get(chatId) || 0;
           // Check if this is the currently open chat
           let currentChatId: string;
-          if (isProjectChannel && selectedProjectId) {
+          if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
             currentChatId = selectedMember;
           } else if (selectedMember === "ai-assistant") {
             currentChatId = "ai-assistant";
@@ -1512,6 +1616,37 @@ export function Chatbot() {
                   ![...existingIds].every(id => mergedIds.has(id)) ||
                   merged.length !== existing.length) {
                 newMap.set(selectedProjectId, merged);
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
+                return newMap;
+              }
+              return prev;
+            });
+          } else if (isTeamChannel && selectedTeamId) {
+            // Merge team channel messages instead of replacing
+            setChannelMessages((prev) => {
+              const newMap = new Map(prev);
+              const existing = newMap.get(selectedTeamId) || [];
+              
+              // Don't update if we have optimistic messages that haven't been confirmed yet
+              const hasUnconfirmedOptimistic = existing.some(msg => 
+                msg.id.startsWith('temp-') && 
+                (msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()) > Date.now() - 5000
+              );
+              
+              // Merge with existing messages, preserving optimistic updates
+              const merged = mergeChannelMessages(existing, firestoreMessages, selectedTeamId, false, true);
+              
+              // Always update if we have optimistic messages (they need to be matched)
+              // Otherwise only update if messages actually changed
+              const existingIds = new Set(existing.map(m => m.id));
+              const mergedIds = new Set(merged.map(m => m.id));
+              
+              if (hasUnconfirmedOptimistic || 
+                  existingIds.size !== mergedIds.size || 
+                  ![...existingIds].every(id => mergedIds.has(id)) ||
+                  merged.length !== existing.length) {
+                newMap.set(selectedTeamId, merged);
                 // Save to cache when messages update (after state update)
                 setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
                 return newMap;
@@ -1822,6 +1957,89 @@ export function Chatbot() {
       return;
     }
 
+    // Handle team channel messages
+    if (isTeamChannel && selectedTeamId) {
+      // Create message and add to state immediately (optimistic update)
+      const tempChannelMessage: ChannelMessage = {
+        id: `temp-channel-${Date.now()}`,
+        memberName: "You",
+        memberAvatar: "U",
+        content: messageContent,
+        timestamp: new Date(),
+        teamId: selectedTeamId,
+        userId: user.email?.toLowerCase(),
+      };
+
+      // Add message to state immediately for instant feedback
+      setChannelMessages((prev) => {
+        const teamMessages = prev.get(selectedTeamId) || [];
+        const newMap = new Map(prev);
+        newMap.set(selectedTeamId, [...teamMessages, tempChannelMessage]);
+        return newMap;
+      });
+
+      // Save to Firestore and update with saved data
+      try {
+        const savedMessage = await messagesService.create({
+          chatId: selectedMember,
+          role: 'user',
+          content: messageContent,
+          teamId: selectedTeamId,
+        });
+
+        const savedChannelMessage: ChannelMessage = {
+          id: savedMessage.id,
+          memberName: savedMessage.memberName || "You",
+          memberAvatar: savedMessage.memberAvatar || "U",
+          content: savedMessage.content,
+          timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
+          teamId: selectedTeamId,
+          userId: savedMessage.userId || user.email?.toLowerCase(),
+        };
+
+        // Update the message in state with saved data
+        setChannelMessages((prev) => {
+          const teamMessages = prev.get(selectedTeamId) || [];
+          const newMap = new Map(prev);
+          const updatedMessages = teamMessages.map(msg => 
+            msg.id === tempChannelMessage.id ? savedChannelMessage : msg
+          );
+          newMap.set(selectedTeamId, updatedMessages);
+          
+          // Update cache after state update
+          const chatId = selectedMember;
+          setTimeout(() => {
+            const allMessages = updatedMessages.map(msg => ({
+              id: msg.id,
+              chatId: chatId,
+              role: 'user' as const,
+              content: msg.content,
+              timestamp: msg.timestamp,
+              teamId: msg.teamId,
+              userId: msg.userId,
+              memberName: msg.memberName,
+              memberAvatar: msg.memberAvatar,
+            }));
+            saveCachedMessages(chatId, allMessages);
+          }, 0);
+          
+          return newMap;
+        });
+        setIsSendingMessage(false);
+      } catch (error) {
+        console.error('Failed to save team channel message:', error);
+        // Remove the optimistic message if save failed
+        setChannelMessages((prev) => {
+          const teamMessages = prev.get(selectedTeamId) || [];
+          const newMap = new Map(prev);
+          newMap.set(selectedTeamId, teamMessages.filter(msg => msg.id !== tempChannelMessage.id));
+          return newMap;
+        });
+        setIsSendingMessage(false);
+      }
+      return;
+    }
+
     // Handle AI Assistant or team member messages
     // Determine the correct chatId
     let chatId: string;
@@ -2084,7 +2302,7 @@ export function Chatbot() {
                 )}
 
                 {/* Separator between AI Assistant and Channels */}
-                {(aiAssistantMatches || filteredProjects.length > 0 || filteredTeamMembers.length > 0) && (
+                {(aiAssistantMatches || filteredProjects.length > 0 || filteredTeams.length > 0 || filteredTeamMembers.length > 0) && (
                   <Separator className="my-2" />
                 )}
 
@@ -2094,36 +2312,67 @@ export function Chatbot() {
                     Channels
                   </div>
                   <div className="space-y-1">
-                    {filteredProjects.length > 0 ? (
-                      filteredProjects.map((project) => {
-                        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
-                        const projectChatId = `project-${projectId}`;
-                        const projectUnreadCount = unreadCounts.get(projectChatId) || 0;
-                        const isSelected = selectedMember === projectChatId;
-                        return (
-                          <button
-                            key={`project-${projectId}`}
-                            onClick={() => {
-                              setSelectedMember(projectChatId);
-                              setMemberSearchQuery("");
-                            }}
-                            className={cn(
-                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
-                              isSelected
-                                ? "bg-primary text-primary-foreground"
-                                : projectUnreadCount > 0
-                                ? "bg-primary/10 hover:bg-primary/20"
-                                : "hover:bg-muted"
-                            )}
-                          >
-                            <Hash className="h-4 w-4 flex-shrink-0" />
-                            <span className={cn(
-                              "flex-1 text-left truncate",
-                              projectUnreadCount > 0 && !isSelected && "font-semibold"
-                            )}>{project.name}</span>
-                          </button>
-                        );
-                      })
+                    {filteredProjects.length > 0 || filteredTeams.length > 0 ? (
+                      <>
+                        {filteredProjects.map((project) => {
+                          const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+                          const projectChatId = `project-${projectId}`;
+                          const projectUnreadCount = unreadCounts.get(projectChatId) || 0;
+                          const isSelected = selectedMember === projectChatId;
+                          return (
+                            <button
+                              key={`project-${projectId}`}
+                              onClick={() => {
+                                setSelectedMember(projectChatId);
+                                setMemberSearchQuery("");
+                              }}
+                              className={cn(
+                                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : projectUnreadCount > 0
+                                  ? "bg-primary/10 hover:bg-primary/20"
+                                  : "hover:bg-muted"
+                              )}
+                            >
+                              <Hash className="h-4 w-4 flex-shrink-0" />
+                              <span className={cn(
+                                "flex-1 text-left truncate",
+                                projectUnreadCount > 0 && !isSelected && "font-semibold"
+                              )}>{project.name}</span>
+                            </button>
+                          );
+                        })}
+                        {filteredTeams.map((team) => {
+                          const teamId = team.name.toLowerCase().replace(/\s+/g, '-');
+                          const teamChatId = `team-${teamId}`;
+                          const teamUnreadCount = unreadCounts.get(teamChatId) || 0;
+                          const isSelected = selectedMember === teamChatId;
+                          return (
+                            <button
+                              key={`team-${teamId}`}
+                              onClick={() => {
+                                setSelectedMember(teamChatId);
+                                setMemberSearchQuery("");
+                              }}
+                              className={cn(
+                                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : teamUnreadCount > 0
+                                  ? "bg-primary/10 hover:bg-primary/20"
+                                  : "hover:bg-muted"
+                              )}
+                            >
+                              <Users className="h-4 w-4 flex-shrink-0" />
+                              <span className={cn(
+                                "flex-1 text-left truncate",
+                                teamUnreadCount > 0 && !isSelected && "font-semibold"
+                              )}>{team.name}</span>
+                            </button>
+                          );
+                        })}
+                      </>
                     ) : (
                       <div className="px-2 py-1.5 text-xs text-muted-foreground">
                         No channels
@@ -2133,14 +2382,14 @@ export function Chatbot() {
                 </div>
 
                 {/* Team Members Section */}
-                {(filteredProjects.length > 0 || filteredTeamMembers.length > 0) && (
+                {(filteredProjects.length > 0 || filteredTeams.length > 0 || filteredTeamMembers.length > 0) && (
                   <Separator className="my-2" />
                 )}
 
-                {/* Team Members Section */}
+                {/* Users Section */}
                 <div className="px-2 py-1.5">
                   <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
-                    Team Members
+                    Direct Messages
                   </div>
                   <div className="space-y-1">
                     {filteredTeamMembers.length > 0 ? (
@@ -2180,7 +2429,7 @@ export function Chatbot() {
                       })
                     ) : (
                       <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                        No team members
+                        No users found
                       </div>
                     )}
                   </div>
@@ -2197,12 +2446,14 @@ export function Chatbot() {
                 <Avatar className="h-8 w-8 flex-shrink-0">
                   <AvatarFallback className={cn(
                     "text-primary-foreground",
-                    selectedMember === "ai-assistant" ? "bg-primary" : isProjectChannel ? "bg-primary/10" : "bg-muted"
+                    selectedMember === "ai-assistant" ? "bg-primary" : (isProjectChannel || isTeamChannel) ? "bg-primary/10" : "bg-muted"
                   )}>
                     {selectedMember === "ai-assistant" ? (
                       <Bot className="h-4 w-4" />
                     ) : isProjectChannel ? (
                       <Hash className="h-4 w-4 text-primary" />
+                    ) : isTeamChannel ? (
+                      <Users className="h-4 w-4 text-primary" />
                     ) : (
                       <span className="text-xs">{currentMember.avatar}</span>
                     )}
@@ -2211,7 +2462,7 @@ export function Chatbot() {
                 <div className="flex flex-col min-w-0">
                   <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
                   <p className="text-xs text-muted-foreground">
-                    {selectedMember === "ai-assistant" ? "AI Assistant" : isProjectChannel ? "Project Channel" : "Direct Message"}
+                    {selectedMember === "ai-assistant" ? "AI Assistant" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
                   </p>
                 </div>
               </div>
@@ -2312,6 +2563,101 @@ export function Chatbot() {
             </div>
           )}
 
+          {/* Team Channel Messages */}
+          {!isLoadingMessages && isTeamChannel && !isSearching && selectedTeamId && (
+            <>
+              {(() => {
+                const teamMessages = channelMessages.get(selectedTeamId) || [];
+                if (teamMessages.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                      <Users className="h-12 w-12 text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-semibold mb-2">{selectedTeam?.name} Channel</h3>
+                      <p className="text-sm text-muted-foreground max-w-sm">
+                        Start a conversation with your team. Your messages will be visible to all team members.
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-4">
+                    {teamMessages.map((message) => {
+                      // Determine if message is from current user
+                      const isSent = message.userId?.toLowerCase() === user?.email?.toLowerCase();
+                      
+                      return (
+                        <div
+                          key={message.id}
+                          className={cn(
+                            "flex gap-3",
+                            isSent ? "justify-end" : "justify-start"
+                          )}
+                        >
+                          {/* Avatar for received messages (other users) */}
+                          {!isSent && (
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                {message.memberAvatar}
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
+                          
+                          {/* Message bubble */}
+                          <div className="flex flex-col min-w-0 max-w-[80%]">
+                            {!isSent && (
+                              <div className="flex items-center gap-2 mb-1 px-1">
+                                <p className="font-medium text-sm">{message.memberName}</p>
+                                <span className="text-xs text-muted-foreground">
+                                  {message.timestamp.toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                            )}
+                            <div
+                              className={cn(
+                                "rounded-lg px-4 py-2",
+                                isSent
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted-foreground/10 border border-border"
+                              )}
+                            >
+                              <p className={cn(
+                                "text-sm whitespace-pre-wrap",
+                                isSent ? "text-primary-foreground" : "text-foreground"
+                              )}>
+                                {message.content}
+                              </p>
+                              <p className={cn(
+                                "text-xs mt-1",
+                                isSent ? "opacity-80" : "opacity-60"
+                              )}>
+                                {message.timestamp.toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                          
+                          {/* Avatar for sent messages (current user) */}
+                          {isSent && (
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-primary text-primary-foreground">
+                                {message.memberAvatar}
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </>
+          )}
+
           {/* Project Channel Messages */}
           {!isLoadingMessages && isProjectChannel && !isSearching && selectedProjectId && (
             <>
@@ -2408,7 +2754,7 @@ export function Chatbot() {
           )}
 
           {/* Regular Messages (AI Assistant or Team Members) */}
-          {!isLoadingMessages && !isProjectChannel && messages.map((message) => {
+          {!isLoadingMessages && !isProjectChannel && !isTeamChannel && messages.map((message) => {
             // Determine if message is from current user (sent) or other user (received)
             const isSent = message.role === "assistant" 
               ? false // Assistant messages are always received
@@ -2482,7 +2828,7 @@ export function Chatbot() {
               </div>
             );
           })}
-          {!isLoadingMessages && isLoading && !isProjectChannel && (
+          {!isLoadingMessages && isLoading && !isProjectChannel && !isTeamChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
                 <AvatarFallback className="bg-primary text-primary-foreground">
