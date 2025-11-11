@@ -32,3 +32,14 @@ export interface TeamJoinRequest {
   ownerEmail: string;
 }
 
+export interface TeamInvitation {
+  id: string;
+  teamName: string;
+  teamDescription?: string;
+  inviteeEmail: string;
+  inviterEmail: string;
+  inviterName: string;
+  status: 'pending' | 'accepted' | 'declined';
+  createdAt: string | Date;
+}
+

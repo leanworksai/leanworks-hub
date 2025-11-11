@@ -23,8 +23,8 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
-import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest } from "@/hooks/useTeams";
-import type { TeamJoinRequest } from "@/data/teamsData";
+import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation } from "@/hooks/useTeams";
+import type { TeamJoinRequest, TeamInvitation } from "@/data/teamsData";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -47,8 +47,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
   const { isSelectionMode, toggleSelectionMode } = useSelectionMode();
   const { data: joinRequests = [], isLoading: isLoadingRequests } = useJoinRequests();
+  const { data: invitations = [], isLoading: isLoadingInvitations } = useInvitations();
   const approveRequestMutation = useApproveJoinRequest();
   const rejectRequestMutation = useRejectJoinRequest();
+  const acceptInvitationMutation = useAcceptInvitation();
+  const declineInvitationMutation = useDeclineInvitation();
 
   // Filter requests where current user is the owner (can manage)
   const manageableRequests = joinRequests.filter(
@@ -57,8 +60,15 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
       request.status === 'pending'
   );
 
-  // Get pending requests count
+  // Filter invitations for the current user
+  const userInvitations = invitations.filter(
+    (invitation: TeamInvitation) => invitation.status === 'pending'
+  );
+
+  // Get total pending notifications count
   const pendingRequestsCount = manageableRequests.length;
+  const pendingInvitationsCount = userInvitations.length;
+  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount;
 
   useEffect(() => {
     setMounted(true);
@@ -159,6 +169,27 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     }
   };
 
+  // Handle accept invitation
+  const handleAcceptInvitation = async (invitationId: string) => {
+    try {
+      await acceptInvitationMutation.mutateAsync(invitationId);
+      toast.success('Invitation accepted! You are now a member of the team.');
+      navigate('/teams');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to accept invitation');
+    }
+  };
+
+  // Handle decline invitation
+  const handleDeclineInvitation = async (invitationId: string) => {
+    try {
+      await declineInvitationMutation.mutateAsync(invitationId);
+      toast.success('Invitation declined');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to decline invitation');
+    }
+  };
+
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full">
@@ -212,9 +243,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="relative">
                       <Bell className="h-5 w-5" />
-                      {pendingRequestsCount > 0 && (
+                      {totalNotificationsCount > 0 && (
                         <span className="absolute top-1 right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground text-xs flex items-center justify-center font-medium">
-                          {pendingRequestsCount > 9 ? '9+' : pendingRequestsCount}
+                          {totalNotificationsCount > 9 ? '9+' : totalNotificationsCount}
                         </span>
                       )}
                     </Button>
@@ -222,24 +253,85 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   <DropdownMenuContent className="w-80" align="end" forceMount>
                     <DropdownMenuLabel className="flex items-center justify-between">
                       <span>Notifications</span>
-                      {pendingRequestsCount > 0 && (
+                      {totalNotificationsCount > 0 && (
                         <Badge variant="secondary" className="text-xs">
-                          {pendingRequestsCount} pending
+                          {totalNotificationsCount} pending
                         </Badge>
                       )}
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    {isLoadingRequests ? (
+                    {isLoadingRequests || isLoadingInvitations ? (
                       <div className="p-4 text-center text-sm text-muted-foreground">
                         Loading notifications...
                       </div>
-                    ) : manageableRequests.length === 0 ? (
+                    ) : totalNotificationsCount === 0 ? (
                       <div className="p-6 text-center">
                         <Bell className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                        <p className="text-sm text-muted-foreground">No pending requests</p>
+                        <p className="text-sm text-muted-foreground">No pending notifications</p>
                       </div>
                     ) : (
                       <div className="max-h-96 overflow-y-auto">
+                        {/* Team Invitations */}
+                        {userInvitations.map((invitation: TeamInvitation) => (
+                          <div
+                            key={invitation.id}
+                            className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"
+                          >
+                            <div className="flex items-start gap-3 mb-3">
+                              <Avatar className="h-10 w-10 flex-shrink-0">
+                                <AvatarFallback className="bg-primary text-primary-foreground text-xs">
+                                  {getUserInitials(invitation.inviterName, invitation.inviterEmail)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className="font-semibold text-sm truncate">{invitation.inviterName}</p>
+                                  <Badge variant="outline" className="text-xs flex-shrink-0">
+                                    <Clock className="mr-1 h-3 w-3" />
+                                    Invitation
+                                  </Badge>
+                                </div>
+                                <p className="text-xs text-muted-foreground truncate mb-1">
+                                  {invitation.inviterEmail}
+                                </p>
+                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  <Users className="h-3 w-3 flex-shrink-0" />
+                                  <span className="truncate">
+                                    Invited you to join <span className="font-medium text-foreground">{invitation.teamName}</span>
+                                  </span>
+                                </div>
+                                {invitation.createdAt && (
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {formatDate(invitation.createdAt)}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => handleDeclineInvitation(invitation.id)}
+                                disabled={declineInvitationMutation.isPending}
+                              >
+                                <X className="mr-2 h-3 w-3" />
+                                Decline
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="flex-1 bg-primary hover:bg-primary/90"
+                                onClick={() => handleAcceptInvitation(invitation.id)}
+                                disabled={acceptInvitationMutation.isPending}
+                              >
+                                <Check className="mr-2 h-3 w-3" />
+                                Accept
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                        
+                        {/* Join Requests (for team owners) */}
                         {manageableRequests.map((request: TeamJoinRequest) => (
                           <div
                             key={request.id}
@@ -256,7 +348,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                                   <p className="font-semibold text-sm truncate">{request.userName}</p>
                                   <Badge variant="outline" className="text-xs flex-shrink-0">
                                     <Clock className="mr-1 h-3 w-3" />
-                                    Pending
+                                    Request
                                   </Badge>
                                 </div>
                                 <p className="text-xs text-muted-foreground truncate mb-1">

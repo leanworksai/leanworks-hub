@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
-import { teamsService, teamJoinRequestsService } from '@/services/firestore';
-import type { Team, TeamDetailData, TeamJoinRequest } from '@/data/teamsData';
+import { teamsService, teamJoinRequestsService, teamInvitationsService } from '@/services/firestore';
+import type { Team, TeamDetailData, TeamJoinRequest, TeamInvitation } from '@/data/teamsData';
 import { useAuth } from '@/contexts/AuthContext';
 
 export const useTeams = () => {
@@ -205,6 +205,56 @@ export const useLeaveTeam = () => {
     onSuccess: (_, teamName) => {
       queryClient.invalidateQueries({ queryKey: ['teams'] });
       queryClient.invalidateQueries({ queryKey: ['teams', teamName] });
+    },
+  });
+};
+
+// Team invitation hooks
+export const useInvitations = () => {
+  const { user, loading } = useAuth();
+  
+  return useQuery({
+    queryKey: ['teamInvitations'],
+    queryFn: () => teamInvitationsService.getInvitations(),
+    enabled: !loading && !!user, // Only fetch when user is authenticated
+    staleTime: 0, // Always consider data stale to allow immediate refetches
+    refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
+    refetchOnWindowFocus: true, // Refetch when user returns to the tab
+    refetchOnMount: true, // Always refetch when component mounts
+  });
+};
+
+export const useInviteTeamMember = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: ({ teamName, inviteeEmail }: { teamName: string; inviteeEmail: string }) =>
+      teamInvitationsService.inviteMember(teamName, inviteeEmail),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['teamInvitations'] });
+    },
+  });
+};
+
+export const useAcceptInvitation = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (invitationId: string) => teamInvitationsService.acceptInvitation(invitationId),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['teamInvitations'] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+    },
+  });
+};
+
+export const useDeclineInvitation = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (invitationId: string) => teamInvitationsService.declineInvitation(invitationId),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['teamInvitations'] });
     },
   });
 };

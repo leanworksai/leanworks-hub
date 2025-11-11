@@ -301,6 +301,56 @@ export const teamJoinRequestsService = {
   },
 };
 
+// Team Invitations Service
+export const teamInvitationsService = {
+  async inviteMember(teamName: string, inviteeEmail: string): Promise<void> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}/invitations`
+      : `${API_BASE}/teams/${encodeURIComponent(teamName)}/invitations`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ inviteeEmail }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to send invitation' }));
+      throw new Error(error.error || 'Failed to send invitation');
+    }
+  },
+
+  async getInvitations(): Promise<any[]> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/invitations` : `${API_BASE}/teams/invitations`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch invitations');
+    return response.json();
+  },
+
+  async acceptInvitation(invitationId: string): Promise<void> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/teams/invitations/${invitationId}/accept`
+      : `${API_BASE}/teams/invitations/${invitationId}/accept`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to accept invitation' }));
+      throw new Error(error.error || 'Failed to accept invitation');
+    }
+  },
+
+  async declineInvitation(invitationId: string): Promise<void> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/teams/invitations/${invitationId}/decline`
+      : `${API_BASE}/teams/invitations/${invitationId}/decline`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to decline invitation' }));
+      throw new Error(error.error || 'Failed to decline invitation');
+    }
+  },
+};
+
 // Integrations Service
 export interface Integration {
   id: string;
@@ -372,8 +422,11 @@ export type MessageListener = (messages: ChatMessage[]) => void;
 export type Unsubscribe = () => void;
 
 export const messagesService = {
-  async getByChatId(chatId: string): Promise<ChatMessage[]> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/messages/${encodeURIComponent(chatId)}` : `${API_BASE}/messages/${encodeURIComponent(chatId)}`;
+  async getByChatId(chatId: string, afterTimestamp?: Date): Promise<ChatMessage[]> {
+    let url = import.meta.env.DEV ? `${API_BASE}/api/messages/${encodeURIComponent(chatId)}` : `${API_BASE}/messages/${encodeURIComponent(chatId)}`;
+    if (afterTimestamp) {
+      url += `?afterTimestamp=${afterTimestamp.toISOString()}`;
+    }
     const response = await authenticatedFetch(url);
     if (!response.ok) throw new Error('Failed to fetch messages');
     const messages = await response.json();

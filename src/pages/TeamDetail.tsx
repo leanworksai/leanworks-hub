@@ -30,7 +30,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useTeam, useRemoveTeamMember, useLeaveTeam, useUpdateTeamDetail, useUpdateTeam } from "@/hooks/useTeams";
+import { useTeam, useRemoveTeamMember, useLeaveTeam, useInviteTeamMember } from "@/hooks/useTeams";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
 import { useEffect, useState, useMemo } from "react";
@@ -46,8 +46,7 @@ export default function TeamDetail() {
   const { data: team, isLoading } = useTeam(teamName || '');
   const removeMemberMutation = useRemoveTeamMember();
   const leaveTeamMutation = useLeaveTeam();
-  const updateTeamDetailMutation = useUpdateTeamDetail();
-  const updateTeamMutation = useUpdateTeam();
+  const inviteMemberMutation = useInviteTeamMember();
 
   const [removeMemberDialog, setRemoveMemberDialog] = useState<{ open: boolean; memberEmail: string; memberName: string }>({
     open: false,
@@ -165,45 +164,27 @@ export default function TeamDetail() {
     setSelectedUserEmails(newSelected);
   };
 
-  // Handle add members
-  const handleAddMembers = async () => {
+  // Handle invite members
+  const handleInviteMembers = async () => {
     if (!teamName || !team || selectedUserEmails.size === 0) return;
 
     try {
       // Get selected users
       const selectedUsers = users.filter(u => selectedUserEmails.has(u.email));
       
-      // Create new members from selected users
-      const newMembers = selectedUsers.map(user => {
-        const firstName = user.firstName || '';
-        const lastName = user.lastName || '';
-        const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || user.email.charAt(0).toUpperCase();
-        return {
-          name: `${firstName} ${lastName}`.trim() || user.email,
-          role: user.jobTitle || 'Member',
-          email: user.email,
-          avatar: initials,
-        };
-      });
+      // Send invitations to all selected users
+      const invitationPromises = selectedUsers.map(user => 
+        inviteMemberMutation.mutateAsync({
+          teamName,
+          inviteeEmail: user.email,
+        })
+      );
 
-      // Combine with existing members
-      const updatedMembers = [...(team.members || []), ...newMembers];
-
-      // Update team detail
-      await updateTeamDetailMutation.mutateAsync({
-        teamName,
-        updates: { members: updatedMembers },
-      });
-
-      // Update team member count
-      await updateTeamMutation.mutateAsync({
-        teamName,
-        updates: { members: updatedMembers.length },
-      });
+      await Promise.all(invitationPromises);
 
       toast({
-        title: "Members added",
-        description: `Successfully added ${newMembers.length} member(s) to the team.`,
+        title: "Invitations sent",
+        description: `Successfully sent ${selectedUsers.length} invitation(s). Users will receive notifications.`,
       });
 
       // Reset and close dialog
@@ -213,7 +194,7 @@ export default function TeamDetail() {
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.message || "Failed to add members",
+        description: error.message || "Failed to send invitations",
         variant: "destructive",
       });
     }
@@ -292,7 +273,7 @@ export default function TeamDetail() {
               onClick={() => setAddMemberDialog(true)}
             >
               <UserPlus className="mr-2 h-4 w-4" />
-              Add Member
+              Invite Member
             </Button>
           )}
           {!isUserOwner && isUserMember && (
@@ -418,13 +399,13 @@ export default function TeamDetail() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Add Member Dialog */}
+      {/* Invite Member Dialog */}
       <Dialog open={addMemberDialog} onOpenChange={setAddMemberDialog}>
         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>Add Members</DialogTitle>
+            <DialogTitle>Invite Members</DialogTitle>
             <DialogDescription>
-              Select users from your domain to add to the team. Users who are already members are not shown.
+              Select users from your domain to invite to the team. Invitations will be sent through notifications. Users who are already members are not shown.
             </DialogDescription>
           </DialogHeader>
           
@@ -498,16 +479,16 @@ export default function TeamDetail() {
             <Button
               variant="outline"
               onClick={() => setAddMemberDialog(false)}
-              disabled={updateTeamDetailMutation.isPending}
+              disabled={inviteMemberMutation.isPending}
             >
               Cancel
             </Button>
             <Button
-              onClick={handleAddMembers}
-              disabled={selectedUserEmails.size === 0 || updateTeamDetailMutation.isPending}
+              onClick={handleInviteMembers}
+              disabled={selectedUserEmails.size === 0 || inviteMemberMutation.isPending}
               className="bg-primary hover:bg-primary/90"
             >
-              {updateTeamDetailMutation.isPending ? "Adding..." : `Add ${selectedUserEmails.size > 0 ? `${selectedUserEmails.size} ` : ''}Member${selectedUserEmails.size !== 1 ? 's' : ''}`}
+              {inviteMemberMutation.isPending ? "Sending..." : `Send ${selectedUserEmails.size > 0 ? `${selectedUserEmails.size} ` : ''}Invitation${selectedUserEmails.size !== 1 ? 's' : ''}`}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -698,6 +698,54 @@ app.get('/api/teams/join-requests', authenticateUser, async (req, res) => {
   }
 });
 
+// Get invitations for the current user
+app.get('/api/teams/invitations', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const invitationsPath = getCollectionPath('teamInvitations', domain);
+    
+    // Get all pending invitations for this user
+    let snapshot;
+    try {
+      snapshot = await db.collection(invitationsPath)
+        .where('inviteeEmail', '==', userEmail.toLowerCase())
+        .where('status', '==', 'pending')
+        .orderBy('createdAt', 'desc')
+        .get();
+    } catch (error: any) {
+      // If index error, fetch without orderBy and sort in memory
+      if (error.code === 9 || error.message?.includes('index')) {
+        snapshot = await db.collection(invitationsPath)
+          .where('inviteeEmail', '==', userEmail.toLowerCase())
+          .where('status', '==', 'pending')
+          .get();
+        // Sort in memory
+        const docs = snapshot.docs.sort((a, b) => {
+          const aTime = a.data().createdAt?.toDate?.()?.getTime() || 0;
+          const bTime = b.data().createdAt?.toDate?.()?.getTime() || 0;
+          return bTime - aTime; // Descending
+        });
+        // Create a new QuerySnapshot-like object
+        snapshot = { docs, empty: docs.length === 0 };
+      } else {
+        throw error;
+      }
+    }
+    
+    const invitations = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      createdAt: doc.data().createdAt?.toDate ? doc.data().createdAt.toDate().toISOString() : doc.data().createdAt,
+    }));
+    
+    res.json(invitations);
+  } catch (error) {
+    console.error('Get invitations error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch invitations' });
+  }
+});
+
 app.get('/api/teams/:name', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
@@ -903,6 +951,229 @@ app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, async (
   } catch (error) {
     console.error('Reject join request error:', error);
     res.status(500).json({ error: (error as Error).message || 'Failed to reject join request' });
+  }
+});
+
+// Team Invitation endpoints
+// Create team invitation (owner only)
+app.post('/api/teams/:teamName/invitations', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const teamName = req.params.teamName;
+    const { inviteeEmail } = req.body;
+    
+    if (!inviteeEmail) {
+      return res.status(400).json({ error: 'Invitee email is required' });
+    }
+    
+    // Get team details to verify ownership
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    
+    if (!teamDetailDoc.exists) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const teamDetail = teamDetailDoc.data();
+    if (!teamDetail) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    // Verify the user is the owner
+    if (teamDetail.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the team owner can send invitations' });
+    }
+    
+    // Check if user is already a member
+    const isMember = teamDetail.members?.some(
+      (member: any) => member.email?.toLowerCase() === inviteeEmail.toLowerCase()
+    );
+    
+    if (isMember) {
+      return res.status(400).json({ error: 'User is already a member of this team' });
+    }
+    
+    // Check if there's already a pending invitation
+    const invitationsPath = getCollectionPath('teamInvitations', domain);
+    const existingInvitations = await db.collection(invitationsPath)
+      .where('teamName', '==', teamName)
+      .where('inviteeEmail', '==', inviteeEmail.toLowerCase())
+      .where('status', '==', 'pending')
+      .get();
+    
+    if (!existingInvitations.empty) {
+      return res.status(400).json({ error: 'An invitation has already been sent to this user' });
+    }
+    
+    // Get owner info for the invitation
+    const usersCollectionPath = getCollectionPath('users', domain);
+    const ownerDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
+    const ownerData = ownerDoc.data();
+    const ownerName = ownerData 
+      ? `${ownerData.firstName || ''} ${ownerData.lastName || ''}`.trim() || userEmail
+      : userEmail;
+    
+    // Create invitation
+    const invitationData = {
+      teamName,
+      teamDescription: teamDetail.description || '',
+      inviteeEmail: inviteeEmail.toLowerCase(),
+      inviterEmail: userEmail.toLowerCase(),
+      inviterName: ownerName,
+      status: 'pending',
+      createdAt: new Date(),
+    };
+    
+    const invitationRef = await db.collection(invitationsPath).add(invitationData);
+    
+    res.json({ 
+      success: true, 
+      invitationId: invitationRef.id,
+      message: 'Invitation sent successfully'
+    });
+  } catch (error) {
+    console.error('Create invitation error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to create invitation' });
+  }
+});
+
+// Accept team invitation
+app.post('/api/teams/invitations/:invitationId/accept', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const invitationId = req.params.invitationId;
+    const invitationsPath = getCollectionPath('teamInvitations', domain);
+    
+    // Get the invitation
+    const invitationDoc = await db.collection(invitationsPath).doc(invitationId).get();
+    if (!invitationDoc.exists) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+    
+    const invitationData = invitationDoc.data();
+    if (!invitationData) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+    
+    // Verify the invitation is for the current user
+    if (invitationData.inviteeEmail?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'This invitation is not for you' });
+    }
+    
+    // Check if already processed
+    if (invitationData.status !== 'pending') {
+      return res.status(400).json({ error: 'This invitation has already been processed' });
+    }
+    
+    // Get user info to add to team
+    const usersCollectionPath = getCollectionPath('users', domain);
+    const userDoc = await db.collection(usersCollectionPath).doc(userEmail).get();
+    const userData = userDoc.data();
+    
+    if (!userData) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Add user to team
+    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(invitationData.teamName).get();
+    
+    if (!teamDetailDoc.exists) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const teamDetail = teamDetailDoc.data();
+    if (!teamDetail) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    // Check if user is already a member
+    const isAlreadyMember = teamDetail.members?.some(
+      (member: any) => member.email?.toLowerCase() === userEmail.toLowerCase()
+    );
+    
+    if (isAlreadyMember) {
+      // Just mark invitation as accepted
+      await db.collection(invitationsPath).doc(invitationId).update({ status: 'accepted' });
+      return res.json({ success: true, message: 'User is already a member' });
+    }
+    
+    // Add new member
+    const firstName = userData.firstName || '';
+    const lastName = userData.lastName || '';
+    const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || userEmail.charAt(0).toUpperCase();
+    
+    const newMember = {
+      name: `${firstName} ${lastName}`.trim() || userEmail,
+      role: userData.jobTitle || 'Member',
+      email: userEmail,
+      avatar: initials,
+    };
+    
+    const updatedMembers = [...(teamDetail.members || []), newMember];
+    
+    // Update team detail
+    await db.collection(teamDetailsPath).doc(invitationData.teamName).update({
+      members: updatedMembers,
+    });
+    
+    // Update team member count
+    const teamsPath = getCollectionPath('teams', domain);
+    const teamDoc = await db.collection(teamsPath).doc(invitationData.teamName).get();
+    if (teamDoc.exists) {
+      await db.collection(teamsPath).doc(invitationData.teamName).update({
+        members: updatedMembers.length,
+      });
+    }
+    
+    // Update invitation status
+    await db.collection(invitationsPath).doc(invitationId).update({ status: 'accepted' });
+    
+    res.json({ success: true, message: 'Invitation accepted successfully' });
+  } catch (error) {
+    console.error('Accept invitation error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to accept invitation' });
+  }
+});
+
+// Decline team invitation
+app.post('/api/teams/invitations/:invitationId/decline', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user.email;
+    const invitationId = req.params.invitationId;
+    const invitationsPath = getCollectionPath('teamInvitations', domain);
+    
+    // Get the invitation
+    const invitationDoc = await db.collection(invitationsPath).doc(invitationId).get();
+    if (!invitationDoc.exists) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+    
+    const invitationData = invitationDoc.data();
+    if (!invitationData) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+    
+    // Verify the invitation is for the current user
+    if (invitationData.inviteeEmail?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'This invitation is not for you' });
+    }
+    
+    // Check if already processed
+    if (invitationData.status !== 'pending') {
+      return res.status(400).json({ error: 'This invitation has already been processed' });
+    }
+    
+    // Update invitation status
+    await db.collection(invitationsPath).doc(invitationId).update({ status: 'declined' });
+    
+    res.json({ success: true, message: 'Invitation declined' });
+  } catch (error) {
+    console.error('Decline invitation error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to decline invitation' });
   }
 });
 
@@ -1392,28 +1663,49 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const chatId = req.params.chatId;
+    const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : null;
     const collectionPath = getCollectionPath('messages', domain);
     
     // Query messages for this chat, ordered by timestamp
+    // If afterTimestamp is provided, only fetch messages after that timestamp
     // If index doesn't exist, fetch without orderBy and sort in memory
     let snapshot;
     try {
-      snapshot = await db.collection(collectionPath)
-        .where('chatId', '==', chatId)
-        .orderBy('timestamp', 'asc')
-        .get();
+      if (afterTimestamp) {
+        // Fetch only messages after the specified timestamp
+        snapshot = await db.collection(collectionPath)
+          .where('chatId', '==', chatId)
+          .where('timestamp', '>', afterTimestamp)
+          .orderBy('timestamp', 'asc')
+          .get();
+      } else {
+        // Fetch all messages
+        snapshot = await db.collection(collectionPath)
+          .where('chatId', '==', chatId)
+          .orderBy('timestamp', 'asc')
+          .get();
+      }
     } catch (error: any) {
       // If index error, fetch without orderBy and sort in memory
       if (error.code === 9 || error.message?.includes('index')) {
         snapshot = await db.collection(collectionPath)
           .where('chatId', '==', chatId)
           .get();
-        // Sort in memory
-        const docs = snapshot.docs.sort((a, b) => {
+        // Sort in memory and filter by timestamp if needed
+        let docs = snapshot.docs.sort((a, b) => {
           const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
           const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
           return aTime - bTime; // Ascending
         });
+        
+        // Filter by timestamp if afterTimestamp is provided
+        if (afterTimestamp) {
+          docs = docs.filter(doc => {
+            const docTime = doc.data().timestamp?.toDate?.()?.getTime() || 0;
+            return docTime > afterTimestamp.getTime();
+          });
+        }
+        
         // Create a new QuerySnapshot-like object
         snapshot = { docs, empty: docs.length === 0 };
       } else {

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,7 +16,7 @@ import { Project } from "@/data/projectsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useQueries } from "@tanstack/react-query";
-import { teamsService, messagesService } from "@/services/firestore";
+import { teamsService, messagesService, type ChatMessage } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 
 interface Message {
@@ -100,7 +100,30 @@ export function Chatbot() {
   const { data: userTeams = [] } = useUserTeams();
   const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedMember, setSelectedMember] = useState<string>("ai-assistant");
+  
+  // Load last selected member from localStorage
+  const getLastSelectedMember = useCallback((): string => {
+    if (!user?.email) return "ai-assistant";
+    try {
+      const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+      const stored = localStorage.getItem(storageKey);
+      return stored || "ai-assistant";
+    } catch (error) {
+      console.error('Failed to load last selected member:', error);
+      return "ai-assistant";
+    }
+  }, [user?.email]);
+  
+  const [selectedMember, setSelectedMember] = useState<string>(() => {
+    if (!user?.email) return "ai-assistant";
+    try {
+      const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+      const stored = localStorage.getItem(storageKey);
+      return stored || "ai-assistant";
+    } catch (error) {
+      return "ai-assistant";
+    }
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [channelMessages, setChannelMessages] = useState<Map<string, ChannelMessage[]>>(new Map());
   const [input, setInput] = useState("");
@@ -115,6 +138,152 @@ export function Chatbot() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
+
+  // Helper functions for message caching
+  const getCacheKey = (chatId: string) => {
+    if (!user?.email) return null;
+    return `chat_messages_${user.email.toLowerCase()}_${chatId}`;
+  };
+
+  const loadCachedMessages = (chatId: string): { messages: ChatMessage[], lastSync: number } | null => {
+    const cacheKey = getCacheKey(chatId);
+    if (!cacheKey) return null;
+    
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed.messages && Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+          return {
+            messages: parsed.messages.map((msg: any) => ({
+              ...msg,
+              timestamp: new Date(msg.timestamp),
+            })),
+            lastSync: parsed.lastSync || 0,
+          };
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load cached messages:', error);
+    }
+    return null;
+  };
+
+  // Check if cache is stale (older than 30 seconds)
+  const isCacheStale = (lastSync: number): boolean => {
+    const CACHE_STALE_TIME = 30 * 1000; // 30 seconds
+    return Date.now() - lastSync > CACHE_STALE_TIME;
+  };
+
+  const saveCachedMessages = (chatId: string, messages: ChatMessage[]) => {
+    const cacheKey = getCacheKey(chatId);
+    if (!cacheKey) return;
+    
+    try {
+      const toCache = {
+        messages: messages.map(msg => ({
+          ...msg,
+          timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
+        })),
+        lastSync: Date.now(),
+      };
+      localStorage.setItem(cacheKey, JSON.stringify(toCache));
+    } catch (error) {
+      console.error('Failed to save cached messages:', error);
+      // If storage is full, try to clear old caches
+      try {
+        clearOldMessageCaches();
+        localStorage.setItem(cacheKey, JSON.stringify({
+          messages: messages.slice(-100).map(msg => ({
+            ...msg,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
+          })),
+          lastSync: Date.now(),
+        }));
+      } catch (e) {
+        console.error('Failed to save even after clearing old caches:', e);
+      }
+    }
+  };
+
+  const clearOldMessageCaches = () => {
+    if (!user?.email) return;
+    const prefix = `chat_messages_${user.email.toLowerCase()}_`;
+    const keysToRemove: string[] = [];
+    
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key?.startsWith(prefix)) {
+          keysToRemove.push(key);
+        }
+      }
+      // Keep only the most recent 20 chat caches
+      if (keysToRemove.length > 20) {
+        const cacheData = keysToRemove.map(key => ({
+          key,
+          lastSync: JSON.parse(localStorage.getItem(key) || '{}').lastSync || 0,
+        }));
+        cacheData.sort((a, b) => b.lastSync - a.lastSync);
+        const toRemove = cacheData.slice(20);
+        toRemove.forEach(({ key }) => localStorage.removeItem(key));
+      }
+    } catch (error) {
+      console.error('Failed to clear old message caches:', error);
+    }
+  };
+
+  // Load lastReadTimestamps from localStorage on mount or when user changes
+  useEffect(() => {
+    if (!user?.email) return;
+    
+    try {
+      const storageKey = `chat_lastReadTimestamps_${user.email.toLowerCase()}`;
+      const stored = localStorage.getItem(storageKey);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        const timestampsMap = new Map<string, number>();
+        Object.entries(parsed).forEach(([chatId, timestamp]) => {
+          timestampsMap.set(chatId, timestamp as number);
+        });
+        setLastReadTimestamps(timestampsMap);
+      }
+    } catch (error) {
+      console.error('Failed to load lastReadTimestamps from localStorage:', error);
+    }
+  }, [user?.email]);
+
+  // Save lastReadTimestamps to localStorage whenever it changes
+  useEffect(() => {
+    if (!user?.email) return;
+    
+    try {
+      const storageKey = `chat_lastReadTimestamps_${user.email.toLowerCase()}`;
+      const serialized = Object.fromEntries(lastReadTimestamps);
+      localStorage.setItem(storageKey, JSON.stringify(serialized));
+    } catch (error) {
+      console.error('Failed to save lastReadTimestamps to localStorage:', error);
+    }
+  }, [lastReadTimestamps, user?.email]);
+
+  // Save last selected member to localStorage whenever it changes
+  useEffect(() => {
+    if (!user?.email || !isOpen) return;
+    
+    try {
+      const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+      localStorage.setItem(storageKey, selectedMember);
+    } catch (error) {
+      console.error('Failed to save last selected member to localStorage:', error);
+    }
+  }, [selectedMember, user?.email, isOpen]);
+
+  // Restore last selected member when user changes
+  useEffect(() => {
+    if (!user?.email) return;
+    const lastMember = getLastSelectedMember();
+    setSelectedMember(lastMember);
+  }, [user?.email, getLastSelectedMember]);
 
   // Fetch team details for all user teams
   const teamDetailsQueries = useQueries({
@@ -291,6 +460,223 @@ export function Chatbot() {
     }
   }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isSearching]);
 
+  // Calculate unread counts for all chats when chatbot opens or when user/projects/teams change
+  useEffect(() => {
+    if (!user || !user.email) return;
+
+    const calculateUnreadCounts = async () => {
+      const newUnreadCounts = new Map<string, number>();
+      const allChatIds: string[] = [];
+
+      // Add AI assistant chat
+      allChatIds.push("ai-assistant");
+
+      // Add all project channels
+      projects.forEach((project) => {
+        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+        allChatIds.push(`project-${projectId}`);
+      });
+
+      // Add all team member direct message chats
+      allTeamMembers.forEach((member) => {
+        if (member.email) {
+          const chatId = getDirectMessageChatId(user.email, member.email);
+          allChatIds.push(chatId);
+        }
+      });
+
+      // Calculate unread count for each chat
+      await Promise.all(
+        allChatIds.map(async (chatId) => {
+          try {
+            const firestoreMessages = await messagesService.getByChatId(chatId);
+            const lastRead = lastReadTimestamps.get(chatId) || 0;
+
+            const unreadCount = firestoreMessages.filter((msg) => {
+              const msgTime =
+                msg.timestamp instanceof Date
+                  ? msg.timestamp.getTime()
+                  : new Date(msg.timestamp).getTime();
+              const isAfterLastRead = msgTime > lastRead;
+              // For AI assistant, count assistant messages as unread; for others, count messages not from current user
+              const isUnread =
+                chatId === "ai-assistant"
+                  ? msg.role === "assistant" ||
+                    (msg.role === "user" &&
+                      msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
+                  : msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
+              return isAfterLastRead && isUnread;
+            }).length;
+
+            // Store unread count (0 or positive)
+            newUnreadCounts.set(chatId, unreadCount);
+          } catch (error) {
+            console.error(`Failed to calculate unread count for chat ${chatId}:`, error);
+          }
+        })
+      );
+
+      // Update unread counts, but don't overwrite if current chat is open (it should be 0)
+      setUnreadCounts((prev) => {
+        const merged = new Map(prev);
+        newUnreadCounts.forEach((count, chatId) => {
+          // Only update if this chat is not currently open (and chatbot is open)
+          if (isOpen) {
+            let currentChatId: string;
+            if (isProjectChannel && selectedProjectId) {
+              currentChatId = selectedMember;
+            } else if (selectedMember === "ai-assistant") {
+              currentChatId = "ai-assistant";
+            } else {
+              const selectedMemberData = allTeamMembers.find((m) => m.id === selectedMember);
+              if (selectedMemberData?.email) {
+                currentChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+              } else {
+                currentChatId = selectedMember;
+              }
+            }
+            if (chatId !== currentChatId) {
+              if (count > 0) {
+                merged.set(chatId, count);
+              } else {
+                // Remove from map if count is 0
+                merged.delete(chatId);
+              }
+            }
+          } else {
+            // Chatbot is closed, update all unread counts
+            if (count > 0) {
+              merged.set(chatId, count);
+            } else {
+              // Remove from map if count is 0
+              merged.delete(chatId);
+            }
+          }
+        });
+        return merged;
+      });
+    };
+
+    calculateUnreadCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, selectedProjectId, lastReadTimestamps]);
+
+  // Background sync: Fetch new messages for all chats even when chat is closed
+  useEffect(() => {
+    if (!user || !user.email) return;
+
+    const syncAllChats = async () => {
+      const allChatIds: string[] = [];
+
+      // Add AI assistant chat
+      allChatIds.push("ai-assistant");
+
+      // Add all project channels
+      projects.forEach((project) => {
+        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+        allChatIds.push(`project-${projectId}`);
+      });
+
+      // Add all team member direct message chats
+      allTeamMembers.forEach((member) => {
+        if (member.email) {
+          const chatId = getDirectMessageChatId(user.email, member.email);
+          allChatIds.push(chatId);
+        }
+      });
+
+      // Sync each chat in the background
+      await Promise.all(
+        allChatIds.map(async (chatId) => {
+          try {
+            const cached = loadCachedMessages(chatId);
+            const hasCachedMessages = cached && cached.messages.length > 0;
+            const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
+
+            // Only sync if cache is stale or doesn't exist
+            if (!hasCachedMessages || cacheIsStale) {
+              // Get the latest message timestamp from cache to fetch only new messages
+              let afterTimestamp: Date | undefined;
+              if (cached && cached.messages.length > 0) {
+                const latestTimestamp = Math.max(
+                  ...cached.messages.map(msg => 
+                    msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+                  )
+                );
+                afterTimestamp = new Date(latestTimestamp);
+              }
+
+              // Fetch only new messages
+              const newMessages = afterTimestamp 
+                ? await messagesService.getByChatId(chatId, afterTimestamp)
+                : await messagesService.getByChatId(chatId);
+
+              // If we got new messages, merge with cache and save
+              if (newMessages.length > 0 || !hasCachedMessages) {
+                const messageMap = new Map<string, ChatMessage>();
+                if (cached) {
+                  cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+                }
+                newMessages.forEach(msg => messageMap.set(msg.id, msg));
+
+                const allMessages = Array.from(messageMap.values()).sort((a, b) => {
+                  const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+                  const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+                  return aTime - bTime;
+                });
+
+                // Save to cache
+                saveCachedMessages(chatId, allMessages);
+
+                // Update unread counts if chat is not currently open
+                const isCurrentChat = isOpen && (
+                  (isProjectChannel && selectedProjectId && chatId === selectedMember) ||
+                  (!isProjectChannel && selectedMember === chatId)
+                );
+                if (!isCurrentChat) {
+                  const lastRead = lastReadTimestamps.get(chatId) || 0;
+                  const unreadCount = allMessages.filter((msg) => {
+                    const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+                    const isAfterLastRead = msgTime > lastRead;
+                    const isUnread = chatId === "ai-assistant"
+                      ? msg.role === "assistant" || (msg.role === "user" && msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
+                      : msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
+                    return isAfterLastRead && isUnread;
+                  }).length;
+
+                  if (unreadCount > 0) {
+                    setUnreadCounts((prev) => {
+                      const newMap = new Map(prev);
+                      newMap.set(chatId, unreadCount);
+                      return newMap;
+                    });
+                  }
+                }
+              } else if (hasCachedMessages) {
+                // Even if no new messages, update cache timestamp to prevent unnecessary fetches
+                saveCachedMessages(chatId, cached.messages);
+              }
+            }
+          } catch (error) {
+            // Silently fail for background sync - don't spam console
+            console.debug(`Background sync failed for chat ${chatId}:`, error);
+          }
+        })
+      );
+    };
+
+    // Initial sync
+    syncAllChats();
+
+    // Set up periodic sync every 30 seconds
+    const syncInterval = setInterval(syncAllChats, 30000);
+
+    return () => {
+      clearInterval(syncInterval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, lastReadTimestamps]);
+
   // Load messages from Firestore when chat changes
   useEffect(() => {
     if (!user || !isOpen || !user.email) return;
@@ -315,15 +701,101 @@ export function Chatbot() {
       }
     }
 
-    setIsLoadingMessages(true);
+    // Load cached messages first for instant display
+    const cached = loadCachedMessages(chatId);
+    const hasCachedMessages = cached && cached.messages.length > 0;
+    const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
+    
+    // Only show loading if we don't have cached messages
+    if (!hasCachedMessages) {
+      setIsLoadingMessages(true);
+    } else {
+      // Show cached messages immediately without loading state
+      setIsLoadingMessages(false); // Explicitly set loading to false when we have cached messages
+      if (isProjectChannel && selectedProjectId) {
+        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+          .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
+          .map(msg => ({
+            id: msg.id,
+            memberName: msg.memberName || 'You',
+            memberAvatar: msg.memberAvatar || 'U',
+            content: msg.content,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            projectId: msg.projectId || selectedProjectId,
+            userId: msg.userId,
+          }));
+        
+        setChannelMessages((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(selectedProjectId, cachedChannelMsgs);
+          return newMap;
+        });
+      } else {
+        const filteredCached = chatId === "ai-assistant" 
+          ? cached.messages 
+          : cached.messages.filter(msg => msg.role === 'user');
+        
+        const cachedRegularMsgs: Message[] = filteredCached.map(msg => ({
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+          userId: msg.userId,
+        }));
+        
+        if (cachedRegularMsgs.length > 0) {
+          setMessages(cachedRegularMsgs);
+        } else if (chatId === "ai-assistant") {
+          setMessages([
+            {
+              id: "greeting",
+              role: "assistant",
+              content: "Hello! I'm your AI assistant. How can I help you today?",
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      }
+    }
 
-    // Initial load
-    const loadMessages = async () => {
-      try {
-        if (isProjectChannel && selectedProjectId) {
-          // Load project channel messages
-          const firestoreMessages = await messagesService.getByChatId(chatId);
-          const channelMsgs: ChannelMessage[] = firestoreMessages
+    // Only fetch fresh messages from Firestore if cache is stale or doesn't exist
+    // This prevents unnecessary slow requests when we have fresh cached data
+    if (!hasCachedMessages || cacheIsStale) {
+      // Fetch fresh messages from Firestore in the background
+      const loadMessages = async () => {
+        const cachedForError = hasCachedMessages; // Capture for error handling
+        try {
+          // Get the latest message timestamp from cache to fetch only new messages
+          let afterTimestamp: Date | undefined;
+          if (cached && cached.messages.length > 0) {
+            const latestTimestamp = Math.max(
+              ...cached.messages.map(msg => 
+                msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+              )
+            );
+            afterTimestamp = new Date(latestTimestamp);
+          }
+          
+          if (isProjectChannel && selectedProjectId) {
+            // Load only new project channel messages
+            const newMessages = afterTimestamp 
+              ? await messagesService.getByChatId(chatId, afterTimestamp)
+              : await messagesService.getByChatId(chatId);
+            
+            // Merge with cached messages (prefer new messages if there are duplicates)
+            const messageMap = new Map<string, ChatMessage>();
+            if (cached) {
+              cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
+            newMessages.forEach(msg => messageMap.set(msg.id, msg));
+          
+          const allMessages = Array.from(messageMap.values()).sort((a, b) => {
+            const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+            const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+            return aTime - bTime;
+          });
+          
+          const channelMsgs: ChannelMessage[] = allMessages
             .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
             .map(msg => ({
               id: msg.id,
@@ -340,15 +812,54 @@ export function Chatbot() {
             newMap.set(selectedProjectId, channelMsgs);
             return newMap;
           });
+          
+          // Save to cache
+          saveCachedMessages(chatId, allMessages);
+          
+          // Calculate latest message time for read timestamp
+          if (channelMsgs.length > 0) {
+            const latestTime = Math.max(
+              ...channelMsgs.map(msg => 
+                msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+              )
+            );
+            setLastReadTimestamps((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, latestTime);
+              return newMap;
+            });
+          }
+          
+          // Clear unread count for this chat (since we're viewing it)
+          setUnreadCounts((prev) => {
+            const newMap = new Map(prev);
+            newMap.delete(chatId);
+            return newMap;
+          });
         } else {
-          // Load regular messages (AI Assistant or team member)
-          const firestoreMessages = await messagesService.getByChatId(chatId);
+          // Load only new regular messages (AI Assistant or team member)
+          const newMessages = afterTimestamp 
+            ? await messagesService.getByChatId(chatId, afterTimestamp)
+            : await messagesService.getByChatId(chatId);
+          
+          // Merge with cached messages (prefer new messages if there are duplicates)
+          const messageMap = new Map<string, ChatMessage>();
+          if (cached) {
+            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+          }
+          newMessages.forEach(msg => messageMap.set(msg.id, msg));
+          
+          const allMessages = Array.from(messageMap.values()).sort((a, b) => {
+            const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+            const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+            return aTime - bTime;
+          });
           
           // For team member chats, only show user messages (no assistant messages)
           // For AI Assistant, show both user and assistant messages
           const filteredMessages = chatId === "ai-assistant" 
-            ? firestoreMessages 
-            : firestoreMessages.filter(msg => msg.role === 'user');
+            ? allMessages 
+            : allMessages.filter(msg => msg.role === 'user');
           
           const regularMsgs: Message[] = filteredMessages.map(msg => ({
             id: msg.id,
@@ -371,25 +882,35 @@ export function Chatbot() {
           } else {
             setMessages(regularMsgs);
           }
+          
+          // Save to cache
+          saveCachedMessages(chatId, allMessages);
+          
+          // Calculate latest message time for read timestamp
+          if (regularMsgs.length > 0) {
+            const latestTime = Math.max(
+              ...regularMsgs.map(msg => 
+                msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+              )
+            );
+            setLastReadTimestamps((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, latestTime);
+              return newMap;
+            });
+          }
+          
+          // Clear unread count for this chat (since we're viewing it)
+          setUnreadCounts((prev) => {
+            const newMap = new Map(prev);
+            newMap.delete(chatId);
+            return newMap;
+          });
         }
-        
-        // Mark messages as read when opening chat
-        const now = Date.now();
-        setLastReadTimestamps((prev) => {
-          const newMap = new Map(prev);
-          newMap.set(chatId, now);
-          return newMap;
-        });
-        // Clear unread count for this chat (since we're viewing it)
-        setUnreadCounts((prev) => {
-          const newMap = new Map(prev);
-          newMap.set(chatId, 0);
-          return newMap;
-        });
       } catch (error) {
         console.error('Failed to load messages:', error);
-        // On error, show greeting for AI Assistant
-        if (selectedMember === "ai-assistant" && !isProjectChannel) {
+        // On error, show greeting for AI Assistant (only if we don't have cached messages)
+        if (!cachedForError && selectedMember === "ai-assistant" && !isProjectChannel) {
           setMessages([
             {
               id: "greeting",
@@ -400,11 +921,22 @@ export function Chatbot() {
           ]);
         }
       } finally {
+        // Always set loading to false after fetch completes
         setIsLoadingMessages(false);
       }
     };
 
-    loadMessages();
+      // Add timeout to prevent hanging requests
+      const timeoutPromise = new Promise<void>((_, reject) => {
+        setTimeout(() => reject(new Error('Request timeout')), 10000); // 10 second timeout
+      });
+
+      Promise.race([loadMessages(), timeoutPromise]).catch((error) => {
+        console.warn('Message fetch timed out or failed, using cached messages:', error);
+        setIsLoadingMessages(false);
+        // Keep using cached messages if fetch fails
+      });
+    }
   }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen]);
 
   // Set up real-time listener in a separate effect to avoid conflicts
@@ -467,25 +999,49 @@ export function Chatbot() {
           const isCurrentChat = chatId === currentChatId && isOpen;
           
           // Count unread messages (messages after last read timestamp and not from current user)
+          // For AI assistant, also count assistant messages as unread
           const unreadCount = firestoreMessages.filter(msg => {
             const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
             const isAfterLastRead = msgTime > lastRead;
-            const isNotFromCurrentUser = msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
-            return isAfterLastRead && isNotFromCurrentUser;
+            // For AI assistant, count assistant messages as unread; for others, count messages not from current user
+            const isUnread = chatId === "ai-assistant"
+              ? msg.role === 'assistant' || (msg.role === 'user' && msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
+              : msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
+            return isAfterLastRead && isUnread;
           }).length;
           
           // Update unread count (only if not currently viewing this chat)
-          if (!isCurrentChat && unreadCount > 0) {
+          if (!isCurrentChat) {
             setUnreadCounts((prev) => {
               const newMap = new Map(prev);
-              newMap.set(chatId, unreadCount);
+              if (unreadCount > 0) {
+                newMap.set(chatId, unreadCount);
+              } else {
+                // Remove from map if count is 0
+                newMap.delete(chatId);
+              }
               return newMap;
             });
           } else if (isCurrentChat) {
-            // Clear unread count if viewing this chat
+            // If viewing this chat, mark all messages as read and clear unread count
+            const latestMessageTime = firestoreMessages.length > 0
+              ? Math.max(
+                  ...firestoreMessages.map(msg => 
+                    msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+                  )
+                )
+              : Date.now();
+            
+            setLastReadTimestamps((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, latestMessageTime);
+              return newMap;
+            });
+            
+            // Clear unread count if viewing this chat - remove from map
             setUnreadCounts((prev) => {
               const newMap = new Map(prev);
-              newMap.set(chatId, 0);
+              newMap.delete(chatId); // Remove from map instead of setting to 0
               return newMap;
             });
           }
@@ -514,6 +1070,8 @@ export function Chatbot() {
               if (existingIds.size !== newIds.size || 
                   ![...existingIds].every(id => newIds.has(id))) {
                 newMap.set(selectedProjectId, channelMsgs);
+                // Save to cache when messages update
+                saveCachedMessages(chatId, firestoreMessages);
                 return newMap;
               }
               return prev;
@@ -540,6 +1098,8 @@ export function Chatbot() {
               const hasRemovedMessages = prev.some(msg => !newIds.has(msg.id));
               
               if (hasNewMessages || hasRemovedMessages || regularMsgs.length !== prev.length) {
+                // Save to cache when messages update
+                saveCachedMessages(chatId, firestoreMessages);
                 if (regularMsgs.length > 0 || chatId !== "ai-assistant") {
                   return regularMsgs;
                 }
@@ -766,6 +1326,22 @@ export function Chatbot() {
             msg.id === tempChannelMessage.id ? savedChannelMessage : msg
           );
           newMap.set(selectedProjectId, updatedMessages);
+          
+          // Update cache immediately
+          const chatId = selectedMember;
+          const allMessages = updatedMessages.map(msg => ({
+            id: msg.id,
+            chatId: chatId,
+            role: 'user' as const,
+            content: msg.content,
+            timestamp: msg.timestamp,
+            projectId: msg.projectId,
+            userId: msg.userId,
+            memberName: msg.memberName,
+            memberAvatar: msg.memberAvatar,
+          }));
+          saveCachedMessages(chatId, allMessages);
+          
           return newMap;
         });
       } catch (error) {
@@ -824,16 +1400,31 @@ export function Chatbot() {
       });
       
       // Update the message in state with saved data
-      setMessages((prev) => prev.map(msg => 
-        msg.id === userMessage.id 
-          ? {
-              ...msg,
-              id: savedUserMessage.id,
-              timestamp: savedUserMessage.timestamp instanceof Date ? savedUserMessage.timestamp : new Date(savedUserMessage.timestamp),
-              userId: savedUserMessage.userId || user.email?.toLowerCase(),
-            }
-          : msg
-      ));
+      setMessages((prev) => {
+        const updated = prev.map(msg => 
+          msg.id === userMessage.id 
+            ? {
+                ...msg,
+                id: savedUserMessage.id,
+                timestamp: savedUserMessage.timestamp instanceof Date ? savedUserMessage.timestamp : new Date(savedUserMessage.timestamp),
+                userId: savedUserMessage.userId || user.email?.toLowerCase(),
+              }
+            : msg
+        );
+        
+        // Update cache immediately
+        const allMessages = updated.map(msg => ({
+          id: msg.id,
+          chatId: chatId,
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          userId: msg.userId,
+        }));
+        saveCachedMessages(chatId, allMessages);
+        
+        return updated;
+      });
     } catch (error) {
       console.error('Failed to save user message:', error);
       // Remove the optimistic message if save failed
@@ -867,15 +1458,30 @@ export function Chatbot() {
           });
           
           // Update the message in state with saved data
-          setMessages((prev) => prev.map(msg => 
-            msg.id === assistantMessage.id 
-              ? {
-                  ...msg,
-                  id: savedAssistantMessage.id,
-                  timestamp: savedAssistantMessage.timestamp instanceof Date ? savedAssistantMessage.timestamp : new Date(savedAssistantMessage.timestamp),
-                }
-              : msg
-          ));
+          setMessages((prev) => {
+            const updated = prev.map(msg => 
+              msg.id === assistantMessage.id 
+                ? {
+                    ...msg,
+                    id: savedAssistantMessage.id,
+                    timestamp: savedAssistantMessage.timestamp instanceof Date ? savedAssistantMessage.timestamp : new Date(savedAssistantMessage.timestamp),
+                  }
+                : msg
+            );
+            
+            // Update cache immediately
+            const allMessages = updated.map(msg => ({
+              id: msg.id,
+              chatId: chatId,
+              role: msg.role,
+              content: msg.content,
+              timestamp: msg.timestamp,
+              userId: msg.userId,
+            }));
+            saveCachedMessages(chatId, allMessages);
+            
+            return updated;
+          });
         } catch (error) {
           console.error('Failed to save assistant message:', error);
           // Remove the optimistic message if save failed
@@ -908,7 +1514,14 @@ export function Chatbot() {
       {/* Floating Chat Button */}
       <div className="fixed bottom-6 left-0 right-0 flex justify-center z-50 pointer-events-none">
         <Button
-          onClick={() => setIsOpen(!isOpen)}
+          onClick={() => {
+            setIsOpen(!isOpen);
+            // When opening, restore the last selected member
+            if (!isOpen) {
+              const lastMember = getLastSelectedMember();
+              setSelectedMember(lastMember);
+            }
+          }}
           className={cn(
             "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto",
             isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
@@ -916,15 +1529,9 @@ export function Chatbot() {
           size="icon"
         >
         <MessageCircle className="h-6 w-6" />
-        {/* Unread indicator */}
+        {/* Unread indicator - red dot */}
         {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
-          <span className="absolute top-0 right-0 h-4 w-4 bg-red-500 rounded-full border-2 border-background flex items-center justify-center">
-            <span className="text-[10px] text-white font-bold">
-              {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 99 
-                ? '99+' 
-                : Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0)}
-            </span>
-          </span>
+          <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background" />
         )}
         </Button>
       </div>
@@ -946,7 +1553,18 @@ export function Chatbot() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setIsOpen(false)}
+                onClick={() => {
+                  // Save current selected member before closing
+                  if (user?.email) {
+                    try {
+                      const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+                      localStorage.setItem(storageKey, selectedMember);
+                    } catch (error) {
+                      console.error('Failed to save last selected member:', error);
+                    }
+                  }
+                  setIsOpen(false);
+                }}
                 className="h-8 w-8"
               >
                 <X className="h-4 w-4" />
@@ -983,14 +1601,19 @@ export function Chatbot() {
                         setMemberSearchQuery("");
                       }}
                       className={cn(
-                        "w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors",
+                        "w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors relative",
                         selectedMember === "ai-assistant"
                           ? "bg-primary text-primary-foreground"
+                          : (unreadCounts.get("ai-assistant") || 0) > 0
+                          ? "bg-primary/10 hover:bg-primary/20 font-semibold"
                           : "hover:bg-muted"
                       )}
                     >
                       <Bot className="h-4 w-4 flex-shrink-0" />
-                      <span className="font-medium">AI Assistant</span>
+                      <span className={cn(
+                        "font-medium",
+                        (unreadCounts.get("ai-assistant") || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
+                      )}>AI Assistant</span>
                     </button>
                   </div>
                 )}
@@ -1023,14 +1646,16 @@ export function Chatbot() {
                               "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
                               isSelected
                                 ? "bg-primary text-primary-foreground"
+                                : projectUnreadCount > 0
+                                ? "bg-primary/10 hover:bg-primary/20 font-semibold"
                                 : "hover:bg-muted"
                             )}
                           >
                             <Hash className="h-4 w-4 flex-shrink-0" />
-                            <span className="flex-1 text-left truncate">{project.name}</span>
-                            {projectUnreadCount > 0 && (
-                              <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
-                            )}
+                            <span className={cn(
+                              "flex-1 text-left truncate",
+                              projectUnreadCount > 0 && !isSelected && "font-semibold"
+                            )}>{project.name}</span>
                           </button>
                         );
                       })
@@ -1071,6 +1696,8 @@ export function Chatbot() {
                               "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors",
                               isSelected
                                 ? "bg-primary text-primary-foreground"
+                                : memberUnreadCount > 0
+                                ? "bg-primary/10 hover:bg-primary/20 font-semibold"
                                 : "hover:bg-muted"
                             )}
                           >
@@ -1079,10 +1706,10 @@ export function Chatbot() {
                                 {member.avatar}
                               </AvatarFallback>
                             </Avatar>
-                            <span className="flex-1 text-left truncate">{member.name}</span>
-                            {memberUnreadCount > 0 && (
-                              <span className="h-2 w-2 bg-red-500 rounded-full flex-shrink-0" />
-                            )}
+                            <span className={cn(
+                              "flex-1 text-left truncate",
+                              memberUnreadCount > 0 && !isSelected && "font-semibold"
+                            )}>{member.name}</span>
                           </button>
                         );
                       })
