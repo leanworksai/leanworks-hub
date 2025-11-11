@@ -141,7 +141,7 @@ const EMAIL_WHITELIST = [
   'testuser@leanworks.ai',
   'yanfu@leanworks.ai',
   'vijay@leanworks.ai',
-  'qian@leanworks.ai',
+  'qianwen@leanworks.ai',
   // Add more whitelisted emails here
 ];
 
