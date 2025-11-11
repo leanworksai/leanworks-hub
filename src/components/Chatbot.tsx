@@ -129,15 +129,19 @@ export function Chatbot() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [filterType, setFilterType] = useState<"all" | "activities" | "tasks" | "comments">("all");
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map()); // chatId -> unread count
   const [lastReadTimestamps, setLastReadTimestamps] = useState<Map<string, number>>(new Map()); // chatId -> last read timestamp
+  const [allChatCaches, setAllChatCaches] = useState<Map<string, { messages: ChatMessage[], lastSync: number }>>(new Map()); // chatId -> cached messages
+  const [cacheLoadedForSession, setCacheLoadedForSession] = useState(false); // Track if cache has been loaded for this session
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
+  const previousChatIdRef = useRef<string | null>(null); // Track previous chatId to detect chat switches
 
   // Helper functions for message caching
   const getCacheKey = (chatId: string) => {
@@ -179,27 +183,58 @@ export function Chatbot() {
     const cacheKey = getCacheKey(chatId);
     if (!cacheKey) return;
     
+    const lastSync = Date.now();
+    const cachedData = {
+      messages: messages.map(msg => ({
+        ...msg,
+        timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+      })),
+      lastSync,
+    };
+    
     try {
       const toCache = {
         messages: messages.map(msg => ({
           ...msg,
           timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
         })),
-        lastSync: Date.now(),
+        lastSync,
       };
       localStorage.setItem(cacheKey, JSON.stringify(toCache));
+      
+      // Update in-memory cache
+      setAllChatCaches((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(chatId, cachedData);
+        return newMap;
+      });
     } catch (error) {
       console.error('Failed to save cached messages:', error);
       // If storage is full, try to clear old caches
       try {
         clearOldMessageCaches();
-        localStorage.setItem(cacheKey, JSON.stringify({
-          messages: messages.slice(-100).map(msg => ({
+        const limitedMessages = messages.slice(-100);
+        const toCache = {
+          messages: limitedMessages.map(msg => ({
             ...msg,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
           })),
-          lastSync: Date.now(),
-        }));
+          lastSync,
+        };
+        localStorage.setItem(cacheKey, JSON.stringify(toCache));
+        
+        // Update in-memory cache with limited messages
+        setAllChatCaches((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(chatId, {
+            messages: limitedMessages.map(msg => ({
+              ...msg,
+              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            })),
+            lastSync,
+          });
+          return newMap;
+        });
       } catch (e) {
         console.error('Failed to save even after clearing old caches:', e);
       }
@@ -231,6 +266,218 @@ export function Chatbot() {
     } catch (error) {
       console.error('Failed to clear old message caches:', error);
     }
+  };
+
+  // Helper function to merge messages intelligently, preserving optimistic updates
+  const mergeMessages = (
+    existing: Message[], 
+    incoming: ChatMessage[], 
+    preserveOptimistic: boolean = true
+  ): Message[] => {
+    // Create a map of existing messages by ID
+    const existingMap = new Map<string, Message>();
+    existing.forEach(msg => {
+      existingMap.set(msg.id, msg);
+    });
+
+    // Also create a map of optimistic messages by content+timestamp for matching
+    // This helps match temp IDs to real IDs when Firestore confirms the message
+    const optimisticMap = new Map<string, Message>();
+    existing.forEach(msg => {
+      if (msg.id.startsWith('temp-')) {
+        // Use content + timestamp (within 5 seconds) as key to match optimistic messages
+        const key = `${msg.content}|${msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()}`;
+        optimisticMap.set(key, msg);
+      }
+    });
+
+    // Process incoming messages
+    incoming.forEach(incomingMsg => {
+      const incomingId = incomingMsg.id;
+      const existingMsg = existingMap.get(incomingId);
+      
+      // If message exists by ID, update it (prefer real ID over temp ID)
+      if (existingMsg) {
+        const isOptimistic = existingMsg.id.startsWith('temp-');
+        if (!isOptimistic || !preserveOptimistic) {
+          // Update with incoming message (it's from Firestore, so it's authoritative)
+          existingMap.set(incomingId, {
+            id: incomingId,
+            role: incomingMsg.role as "user" | "assistant",
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            userId: incomingMsg.userId,
+          });
+        }
+      } else {
+        // Message doesn't exist by ID - check if it matches an optimistic message
+        const incomingTime = incomingMsg.timestamp instanceof Date 
+          ? incomingMsg.timestamp.getTime() 
+          : new Date(incomingMsg.timestamp).getTime();
+        const incomingContent = incomingMsg.content;
+        
+        // Try to find matching optimistic message (same content, timestamp within 10 seconds)
+        let matchedOptimistic: Message | null = null;
+        for (const [key, optimisticMsg] of optimisticMap.entries()) {
+          const [content, timeStr] = key.split('|');
+          const optimisticTime = parseInt(timeStr);
+          
+          // Match if content is same and timestamp is within 10 seconds
+          if (content === incomingContent && 
+              Math.abs(incomingTime - optimisticTime) < 10000) {
+            matchedOptimistic = optimisticMsg;
+            break;
+          }
+        }
+        
+        if (matchedOptimistic) {
+          // Replace optimistic message with real one
+          existingMap.delete(matchedOptimistic.id);
+          existingMap.set(incomingId, {
+            id: incomingId,
+            role: incomingMsg.role as "user" | "assistant",
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            userId: incomingMsg.userId,
+          });
+        } else {
+          // New message, add it
+          existingMap.set(incomingId, {
+            id: incomingId,
+            role: incomingMsg.role as "user" | "assistant",
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            userId: incomingMsg.userId,
+          });
+        }
+      }
+    });
+
+    // Convert back to array and sort by timestamp
+    const merged = Array.from(existingMap.values()).sort((a, b) => {
+      const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+      const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+      return aTime - bTime;
+    });
+
+    return merged;
+  };
+
+  // Helper function to merge channel messages intelligently
+  const mergeChannelMessages = (
+    existing: ChannelMessage[],
+    incoming: ChatMessage[],
+    projectId: string,
+    preserveOptimistic: boolean = true
+  ): ChannelMessage[] => {
+    // Filter incoming messages for this project
+    const projectMessages = incoming.filter(msg => 
+      msg.role === 'user' && msg.projectId === projectId
+    );
+
+    // Create a map of existing messages by ID
+    const existingMap = new Map<string, ChannelMessage>();
+    existing.forEach(msg => {
+      existingMap.set(msg.id, msg);
+    });
+
+    // Also create a map of optimistic messages by content+timestamp for matching
+    const optimisticMap = new Map<string, ChannelMessage>();
+    existing.forEach(msg => {
+      if (msg.id.startsWith('temp-')) {
+        const key = `${msg.content}|${msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()}`;
+        optimisticMap.set(key, msg);
+      }
+    });
+
+    // Process incoming messages
+    projectMessages.forEach(incomingMsg => {
+      const incomingId = incomingMsg.id;
+      const existingMsg = existingMap.get(incomingId);
+      
+      // If message exists by ID, update it
+      if (existingMsg) {
+        const isOptimistic = existingMsg.id.startsWith('temp-');
+        if (!isOptimistic || !preserveOptimistic) {
+          // Update with incoming message
+          existingMap.set(incomingId, {
+            id: incomingId,
+            memberName: incomingMsg.memberName || 'You',
+            memberAvatar: incomingMsg.memberAvatar || 'U',
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            projectId: projectId,
+            userId: incomingMsg.userId,
+          });
+        }
+      } else {
+        // Message doesn't exist by ID - check if it matches an optimistic message
+        const incomingTime = incomingMsg.timestamp instanceof Date 
+          ? incomingMsg.timestamp.getTime() 
+          : new Date(incomingMsg.timestamp).getTime();
+        const incomingContent = incomingMsg.content;
+        
+        // Try to find matching optimistic message
+        let matchedOptimistic: ChannelMessage | null = null;
+        for (const [key, optimisticMsg] of optimisticMap.entries()) {
+          const [content, timeStr] = key.split('|');
+          const optimisticTime = parseInt(timeStr);
+          
+          // Match if content is same and timestamp is within 10 seconds
+          if (content === incomingContent && 
+              Math.abs(incomingTime - optimisticTime) < 10000) {
+            matchedOptimistic = optimisticMsg;
+            break;
+          }
+        }
+        
+        if (matchedOptimistic) {
+          // Replace optimistic message with real one
+          existingMap.delete(matchedOptimistic.id);
+          existingMap.set(incomingId, {
+            id: incomingId,
+            memberName: incomingMsg.memberName || 'You',
+            memberAvatar: incomingMsg.memberAvatar || 'U',
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            projectId: projectId,
+            userId: incomingMsg.userId,
+          });
+        } else {
+          // New message, add it
+          existingMap.set(incomingId, {
+            id: incomingId,
+            memberName: incomingMsg.memberName || 'You',
+            memberAvatar: incomingMsg.memberAvatar || 'U',
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            projectId: projectId,
+            userId: incomingMsg.userId,
+          });
+        }
+      }
+    });
+
+    // Convert back to array and sort by timestamp
+    const merged = Array.from(existingMap.values()).sort((a, b) => {
+      const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+      const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+      return aTime - bTime;
+    });
+
+    return merged;
   };
 
   // Load lastReadTimestamps from localStorage on mount or when user changes
@@ -486,9 +733,22 @@ export function Chatbot() {
       });
 
       // Calculate unread count for each chat
+      // Use cache first to avoid unnecessary API calls for empty chats
       await Promise.all(
         allChatIds.map(async (chatId) => {
           try {
+            // Check cache first - if chat is empty in cache and cache is recent, skip API call
+            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
+            const cacheIsRecent = cached && !isCacheStale(cached.lastSync);
+            const cacheIsEmpty = cached && cached.messages.length === 0;
+            
+            // If cache shows empty and is recent, skip API call and set count to 0
+            if (cacheIsRecent && cacheIsEmpty) {
+              newUnreadCounts.set(chatId, 0);
+              return;
+            }
+            
+            // Only make API call if cache is stale or doesn't exist
             const firestoreMessages = await messagesService.getByChatId(chatId);
             const lastRead = lastReadTimestamps.get(chatId) || 0;
 
@@ -511,7 +771,12 @@ export function Chatbot() {
             // Store unread count (0 or positive)
             newUnreadCounts.set(chatId, unreadCount);
           } catch (error) {
-            console.error(`Failed to calculate unread count for chat ${chatId}:`, error);
+            // Silently fail - don't spam console with errors
+            // Use cache as fallback if available
+            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
+            if (cached && cached.messages.length === 0) {
+              newUnreadCounts.set(chatId, 0);
+            }
           }
         })
       );
@@ -561,6 +826,47 @@ export function Chatbot() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, selectedProjectId, lastReadTimestamps]);
 
+  // Load all chat caches upfront - ONLY ONCE per session (on mount/login)
+  useEffect(() => {
+    if (!user || !user.email || cacheLoadedForSession) return;
+
+    const loadAllChatCaches = () => {
+      const allChatIds: string[] = [];
+      const caches = new Map<string, { messages: ChatMessage[], lastSync: number }>();
+
+      // Add AI assistant chat
+      allChatIds.push("ai-assistant");
+
+      // Add all project channels
+      projects.forEach((project) => {
+        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+        allChatIds.push(`project-${projectId}`);
+      });
+
+      // Add all team member direct message chats
+      allTeamMembers.forEach((member) => {
+        if (member.email) {
+          const chatId = getDirectMessageChatId(user.email, member.email);
+          allChatIds.push(chatId);
+        }
+      });
+
+      // Load all caches in parallel
+      allChatIds.forEach((chatId) => {
+        const cached = loadCachedMessages(chatId);
+        if (cached) {
+          caches.set(chatId, cached);
+        }
+      });
+
+      setAllChatCaches(caches);
+      setCacheLoadedForSession(true); // Mark cache as loaded for this session
+    };
+
+    loadAllChatCaches();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, projects, allTeamMembers, cacheLoadedForSession]);
+
   // Background sync: Fetch new messages for all chats even when chat is closed
   useEffect(() => {
     if (!user || !user.email) return;
@@ -589,10 +895,22 @@ export function Chatbot() {
       await Promise.all(
         allChatIds.map(async (chatId) => {
           try {
-            const cached = loadCachedMessages(chatId);
+            // Use pre-loaded cache if available, otherwise load from localStorage
+            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
             const hasCachedMessages = cached && cached.messages.length > 0;
             const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
 
+            // Only sync if cache is stale or doesn't exist
+            // Skip if cache shows empty and is recent (avoid unnecessary API calls for empty chats)
+            const cacheIsRecent = cached && !cacheIsStale;
+            const cacheIsEmpty = cached && cached.messages.length === 0;
+            
+            // Skip API call if cache shows empty and is recent
+            if (cacheIsRecent && cacheIsEmpty) {
+              // Cache shows empty and is fresh - skip API call
+              return;
+            }
+            
             // Only sync if cache is stale or doesn't exist
             if (!hasCachedMessages || cacheIsStale) {
               // Get the latest message timestamp from cache to fetch only new messages
@@ -629,10 +947,42 @@ export function Chatbot() {
                 saveCachedMessages(chatId, allMessages);
 
                 // Update unread counts if chat is not currently open
+                // IMPORTANT: Never update state for active chats - only update cache and unread counts
                 const isCurrentChat = isOpen && (
                   (isProjectChannel && selectedProjectId && chatId === selectedMember) ||
                   (!isProjectChannel && selectedMember === chatId)
                 );
+                
+                // For active chats, only update cache, don't touch state
+                if (isCurrentChat) {
+                  // Update cache but don't update state (state is managed by real-time listener)
+                  saveCachedMessages(chatId, allMessages);
+                  
+                  // Update last read timestamp
+                  if (allMessages.length > 0) {
+                    const latestMessageTime = Math.max(
+                      ...allMessages.map(msg => 
+                        msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+                      )
+                    );
+                    setLastReadTimestamps((prev) => {
+                      const newMap = new Map(prev);
+                      newMap.set(chatId, latestMessageTime);
+                      return newMap;
+                    });
+                  }
+                  
+                  // Clear unread count if viewing this chat
+                  setUnreadCounts((prev) => {
+                    const newMap = new Map(prev);
+                    newMap.delete(chatId);
+                    return newMap;
+                  });
+                  
+                  // Don't update state - return early
+                  return;
+                }
+                
                 if (!isCurrentChat) {
                   const lastRead = lastReadTimestamps.get(chatId) || 0;
                   const unreadCount = allMessages.filter((msg) => {
@@ -650,11 +1000,32 @@ export function Chatbot() {
                       newMap.set(chatId, unreadCount);
                       return newMap;
                     });
+                  } else {
+                    // Clear unread count if it's 0
+                    setUnreadCounts((prev) => {
+                      const newMap = new Map(prev);
+                      newMap.delete(chatId);
+                      return newMap;
+                    });
                   }
                 }
               } else if (hasCachedMessages) {
                 // Even if no new messages, update cache timestamp to prevent unnecessary fetches
                 saveCachedMessages(chatId, cached.messages);
+                
+                // If viewing this chat, make sure unread count is cleared
+                const isCurrentChat = isOpen && (
+                  (isProjectChannel && selectedProjectId && chatId === selectedMember) ||
+                  (!isProjectChannel && selectedMember === chatId)
+                );
+                if (isCurrentChat) {
+                  // Clear unread count if viewing this chat
+                  setUnreadCounts((prev) => {
+                    const newMap = new Map(prev);
+                    newMap.delete(chatId);
+                    return newMap;
+                  });
+                }
               }
             }
           } catch (error) {
@@ -665,13 +1036,16 @@ export function Chatbot() {
       );
     };
 
-    // Initial sync
-    syncAllChats();
+    // Initial sync - delay to avoid overwhelming the server
+    const initialSyncTimer = setTimeout(() => {
+      syncAllChats();
+    }, 2000);
 
-    // Set up periodic sync every 30 seconds
-    const syncInterval = setInterval(syncAllChats, 30000);
+    // Set up periodic sync every 60 seconds (reduced from 30 to reduce load)
+    const syncInterval = setInterval(syncAllChats, 60000);
 
     return () => {
+      clearTimeout(initialSyncTimer);
       clearInterval(syncInterval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -701,17 +1075,41 @@ export function Chatbot() {
       }
     }
 
-    // Load cached messages first for instant display
-    const cached = loadCachedMessages(chatId);
+    // Clear messages when switching to a different chat
+    const previousChatId = previousChatIdRef.current;
+    const chatHasChanged = previousChatId !== null && previousChatId !== chatId;
+    
+    if (chatHasChanged) {
+      // Chat has changed - clear old messages immediately
+      if (isProjectChannel && selectedProjectId) {
+        // For project channels, we keep the Map structure but clear the specific channel
+        // Actually, we should keep other channels' messages, so don't clear here
+      } else {
+        // For regular chats, clear messages immediately
+        setMessages([]);
+      }
+    }
+    // Update the ref to track current chatId
+    previousChatIdRef.current = chatId;
+
+    // Check if this is initial load (state is empty OR chat has changed)
+    // When chat changes, we treat it as initial load since we just cleared messages
+    const isInitialLoad = chatHasChanged || (isProjectChannel && selectedProjectId
+      ? !channelMessages.has(selectedProjectId) || channelMessages.get(selectedProjectId)?.length === 0
+      : messages.length === 0);
+    
+    // Load cached messages ONLY for initial load AND only if cache was loaded for this session
+    // Once messages are loaded, rely on real-time listener only - NEVER load from cache again
+    const cached = (isInitialLoad && cacheLoadedForSession) 
+      ? (allChatCaches.get(chatId) || loadCachedMessages(chatId))
+      : null;
     const hasCachedMessages = cached && cached.messages.length > 0;
     const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
     
-    // Only show loading if we don't have cached messages
-    if (!hasCachedMessages) {
-      setIsLoadingMessages(true);
-    } else {
+    // Only use cache for initial load - never after
+    if (isInitialLoad && hasCachedMessages && cacheLoadedForSession) {
       // Show cached messages immediately without loading state
-      setIsLoadingMessages(false); // Explicitly set loading to false when we have cached messages
+      setIsLoadingMessages(false);
       if (isProjectChannel && selectedProjectId) {
         const cachedChannelMsgs: ChannelMessage[] = cached.messages
           .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
@@ -754,13 +1152,28 @@ export function Chatbot() {
               timestamp: new Date(),
             },
           ]);
+        } else {
+          // For private chats with no messages, set empty array
+          setMessages([]);
         }
       }
+    } else if (isInitialLoad && !hasCachedMessages) {
+      // Only show loading if we don't have cached messages and it's initial load
+      setIsLoadingMessages(true);
+    } else {
+      // Not initial load - state already has messages, don't overwrite with cache
+      setIsLoadingMessages(false);
     }
 
-    // Only fetch fresh messages from Firestore if cache is stale or doesn't exist
-    // This prevents unnecessary slow requests when we have fresh cached data
-    if (!hasCachedMessages || cacheIsStale) {
+    // Fetch fresh messages from Firestore if:
+    // 1. Not initial load (always fetch fresh after initial load)
+    // 2. No cached messages available
+    // 3. Cache is stale
+    // 4. Cache shows empty (need to verify it's still empty)
+    // After initial load, always fetch fresh - don't rely on cache
+    const shouldFetch = !isInitialLoad || !hasCachedMessages || cacheIsStale || (hasCachedMessages && cached.messages.length === 0);
+    
+    if (shouldFetch) {
       // Fetch fresh messages from Firestore in the background
       const loadMessages = async () => {
         const cachedForError = hasCachedMessages; // Capture for error handling
@@ -774,6 +1187,13 @@ export function Chatbot() {
               )
             );
             afterTimestamp = new Date(latestTimestamp);
+          }
+          
+          // If cache shows empty and is recent, skip API call for empty chats
+          if (hasCachedMessages && cached.messages.length === 0 && !cacheIsStale) {
+            // Cache shows empty and is fresh - don't make API call
+            setIsLoadingMessages(false);
+            return;
           }
           
           if (isProjectChannel && selectedProjectId) {
@@ -807,14 +1227,18 @@ export function Chatbot() {
               userId: msg.userId,
             }));
           
-          setChannelMessages((prev) => {
-            const newMap = new Map(prev);
-            newMap.set(selectedProjectId, channelMsgs);
-            return newMap;
-          });
+          // Only update state if it's initial load (state is empty)
+          // Otherwise, real-time listener will handle updates
+          if (isInitialLoad) {
+            setChannelMessages((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(selectedProjectId, channelMsgs);
+              return newMap;
+            });
+          }
           
-          // Save to cache
-          saveCachedMessages(chatId, allMessages);
+          // Save to cache (after state update) - but don't reload from cache
+          setTimeout(() => saveCachedMessages(chatId, allMessages), 0);
           
           // Calculate latest message time for read timestamp
           if (channelMsgs.length > 0) {
@@ -869,22 +1293,28 @@ export function Chatbot() {
             userId: msg.userId,
           }));
           
-          // If no messages and it's AI Assistant, add greeting
-          if (regularMsgs.length === 0 && chatId === "ai-assistant") {
-            setMessages([
-              {
-                id: "greeting",
-                role: "assistant",
-                content: "Hello! I'm your AI assistant. How can I help you today?",
-                timestamp: new Date(),
-              },
-            ]);
-          } else {
-            setMessages(regularMsgs);
+          // Only update state if it's initial load (state is empty)
+          // Otherwise, real-time listener will handle updates
+          if (isInitialLoad) {
+            if (regularMsgs.length === 0 && chatId === "ai-assistant") {
+              setMessages([
+                {
+                  id: "greeting",
+                  role: "assistant",
+                  content: "Hello! I'm your AI assistant. How can I help you today?",
+                  timestamp: new Date(),
+                },
+              ]);
+            } else if (regularMsgs.length === 0 && chatId !== "ai-assistant") {
+              // For private chats with no messages, set empty array
+              setMessages([]);
+            } else {
+              setMessages(regularMsgs);
+            }
           }
           
-          // Save to cache
-          saveCachedMessages(chatId, allMessages);
+          // Save to cache (after state update if initial load)
+          setTimeout(() => saveCachedMessages(chatId, allMessages), 0);
           
           // Calculate latest message time for read timestamp
           if (regularMsgs.length > 0) {
@@ -939,9 +1369,9 @@ export function Chatbot() {
     }
   }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen]);
 
-  // Set up real-time listener in a separate effect to avoid conflicts
-  useEffect(() => {
-    if (!user || !isOpen || !user.email || isLoadingMessages) return;
+    // Set up real-time listener in a separate effect to avoid conflicts
+    useEffect(() => {
+      if (!user || !isOpen || !user.email || isLoadingMessages || isSendingMessage) return;
 
     let chatId: string;
     
@@ -972,6 +1402,11 @@ export function Chatbot() {
         // Skip first update since we just loaded messages
         if (isInitialLoad) {
           isInitialLoad = false;
+          return;
+        }
+        
+        // Don't process updates while sending a message (prevents race conditions)
+        if (isSendingMessage) {
           return;
         }
         
@@ -1046,63 +1481,88 @@ export function Chatbot() {
             });
           }
           
+          // Only update messages if this is the currently selected chat
+          // This prevents messages from old chats from appearing when switching chats
+          if (!isCurrentChat) {
+            return; // Don't update messages for chats that are not currently selected
+          }
+          
           if (isProjectChannel && selectedProjectId) {
-            // Update project channel messages
-            const channelMsgs: ChannelMessage[] = firestoreMessages
-              .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
-              .map(msg => ({
-                id: msg.id,
-                memberName: msg.memberName || 'You',
-                memberAvatar: msg.memberAvatar || 'U',
-                content: msg.content,
-                timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
-                projectId: msg.projectId || selectedProjectId,
-                userId: msg.userId,
-              }));
-            
+            // Merge project channel messages instead of replacing
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
               const existing = newMap.get(selectedProjectId) || [];
-              const existingIds = new Set(existing.map(m => m.id));
-              const newIds = new Set(channelMsgs.map(m => m.id));
               
-              // Only update if messages actually changed
-              if (existingIds.size !== newIds.size || 
-                  ![...existingIds].every(id => newIds.has(id))) {
-                newMap.set(selectedProjectId, channelMsgs);
-                // Save to cache when messages update
-                saveCachedMessages(chatId, firestoreMessages);
+              // Don't update if we have optimistic messages that haven't been confirmed yet
+              const hasUnconfirmedOptimistic = existing.some(msg => 
+                msg.id.startsWith('temp-') && 
+                (msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()) > Date.now() - 5000
+              );
+              
+              // Merge with existing messages, preserving optimistic updates
+              const merged = mergeChannelMessages(existing, firestoreMessages, selectedProjectId, true);
+              
+              // Always update if we have optimistic messages (they need to be matched)
+              // Otherwise only update if messages actually changed
+              const existingIds = new Set(existing.map(m => m.id));
+              const mergedIds = new Set(merged.map(m => m.id));
+              
+              if (hasUnconfirmedOptimistic || 
+                  existingIds.size !== mergedIds.size || 
+                  ![...existingIds].every(id => mergedIds.has(id)) ||
+                  merged.length !== existing.length) {
+                newMap.set(selectedProjectId, merged);
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
                 return newMap;
               }
               return prev;
             });
           } else {
-            // Update regular messages
-            const filteredMessages = chatId === "ai-assistant" 
-              ? firestoreMessages 
-              : firestoreMessages.filter(msg => msg.role === 'user');
-            
-            const regularMsgs: Message[] = filteredMessages.map(msg => ({
-              id: msg.id,
-              role: msg.role,
-              content: msg.content,
-              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
-              userId: msg.userId,
-            }));
-            
-            // Only update if messages actually changed
+            // Merge regular messages instead of replacing, preserving optimistic updates
             setMessages((prev) => {
-              const existingIds = new Set(prev.map(m => m.id));
-              const newIds = new Set(regularMsgs.map(m => m.id));
-              const hasNewMessages = regularMsgs.some(msg => !existingIds.has(msg.id));
-              const hasRemovedMessages = prev.some(msg => !newIds.has(msg.id));
+              // Don't update if we have optimistic messages that haven't been confirmed yet
+              // This prevents overwriting messages that were just sent
+              const hasUnconfirmedOptimistic = prev.some(msg => 
+                msg.id.startsWith('temp-') && 
+                (msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()) > Date.now() - 5000
+              );
               
-              if (hasNewMessages || hasRemovedMessages || regularMsgs.length !== prev.length) {
-                // Save to cache when messages update
-                saveCachedMessages(chatId, firestoreMessages);
-                if (regularMsgs.length > 0 || chatId !== "ai-assistant") {
-                  return regularMsgs;
-                }
+              // If we have recent optimistic messages, be more careful about merging
+              if (hasUnconfirmedOptimistic) {
+                // For AI Assistant, show both user and assistant messages
+                // For team member chats, only show user messages
+                const filteredMessages = chatId === "ai-assistant" 
+                  ? firestoreMessages 
+                  : firestoreMessages.filter(msg => msg.role === 'user');
+                
+                // Merge with existing messages, preserving optimistic updates
+                const merged = mergeMessages(prev, filteredMessages, true);
+                
+                // Always return merged if we have optimistic messages (they need to be matched)
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
+                return merged;
+              }
+              
+              // Normal merge for confirmed messages
+              const filteredMessages = chatId === "ai-assistant" 
+                ? firestoreMessages 
+                : firestoreMessages.filter(msg => msg.role === 'user');
+              
+              // Merge with existing messages, preserving optimistic updates
+              const merged = mergeMessages(prev, filteredMessages, true);
+              
+              // Only update if messages actually changed
+              const existingIds = new Set(prev.map(m => m.id));
+              const mergedIds = new Set(merged.map(m => m.id));
+              
+              if (existingIds.size !== mergedIds.size || 
+                  ![...existingIds].every(id => mergedIds.has(id)) ||
+                  merged.length !== prev.length) {
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
+                return merged;
               }
               return prev;
             });
@@ -1121,7 +1581,7 @@ export function Chatbot() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages]);
+  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages, allChatCaches]);
 
   const generateResponse = async (userMessage: string): Promise<string> => {
     // Simulate API call delay
@@ -1273,10 +1733,11 @@ export function Chatbot() {
   };
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || !user) return;
+    if (!input.trim() || isLoading || !user || isSendingMessage) return;
 
     const messageContent = input.trim();
     setInput("");
+    setIsSendingMessage(true);
 
     // Handle project channel messages
     if (isProjectChannel && selectedProjectId) {
@@ -1327,23 +1788,26 @@ export function Chatbot() {
           );
           newMap.set(selectedProjectId, updatedMessages);
           
-          // Update cache immediately
+          // Update cache after state update
           const chatId = selectedMember;
-          const allMessages = updatedMessages.map(msg => ({
-            id: msg.id,
-            chatId: chatId,
-            role: 'user' as const,
-            content: msg.content,
-            timestamp: msg.timestamp,
-            projectId: msg.projectId,
-            userId: msg.userId,
-            memberName: msg.memberName,
-            memberAvatar: msg.memberAvatar,
-          }));
-          saveCachedMessages(chatId, allMessages);
+          setTimeout(() => {
+            const allMessages = updatedMessages.map(msg => ({
+              id: msg.id,
+              chatId: chatId,
+              role: 'user' as const,
+              content: msg.content,
+              timestamp: msg.timestamp,
+              projectId: msg.projectId,
+              userId: msg.userId,
+              memberName: msg.memberName,
+              memberAvatar: msg.memberAvatar,
+            }));
+            saveCachedMessages(chatId, allMessages);
+          }, 0);
           
           return newMap;
         });
+        setIsSendingMessage(false);
       } catch (error) {
         console.error('Failed to save channel message:', error);
         // Remove the optimistic message if save failed
@@ -1353,6 +1817,7 @@ export function Chatbot() {
           newMap.set(selectedProjectId, projectMessages.filter(msg => msg.id !== tempChannelMessage.id));
           return newMap;
         });
+        setIsSendingMessage(false);
       }
       return;
     }
@@ -1412,23 +1877,27 @@ export function Chatbot() {
             : msg
         );
         
-        // Update cache immediately
-        const allMessages = updated.map(msg => ({
-          id: msg.id,
-          chatId: chatId,
-          role: msg.role,
-          content: msg.content,
-          timestamp: msg.timestamp,
-          userId: msg.userId,
-        }));
-        saveCachedMessages(chatId, allMessages);
+        // Update cache after state update
+        setTimeout(() => {
+          const allMessages = updated.map(msg => ({
+            id: msg.id,
+            chatId: chatId,
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp,
+            userId: msg.userId,
+          }));
+          saveCachedMessages(chatId, allMessages);
+        }, 0);
         
         return updated;
       });
+      setIsSendingMessage(false);
     } catch (error) {
       console.error('Failed to save user message:', error);
       // Remove the optimistic message if save failed
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
+      setIsSendingMessage(false);
     }
 
     // Only generate AI response for AI Assistant chat
@@ -1469,16 +1938,18 @@ export function Chatbot() {
                 : msg
             );
             
-            // Update cache immediately
-            const allMessages = updated.map(msg => ({
-              id: msg.id,
-              chatId: chatId,
-              role: msg.role,
-              content: msg.content,
-              timestamp: msg.timestamp,
-              userId: msg.userId,
-            }));
-            saveCachedMessages(chatId, allMessages);
+            // Update cache after state update
+            setTimeout(() => {
+              const allMessages = updated.map(msg => ({
+                id: msg.id,
+                chatId: chatId,
+                role: msg.role,
+                content: msg.content,
+                timestamp: msg.timestamp,
+                userId: msg.userId,
+              }));
+              saveCachedMessages(chatId, allMessages);
+            }, 0);
             
             return updated;
           });
@@ -1487,17 +1958,12 @@ export function Chatbot() {
           // Remove the optimistic message if save failed
           setMessages((prev) => prev.filter(msg => msg.id !== assistantMessage.id));
         }
-    } catch (error) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "I apologize, but I encountered an error. Please try again.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
+      } catch (error) {
+        console.error('Failed to generate response:', error);
+      } finally {
+        setIsLoading(false);
+        setIsSendingMessage(false);
+      }
     }
     // For team member chats, just save the message (no AI response)
   };
@@ -1605,13 +2071,12 @@ export function Chatbot() {
                         selectedMember === "ai-assistant"
                           ? "bg-primary text-primary-foreground"
                           : (unreadCounts.get("ai-assistant") || 0) > 0
-                          ? "bg-primary/10 hover:bg-primary/20 font-semibold"
+                          ? "bg-primary/10 hover:bg-primary/20"
                           : "hover:bg-muted"
                       )}
                     >
                       <Bot className="h-4 w-4 flex-shrink-0" />
                       <span className={cn(
-                        "font-medium",
                         (unreadCounts.get("ai-assistant") || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
                       )}>AI Assistant</span>
                     </button>
@@ -1647,7 +2112,7 @@ export function Chatbot() {
                               isSelected
                                 ? "bg-primary text-primary-foreground"
                                 : projectUnreadCount > 0
-                                ? "bg-primary/10 hover:bg-primary/20 font-semibold"
+                                ? "bg-primary/10 hover:bg-primary/20"
                                 : "hover:bg-muted"
                             )}
                           >
@@ -1697,7 +2162,7 @@ export function Chatbot() {
                               isSelected
                                 ? "bg-primary text-primary-foreground"
                                 : memberUnreadCount > 0
-                                ? "bg-primary/10 hover:bg-primary/20 font-semibold"
+                                ? "bg-primary/10 hover:bg-primary/20"
                                 : "hover:bg-muted"
                             )}
                           >
