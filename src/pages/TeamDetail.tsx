@@ -37,13 +37,13 @@ import { useEffect, useState, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
 
 export default function TeamDetail() {
-  const { teamName } = useParams<{ teamName: string }>();
+  const { teamId } = useParams<{ teamId: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { data: users = [] } = useUsers();
   const { toast } = useToast();
   
-  const { data: team, isLoading } = useTeam(teamName || '');
+  const { data: team, isLoading } = useTeam(teamId || '');
   const removeMemberMutation = useRemoveTeamMember();
   const leaveTeamMutation = useLeaveTeam();
   const inviteMemberMutation = useInviteTeamMember();

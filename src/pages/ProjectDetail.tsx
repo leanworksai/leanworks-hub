@@ -15,7 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
-import { useUserProjects, useDeleteProject } from "@/hooks/useProjects";
+import { useUserProjects, useDeleteProject, useProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserTeams } from "@/hooks/useTeams";
 import { teamsService } from "@/services/firestore";
@@ -56,47 +56,27 @@ const formatDate = (dateValue: any): string => {
 };
 
 export default function ProjectDetail() {
-  const { projectName: projectNameParam } = useParams();
+  const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   
-  // Log that component is rendering
-  useEffect(() => {
-    console.log('🔵 ProjectDetail component rendered', { projectNameParam });
-  }, [projectNameParam]);
-  
-  // Convert URL slug back to project name
-  // Project names in Firestore are stored with original casing
-  // We need to fetch all projects and find the matching one by slug
-  const { data: projects = [], isLoading: isLoadingProjects, error: projectsError } = useUserProjects();
+  // Fetch project by ID
+  const { data: project, isLoading: isLoadingProject, error: projectError } = useProject(projectId || '');
+  const { data: projects = [] } = useUserProjects();
   const { user } = useAuth();
   const { data: userTeams = [] } = useUserTeams();
   
-  // Normalize the URL parameter (React Router already decodes it)
-  const normalizedSlug = projectNameParam 
-    ? projectNameParam.toLowerCase()
-    : null;
+  const isLoading = isLoadingProject;
   
-  // Helper function to create slug from project name (must match Projects.tsx)
-  const createSlug = (name: string) => {
-    return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-  };
-  
-  // Find the project based on the slug
-  const project = normalizedSlug && projects.length > 0
-    ? projects.find(p => createSlug(p.name) === normalizedSlug)
-    : null;
-  const isLoading = isLoadingProjects;
-
   // Fetch team details to check project access
   const teamDetailsQueries = useQueries({
     queries: userTeams.map((team) => ({
-      queryKey: ['teams', team.name],
-      queryFn: () => teamsService.getById(team.name),
-      enabled: !!team.name && !!user?.email,
+      queryKey: ['teams', team.id],
+      queryFn: () => teamsService.getById(team.id),
+      enabled: !!team.id && !!user?.email,
       staleTime: 1000 * 60 * 5,
     })),
   });
@@ -118,32 +98,16 @@ export default function ProjectDetail() {
   
   // Redirect if user doesn't have access
   useEffect(() => {
-    if (!isLoadingProjects && project && userTeamMemberNames.size > 0 && !hasAccess) {
+    if (!isLoading && project && userTeamMemberNames.size > 0 && !hasAccess) {
       navigate("/projects");
     }
-  }, [isLoadingProjects, project, hasAccess, userTeamMemberNames.size, navigate]);
-
-  // Debug logging (remove in production)
-  useEffect(() => {
-    console.log('🟢 ProjectDetail State:', {
-      projectNameParam,
-      normalizedSlug,
-      isLoading,
-      projectsCount: projects.length,
-      hasError: !!projectsError,
-      error: projectsError,
-      projectNames: projects.map(p => p.name),
-      projectSlugs: projects.map(p => createSlug(p.name)),
-      foundProject: project?.name || 'NOT FOUND',
-      projectMatch: project ? '✅' : '❌'
-    });
-  }, [projectNameParam, normalizedSlug, isLoading, projects, project, projectsError]);
+  }, [isLoading, project, hasAccess, userTeamMemberNames.size, navigate]);
 
   const handleDelete = async () => {
     if (!project) return;
 
     try {
-      await deleteProject.mutateAsync(project.name);
+      await deleteProject.mutateAsync(project.id);
       toast({
         title: "Project deleted",
         description: `"${project.name}" has been deleted successfully.`,
@@ -158,41 +122,8 @@ export default function ProjectDetail() {
     }
   };
 
-  // Show loading state
-  if (isLoading) {
-    return (
-      <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
-        </Button>
-        <div className="text-center py-12">
-          <p className="text-muted-foreground">Loading project...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show error if projects failed to load
-  if (projectsError) {
-    return (
-      <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
-        </Button>
-        <div className="text-center py-12 space-y-4">
-          <h1 className="text-2xl font-bold text-destructive">Error loading projects</h1>
-          <p className="text-muted-foreground">
-            {projectsError instanceof Error ? projectsError.message : 'Failed to load projects'}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show not found if no projectNameParam
-  if (!projectNameParam) {
+  // Show not found if no projectId
+  if (!projectId) {
     return (
       <div className="space-y-6 animate-fade-in">
         <Button variant="ghost" onClick={() => navigate("/projects")}>
@@ -208,7 +139,7 @@ export default function ProjectDetail() {
   }
 
   // Show access denied if user doesn't have access
-  if (project && userTeamMemberNames.size > 0 && !hasAccess && !isLoadingProjects) {
+  if (project && userTeamMemberNames.size > 0 && !hasAccess && !isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
         <Button variant="ghost" onClick={() => navigate("/projects")}>
@@ -222,8 +153,41 @@ export default function ProjectDetail() {
     );
   }
 
-  // Show not found if project doesn't exist
-  if (!project && !isLoading) {
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">Loading project...</p>
+        </div>
+      </div>
+    );
+  }
+  
+  // Show error if there was an error loading the project
+  if (projectError) {
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <Button variant="ghost" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Projects
+        </Button>
+        <div className="text-center py-12 space-y-4">
+          <h1 className="text-2xl font-bold text-destructive">Error loading project</h1>
+          <p className="text-muted-foreground">
+            {projectError instanceof Error ? projectError.message : 'Failed to load project'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+  
+  // Show not found if project doesn't exist (after loading completes)
+  if (!project) {
     return (
       <div className="space-y-6 animate-fade-in">
         <Button variant="ghost" onClick={() => navigate("/projects")}>
@@ -233,24 +197,8 @@ export default function ProjectDetail() {
         <div className="text-center py-12 space-y-4">
           <h1 className="text-2xl font-bold">Project not found</h1>
           <p className="text-muted-foreground">
-            Could not find a project matching "{normalizedSlug}"
+            Could not find a project with ID "{projectId}"
           </p>
-          {projects.length > 0 && (
-            <div className="text-sm text-muted-foreground mt-4 max-w-md mx-auto">
-              <p className="font-medium mb-2">Available projects:</p>
-              <ul className="list-disc list-inside mt-2 space-y-1 text-left">
-                {projects.slice(0, 5).map(p => (
-                  <li key={p.name}>
-                    <span className="font-medium">{p.name}</span> → slug: <code className="bg-secondary px-1 rounded">{createSlug(p.name)}</code>
-                  </li>
-                ))}
-              </ul>
-              {projects.length > 5 && <p className="mt-2">... and {projects.length - 5} more</p>}
-            </div>
-          )}
-          {projects.length === 0 && (
-            <p className="text-sm text-muted-foreground">No projects available</p>
-          )}
         </div>
       </div>
     );

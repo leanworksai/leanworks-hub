@@ -197,30 +197,42 @@ export default function TaskDetail() {
   
   // Check if user has access to the task
   const hasAccess = task ? (() => {
-    // If task has a project, check if user has access to that project
-    if (task.project || task.projectId) {
-      return projects.some((project) => {
-        const projectName = project.name.toLowerCase();
-        const taskProjectName = (task.project?.toLowerCase() || task.projectId?.toLowerCase());
-        return taskProjectName && projectName === taskProjectName;
-      });
+    // If task has a projectId, check if user has access to that project
+    if (task.projectId) {
+      // First try matching by ID (UUID format)
+      const hasProjectAccessById = projects.some((project) => project.id === task.projectId);
+      if (hasProjectAccessById) {
+        return true;
+      }
+      
+      // If ID match fails, try matching by name (for legacy tasks where projectId is actually a name)
+      const hasProjectAccessByName = projects.some((project) => project.name === task.projectId);
+      if (hasProjectAccessByName) return true;
+    }
+    
+    // If task has a project name (legacy), try to find it by name
+    if (task.project) {
+      const hasProjectAccess = projects.some((project) => project.name === task.project);
+      if (hasProjectAccess) return true;
     }
     
     // If task has no project, check if it's associated with user's teams
     if (task.teams && task.teams.length > 0) {
       const userTeamNames = new Set(userTeams.map(team => team.name.toLowerCase()));
-      return task.teams.some(teamName => userTeamNames.has(teamName.toLowerCase()));
+      const hasTeamAccess = task.teams.some(teamName => userTeamNames.has(teamName.toLowerCase()));
+      return hasTeamAccess;
     }
     
-    return false;
+    // If task has no project or teams, allow access (user created it or it's a standalone task)
+    return true;
   })() : false;
   
-  // Redirect if user doesn't have access
+  // Redirect if user doesn't have access (only after both task and projects are loaded)
   useEffect(() => {
     if (!isLoading && task && !hasAccess) {
       navigate("/tasks");
     }
-  }, [isLoading, task, hasAccess, navigate]);
+  }, [isLoading, task, hasAccess, navigate, projects.length]);
   const updateTaskMutation = useUpdateTask();
   const deleteTask = useDeleteTask();
   const { toast } = useToast();
@@ -285,8 +297,8 @@ export default function TaskDetail() {
     );
   }
 
-  // Show access denied if user doesn't have access
-  if (task && projects.length > 0 && !hasAccess && !isLoading) {
+  // Show access denied if user doesn't have access (wait for projects to load)
+  if (task && !hasAccess && !isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
         <Button variant="ghost" onClick={() => navigate("/tasks")}>
@@ -310,8 +322,9 @@ export default function TaskDetail() {
   };
 
   const handleProjectClick = () => {
-    const slug = task.projectId.toLowerCase().replace(/\s+/g, '-');
-    navigate(`/projects/${slug}`);
+    if (task.projectId) {
+      navigate(`/projects/${task.projectId}`);
+    }
   };
 
   const handleDelete = async () => {

@@ -48,22 +48,19 @@ export default function Projects() {
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   const [hoveredProject, setHoveredProject] = useState<string | null>(null);
 
-  const handleCardClick = (projectName: string) => {
+  const handleCardClick = (projectId: string) => {
     // Don't navigate if in selection mode
     if (isSelectionMode) return;
-    // Create slug: lowercase, replace spaces with hyphens, remove special chars
-    const slug = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    // Navigate with slug (React Router handles URL encoding automatically)
-    navigate(`/projects/${slug}`);
+    navigate(`/projects/${projectId}`);
   };
 
   const handleCheckboxClick = (e: React.MouseEvent) => {
     e.stopPropagation();
   };
 
-  const handleDeleteClick = (e: React.MouseEvent, projectName: string) => {
+  const handleDeleteClick = (e: React.MouseEvent, projectId: string, projectName: string) => {
     e.stopPropagation();
-    setProjectToDelete(projectName);
+    setProjectToDelete(projectId);
   };
 
   const handleDeleteConfirm = async () => {
@@ -71,9 +68,10 @@ export default function Projects() {
 
     try {
       await deleteProject.mutateAsync(projectToDelete);
+      const project = projects.find(p => p.id === projectToDelete);
       toast({
         title: "Project deleted",
-        description: `"${projectToDelete}" has been deleted successfully.`,
+        description: `"${project?.name || 'Project'}" has been deleted successfully.`,
       });
       setProjectToDelete(null);
     } catch (error) {
@@ -124,7 +122,7 @@ export default function Projects() {
             className={`bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow ${
               isProjectSelected(project.name) ? 'ring-2 ring-primary' : ''
             }`}
-            onClick={() => handleCardClick(project.name)}
+            onClick={() => handleCardClick(project.id)}
           >
             <CardHeader>
               <div className="flex items-start justify-between">
@@ -226,7 +224,7 @@ export default function Projects() {
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive"
-                      onClick={(e) => handleDeleteClick(e, project.name)}
+                      onClick={(e) => handleDeleteClick(e, project.id, project.name)}
                     >
                       <Trash2 className="mr-2 h-4 w-4" />
                       Delete
@@ -261,7 +259,7 @@ export default function Projects() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Project</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{projectToDelete}"? This action cannot be undone.
+              Are you sure you want to delete "{projects.find(p => p.id === projectToDelete)?.name || 'this project'}"? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

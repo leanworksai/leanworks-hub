@@ -23,9 +23,9 @@ export const useUserTeams = () => {
   const teamDetailsQueries = useQueries({
     queries: allTeams.length > 0 && user?.email
       ? allTeams.map((team) => ({
-          queryKey: ['teams', team.name],
-          queryFn: () => teamsService.getById(team.name),
-          enabled: !!team.name && !!user?.email,
+          queryKey: ['teams', team.id],
+          queryFn: () => teamsService.getById(team.id),
+          enabled: !!team.id && !!user?.email,
           staleTime: 1000 * 60 * 5,
         }))
       : [],
@@ -47,12 +47,12 @@ export const useUserTeams = () => {
     (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
   );
 
-  // Filter teams where the user is a member
+        // Filter teams where the user is a member
   // Only filter after all queries have completed to avoid filtering out teams prematurely
   const userTeams = allQueriesCompleted && !isLoadingDetails
     ? allTeams.filter((team) => {
         const teamDetailQuery = teamDetailsQueries.find(
-          (query) => query.data?.name === team.name
+          (query) => query.data?.id === team.id
         );
         const teamDetail = teamDetailQuery?.data;
         
@@ -71,13 +71,13 @@ export const useUserTeams = () => {
   };
 };
 
-export const useTeam = (teamName: string) => {
+export const useTeam = (teamId: string) => {
   const { user, loading } = useAuth();
   
   return useQuery({
-    queryKey: ['teams', teamName],
-    queryFn: () => teamsService.getById(teamName),
-    enabled: !loading && !!user && !!teamName, // Only fetch when user is authenticated and teamName is provided
+    queryKey: ['teams', teamId],
+    queryFn: () => teamsService.getById(teamId),
+    enabled: !loading && !!user && !!teamId, // Only fetch when user is authenticated and teamId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
@@ -88,8 +88,11 @@ export const useCreateTeam = () => {
   return useMutation({
     mutationFn: ({ team, teamDetail }: { team: Team; teamDetail: TeamDetailData }) =>
       teamsService.create(team, teamDetail),
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      // Invalidate all team queries to refetch the list
       queryClient.invalidateQueries({ queryKey: ['teams'] });
+      // Invalidate the specific team detail query so useUserTeams can find it
+      queryClient.invalidateQueries({ queryKey: ['teams', variables.team.id] });
     },
   });
 };

@@ -30,6 +30,7 @@ import type { TeamMember } from "@/data/teamsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { useQueries } from "@tanstack/react-query";
+import { v4 as uuidv4 } from 'uuid';
 
 interface NewProjectDialogProps {
   open: boolean;
@@ -91,9 +92,9 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   // Fetch team details for all user teams to get member emails
   const teamDetailsQueries = useQueries({
     queries: teams.map((team) => ({
-      queryKey: ['teams', team.name],
-      queryFn: () => teamsService.getById(team.name),
-      enabled: !!team.name && !!user?.email && open,
+      queryKey: ['teams', team.id],
+      queryFn: () => teamsService.getById(team.id),
+      enabled: !!team.id && !!user?.email && open,
       staleTime: 1000 * 60 * 5,
     })),
   });
@@ -142,19 +143,6 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       const teamMemberEmails = new Set<string>();
       const emailToTeamMap = new Map<string, string>();
       
-      console.log('Loading team members:', {
-        teamsCount: teams.length,
-        usersCount: users.length,
-        queriesCount: teamDetailsQueries.length,
-        queriesData: teamDetailsQueries.map((q, i) => ({
-          team: teams[i]?.name,
-          hasData: !!q.data,
-          membersCount: q.data?.members?.length || 0,
-          isLoading: q.isLoading,
-          error: q.error
-        }))
-      });
-      
       teamDetailsQueries.forEach((query, index) => {
         if (query.data?.members && teams[index]) {
           query.data.members.forEach(member => {
@@ -166,7 +154,6 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
         }
       });
       
-      console.log('Team member emails found:', teamMemberEmails.size);
 
       // Filter users to only those in user's teams
       const filteredUsers = users.filter(user => 
@@ -262,8 +249,8 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
 
     // Fetch all team details in parallel
     const teamDetailsPromises = teams.map(team => 
-      teamsService.getById(team.name).catch(error => {
-        console.error(`Failed to fetch team ${team.name}:`, error);
+      teamsService.getById(team.id).catch(error => {
+        console.error(`Failed to fetch team ${team.id}:`, error);
         return null;
       })
     );
@@ -378,6 +365,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       const projectMembers = await getSelectedProjectMembers();
 
       const project: Project = {
+        id: uuidv4(), // Generate unique ID
         name: data.name,
         description: data.description,
         detailedDescription: data.description,

@@ -57,7 +57,7 @@ const AppRoutes = () => {
           }
         />
         <Route
-          path="/teams/:teamName"
+          path="/teams/:teamId"
           element={
             <ProtectedRoute>
               <DashboardLayout>
@@ -97,7 +97,7 @@ const AppRoutes = () => {
           }
         />
         <Route
-          path="/projects/:projectName"
+          path="/projects/:projectId"
           element={
             <ProtectedRoute>
               <DashboardLayout>

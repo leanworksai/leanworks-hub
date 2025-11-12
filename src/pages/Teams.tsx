@@ -55,6 +55,7 @@ import { useUsers } from "@/hooks/useUsers";
 import type { Team, TeamDetailData, TeamMember, TeamJoinRequest } from "@/data/teamsData";
 import { toast } from "@/components/ui/sonner";
 import { useAuth } from "@/contexts/AuthContext";
+import { v4 as uuidv4 } from 'uuid';
 
 export default function Teams() {
   const navigate = useNavigate();
@@ -86,15 +87,15 @@ export default function Teams() {
   const [showRequestsDialog, setShowRequestsDialog] = useState(false);
   
   // Load team details when editing
-  const { data: teamDetail } = useTeam(teamToEdit?.name || "");
+  const { data: teamDetail } = useTeam(teamToEdit?.id || "");
   
   // Fetch team details for all teams to check membership
   const teamDetailsQueries = useQueries({
     queries: allTeams.length > 0 && user?.email
       ? allTeams.map((team) => ({
-          queryKey: ['teams', team.name],
-          queryFn: () => teamsService.getById(team.name),
-          enabled: !!team.name && !!user?.email,
+          queryKey: ['teams', team.id],
+          queryFn: () => teamsService.getById(team.id),
+          enabled: !!team.id && !!user?.email,
           staleTime: 1000 * 60 * 5,
         }))
       : [],
@@ -254,7 +255,10 @@ export default function Teams() {
       }
     }
     
+    const teamId = uuidv4(); // Generate unique ID
+    
     const newTeam: Team = {
+      id: teamId,
       name: formData.name.trim(),
       description: formData.description.trim(),
       members: teamMembers.length,
@@ -264,6 +268,7 @@ export default function Teams() {
     };
 
     const newTeamDetail: TeamDetailData = {
+      id: teamId,
       name: formData.name.trim(),
       description: formData.description.trim(),
       avatar,
@@ -466,14 +471,14 @@ export default function Teams() {
                   className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
                     isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
                   }`}
-                  onClick={() => {
-                    // Don't navigate if in selection mode
-                    if (!isSelectionMode) {
-                      if (isMember) {
-                        navigate(`/teams/${team.name}`);
+                    onClick={() => {
+                      // Don't navigate if in selection mode
+                      if (!isSelectionMode) {
+                        if (isMember) {
+                          navigate(`/teams/${team.id}`);
+                        }
                       }
-                    }
-                  }}
+                    }}
                 >
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                     <div className="flex items-center gap-3">
@@ -513,7 +518,7 @@ export default function Teams() {
                             <>
                               <DropdownMenuItem onClick={(e) => {
                                 e.stopPropagation();
-                                navigate(`/teams/${team.name}`);
+                                navigate(`/teams/${team.id}`);
                               }}>
                                 View Details
                               </DropdownMenuItem>
@@ -599,7 +604,7 @@ export default function Teams() {
                     onClick={() => {
                       // Don't navigate if in selection mode
                       if (!isSelectionMode) {
-                        navigate(`/teams/${team.name}`);
+                        navigate(`/teams/${team.id}`);
                       }
                     }}
                   >
@@ -639,7 +644,7 @@ export default function Teams() {
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/teams/${team.name}`);
+                              navigate(`/teams/${team.id}`);
                             }}>
                               View Details
                             </DropdownMenuItem>

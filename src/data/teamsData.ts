@@ -1,4 +1,5 @@
 export interface Team {
+  id: string; // Unique identifier
   name: string;
   members: number;
   projects: number;
@@ -15,6 +16,7 @@ export interface TeamMember {
 }
 
 export interface TeamDetailData {
+  id: string; // Unique identifier
   name: string;
   description: string;
   avatar: string;
