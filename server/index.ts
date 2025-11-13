@@ -1596,12 +1596,13 @@ app.get('/api/integrations', authenticateUser, async (req, res) => {
       };
     });
 
-    // Ensure we return all three integrations with their connection status
+    // Ensure we return all integrations with their connection status
     // Only show connected integrations from Firestore (which are in sync with Secret Manager)
     const allIntegrations = [
       { id: 'slack', name: 'Slack' },
       { id: 'atlassian', name: 'Atlassian' },
       { id: 'github', name: 'GitHub' },
+      { id: 'outlook', name: 'Outlook' },
     ].map(integration => {
       const existing = integrations.find(i => i.id === integration.id);
       return {
@@ -1621,74 +1622,82 @@ app.get('/api/integrations', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/integrations/slack/connect', authenticateUser, async (req, res) => {
+// Unified endpoint for connecting integrations
+app.post('/api/integrations/:integrationId/connect', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
-    const { botToken } = req.body;
+    const integrationId = req.params.integrationId;
+    const body = req.body;
 
-    if (!botToken) {
-      return res.status(400).json({ error: 'Bot token is required' });
+    // Validate integration ID
+    if (!['slack', 'atlassian', 'outlook'].includes(integrationId)) {
+      return res.status(400).json({ error: 'Invalid integration ID' });
+    }
+
+    // Integration-specific validation and credential extraction
+    let credentials: any;
+    let integrationName: string;
+
+    switch (integrationId) {
+      case 'slack':
+        if (!body.botToken) {
+          return res.status(400).json({ error: 'Bot token is required' });
+        }
+        credentials = { botToken: body.botToken };
+        integrationName = 'Slack';
+        break;
+
+      case 'atlassian':
+        if (!body.email || !body.domain || !body.apiToken) {
+          return res.status(400).json({ error: 'Email, Atlassian domain, and API token are required' });
+        }
+        credentials = { 
+          email: body.email, 
+          domain: body.domain, 
+          apiToken: body.apiToken 
+        };
+        integrationName = 'Atlassian';
+        break;
+
+      case 'outlook':
+        if (!body.clientId || !body.clientSecret || !body.tenantId) {
+          return res.status(400).json({ error: 'Client ID, Client Secret, and Tenant ID are required' });
+        }
+        credentials = { 
+          clientId: body.clientId, 
+          clientSecret: body.clientSecret, 
+          tenantId: body.tenantId 
+        };
+        integrationName = 'Outlook';
+        break;
+
+      default:
+        return res.status(400).json({ error: 'Unsupported integration type' });
     }
 
     // Generate secret name
-    const secretName = getSecretName(domain, 'slack');
+    const secretName = getSecretName(domain, integrationId);
     
     // Save credentials to GCP Secret Manager first
-    await saveSecret(secretName, JSON.stringify({ botToken }));
+    await saveSecret(secretName, JSON.stringify(credentials));
 
     // Only update Firestore if Secret Manager operation succeeds
     // Store integration record with secret name to keep in sync
     const collectionPath = getCollectionPath('integrations', domain);
-    await db.collection(collectionPath).doc('slack').set({
-      id: 'slack',
-      name: 'Slack',
+    await db.collection(collectionPath).doc(integrationId).set({
+      id: integrationId,
+      name: integrationName,
       connected: true,
       secretName: secretName, // Store the secret name for reference
       connectedAt: new Date(),
       updatedAt: new Date(),
     }, { merge: true });
 
-    console.log(`[Integrations] Slack connected for domain ${domain}, secret: ${secretName}`);
-    res.json({ success: true, message: 'Slack connected successfully' });
+    console.log(`[Integrations] ${integrationName} connected for domain ${domain}, secret: ${secretName}`);
+    res.json({ success: true, message: `${integrationName} connected successfully` });
   } catch (error) {
-    console.error('Connect Slack error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to connect Slack' });
-  }
-});
-
-app.post('/api/integrations/atlassian/connect', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const { email, domain: atlassianDomainUrl, apiToken } = req.body;
-
-    if (!email || !atlassianDomainUrl || !apiToken) {
-      return res.status(400).json({ error: 'Email, Atlassian domain, and API token are required' });
-    }
-
-    // Generate secret name
-    const secretName = getSecretName(domain, 'atlassian');
-    
-    // Save credentials to GCP Secret Manager first
-    // Store domain instead of password for Atlassian integration
-    await saveSecret(secretName, JSON.stringify({ email, domain: atlassianDomainUrl, apiToken }));
-
-    // Only update Firestore if Secret Manager operation succeeds
-    // Store integration record with secret name to keep in sync
-    const collectionPath = getCollectionPath('integrations', domain);
-    await db.collection(collectionPath).doc('atlassian').set({
-      id: 'atlassian',
-      name: 'Atlassian',
-      connected: true,
-      secretName: secretName, // Store the secret name for reference
-      connectedAt: new Date(),
-      updatedAt: new Date(),
-    }, { merge: true });
-
-    console.log(`[Integrations] Atlassian connected for domain ${domain}, secret: ${secretName}`);
-    res.json({ success: true, message: 'Atlassian connected successfully' });
-  } catch (error) {
-    console.error('Connect Atlassian error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to connect Atlassian' });
+    console.error(`Connect ${req.params.integrationId} error:`, error);
+    res.status(500).json({ error: (error as Error).message || `Failed to connect ${req.params.integrationId}` });
   }
 });
 
@@ -1697,7 +1706,7 @@ app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async 
     const domain = (req as any).userDomain;
     const integrationId = req.params.integrationId;
 
-    if (!['slack', 'atlassian', 'github'].includes(integrationId)) {
+    if (!['slack', 'atlassian', 'github', 'outlook'].includes(integrationId)) {
       return res.status(400).json({ error: 'Invalid integration ID' });
     }
 

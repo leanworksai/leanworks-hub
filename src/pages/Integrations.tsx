@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Check } from "lucide-react";
 import { SlackConnectDialog } from "@/components/SlackConnectDialog";
 import { AtlassianConnectDialog } from "@/components/AtlassianConnectDialog";
+import { OutlookConnectDialog } from "@/components/OutlookConnectDialog";
 import { integrationsService } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -31,6 +32,13 @@ const integrations = [
     category: "Development",
     icon: "🔧",
   },
+  {
+    id: "outlook",
+    name: "Outlook",
+    description: "Email and calendar integration",
+    category: "Communication",
+    icon: "📧",
+  },
 ];
 
 export default function Integrations() {
@@ -38,6 +46,7 @@ export default function Integrations() {
   const [loading, setLoading] = useState(true);
   const [slackDialogOpen, setSlackDialogOpen] = useState(false);
   const [atlassianDialogOpen, setAtlassianDialogOpen] = useState(false);
+  const [outlookDialogOpen, setOutlookDialogOpen] = useState(false);
   const { user } = useAuth();
   const { toast } = useToast();
 
@@ -66,6 +75,8 @@ export default function Integrations() {
       setSlackDialogOpen(true);
     } else if (integrationId === "atlassian") {
       setAtlassianDialogOpen(true);
+    } else if (integrationId === "outlook") {
+      setOutlookDialogOpen(true);
     } else if (integrationId === "github") {
       window.open("https://github.com/apps/leanworks", "_blank");
     }
@@ -96,6 +107,7 @@ export default function Integrations() {
     setConnectedIntegrations(prev => new Set(prev).add(integrationId));
     setSlackDialogOpen(false);
     setAtlassianDialogOpen(false);
+    setOutlookDialogOpen(false);
     toast({
       title: "Success",
       description: "Integration connected successfully",
@@ -182,6 +194,12 @@ export default function Integrations() {
         open={atlassianDialogOpen}
         onOpenChange={setAtlassianDialogOpen}
         onSuccess={() => handleConnectionSuccess("atlassian")}
+      />
+
+      <OutlookConnectDialog
+        open={outlookDialogOpen}
+        onOpenChange={setOutlookDialogOpen}
+        onSuccess={() => handleConnectionSuccess("outlook")}
       />
     </div>
   );

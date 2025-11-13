@@ -367,28 +367,32 @@ export const integrationsService = {
     return response.json();
   },
 
-  async connectSlack(botToken: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/integrations/slack/connect` : `${API_BASE}/integrations/slack/connect`;
+  // Unified connect method for all integrations
+  async connect(integrationId: string, credentials: Record<string, string>): Promise<void> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/integrations/${integrationId}/connect`
+      : `${API_BASE}/integrations/${integrationId}/connect`;
     const response = await authenticatedFetch(url, {
       method: 'POST',
-      body: JSON.stringify({ botToken }),
+      body: JSON.stringify(credentials),
     });
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to connect Slack' }));
-      throw new Error(error.error || 'Failed to connect Slack');
+      const error = await response.json().catch(() => ({ error: `Failed to connect ${integrationId}` }));
+      throw new Error(error.error || `Failed to connect ${integrationId}`);
     }
   },
 
+  // Convenience methods that use the unified connect endpoint
+  async connectSlack(botToken: string): Promise<void> {
+    return this.connect('slack', { botToken });
+  },
+
   async connectAtlassian(email: string, domain: string, apiToken: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/integrations/atlassian/connect` : `${API_BASE}/integrations/atlassian/connect`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-      body: JSON.stringify({ email, domain, apiToken }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to connect Atlassian' }));
-      throw new Error(error.error || 'Failed to connect Atlassian');
-    }
+    return this.connect('atlassian', { email, domain, apiToken });
+  },
+
+  async connectOutlook(clientId: string, clientSecret: string, tenantId: string): Promise<void> {
+    return this.connect('outlook', { clientId, clientSecret, tenantId });
   },
 
   async disconnect(integrationId: string): Promise<void> {
