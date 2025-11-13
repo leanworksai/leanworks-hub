@@ -117,8 +117,7 @@ export default function Tasks() {
 
   const handleProjectClick = (e: React.MouseEvent, projectId: string) => {
     e.stopPropagation();
-    const slug = projectId.toLowerCase().replace(/\s+/g, '-');
-    navigate(`/projects/${slug}`);
+    navigate(`/projects/${projectId}`);
   };
 
   const handleCheckboxClick = (e: React.MouseEvent) => {
@@ -276,13 +275,15 @@ export default function Tasks() {
                         <Calendar className="h-4 w-4" />
                         <span>{task.dueDate}</span>
                       </div>
-                      <button
-                        onClick={(e) => handleProjectClick(e, task.projectId)}
-                        className="flex items-center gap-1 text-primary hover:underline"
-                      >
-                        <span>{task.project}</span>
-                        <ArrowRight className="h-3 w-3" />
-                      </button>
+                      {task.projectId && (
+                        <button
+                          onClick={(e) => handleProjectClick(e, task.projectId!)}
+                          className="flex items-center gap-1 text-primary hover:underline"
+                        >
+                          <span>{task.project}</span>
+                          <ArrowRight className="h-3 w-3" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>

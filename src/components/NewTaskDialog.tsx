@@ -28,6 +28,7 @@ import type { Task } from "@/data/tasksData";
 import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown } from "lucide-react";
+import { v4 as uuidv4 } from 'uuid';
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -54,7 +55,7 @@ const formatDate = (date: Date): string => {
 };
 
 const generateTaskId = (): string => {
-  return `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return uuidv4();
 };
 
 const getInitials = (name: string): string => {
@@ -166,7 +167,11 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
       const now = new Date();
       
       // Find the selected project (if provided)
+      // data.projectId could be either a project ID or a project name/slug
       const project = data.projectId ? projects.find((p) => {
+        // Try matching by ID first
+        if (p.id === data.projectId) return true;
+        // Fall back to matching by name or slug
         const slug = p.name.toLowerCase().replace(/\s+/g, '-');
         return slug === data.projectId || p.name === data.projectId;
       }) : null;
@@ -207,7 +212,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
         assignee: data.assignee || undefined,
         assigneeAvatar: assigneeAvatar,
         project: project?.name,
-        projectId: data.projectId || undefined,
+        projectId: project?.id || undefined, // Use the actual project ID, not the form value
         teams: teams,
         createdBy: user?.email || undefined,
         dueDate: formattedDueDate,

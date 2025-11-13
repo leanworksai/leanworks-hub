@@ -76,8 +76,8 @@ export const projectsService = {
     return response.json();
   },
 
-  async getById(projectName: string): Promise<Project | null> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/projects/${encodeURIComponent(projectName)}` : `${API_BASE}/projects/${encodeURIComponent(projectName)}`;
+  async getById(projectId: string): Promise<Project | null> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/projects/${encodeURIComponent(projectId)}` : `${API_BASE}/projects/${encodeURIComponent(projectId)}`;
     const response = await authenticatedFetch(url);
     if (response.status === 404) return null;
     if (!response.ok) throw new Error('Failed to fetch project');
@@ -93,8 +93,8 @@ export const projectsService = {
     if (!response.ok) throw new Error('Failed to create project');
   },
 
-  async update(projectName: string, updates: Partial<Project>): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/projects/${encodeURIComponent(projectName)}` : `${API_BASE}/projects/${encodeURIComponent(projectName)}`;
+  async update(projectId: string, updates: Partial<Project>): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/projects/${encodeURIComponent(projectId)}` : `${API_BASE}/projects/${encodeURIComponent(projectId)}`;
     const response = await authenticatedFetch(url, {
       method: 'PATCH',
       body: JSON.stringify(updates),
@@ -102,8 +102,8 @@ export const projectsService = {
     if (!response.ok) throw new Error('Failed to update project');
   },
 
-  async delete(projectName: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/projects/${encodeURIComponent(projectName)}` : `${API_BASE}/projects/${encodeURIComponent(projectName)}`;
+  async delete(projectId: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/projects/${encodeURIComponent(projectId)}` : `${API_BASE}/projects/${encodeURIComponent(projectId)}`;
     const response = await authenticatedFetch(url, {
       method: 'DELETE',
     });
@@ -188,8 +188,8 @@ export const teamsService = {
     return response.json();
   },
 
-  async getById(teamName: string): Promise<TeamDetailData | null> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}` : `${API_BASE}/teams/${encodeURIComponent(teamName)}`;
+  async getById(teamId: string): Promise<TeamDetailData | null> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}` : `${API_BASE}/teams/${encodeURIComponent(teamId)}`;
     const response = await authenticatedFetch(url);
     if (response.status === 404) return null;
     if (!response.ok) throw new Error('Failed to fetch team');
@@ -205,8 +205,8 @@ export const teamsService = {
     if (!response.ok) throw new Error('Failed to create team');
   },
 
-  async update(teamName: string, updates: Partial<Team>): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}` : `${API_BASE}/teams/${encodeURIComponent(teamName)}`;
+  async update(teamId: string, updates: Partial<Team>): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}` : `${API_BASE}/teams/${encodeURIComponent(teamId)}`;
     const response = await authenticatedFetch(url, {
       method: 'PATCH',
       body: JSON.stringify(updates),
@@ -214,8 +214,8 @@ export const teamsService = {
     if (!response.ok) throw new Error('Failed to update team');
   },
 
-  async updateDetail(teamName: string, updates: Partial<TeamDetailData>): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}/detail` : `${API_BASE}/teams/${encodeURIComponent(teamName)}/detail`;
+  async updateDetail(teamId: string, updates: Partial<TeamDetailData>): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}/detail` : `${API_BASE}/teams/${encodeURIComponent(teamId)}/detail`;
     const response = await authenticatedFetch(url, {
       method: 'PATCH',
       body: JSON.stringify(updates),
@@ -223,8 +223,8 @@ export const teamsService = {
     if (!response.ok) throw new Error('Failed to update team detail');
   },
 
-  async delete(teamName: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}` : `${API_BASE}/teams/${encodeURIComponent(teamName)}`;
+  async delete(teamId: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}` : `${API_BASE}/teams/${encodeURIComponent(teamId)}`;
     const response = await authenticatedFetch(url, {
       method: 'DELETE',
     });
@@ -414,6 +414,7 @@ export interface ChatMessage {
   timestamp: string | Date;
   userId?: string;
   projectId?: string;
+  teamId?: string;
   memberName?: string;
   memberAvatar?: string;
 }
@@ -442,6 +443,7 @@ export const messagesService = {
     role?: 'user' | 'assistant';
     content: string;
     projectId?: string;
+    teamId?: string;
     memberName?: string;
     memberAvatar?: string;
   }): Promise<ChatMessage> {

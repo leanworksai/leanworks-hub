@@ -25,9 +25,9 @@ export const useUserProjects = () => {
   // Fetch team details for all user teams to get member names
   const teamDetailsQueries = useQueries({
     queries: userTeams.map((team) => ({
-      queryKey: ['teams', team.name],
-      queryFn: () => teamsService.getById(team.name),
-      enabled: !!team.name && !!user?.email,
+      queryKey: ['teams', team.id],
+      queryFn: () => teamsService.getById(team.id),
+      enabled: !!team.id && !!user?.email,
       staleTime: 1000 * 60 * 5,
     })),
   });
@@ -68,13 +68,13 @@ export const useUserProjects = () => {
   };
 };
 
-export const useProject = (projectName: string) => {
+export const useProject = (projectId: string) => {
   const { user, loading } = useAuth();
   
   return useQuery({
-    queryKey: ['projects', projectName],
-    queryFn: () => projectsService.getById(projectName),
-    enabled: !loading && !!user && !!projectName, // Only fetch when user is authenticated and projectName is provided
+    queryKey: ['projects', projectId],
+    queryFn: () => projectsService.getById(projectId),
+    enabled: !loading && !!user && !!projectId, // Only fetch when user is authenticated and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
@@ -94,11 +94,11 @@ export const useUpdateProject = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ projectName, updates }: { projectName: string; updates: Partial<Project> }) =>
-      projectsService.update(projectName, updates),
+    mutationFn: ({ projectId, updates }: { projectId: string; updates: Partial<Project> }) =>
+      projectsService.update(projectId, updates),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['projects', variables.projectName] });
+      queryClient.invalidateQueries({ queryKey: ['projects', variables.projectId] });
     },
   });
 };
@@ -107,7 +107,7 @@ export const useDeleteProject = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (projectName: string) => projectsService.delete(projectName),
+    mutationFn: (projectId: string) => projectsService.delete(projectId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },

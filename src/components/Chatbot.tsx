@@ -15,8 +15,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Project } from "@/data/projectsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
-import { useQueries } from "@tanstack/react-query";
-import { teamsService, messagesService, type ChatMessage } from "@/services/firestore";
+import { useUsers } from "@/hooks/useUsers";
+import { messagesService, type ChatMessage } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 
 interface Message {
@@ -41,7 +41,8 @@ interface ChannelMessage {
   memberAvatar: string;
   content: string;
   timestamp: Date;
-  projectId: string;
+  projectId?: string;
+  teamId?: string;
   userId?: string;
 }
 
@@ -55,35 +56,6 @@ interface SearchResult {
   date: string;
 }
 
-// Get team members from user's teams
-const getUserTeamMembers = (userTeams: Array<{ name: string }>, teamDetails: Array<{ data?: { members: Array<{ name: string; role: string; email: string; avatar: string }> } }>): TeamMember[] => {
-  const memberMap = new Map<string, TeamMember>();
-  
-  userTeams.forEach((team) => {
-    const teamDetailQuery = teamDetails.find(
-      (query) => query.data?.name === team.name
-    );
-    const teamDetail = teamDetailQuery?.data;
-    
-    if (teamDetail?.members) {
-      teamDetail.members.forEach((member) => {
-        // Use email as unique identifier to avoid duplicates
-        const key = member.email.toLowerCase();
-        if (!memberMap.has(key)) {
-          memberMap.set(key, {
-            id: member.email.toLowerCase(), // Use email as ID for consistent chatId generation
-            name: member.name,
-            role: member.role,
-            avatar: member.avatar,
-            email: member.email,
-          });
-        }
-      });
-    }
-  });
-  
-  return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-};
 
 // Generate a consistent chatId for direct messages between two users
 // This ensures both users see the same conversation regardless of who initiated it
@@ -98,6 +70,7 @@ export function Chatbot() {
   const { selectedTeams } = useSelectedTeams();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
+  const { data: allDomainUsers = [] } = useUsers();
   const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
   
@@ -129,15 +102,19 @@ export function Chatbot() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [filterType, setFilterType] = useState<"all" | "activities" | "tasks" | "comments">("all");
   const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map()); // chatId -> unread count
   const [lastReadTimestamps, setLastReadTimestamps] = useState<Map<string, number>>(new Map()); // chatId -> last read timestamp
+  const [allChatCaches, setAllChatCaches] = useState<Map<string, { messages: ChatMessage[], lastSync: number }>>(new Map()); // chatId -> cached messages
+  const [cacheLoadedForSession, setCacheLoadedForSession] = useState(false); // Track if cache has been loaded for this session
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
+  const previousChatIdRef = useRef<string | null>(null); // Track previous chatId to detect chat switches
 
   // Helper functions for message caching
   const getCacheKey = (chatId: string) => {
@@ -179,27 +156,58 @@ export function Chatbot() {
     const cacheKey = getCacheKey(chatId);
     if (!cacheKey) return;
     
+    const lastSync = Date.now();
+    const cachedData = {
+      messages: messages.map(msg => ({
+        ...msg,
+        timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+      })),
+      lastSync,
+    };
+    
     try {
       const toCache = {
         messages: messages.map(msg => ({
           ...msg,
           timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
         })),
-        lastSync: Date.now(),
+        lastSync,
       };
       localStorage.setItem(cacheKey, JSON.stringify(toCache));
+      
+      // Update in-memory cache
+      setAllChatCaches((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(chatId, cachedData);
+        return newMap;
+      });
     } catch (error) {
       console.error('Failed to save cached messages:', error);
       // If storage is full, try to clear old caches
       try {
         clearOldMessageCaches();
-        localStorage.setItem(cacheKey, JSON.stringify({
-          messages: messages.slice(-100).map(msg => ({
+        const limitedMessages = messages.slice(-100);
+        const toCache = {
+          messages: limitedMessages.map(msg => ({
             ...msg,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
           })),
-          lastSync: Date.now(),
-        }));
+          lastSync,
+        };
+        localStorage.setItem(cacheKey, JSON.stringify(toCache));
+        
+        // Update in-memory cache with limited messages
+        setAllChatCaches((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(chatId, {
+            messages: limitedMessages.map(msg => ({
+              ...msg,
+              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            })),
+            lastSync,
+          });
+          return newMap;
+        });
       } catch (e) {
         console.error('Failed to save even after clearing old caches:', e);
       }
@@ -231,6 +239,223 @@ export function Chatbot() {
     } catch (error) {
       console.error('Failed to clear old message caches:', error);
     }
+  };
+
+  // Helper function to merge messages intelligently, preserving optimistic updates
+  const mergeMessages = (
+    existing: Message[], 
+    incoming: ChatMessage[], 
+    preserveOptimistic: boolean = true
+  ): Message[] => {
+    // Create a map of existing messages by ID
+    const existingMap = new Map<string, Message>();
+    existing.forEach(msg => {
+      existingMap.set(msg.id, msg);
+    });
+
+    // Also create a map of optimistic messages by content+timestamp for matching
+    // This helps match temp IDs to real IDs when Firestore confirms the message
+    const optimisticMap = new Map<string, Message>();
+    existing.forEach(msg => {
+      if (msg.id.startsWith('temp-')) {
+        // Use content + timestamp (within 5 seconds) as key to match optimistic messages
+        const key = `${msg.content}|${msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()}`;
+        optimisticMap.set(key, msg);
+      }
+    });
+
+    // Process incoming messages
+    incoming.forEach(incomingMsg => {
+      const incomingId = incomingMsg.id;
+      const existingMsg = existingMap.get(incomingId);
+      
+      // If message exists by ID, update it (prefer real ID over temp ID)
+      if (existingMsg) {
+        const isOptimistic = existingMsg.id.startsWith('temp-');
+        if (!isOptimistic || !preserveOptimistic) {
+          // Update with incoming message (it's from Firestore, so it's authoritative)
+          existingMap.set(incomingId, {
+            id: incomingId,
+            role: incomingMsg.role as "user" | "assistant",
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            userId: incomingMsg.userId,
+          });
+        }
+      } else {
+        // Message doesn't exist by ID - check if it matches an optimistic message
+        const incomingTime = incomingMsg.timestamp instanceof Date 
+          ? incomingMsg.timestamp.getTime() 
+          : new Date(incomingMsg.timestamp).getTime();
+        const incomingContent = incomingMsg.content;
+        
+        // Try to find matching optimistic message (same content, timestamp within 10 seconds)
+        let matchedOptimistic: Message | null = null;
+        for (const [key, optimisticMsg] of optimisticMap.entries()) {
+          const [content, timeStr] = key.split('|');
+          const optimisticTime = parseInt(timeStr);
+          
+          // Match if content is same and timestamp is within 10 seconds
+          if (content === incomingContent && 
+              Math.abs(incomingTime - optimisticTime) < 10000) {
+            matchedOptimistic = optimisticMsg;
+            break;
+          }
+        }
+        
+        if (matchedOptimistic) {
+          // Replace optimistic message with real one
+          existingMap.delete(matchedOptimistic.id);
+          existingMap.set(incomingId, {
+            id: incomingId,
+            role: incomingMsg.role as "user" | "assistant",
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            userId: incomingMsg.userId,
+          });
+        } else {
+          // New message, add it
+          existingMap.set(incomingId, {
+            id: incomingId,
+            role: incomingMsg.role as "user" | "assistant",
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            userId: incomingMsg.userId,
+          });
+        }
+      }
+    });
+
+    // Convert back to array and sort by timestamp
+    const merged = Array.from(existingMap.values()).sort((a, b) => {
+      const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+      const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+      return aTime - bTime;
+    });
+
+    return merged;
+  };
+
+  // Helper function to merge channel messages intelligently
+  const mergeChannelMessages = (
+    existing: ChannelMessage[],
+    incoming: ChatMessage[],
+    projectIdOrTeamId: string,
+    preserveOptimistic: boolean = true,
+    isTeam: boolean = false
+  ): ChannelMessage[] => {
+    // Filter incoming messages for this project or team
+    const channelMessages = incoming.filter(msg => {
+      if (isTeam) {
+        return msg.role === 'user' && msg.teamId === projectIdOrTeamId;
+      } else {
+        return msg.role === 'user' && msg.projectId === projectIdOrTeamId;
+      }
+    });
+
+    // Create a map of existing messages by ID
+    const existingMap = new Map<string, ChannelMessage>();
+    existing.forEach(msg => {
+      existingMap.set(msg.id, msg);
+    });
+
+    // Also create a map of optimistic messages by content+timestamp for matching
+    const optimisticMap = new Map<string, ChannelMessage>();
+    existing.forEach(msg => {
+      if (msg.id.startsWith('temp-')) {
+        const key = `${msg.content}|${msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()}`;
+        optimisticMap.set(key, msg);
+      }
+    });
+
+    // Process incoming messages
+    channelMessages.forEach(incomingMsg => {
+      const incomingId = incomingMsg.id;
+      const existingMsg = existingMap.get(incomingId);
+      
+      // If message exists by ID, update it
+      if (existingMsg) {
+        const isOptimistic = existingMsg.id.startsWith('temp-');
+        if (!isOptimistic || !preserveOptimistic) {
+          // Update with incoming message
+          existingMap.set(incomingId, {
+            id: incomingId,
+            memberName: incomingMsg.memberName || 'You',
+            memberAvatar: incomingMsg.memberAvatar || 'U',
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
+            userId: incomingMsg.userId,
+          });
+        }
+      } else {
+        // Message doesn't exist by ID - check if it matches an optimistic message
+        const incomingTime = incomingMsg.timestamp instanceof Date 
+          ? incomingMsg.timestamp.getTime() 
+          : new Date(incomingMsg.timestamp).getTime();
+        const incomingContent = incomingMsg.content;
+        
+        // Try to find matching optimistic message
+        let matchedOptimistic: ChannelMessage | null = null;
+        for (const [key, optimisticMsg] of optimisticMap.entries()) {
+          const [content, timeStr] = key.split('|');
+          const optimisticTime = parseInt(timeStr);
+          
+          // Match if content is same and timestamp is within 10 seconds
+          if (content === incomingContent && 
+              Math.abs(incomingTime - optimisticTime) < 10000) {
+            matchedOptimistic = optimisticMsg;
+            break;
+          }
+        }
+        
+        if (matchedOptimistic) {
+          // Replace optimistic message with real one
+          existingMap.delete(matchedOptimistic.id);
+          existingMap.set(incomingId, {
+            id: incomingId,
+            memberName: incomingMsg.memberName || 'You',
+            memberAvatar: incomingMsg.memberAvatar || 'U',
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
+            userId: incomingMsg.userId,
+          });
+        } else {
+          // New message, add it
+          existingMap.set(incomingId, {
+            id: incomingId,
+            memberName: incomingMsg.memberName || 'You',
+            memberAvatar: incomingMsg.memberAvatar || 'U',
+            content: incomingMsg.content,
+            timestamp: incomingMsg.timestamp instanceof Date 
+              ? incomingMsg.timestamp 
+              : new Date(incomingMsg.timestamp),
+            ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
+            userId: incomingMsg.userId,
+          });
+        }
+      }
+    });
+
+    // Convert back to array and sort by timestamp
+    const merged = Array.from(existingMap.values()).sort((a, b) => {
+      const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+      const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+      return aTime - bTime;
+    });
+
+    return merged;
   };
 
   // Load lastReadTimestamps from localStorage on mount or when user changes
@@ -285,22 +510,30 @@ export function Chatbot() {
     setSelectedMember(lastMember);
   }, [user?.email, getLastSelectedMember]);
 
-  // Fetch team details for all user teams
-  const teamDetailsQueries = useQueries({
-    queries: userTeams.length > 0
-      ? userTeams.map((team) => ({
-          queryKey: ['teams', team.name],
-          queryFn: () => teamsService.getById(team.name),
-          enabled: !!team.name,
-          staleTime: 1000 * 60 * 5,
-        }))
-      : [],
-  });
-
-  // Get team members from user's teams (memoized to prevent infinite loops)
+  // Get all domain users (excluding current user)
   const allTeamMembers = useMemo(() => {
-    return getUserTeamMembers(userTeams, teamDetailsQueries);
-  }, [userTeams, teamDetailsQueries]);
+    return allDomainUsers
+      .filter((domainUser) => {
+        const userEmail = domainUser.email?.toLowerCase();
+        return userEmail && userEmail !== user?.email?.toLowerCase();
+      })
+      .map((domainUser) => {
+        const userEmail = domainUser.email?.toLowerCase() || '';
+        const firstName = domainUser.firstName || '';
+        const lastName = domainUser.lastName || '';
+        const name = `${firstName} ${lastName}`.trim() || userEmail;
+        const avatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || userEmail.charAt(0).toUpperCase();
+        
+        return {
+          id: userEmail,
+          name: name,
+          role: domainUser.jobTitle || 'User',
+          avatar: avatar,
+          email: userEmail,
+        } as TeamMember;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allDomainUsers, user?.email]);
   
   // Check if selected member is a project channel
   const isProjectChannel = selectedMember.startsWith("project-");
@@ -309,13 +542,24 @@ export function Chatbot() {
     ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === selectedProjectId)
     : null;
   
-  // Filter team members based on search query
+  // Check if selected member is a team channel
+  const isTeamChannel = selectedMember.startsWith("team-");
+  const selectedTeamId = isTeamChannel ? selectedMember.replace("team-", "") : null;
+  const selectedTeam = selectedTeamId 
+    ? userTeams.find(t => t.name.toLowerCase().replace(/\s+/g, '-') === selectedTeamId)
+    : null;
+  
+  // Filter team members based on search query (search by name, role, or email)
   const filteredTeamMembers = memberSearchQuery.trim() === ""
     ? allTeamMembers
-    : allTeamMembers.filter((member) =>
-        member.name.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
-        member.role.toLowerCase().includes(memberSearchQuery.toLowerCase())
-      );
+    : allTeamMembers.filter((member) => {
+        const query = memberSearchQuery.toLowerCase();
+        return (
+          member.name.toLowerCase().includes(query) ||
+          member.role.toLowerCase().includes(query) ||
+          member.email?.toLowerCase().includes(query)
+        );
+      });
 
   // Filter projects based on search query
   const filteredProjects = memberSearchQuery.trim() === ""
@@ -325,10 +569,20 @@ export function Chatbot() {
         project.description.toLowerCase().includes(memberSearchQuery.toLowerCase())
       );
 
+  // Filter teams based on search query
+  const filteredTeams = memberSearchQuery.trim() === ""
+    ? userTeams
+    : userTeams.filter((team) =>
+        team.name.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+        (team.description && team.description.toLowerCase().includes(memberSearchQuery.toLowerCase()))
+      );
+
   const currentMember = selectedMember === "ai-assistant" 
     ? { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" }
     : isProjectChannel && selectedProject
     ? { id: selectedMember, name: selectedProject.name, role: "Project Channel", avatar: "#" }
+    : isTeamChannel && selectedTeam
+    ? { id: selectedMember, name: selectedTeam.name, role: "Team Channel", avatar: "👥" }
     : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" };
 
   // Check if AI Assistant matches search query
@@ -341,8 +595,16 @@ export function Chatbot() {
   };
 
   // Perform search through project activities when in project channel mode
+  // Note: Team channels don't have search functionality yet (similar to project channels)
   useEffect(() => {
-    if (!isProjectChannel || !selectedProject || !memberSearchQuery.trim()) {
+    if ((!isProjectChannel && !isTeamChannel) || (!selectedProject && !selectedTeam) || !memberSearchQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    
+    // For now, only project channels have search functionality
+    if (!isProjectChannel || !selectedProject) {
       setSearchResults([]);
       setIsSearching(false);
       return;
@@ -451,14 +713,14 @@ export function Chatbot() {
       // Small delay to ensure DOM is updated
       setTimeout(() => {
         scrollToBottom();
-        if (isProjectChannel && isSearching) {
+        if ((isProjectChannel || isTeamChannel) && isSearching) {
           memberSearchRef.current?.focus();
         } else {
           inputRef.current?.focus();
         }
       }, 100);
     }
-  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isSearching]);
+  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isTeamChannel, isSearching]);
 
   // Calculate unread counts for all chats when chatbot opens or when user/projects/teams change
   useEffect(() => {
@@ -477,7 +739,7 @@ export function Chatbot() {
         allChatIds.push(`project-${projectId}`);
       });
 
-      // Add all team member direct message chats
+      // Add all domain user direct message chats
       allTeamMembers.forEach((member) => {
         if (member.email) {
           const chatId = getDirectMessageChatId(user.email, member.email);
@@ -486,9 +748,22 @@ export function Chatbot() {
       });
 
       // Calculate unread count for each chat
+      // Use cache first to avoid unnecessary API calls for empty chats
       await Promise.all(
         allChatIds.map(async (chatId) => {
           try {
+            // Check cache first - if chat is empty in cache and cache is recent, skip API call
+            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
+            const cacheIsRecent = cached && !isCacheStale(cached.lastSync);
+            const cacheIsEmpty = cached && cached.messages.length === 0;
+            
+            // If cache shows empty and is recent, skip API call and set count to 0
+            if (cacheIsRecent && cacheIsEmpty) {
+              newUnreadCounts.set(chatId, 0);
+              return;
+            }
+            
+            // Only make API call if cache is stale or doesn't exist
             const firestoreMessages = await messagesService.getByChatId(chatId);
             const lastRead = lastReadTimestamps.get(chatId) || 0;
 
@@ -511,7 +786,12 @@ export function Chatbot() {
             // Store unread count (0 or positive)
             newUnreadCounts.set(chatId, unreadCount);
           } catch (error) {
-            console.error(`Failed to calculate unread count for chat ${chatId}:`, error);
+            // Silently fail - don't spam console with errors
+            // Use cache as fallback if available
+            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
+            if (cached && cached.messages.length === 0) {
+              newUnreadCounts.set(chatId, 0);
+            }
           }
         })
       );
@@ -520,21 +800,21 @@ export function Chatbot() {
       setUnreadCounts((prev) => {
         const merged = new Map(prev);
         newUnreadCounts.forEach((count, chatId) => {
-          // Only update if this chat is not currently open (and chatbot is open)
-          if (isOpen) {
-            let currentChatId: string;
-            if (isProjectChannel && selectedProjectId) {
-              currentChatId = selectedMember;
-            } else if (selectedMember === "ai-assistant") {
-              currentChatId = "ai-assistant";
-            } else {
-              const selectedMemberData = allTeamMembers.find((m) => m.id === selectedMember);
-              if (selectedMemberData?.email) {
-                currentChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
-              } else {
+            // Only update if this chat is not currently open (and chatbot is open)
+            if (isOpen) {
+              let currentChatId: string;
+              if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
                 currentChatId = selectedMember;
+              } else if (selectedMember === "ai-assistant") {
+                currentChatId = "ai-assistant";
+              } else {
+                const selectedMemberData = allTeamMembers.find((m) => m.id === selectedMember);
+                if (selectedMemberData?.email) {
+                  currentChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+                } else {
+                  currentChatId = selectedMember;
+                }
               }
-            }
             if (chatId !== currentChatId) {
               if (count > 0) {
                 merged.set(chatId, count);
@@ -559,7 +839,54 @@ export function Chatbot() {
 
     calculateUnreadCounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, selectedProjectId, lastReadTimestamps]);
+  }, [user?.email, projects, userTeams, allTeamMembers, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, lastReadTimestamps]);
+
+  // Load all chat caches upfront - ONLY ONCE per session (on mount/login)
+  useEffect(() => {
+    if (!user || !user.email || cacheLoadedForSession) return;
+
+    const loadAllChatCaches = () => {
+      const allChatIds: string[] = [];
+      const caches = new Map<string, { messages: ChatMessage[], lastSync: number }>();
+
+      // Add AI assistant chat
+      allChatIds.push("ai-assistant");
+
+      // Add all project channels
+      projects.forEach((project) => {
+        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+        allChatIds.push(`project-${projectId}`);
+      });
+
+      // Add all team channels
+      userTeams.forEach((team) => {
+        const teamId = team.name.toLowerCase().replace(/\s+/g, '-');
+        allChatIds.push(`team-${teamId}`);
+      });
+
+      // Add all domain user direct message chats
+      allTeamMembers.forEach((member) => {
+        if (member.email) {
+          const chatId = getDirectMessageChatId(user.email, member.email);
+          allChatIds.push(chatId);
+        }
+      });
+
+      // Load all caches in parallel
+      allChatIds.forEach((chatId) => {
+        const cached = loadCachedMessages(chatId);
+        if (cached) {
+          caches.set(chatId, cached);
+        }
+      });
+
+      setAllChatCaches(caches);
+      setCacheLoadedForSession(true); // Mark cache as loaded for this session
+    };
+
+    loadAllChatCaches();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email, projects, userTeams, allTeamMembers, cacheLoadedForSession]);
 
   // Background sync: Fetch new messages for all chats even when chat is closed
   useEffect(() => {
@@ -589,10 +916,22 @@ export function Chatbot() {
       await Promise.all(
         allChatIds.map(async (chatId) => {
           try {
-            const cached = loadCachedMessages(chatId);
+            // Use pre-loaded cache if available, otherwise load from localStorage
+            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
             const hasCachedMessages = cached && cached.messages.length > 0;
             const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
 
+            // Only sync if cache is stale or doesn't exist
+            // Skip if cache shows empty and is recent (avoid unnecessary API calls for empty chats)
+            const cacheIsRecent = cached && !cacheIsStale;
+            const cacheIsEmpty = cached && cached.messages.length === 0;
+            
+            // Skip API call if cache shows empty and is recent
+            if (cacheIsRecent && cacheIsEmpty) {
+              // Cache shows empty and is fresh - skip API call
+              return;
+            }
+            
             // Only sync if cache is stale or doesn't exist
             if (!hasCachedMessages || cacheIsStale) {
               // Get the latest message timestamp from cache to fetch only new messages
@@ -629,10 +968,42 @@ export function Chatbot() {
                 saveCachedMessages(chatId, allMessages);
 
                 // Update unread counts if chat is not currently open
+                // IMPORTANT: Never update state for active chats - only update cache and unread counts
                 const isCurrentChat = isOpen && (
-                  (isProjectChannel && selectedProjectId && chatId === selectedMember) ||
-                  (!isProjectChannel && selectedMember === chatId)
+                  ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) && chatId === selectedMember ||
+                  (!isProjectChannel && !isTeamChannel && selectedMember === chatId)
                 );
+                
+                // For active chats, only update cache, don't touch state
+                if (isCurrentChat) {
+                  // Update cache but don't update state (state is managed by real-time listener)
+                  saveCachedMessages(chatId, allMessages);
+                  
+                  // Update last read timestamp
+                  if (allMessages.length > 0) {
+                    const latestMessageTime = Math.max(
+                      ...allMessages.map(msg => 
+                        msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+                      )
+                    );
+                    setLastReadTimestamps((prev) => {
+                      const newMap = new Map(prev);
+                      newMap.set(chatId, latestMessageTime);
+                      return newMap;
+                    });
+                  }
+                  
+                  // Clear unread count if viewing this chat
+                  setUnreadCounts((prev) => {
+                    const newMap = new Map(prev);
+                    newMap.delete(chatId);
+                    return newMap;
+                  });
+                  
+                  // Don't update state - return early
+                  return;
+                }
+                
                 if (!isCurrentChat) {
                   const lastRead = lastReadTimestamps.get(chatId) || 0;
                   const unreadCount = allMessages.filter((msg) => {
@@ -650,11 +1021,32 @@ export function Chatbot() {
                       newMap.set(chatId, unreadCount);
                       return newMap;
                     });
+                  } else {
+                    // Clear unread count if it's 0
+                    setUnreadCounts((prev) => {
+                      const newMap = new Map(prev);
+                      newMap.delete(chatId);
+                      return newMap;
+                    });
                   }
                 }
               } else if (hasCachedMessages) {
                 // Even if no new messages, update cache timestamp to prevent unnecessary fetches
                 saveCachedMessages(chatId, cached.messages);
+                
+                // If viewing this chat, make sure unread count is cleared
+                const isCurrentChat = isOpen && (
+                  ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) && chatId === selectedMember ||
+                  (!isProjectChannel && !isTeamChannel && selectedMember === chatId)
+                );
+                if (isCurrentChat) {
+                  // Clear unread count if viewing this chat
+                  setUnreadCounts((prev) => {
+                    const newMap = new Map(prev);
+                    newMap.delete(chatId);
+                    return newMap;
+                  });
+                }
               }
             }
           } catch (error) {
@@ -665,13 +1057,16 @@ export function Chatbot() {
       );
     };
 
-    // Initial sync
-    syncAllChats();
+    // Initial sync - delay to avoid overwhelming the server
+    const initialSyncTimer = setTimeout(() => {
+      syncAllChats();
+    }, 2000);
 
-    // Set up periodic sync every 30 seconds
-    const syncInterval = setInterval(syncAllChats, 30000);
+    // Set up periodic sync every 60 seconds (reduced from 30 to reduce load)
+    const syncInterval = setInterval(syncAllChats, 60000);
 
     return () => {
+      clearTimeout(initialSyncTimer);
       clearInterval(syncInterval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -684,7 +1079,7 @@ export function Chatbot() {
     let chatId: string;
     
     // Determine chatId
-    if (isProjectChannel && selectedProjectId) {
+    if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
       chatId = selectedMember;
     } else if (selectedMember === "ai-assistant") {
       chatId = "ai-assistant";
@@ -701,17 +1096,42 @@ export function Chatbot() {
       }
     }
 
-    // Load cached messages first for instant display
-    const cached = loadCachedMessages(chatId);
+    // Clear messages when switching to a different chat
+    const previousChatId = previousChatIdRef.current;
+    const chatHasChanged = previousChatId !== null && previousChatId !== chatId;
+    
+    if (chatHasChanged) {
+      // Chat has changed - clear old messages immediately
+      if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
+        // For project/team channels, we keep the Map structure but clear the specific channel
+        // Actually, we should keep other channels' messages, so don't clear here
+      } else {
+        // For regular chats, clear messages immediately
+        setMessages([]);
+      }
+    }
+    // Update the ref to track current chatId
+    previousChatIdRef.current = chatId;
+
+    // Check if this is initial load (state is empty OR chat has changed)
+    // When chat changes, we treat it as initial load since we just cleared messages
+    const isInitialLoad = chatHasChanged || ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)
+      ? (isProjectChannel && selectedProjectId && (!channelMessages.has(selectedProjectId) || channelMessages.get(selectedProjectId)?.length === 0)) ||
+        (isTeamChannel && selectedTeamId && (!channelMessages.has(selectedTeamId) || channelMessages.get(selectedTeamId)?.length === 0))
+      : messages.length === 0);
+    
+    // Load cached messages ONLY for initial load AND only if cache was loaded for this session
+    // Once messages are loaded, rely on real-time listener only - NEVER load from cache again
+    const cached = (isInitialLoad && cacheLoadedForSession) 
+      ? (allChatCaches.get(chatId) || loadCachedMessages(chatId))
+      : null;
     const hasCachedMessages = cached && cached.messages.length > 0;
     const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
     
-    // Only show loading if we don't have cached messages
-    if (!hasCachedMessages) {
-      setIsLoadingMessages(true);
-    } else {
+    // Only use cache for initial load - never after
+    if (isInitialLoad && hasCachedMessages && cacheLoadedForSession) {
       // Show cached messages immediately without loading state
-      setIsLoadingMessages(false); // Explicitly set loading to false when we have cached messages
+      setIsLoadingMessages(false);
       if (isProjectChannel && selectedProjectId) {
         const cachedChannelMsgs: ChannelMessage[] = cached.messages
           .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
@@ -728,6 +1148,24 @@ export function Chatbot() {
         setChannelMessages((prev) => {
           const newMap = new Map(prev);
           newMap.set(selectedProjectId, cachedChannelMsgs);
+          return newMap;
+        });
+      } else if (isTeamChannel && selectedTeamId) {
+        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+          .filter(msg => msg.role === 'user' && msg.teamId === selectedTeamId)
+          .map(msg => ({
+            id: msg.id,
+            memberName: msg.memberName || 'You',
+            memberAvatar: msg.memberAvatar || 'U',
+            content: msg.content,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            teamId: msg.teamId || selectedTeamId,
+            userId: msg.userId,
+          }));
+        
+        setChannelMessages((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(selectedTeamId, cachedChannelMsgs);
           return newMap;
         });
       } else {
@@ -754,13 +1192,28 @@ export function Chatbot() {
               timestamp: new Date(),
             },
           ]);
+        } else {
+          // For private chats with no messages, set empty array
+          setMessages([]);
         }
       }
+    } else if (isInitialLoad && !hasCachedMessages) {
+      // Only show loading if we don't have cached messages and it's initial load
+      setIsLoadingMessages(true);
+    } else {
+      // Not initial load - state already has messages, don't overwrite with cache
+      setIsLoadingMessages(false);
     }
 
-    // Only fetch fresh messages from Firestore if cache is stale or doesn't exist
-    // This prevents unnecessary slow requests when we have fresh cached data
-    if (!hasCachedMessages || cacheIsStale) {
+    // Fetch fresh messages from Firestore if:
+    // 1. Not initial load (always fetch fresh after initial load)
+    // 2. No cached messages available
+    // 3. Cache is stale
+    // 4. Cache shows empty (need to verify it's still empty)
+    // After initial load, always fetch fresh - don't rely on cache
+    const shouldFetch = !isInitialLoad || !hasCachedMessages || cacheIsStale || (hasCachedMessages && cached.messages.length === 0);
+    
+    if (shouldFetch) {
       // Fetch fresh messages from Firestore in the background
       const loadMessages = async () => {
         const cachedForError = hasCachedMessages; // Capture for error handling
@@ -774,6 +1227,13 @@ export function Chatbot() {
               )
             );
             afterTimestamp = new Date(latestTimestamp);
+          }
+          
+          // If cache shows empty and is recent, skip API call for empty chats
+          if (hasCachedMessages && cached.messages.length === 0 && !cacheIsStale) {
+            // Cache shows empty and is fresh - don't make API call
+            setIsLoadingMessages(false);
+            return;
           }
           
           if (isProjectChannel && selectedProjectId) {
@@ -807,14 +1267,82 @@ export function Chatbot() {
               userId: msg.userId,
             }));
           
-          setChannelMessages((prev) => {
+          // Only update state if it's initial load (state is empty)
+          // Otherwise, real-time listener will handle updates
+          if (isInitialLoad) {
+            setChannelMessages((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(selectedProjectId, channelMsgs);
+              return newMap;
+            });
+          }
+          
+          // Save to cache (after state update) - but don't reload from cache
+          setTimeout(() => saveCachedMessages(chatId, allMessages), 0);
+          
+          // Calculate latest message time for read timestamp
+          if (channelMsgs.length > 0) {
+            const latestTime = Math.max(
+              ...channelMsgs.map(msg => 
+                msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
+              )
+            );
+            setLastReadTimestamps((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(chatId, latestTime);
+              return newMap;
+            });
+          }
+          
+          // Clear unread count for this chat (since we're viewing it)
+          setUnreadCounts((prev) => {
             const newMap = new Map(prev);
-            newMap.set(selectedProjectId, channelMsgs);
+            newMap.delete(chatId);
             return newMap;
           });
+        } else if (isTeamChannel && selectedTeamId) {
+          // Load only new team channel messages
+          const newMessages = afterTimestamp 
+            ? await messagesService.getByChatId(chatId, afterTimestamp)
+            : await messagesService.getByChatId(chatId);
           
-          // Save to cache
-          saveCachedMessages(chatId, allMessages);
+          // Merge with cached messages (prefer new messages if there are duplicates)
+          const messageMap = new Map<string, ChatMessage>();
+          if (cached) {
+            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+          }
+          newMessages.forEach(msg => messageMap.set(msg.id, msg));
+        
+        const allMessages = Array.from(messageMap.values()).sort((a, b) => {
+          const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+          const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+          return aTime - bTime;
+        });
+        
+        const channelMsgs: ChannelMessage[] = allMessages
+          .filter(msg => msg.role === 'user' && msg.teamId === selectedTeamId)
+          .map(msg => ({
+            id: msg.id,
+            memberName: msg.memberName || 'You',
+            memberAvatar: msg.memberAvatar || 'U',
+            content: msg.content,
+            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+            teamId: msg.teamId || selectedTeamId,
+            userId: msg.userId,
+          }));
+        
+        // Only update state if it's initial load (state is empty)
+        // Otherwise, real-time listener will handle updates
+        if (isInitialLoad) {
+          setChannelMessages((prev) => {
+            const newMap = new Map(prev);
+            newMap.set(selectedTeamId, channelMsgs);
+            return newMap;
+          });
+        }
+          
+          // Save to cache (after state update) - but don't reload from cache
+          setTimeout(() => saveCachedMessages(chatId, allMessages), 0);
           
           // Calculate latest message time for read timestamp
           if (channelMsgs.length > 0) {
@@ -869,22 +1397,28 @@ export function Chatbot() {
             userId: msg.userId,
           }));
           
-          // If no messages and it's AI Assistant, add greeting
-          if (regularMsgs.length === 0 && chatId === "ai-assistant") {
-            setMessages([
-              {
-                id: "greeting",
-                role: "assistant",
-                content: "Hello! I'm your AI assistant. How can I help you today?",
-                timestamp: new Date(),
-              },
-            ]);
-          } else {
-            setMessages(regularMsgs);
+          // Only update state if it's initial load (state is empty)
+          // Otherwise, real-time listener will handle updates
+          if (isInitialLoad) {
+            if (regularMsgs.length === 0 && chatId === "ai-assistant") {
+              setMessages([
+                {
+                  id: "greeting",
+                  role: "assistant",
+                  content: "Hello! I'm your AI assistant. How can I help you today?",
+                  timestamp: new Date(),
+                },
+              ]);
+            } else if (regularMsgs.length === 0 && chatId !== "ai-assistant") {
+              // For private chats with no messages, set empty array
+              setMessages([]);
+            } else {
+              setMessages(regularMsgs);
+            }
           }
           
-          // Save to cache
-          saveCachedMessages(chatId, allMessages);
+          // Save to cache (after state update if initial load)
+          setTimeout(() => saveCachedMessages(chatId, allMessages), 0);
           
           // Calculate latest message time for read timestamp
           if (regularMsgs.length > 0) {
@@ -937,16 +1471,16 @@ export function Chatbot() {
         // Keep using cached messages if fetch fails
       });
     }
-  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen]);
+  }, [selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, user?.email, isOpen]);
 
-  // Set up real-time listener in a separate effect to avoid conflicts
-  useEffect(() => {
-    if (!user || !isOpen || !user.email || isLoadingMessages) return;
+    // Set up real-time listener in a separate effect to avoid conflicts
+    useEffect(() => {
+      if (!user || !isOpen || !user.email || isLoadingMessages || isSendingMessage) return;
 
     let chatId: string;
     
     // Determine chatId (same logic as above)
-    if (isProjectChannel && selectedProjectId) {
+    if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
       chatId = selectedMember;
     } else if (selectedMember === "ai-assistant") {
       chatId = "ai-assistant";
@@ -975,12 +1509,17 @@ export function Chatbot() {
           return;
         }
         
+        // Don't process updates while sending a message (prevents race conditions)
+        if (isSendingMessage) {
+          return;
+        }
+        
         try {
           // Calculate unread count for this chat
           const lastRead = lastReadTimestamps.get(chatId) || 0;
           // Check if this is the currently open chat
           let currentChatId: string;
-          if (isProjectChannel && selectedProjectId) {
+          if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
             currentChatId = selectedMember;
           } else if (selectedMember === "ai-assistant") {
             currentChatId = "ai-assistant";
@@ -1046,63 +1585,119 @@ export function Chatbot() {
             });
           }
           
+          // Only update messages if this is the currently selected chat
+          // This prevents messages from old chats from appearing when switching chats
+          if (!isCurrentChat) {
+            return; // Don't update messages for chats that are not currently selected
+          }
+          
           if (isProjectChannel && selectedProjectId) {
-            // Update project channel messages
-            const channelMsgs: ChannelMessage[] = firestoreMessages
-              .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
-              .map(msg => ({
-                id: msg.id,
-                memberName: msg.memberName || 'You',
-                memberAvatar: msg.memberAvatar || 'U',
-                content: msg.content,
-                timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
-                projectId: msg.projectId || selectedProjectId,
-                userId: msg.userId,
-              }));
-            
+            // Merge project channel messages instead of replacing
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
               const existing = newMap.get(selectedProjectId) || [];
-              const existingIds = new Set(existing.map(m => m.id));
-              const newIds = new Set(channelMsgs.map(m => m.id));
               
-              // Only update if messages actually changed
-              if (existingIds.size !== newIds.size || 
-                  ![...existingIds].every(id => newIds.has(id))) {
-                newMap.set(selectedProjectId, channelMsgs);
-                // Save to cache when messages update
-                saveCachedMessages(chatId, firestoreMessages);
+              // Don't update if we have optimistic messages that haven't been confirmed yet
+              const hasUnconfirmedOptimistic = existing.some(msg => 
+                msg.id.startsWith('temp-') && 
+                (msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()) > Date.now() - 5000
+              );
+              
+              // Merge with existing messages, preserving optimistic updates
+              const merged = mergeChannelMessages(existing, firestoreMessages, selectedProjectId, true);
+              
+              // Always update if we have optimistic messages (they need to be matched)
+              // Otherwise only update if messages actually changed
+              const existingIds = new Set(existing.map(m => m.id));
+              const mergedIds = new Set(merged.map(m => m.id));
+              
+              if (hasUnconfirmedOptimistic || 
+                  existingIds.size !== mergedIds.size || 
+                  ![...existingIds].every(id => mergedIds.has(id)) ||
+                  merged.length !== existing.length) {
+                newMap.set(selectedProjectId, merged);
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
+                return newMap;
+              }
+              return prev;
+            });
+          } else if (isTeamChannel && selectedTeamId) {
+            // Merge team channel messages instead of replacing
+            setChannelMessages((prev) => {
+              const newMap = new Map(prev);
+              const existing = newMap.get(selectedTeamId) || [];
+              
+              // Don't update if we have optimistic messages that haven't been confirmed yet
+              const hasUnconfirmedOptimistic = existing.some(msg => 
+                msg.id.startsWith('temp-') && 
+                (msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()) > Date.now() - 5000
+              );
+              
+              // Merge with existing messages, preserving optimistic updates
+              const merged = mergeChannelMessages(existing, firestoreMessages, selectedTeamId, false, true);
+              
+              // Always update if we have optimistic messages (they need to be matched)
+              // Otherwise only update if messages actually changed
+              const existingIds = new Set(existing.map(m => m.id));
+              const mergedIds = new Set(merged.map(m => m.id));
+              
+              if (hasUnconfirmedOptimistic || 
+                  existingIds.size !== mergedIds.size || 
+                  ![...existingIds].every(id => mergedIds.has(id)) ||
+                  merged.length !== existing.length) {
+                newMap.set(selectedTeamId, merged);
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
                 return newMap;
               }
               return prev;
             });
           } else {
-            // Update regular messages
-            const filteredMessages = chatId === "ai-assistant" 
-              ? firestoreMessages 
-              : firestoreMessages.filter(msg => msg.role === 'user');
-            
-            const regularMsgs: Message[] = filteredMessages.map(msg => ({
-              id: msg.id,
-              role: msg.role,
-              content: msg.content,
-              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
-              userId: msg.userId,
-            }));
-            
-            // Only update if messages actually changed
+            // Merge regular messages instead of replacing, preserving optimistic updates
             setMessages((prev) => {
-              const existingIds = new Set(prev.map(m => m.id));
-              const newIds = new Set(regularMsgs.map(m => m.id));
-              const hasNewMessages = regularMsgs.some(msg => !existingIds.has(msg.id));
-              const hasRemovedMessages = prev.some(msg => !newIds.has(msg.id));
+              // Don't update if we have optimistic messages that haven't been confirmed yet
+              // This prevents overwriting messages that were just sent
+              const hasUnconfirmedOptimistic = prev.some(msg => 
+                msg.id.startsWith('temp-') && 
+                (msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()) > Date.now() - 5000
+              );
               
-              if (hasNewMessages || hasRemovedMessages || regularMsgs.length !== prev.length) {
-                // Save to cache when messages update
-                saveCachedMessages(chatId, firestoreMessages);
-                if (regularMsgs.length > 0 || chatId !== "ai-assistant") {
-                  return regularMsgs;
-                }
+              // If we have recent optimistic messages, be more careful about merging
+              if (hasUnconfirmedOptimistic) {
+                // For AI Assistant, show both user and assistant messages
+                // For team member chats, only show user messages
+                const filteredMessages = chatId === "ai-assistant" 
+                  ? firestoreMessages 
+                  : firestoreMessages.filter(msg => msg.role === 'user');
+                
+                // Merge with existing messages, preserving optimistic updates
+                const merged = mergeMessages(prev, filteredMessages, true);
+                
+                // Always return merged if we have optimistic messages (they need to be matched)
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
+                return merged;
+              }
+              
+              // Normal merge for confirmed messages
+              const filteredMessages = chatId === "ai-assistant" 
+                ? firestoreMessages 
+                : firestoreMessages.filter(msg => msg.role === 'user');
+              
+              // Merge with existing messages, preserving optimistic updates
+              const merged = mergeMessages(prev, filteredMessages, true);
+              
+              // Only update if messages actually changed
+              const existingIds = new Set(prev.map(m => m.id));
+              const mergedIds = new Set(merged.map(m => m.id));
+              
+              if (existingIds.size !== mergedIds.size || 
+                  ![...existingIds].every(id => mergedIds.has(id)) ||
+                  merged.length !== prev.length) {
+                // Save to cache when messages update (after state update)
+                setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
+                return merged;
               }
               return prev;
             });
@@ -1121,7 +1716,7 @@ export function Chatbot() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages]);
+  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages, allChatCaches]);
 
   const generateResponse = async (userMessage: string): Promise<string> => {
     // Simulate API call delay
@@ -1273,10 +1868,11 @@ export function Chatbot() {
   };
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || !user) return;
+    if (!input.trim() || isLoading || !user || isSendingMessage) return;
 
     const messageContent = input.trim();
     setInput("");
+    setIsSendingMessage(true);
 
     // Handle project channel messages
     if (isProjectChannel && selectedProjectId) {
@@ -1327,23 +1923,26 @@ export function Chatbot() {
           );
           newMap.set(selectedProjectId, updatedMessages);
           
-          // Update cache immediately
+          // Update cache after state update
           const chatId = selectedMember;
-          const allMessages = updatedMessages.map(msg => ({
-            id: msg.id,
-            chatId: chatId,
-            role: 'user' as const,
-            content: msg.content,
-            timestamp: msg.timestamp,
-            projectId: msg.projectId,
-            userId: msg.userId,
-            memberName: msg.memberName,
-            memberAvatar: msg.memberAvatar,
-          }));
-          saveCachedMessages(chatId, allMessages);
+          setTimeout(() => {
+            const allMessages = updatedMessages.map(msg => ({
+              id: msg.id,
+              chatId: chatId,
+              role: 'user' as const,
+              content: msg.content,
+              timestamp: msg.timestamp,
+              projectId: msg.projectId,
+              userId: msg.userId,
+              memberName: msg.memberName,
+              memberAvatar: msg.memberAvatar,
+            }));
+            saveCachedMessages(chatId, allMessages);
+          }, 0);
           
           return newMap;
         });
+        setIsSendingMessage(false);
       } catch (error) {
         console.error('Failed to save channel message:', error);
         // Remove the optimistic message if save failed
@@ -1353,6 +1952,90 @@ export function Chatbot() {
           newMap.set(selectedProjectId, projectMessages.filter(msg => msg.id !== tempChannelMessage.id));
           return newMap;
         });
+        setIsSendingMessage(false);
+      }
+      return;
+    }
+
+    // Handle team channel messages
+    if (isTeamChannel && selectedTeamId) {
+      // Create message and add to state immediately (optimistic update)
+      const tempChannelMessage: ChannelMessage = {
+        id: `temp-channel-${Date.now()}`,
+        memberName: "You",
+        memberAvatar: "U",
+        content: messageContent,
+        timestamp: new Date(),
+        teamId: selectedTeamId,
+        userId: user.email?.toLowerCase(),
+      };
+
+      // Add message to state immediately for instant feedback
+      setChannelMessages((prev) => {
+        const teamMessages = prev.get(selectedTeamId) || [];
+        const newMap = new Map(prev);
+        newMap.set(selectedTeamId, [...teamMessages, tempChannelMessage]);
+        return newMap;
+      });
+
+      // Save to Firestore and update with saved data
+      try {
+        const savedMessage = await messagesService.create({
+          chatId: selectedMember,
+          role: 'user',
+          content: messageContent,
+          teamId: selectedTeamId,
+        });
+
+        const savedChannelMessage: ChannelMessage = {
+          id: savedMessage.id,
+          memberName: savedMessage.memberName || "You",
+          memberAvatar: savedMessage.memberAvatar || "U",
+          content: savedMessage.content,
+          timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
+          teamId: selectedTeamId,
+          userId: savedMessage.userId || user.email?.toLowerCase(),
+        };
+
+        // Update the message in state with saved data
+        setChannelMessages((prev) => {
+          const teamMessages = prev.get(selectedTeamId) || [];
+          const newMap = new Map(prev);
+          const updatedMessages = teamMessages.map(msg => 
+            msg.id === tempChannelMessage.id ? savedChannelMessage : msg
+          );
+          newMap.set(selectedTeamId, updatedMessages);
+          
+          // Update cache after state update
+          const chatId = selectedMember;
+          setTimeout(() => {
+            const allMessages = updatedMessages.map(msg => ({
+              id: msg.id,
+              chatId: chatId,
+              role: 'user' as const,
+              content: msg.content,
+              timestamp: msg.timestamp,
+              teamId: msg.teamId,
+              userId: msg.userId,
+              memberName: msg.memberName,
+              memberAvatar: msg.memberAvatar,
+            }));
+            saveCachedMessages(chatId, allMessages);
+          }, 0);
+          
+          return newMap;
+        });
+        setIsSendingMessage(false);
+      } catch (error) {
+        console.error('Failed to save team channel message:', error);
+        // Remove the optimistic message if save failed
+        setChannelMessages((prev) => {
+          const teamMessages = prev.get(selectedTeamId) || [];
+          const newMap = new Map(prev);
+          newMap.set(selectedTeamId, teamMessages.filter(msg => msg.id !== tempChannelMessage.id));
+          return newMap;
+        });
+        setIsSendingMessage(false);
       }
       return;
     }
@@ -1412,23 +2095,27 @@ export function Chatbot() {
             : msg
         );
         
-        // Update cache immediately
-        const allMessages = updated.map(msg => ({
-          id: msg.id,
-          chatId: chatId,
-          role: msg.role,
-          content: msg.content,
-          timestamp: msg.timestamp,
-          userId: msg.userId,
-        }));
-        saveCachedMessages(chatId, allMessages);
+        // Update cache after state update
+        setTimeout(() => {
+          const allMessages = updated.map(msg => ({
+            id: msg.id,
+            chatId: chatId,
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp,
+            userId: msg.userId,
+          }));
+          saveCachedMessages(chatId, allMessages);
+        }, 0);
         
         return updated;
       });
+      setIsSendingMessage(false);
     } catch (error) {
       console.error('Failed to save user message:', error);
       // Remove the optimistic message if save failed
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
+      setIsSendingMessage(false);
     }
 
     // Only generate AI response for AI Assistant chat
@@ -1469,16 +2156,18 @@ export function Chatbot() {
                 : msg
             );
             
-            // Update cache immediately
-            const allMessages = updated.map(msg => ({
-              id: msg.id,
-              chatId: chatId,
-              role: msg.role,
-              content: msg.content,
-              timestamp: msg.timestamp,
-              userId: msg.userId,
-            }));
-            saveCachedMessages(chatId, allMessages);
+            // Update cache after state update
+            setTimeout(() => {
+              const allMessages = updated.map(msg => ({
+                id: msg.id,
+                chatId: chatId,
+                role: msg.role,
+                content: msg.content,
+                timestamp: msg.timestamp,
+                userId: msg.userId,
+              }));
+              saveCachedMessages(chatId, allMessages);
+            }, 0);
             
             return updated;
           });
@@ -1487,17 +2176,12 @@ export function Chatbot() {
           // Remove the optimistic message if save failed
           setMessages((prev) => prev.filter(msg => msg.id !== assistantMessage.id));
         }
-    } catch (error) {
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "I apologize, but I encountered an error. Please try again.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
+      } catch (error) {
+        console.error('Failed to generate response:', error);
+      } finally {
+        setIsLoading(false);
+        setIsSendingMessage(false);
+      }
     }
     // For team member chats, just save the message (no AI response)
   };
@@ -1605,13 +2289,12 @@ export function Chatbot() {
                         selectedMember === "ai-assistant"
                           ? "bg-primary text-primary-foreground"
                           : (unreadCounts.get("ai-assistant") || 0) > 0
-                          ? "bg-primary/10 hover:bg-primary/20 font-semibold"
+                          ? "bg-primary/10 hover:bg-primary/20"
                           : "hover:bg-muted"
                       )}
                     >
                       <Bot className="h-4 w-4 flex-shrink-0" />
                       <span className={cn(
-                        "font-medium",
                         (unreadCounts.get("ai-assistant") || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
                       )}>AI Assistant</span>
                     </button>
@@ -1619,7 +2302,7 @@ export function Chatbot() {
                 )}
 
                 {/* Separator between AI Assistant and Channels */}
-                {(aiAssistantMatches || filteredProjects.length > 0 || filteredTeamMembers.length > 0) && (
+                {(aiAssistantMatches || filteredProjects.length > 0 || filteredTeams.length > 0 || filteredTeamMembers.length > 0) && (
                   <Separator className="my-2" />
                 )}
 
@@ -1629,36 +2312,67 @@ export function Chatbot() {
                     Channels
                   </div>
                   <div className="space-y-1">
-                    {filteredProjects.length > 0 ? (
-                      filteredProjects.map((project) => {
-                        const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
-                        const projectChatId = `project-${projectId}`;
-                        const projectUnreadCount = unreadCounts.get(projectChatId) || 0;
-                        const isSelected = selectedMember === projectChatId;
-                        return (
-                          <button
-                            key={`project-${projectId}`}
-                            onClick={() => {
-                              setSelectedMember(projectChatId);
-                              setMemberSearchQuery("");
-                            }}
-                            className={cn(
-                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
-                              isSelected
-                                ? "bg-primary text-primary-foreground"
-                                : projectUnreadCount > 0
-                                ? "bg-primary/10 hover:bg-primary/20 font-semibold"
-                                : "hover:bg-muted"
-                            )}
-                          >
-                            <Hash className="h-4 w-4 flex-shrink-0" />
-                            <span className={cn(
-                              "flex-1 text-left truncate",
-                              projectUnreadCount > 0 && !isSelected && "font-semibold"
-                            )}>{project.name}</span>
-                          </button>
-                        );
-                      })
+                    {filteredProjects.length > 0 || filteredTeams.length > 0 ? (
+                      <>
+                        {filteredProjects.map((project) => {
+                          const projectId = project.name.toLowerCase().replace(/\s+/g, '-');
+                          const projectChatId = `project-${projectId}`;
+                          const projectUnreadCount = unreadCounts.get(projectChatId) || 0;
+                          const isSelected = selectedMember === projectChatId;
+                          return (
+                            <button
+                              key={`project-${projectId}`}
+                              onClick={() => {
+                                setSelectedMember(projectChatId);
+                                setMemberSearchQuery("");
+                              }}
+                              className={cn(
+                                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : projectUnreadCount > 0
+                                  ? "bg-primary/10 hover:bg-primary/20"
+                                  : "hover:bg-muted"
+                              )}
+                            >
+                              <Hash className="h-4 w-4 flex-shrink-0" />
+                              <span className={cn(
+                                "flex-1 text-left truncate",
+                                projectUnreadCount > 0 && !isSelected && "font-semibold"
+                              )}>{project.name}</span>
+                            </button>
+                          );
+                        })}
+                        {filteredTeams.map((team) => {
+                          const teamId = team.name.toLowerCase().replace(/\s+/g, '-');
+                          const teamChatId = `team-${teamId}`;
+                          const teamUnreadCount = unreadCounts.get(teamChatId) || 0;
+                          const isSelected = selectedMember === teamChatId;
+                          return (
+                            <button
+                              key={`team-${teamId}`}
+                              onClick={() => {
+                                setSelectedMember(teamChatId);
+                                setMemberSearchQuery("");
+                              }}
+                              className={cn(
+                                "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : teamUnreadCount > 0
+                                  ? "bg-primary/10 hover:bg-primary/20"
+                                  : "hover:bg-muted"
+                              )}
+                            >
+                              <Users className="h-4 w-4 flex-shrink-0" />
+                              <span className={cn(
+                                "flex-1 text-left truncate",
+                                teamUnreadCount > 0 && !isSelected && "font-semibold"
+                              )}>{team.name}</span>
+                            </button>
+                          );
+                        })}
+                      </>
                     ) : (
                       <div className="px-2 py-1.5 text-xs text-muted-foreground">
                         No channels
@@ -1668,14 +2382,14 @@ export function Chatbot() {
                 </div>
 
                 {/* Team Members Section */}
-                {(filteredProjects.length > 0 || filteredTeamMembers.length > 0) && (
+                {(filteredProjects.length > 0 || filteredTeams.length > 0 || filteredTeamMembers.length > 0) && (
                   <Separator className="my-2" />
                 )}
 
-                {/* Team Members Section */}
+                {/* Users Section */}
                 <div className="px-2 py-1.5">
                   <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
-                    Team Members
+                    Direct Messages
                   </div>
                   <div className="space-y-1">
                     {filteredTeamMembers.length > 0 ? (
@@ -1697,7 +2411,7 @@ export function Chatbot() {
                               isSelected
                                 ? "bg-primary text-primary-foreground"
                                 : memberUnreadCount > 0
-                                ? "bg-primary/10 hover:bg-primary/20 font-semibold"
+                                ? "bg-primary/10 hover:bg-primary/20"
                                 : "hover:bg-muted"
                             )}
                           >
@@ -1715,7 +2429,7 @@ export function Chatbot() {
                       })
                     ) : (
                       <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                        No team members
+                        No users found
                       </div>
                     )}
                   </div>
@@ -1732,12 +2446,14 @@ export function Chatbot() {
                 <Avatar className="h-8 w-8 flex-shrink-0">
                   <AvatarFallback className={cn(
                     "text-primary-foreground",
-                    selectedMember === "ai-assistant" ? "bg-primary" : isProjectChannel ? "bg-primary/10" : "bg-muted"
+                    selectedMember === "ai-assistant" ? "bg-primary" : (isProjectChannel || isTeamChannel) ? "bg-primary/10" : "bg-muted"
                   )}>
                     {selectedMember === "ai-assistant" ? (
                       <Bot className="h-4 w-4" />
                     ) : isProjectChannel ? (
                       <Hash className="h-4 w-4 text-primary" />
+                    ) : isTeamChannel ? (
+                      <Users className="h-4 w-4 text-primary" />
                     ) : (
                       <span className="text-xs">{currentMember.avatar}</span>
                     )}
@@ -1746,7 +2462,7 @@ export function Chatbot() {
                 <div className="flex flex-col min-w-0">
                   <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
                   <p className="text-xs text-muted-foreground">
-                    {selectedMember === "ai-assistant" ? "AI Assistant" : isProjectChannel ? "Project Channel" : "Direct Message"}
+                    {selectedMember === "ai-assistant" ? "AI Assistant" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
                   </p>
                 </div>
               </div>
@@ -1847,6 +2563,101 @@ export function Chatbot() {
             </div>
           )}
 
+          {/* Team Channel Messages */}
+          {!isLoadingMessages && isTeamChannel && !isSearching && selectedTeamId && (
+            <>
+              {(() => {
+                const teamMessages = channelMessages.get(selectedTeamId) || [];
+                if (teamMessages.length === 0) {
+                  return (
+                    <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                      <Users className="h-12 w-12 text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-semibold mb-2">{selectedTeam?.name} Channel</h3>
+                      <p className="text-sm text-muted-foreground max-w-sm">
+                        Start a conversation with your team. Your messages will be visible to all team members.
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-4">
+                    {teamMessages.map((message) => {
+                      // Determine if message is from current user
+                      const isSent = message.userId?.toLowerCase() === user?.email?.toLowerCase();
+                      
+                      return (
+                        <div
+                          key={message.id}
+                          className={cn(
+                            "flex gap-3",
+                            isSent ? "justify-end" : "justify-start"
+                          )}
+                        >
+                          {/* Avatar for received messages (other users) */}
+                          {!isSent && (
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                {message.memberAvatar}
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
+                          
+                          {/* Message bubble */}
+                          <div className="flex flex-col min-w-0 max-w-[80%]">
+                            {!isSent && (
+                              <div className="flex items-center gap-2 mb-1 px-1">
+                                <p className="font-medium text-sm">{message.memberName}</p>
+                                <span className="text-xs text-muted-foreground">
+                                  {message.timestamp.toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                            )}
+                            <div
+                              className={cn(
+                                "rounded-lg px-4 py-2",
+                                isSent
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted-foreground/10 border border-border"
+                              )}
+                            >
+                              <p className={cn(
+                                "text-sm whitespace-pre-wrap",
+                                isSent ? "text-primary-foreground" : "text-foreground"
+                              )}>
+                                {message.content}
+                              </p>
+                              <p className={cn(
+                                "text-xs mt-1",
+                                isSent ? "opacity-80" : "opacity-60"
+                              )}>
+                                {message.timestamp.toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </p>
+                            </div>
+                          </div>
+                          
+                          {/* Avatar for sent messages (current user) */}
+                          {isSent && (
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-primary text-primary-foreground">
+                                {message.memberAvatar}
+                              </AvatarFallback>
+                            </Avatar>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </>
+          )}
+
           {/* Project Channel Messages */}
           {!isLoadingMessages && isProjectChannel && !isSearching && selectedProjectId && (
             <>
@@ -1943,7 +2754,7 @@ export function Chatbot() {
           )}
 
           {/* Regular Messages (AI Assistant or Team Members) */}
-          {!isLoadingMessages && !isProjectChannel && messages.map((message) => {
+          {!isLoadingMessages && !isProjectChannel && !isTeamChannel && messages.map((message) => {
             // Determine if message is from current user (sent) or other user (received)
             const isSent = message.role === "assistant" 
               ? false // Assistant messages are always received
@@ -2017,7 +2828,7 @@ export function Chatbot() {
               </div>
             );
           })}
-          {!isLoadingMessages && isLoading && !isProjectChannel && (
+          {!isLoadingMessages && isLoading && !isProjectChannel && !isTeamChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
                 <AvatarFallback className="bg-primary text-primary-foreground">

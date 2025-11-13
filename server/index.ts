@@ -136,12 +136,28 @@ function getCollectionPath(collectionName: string, domain: string): string {
   return `domains/${domain}/${collectionName}`;
 }
 
+// Helper function to get team ID by team name
+async function getTeamIdByName(domain: string, teamName: string): Promise<string | null> {
+  const teamsPath = getCollectionPath('teams', domain);
+  const snapshot = await db.collection(teamsPath)
+    .where('name', '==', teamName)
+    .limit(1)
+    .get();
+  
+  if (snapshot.empty) {
+    return null;
+  }
+  
+  // Return the document ID (which is the team.id)
+  return snapshot.docs[0].id;
+}
+
 // Email whitelist - only these emails can signup and login
 const EMAIL_WHITELIST = [
   'testuser@leanworks.ai',
   'yanfu@leanworks.ai',
   'vijay@leanworks.ai',
-  'qian@leanworks.ai',
+  'qianwen@leanworks.ai',
   // Add more whitelisted emails here
 ];
 
@@ -441,11 +457,11 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/projects/:name', authenticateUser, async (req, res) => {
+app.get('/api/projects/:id', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('projects', domain);
-    const doc = await db.collection(collectionPath).doc(req.params.name).get();
+    const doc = await db.collection(collectionPath).doc(req.params.id).get();
     if (!doc.exists) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -460,29 +476,32 @@ app.post('/api/projects', authenticateUser, async (req, res) => {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('projects', domain);
     const project = req.body;
-    await db.collection(collectionPath).doc(project.name).set(project);
+    if (!project.id) {
+      return res.status(400).json({ error: 'Project ID is required' });
+    }
+    await db.collection(collectionPath).doc(project.id).set(project);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/projects/:name', authenticateUser, async (req, res) => {
+app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('projects', domain);
-    await db.collection(collectionPath).doc(req.params.name).update(req.body);
+    await db.collection(collectionPath).doc(req.params.id).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.delete('/api/projects/:name', authenticateUser, async (req, res) => {
+app.delete('/api/projects/:id', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('projects', domain);
-    await db.collection(collectionPath).doc(req.params.name).delete();
+    await db.collection(collectionPath).doc(req.params.id).delete();
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
@@ -584,9 +603,15 @@ app.post('/api/teams/:teamName/join-request', authenticateUser, async (req, res)
     const userEmail = (req as any).user.email;
     const teamName = req.params.teamName;
     
+    // Get team ID by name
+    const teamId = await getTeamIdByName(domain, teamName);
+    if (!teamId) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
     // Get team details to find owner
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
     
     if (!teamDetailDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
@@ -746,11 +771,15 @@ app.get('/api/teams/invitations', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/teams/:name', authenticateUser, async (req, res) => {
+app.get('/api/teams/:id', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('teamDetails', domain);
-    const doc = await db.collection(collectionPath).doc(req.params.name).get();
+    const teamId = req.params.id;
+    
+    // Only use team ID for lookup
+    const doc = await db.collection(collectionPath).doc(teamId).get();
+    
     if (!doc.exists) {
       return res.status(404).json({ error: 'Team not found' });
     }
@@ -768,47 +797,52 @@ app.post('/api/teams', authenticateUser, async (req, res) => {
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
     const { team, teamDetail } = req.body;
     
+    if (!team.id || !teamDetail.id) {
+      return res.status(400).json({ error: 'Team ID is required' });
+    }
+    
     // Add owner email to team and team detail
     const teamWithOwner = { ...team, ownerEmail: userEmail };
     const teamDetailWithOwner = { ...teamDetail, ownerEmail: userEmail };
     
-    await db.collection(teamsPath).doc(team.name).set(teamWithOwner);
-    await db.collection(teamDetailsPath).doc(team.name).set(teamDetailWithOwner);
+    // Use team.id as document ID for consistent matching
+    await db.collection(teamsPath).doc(team.id).set(teamWithOwner);
+    await db.collection(teamDetailsPath).doc(teamDetail.id).set(teamDetailWithOwner);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/teams/:name', authenticateUser, async (req, res) => {
+app.patch('/api/teams/:id', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('teams', domain);
-    await db.collection(collectionPath).doc(req.params.name).update(req.body);
+    await db.collection(collectionPath).doc(req.params.id).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/teams/:name/detail', authenticateUser, async (req, res) => {
+app.patch('/api/teams/:id/detail', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const collectionPath = getCollectionPath('teamDetails', domain);
-    await db.collection(collectionPath).doc(req.params.name).update(req.body);
+    await db.collection(collectionPath).doc(req.params.id).update(req.body);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.delete('/api/teams/:name', authenticateUser, async (req, res) => {
+app.delete('/api/teams/:id', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const teamsPath = getCollectionPath('teams', domain);
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    await db.collection(teamsPath).doc(req.params.name).delete();
-    await db.collection(teamDetailsPath).doc(req.params.name).delete();
+    await db.collection(teamsPath).doc(req.params.id).delete();
+    await db.collection(teamDetailsPath).doc(req.params.id).delete();
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
@@ -853,9 +887,15 @@ app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async 
       return res.status(404).json({ error: 'User not found' });
     }
     
+    // Get team ID by name
+    const teamId = await getTeamIdByName(domain, requestData.teamName);
+    if (!teamId) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
     // Add user to team
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(requestData.teamName).get();
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
     
     if (!teamDetailDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
@@ -892,15 +932,15 @@ app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async 
     const updatedMembers = [...(teamDetail.members || []), newMember];
     
     // Update team detail
-    await db.collection(teamDetailsPath).doc(requestData.teamName).update({
+    await db.collection(teamDetailsPath).doc(teamId).update({
       members: updatedMembers,
     });
     
     // Update team member count
     const teamsPath = getCollectionPath('teams', domain);
-    const teamDoc = await db.collection(teamsPath).doc(requestData.teamName).get();
+    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
     if (teamDoc.exists) {
-      await db.collection(teamsPath).doc(requestData.teamName).update({
+      await db.collection(teamsPath).doc(teamId).update({
         members: updatedMembers.length,
       });
     }
@@ -967,9 +1007,15 @@ app.post('/api/teams/:teamName/invitations', authenticateUser, async (req, res) 
       return res.status(400).json({ error: 'Invitee email is required' });
     }
     
+    // Get team ID by name
+    const teamId = await getTeamIdByName(domain, teamName);
+    if (!teamId) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
     // Get team details to verify ownership
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
     
     if (!teamDetailDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
@@ -1076,9 +1122,15 @@ app.post('/api/teams/invitations/:invitationId/accept', authenticateUser, async 
       return res.status(404).json({ error: 'User not found' });
     }
     
+    // Get team ID by name
+    const teamId = await getTeamIdByName(domain, invitationData.teamName);
+    if (!teamId) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
     // Add user to team
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(invitationData.teamName).get();
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
     
     if (!teamDetailDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
@@ -1115,15 +1167,15 @@ app.post('/api/teams/invitations/:invitationId/accept', authenticateUser, async 
     const updatedMembers = [...(teamDetail.members || []), newMember];
     
     // Update team detail
-    await db.collection(teamDetailsPath).doc(invitationData.teamName).update({
+    await db.collection(teamDetailsPath).doc(teamId).update({
       members: updatedMembers,
     });
     
     // Update team member count
     const teamsPath = getCollectionPath('teams', domain);
-    const teamDoc = await db.collection(teamsPath).doc(invitationData.teamName).get();
+    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
     if (teamDoc.exists) {
-      await db.collection(teamsPath).doc(invitationData.teamName).update({
+      await db.collection(teamsPath).doc(teamId).update({
         members: updatedMembers.length,
       });
     }
@@ -1184,11 +1236,18 @@ app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req
     const userEmail = (req as any).user.email;
     const teamName = req.params.name;
     const memberEmail = decodeURIComponent(req.params.memberEmail);
+    
+    // Get team ID by name
+    const teamId = await getTeamIdByName(domain, teamName);
+    if (!teamId) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
     const teamsPath = getCollectionPath('teams', domain);
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
     
     // Get team to verify ownership
-    const teamDoc = await db.collection(teamsPath).doc(teamName).get();
+    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
     if (!teamDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
     }
@@ -1209,7 +1268,7 @@ app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req
     }
     
     // Get team details
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
     if (!teamDetailDoc.exists) {
       return res.status(404).json({ error: 'Team details not found' });
     }
@@ -1235,12 +1294,12 @@ app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req
     );
     
     // Update team details
-    await db.collection(teamDetailsPath).doc(teamName).update({
+    await db.collection(teamDetailsPath).doc(teamId).update({
       members: updatedMembers,
     });
     
     // Update team member count
-    await db.collection(teamsPath).doc(teamName).update({
+    await db.collection(teamsPath).doc(teamId).update({
       members: updatedMembers.length,
     });
     
@@ -1257,11 +1316,18 @@ app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
     const domain = (req as any).userDomain;
     const userEmail = (req as any).user.email;
     const teamName = req.params.name;
+    
+    // Get team ID by name
+    const teamId = await getTeamIdByName(domain, teamName);
+    if (!teamId) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
     const teamsPath = getCollectionPath('teams', domain);
     const teamDetailsPath = getCollectionPath('teamDetails', domain);
     
     // Get team to check ownership
-    const teamDoc = await db.collection(teamsPath).doc(teamName).get();
+    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
     if (!teamDoc.exists) {
       return res.status(404).json({ error: 'Team not found' });
     }
@@ -1277,7 +1343,7 @@ app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
     }
     
     // Get team details
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
+    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
     if (!teamDetailDoc.exists) {
       return res.status(404).json({ error: 'Team details not found' });
     }
@@ -1303,12 +1369,12 @@ app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
     );
     
     // Update team details
-    await db.collection(teamDetailsPath).doc(teamName).update({
+    await db.collection(teamDetailsPath).doc(teamId).update({
       members: updatedMembers,
     });
     
     // Update team member count
-    await db.collection(teamsPath).doc(teamName).update({
+    await db.collection(teamsPath).doc(teamId).update({
       members: updatedMembers.length,
     });
     
@@ -1733,7 +1799,7 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
     const userEmail = (req as any).user.email;
-    const { chatId, role, content, memberName, memberAvatar, projectId } = req.body;
+    const { chatId, role, content, memberName, memberAvatar, projectId, teamId } = req.body;
 
     if (!chatId || !content) {
       return res.status(400).json({ error: 'chatId and content are required' });
@@ -1769,6 +1835,13 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
     // Add project-specific fields for project channel messages
     if (projectId) {
       messageData.projectId = projectId;
+      messageData.memberName = finalMemberName;
+      messageData.memberAvatar = finalMemberAvatar;
+    }
+
+    // Add team-specific fields for team channel messages
+    if (teamId) {
+      messageData.teamId = teamId;
       messageData.memberName = finalMemberName;
       messageData.memberAvatar = finalMemberAvatar;
     }

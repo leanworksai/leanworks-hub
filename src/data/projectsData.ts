@@ -30,6 +30,7 @@ export interface Comment {
 }
 
 export interface Project {
+  id: string; // Unique identifier
   name: string;
   description: string;
   detailedDescription: string;
