@@ -289,7 +289,6 @@ export default function ProjectDetail() {
           </Button>
         </div>
         <p className="text-muted-foreground text-lg mb-4">{project.description}</p>
-        <p className="text-foreground mb-4">{project.detailedDescription}</p>
         <div className="flex items-center gap-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
