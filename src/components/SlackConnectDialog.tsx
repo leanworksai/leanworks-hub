@@ -37,7 +37,7 @@ export function SlackConnectDialog({ open, onOpenChange, onSuccess }: SlackConne
 
     try {
       setLoading(true);
-      await integrationsService.connectSlack(botToken);
+      await integrationsService.connect('slack', { botToken });
       setBotToken("");
       onSuccess();
     } catch (error: any) {

@@ -382,19 +382,6 @@ export const integrationsService = {
     }
   },
 
-  // Convenience methods that use the unified connect endpoint
-  async connectSlack(botToken: string): Promise<void> {
-    return this.connect('slack', { botToken });
-  },
-
-  async connectAtlassian(email: string, domain: string, apiToken: string): Promise<void> {
-    return this.connect('atlassian', { email, domain, apiToken });
-  },
-
-  async connectOutlook(clientId: string, clientSecret: string, tenantId: string): Promise<void> {
-    return this.connect('outlook', { clientId, clientSecret, tenantId });
-  },
-
   async disconnect(integrationId: string): Promise<void> {
     const url = import.meta.env.DEV 
       ? `${API_BASE}/api/integrations/${integrationId}/disconnect`

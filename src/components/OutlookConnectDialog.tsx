@@ -39,7 +39,7 @@ export function OutlookConnectDialog({ open, onOpenChange, onSuccess }: OutlookC
 
     try {
       setLoading(true);
-      await integrationsService.connectOutlook(clientId, clientSecret, tenantId);
+      await integrationsService.connect('outlook', { clientId, clientSecret, tenantId });
       setClientId("");
       setClientSecret("");
       setTenantId("");

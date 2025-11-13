@@ -39,7 +39,7 @@ export function AtlassianConnectDialog({ open, onOpenChange, onSuccess }: Atlass
 
     try {
       setLoading(true);
-      await integrationsService.connectAtlassian(email, atlassianDomain, apiToken);
+      await integrationsService.connect('atlassian', { email, domain: atlassianDomain, apiToken });
       setEmail("");
       setAtlassianDomain("");
       setApiToken("");
