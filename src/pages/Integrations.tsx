@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,25 +50,57 @@ export default function Integrations() {
   const { user } = useAuth();
   const { toast } = useToast();
 
-  useEffect(() => {
-    loadIntegrations();
-  }, [user]);
-
-  const loadIntegrations = async () => {
+  const loadIntegrations = useCallback(async () => {
     if (!user) return;
     try {
       setLoading(true);
       const integrations = await integrationsService.getAll();
+      console.log('[Integrations] Loaded integrations:', integrations);
       const connected = new Set(
         integrations.filter(i => i.connected).map(i => i.id)
       );
+      console.log('[Integrations] Connected integration IDs:', Array.from(connected));
       setConnectedIntegrations(connected);
     } catch (error) {
       console.error("Failed to load integrations:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user]);
+
+  useEffect(() => {
+    loadIntegrations();
+  }, [loadIntegrations]);
+
+  // Handle GitHub installation callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const githubStatus = params.get('github');
+    const installationId = params.get('installation_id');
+    
+    if (githubStatus === 'connected') {
+      console.log('[Integrations] GitHub callback detected, installation_id:', installationId);
+      toast({
+        title: "Success",
+        description: "GitHub integration connected successfully",
+      });
+      // Small delay to ensure Firestore write has completed
+      setTimeout(() => {
+        loadIntegrations(); // Reload to show connected status
+      }, 500);
+      // Clean up URL
+      window.history.replaceState({}, '', '/integrations');
+    } else if (githubStatus === 'error') {
+      console.error('[Integrations] GitHub callback error');
+      toast({
+        title: "Error",
+        description: "Failed to connect GitHub integration",
+        variant: "destructive",
+      });
+      // Clean up URL
+      window.history.replaceState({}, '', '/integrations');
+    }
+  }, [toast, loadIntegrations]);
 
   const handleConnect = (integrationId: string) => {
     if (integrationId === "slack") {
@@ -78,7 +110,21 @@ export default function Integrations() {
     } else if (integrationId === "outlook") {
       setOutlookDialogOpen(true);
     } else if (integrationId === "github") {
-      window.open("https://github.com/apps/leanworks", "_blank");
+      // Include domain in state parameter so we can identify which client installed
+      const domain = user?.email ? user.email.split('@')[1]?.toLowerCase() : '';
+      if (!domain) {
+        toast({
+          title: "Error",
+          description: "Unable to determine your domain. Please ensure you're logged in.",
+          variant: "destructive",
+        });
+        return;
+      }
+      // GitHub App installation URL with state parameter containing domain
+      // The callback URL should be configured in GitHub App settings as:
+      // https://hub.leanworks.ai/api/integrations/github/callback
+      const githubAppUrl = `https://github.com/apps/leanworksai/installations/new?state=${encodeURIComponent(domain)}`;
+      window.open(githubAppUrl, "_blank");
     }
   };
 

@@ -8,6 +8,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import crypto from 'crypto';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -40,7 +41,16 @@ const app = express();
 const PORT = 3001;
 
 app.use(cors());
-app.use(express.json());
+// GitHub webhook needs raw body for signature verification, so we'll handle JSON parsing per-route
+// For most routes, we'll use express.json() middleware
+// For the webhook route, we'll use express.raw()
+app.use((req, res, next) => {
+  // Skip JSON parsing for GitHub webhook endpoint
+  if (req.path === '/api/integrations/github/webhook') {
+    return next();
+  }
+  express.json()(req, res, next);
+});
 
 // Extract domain from email
 function extractDomain(email: string): string {
@@ -1730,6 +1740,411 @@ app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async 
   } catch (error) {
     console.error('Disconnect integration error:', error);
     res.status(500).json({ error: (error as Error).message || 'Failed to disconnect integration' });
+  }
+});
+
+// GitHub App installation callback endpoint
+// This endpoint is called by GitHub after the user installs the app
+// It receives the installation_id and state (which contains the domain)
+app.get('/api/integrations/github/callback', async (req, res) => {
+  console.log('[GitHub Callback] ===== Route hit =====');
+  console.log('[GitHub Callback] URL:', req.url);
+  console.log('[GitHub Callback] Query params:', JSON.stringify(req.query, null, 2));
+  console.log('[GitHub Callback] Method:', req.method);
+  
+  try {
+    const { installation_id, setup_action, state } = req.query;
+
+    if (!installation_id) {
+      console.error('[GitHub Callback] Missing installation_id parameter');
+      return res.status(400).send('Missing installation_id parameter');
+    }
+
+    if (!state) {
+      console.error('[GitHub Callback] Missing state parameter');
+      return res.status(400).send('Missing state parameter');
+    }
+
+    const installationId = parseInt(installation_id as string, 10);
+    if (isNaN(installationId)) {
+      console.error('[GitHub Callback] Invalid installation_id:', installation_id);
+      return res.status(400).send('Invalid installation_id parameter');
+    }
+    
+    const domain = state as string;
+
+    console.log(`[GitHub Callback] Processing: Installation ID=${installationId}, Domain=${domain}, Setup Action=${setup_action}`);
+
+    // Store mapping between installation ID and domain in Firestore
+    // This allows us to identify which client installed the app
+    try {
+      const mappingCollectionPath = 'github-installations';
+      await db.collection(mappingCollectionPath).doc(installationId.toString()).set({
+        installationId,
+        domain,
+        setupAction: setup_action || 'install',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      console.log(`[GitHub Callback] ✅ Mapped installation ${installationId} to domain ${domain}`);
+    } catch (error: any) {
+      console.error(`[GitHub Callback] ❌ Failed to store installation mapping:`, error);
+      throw error; // Re-throw to be caught by outer catch
+    }
+
+    // Save installation data to Secret Manager
+    // The webhook will later update this with full installation details, but we save basic info now
+    const secretName = getSecretName(domain, 'github');
+    const basicInstallationData = {
+      installationId,
+      domain,
+      connectedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      // Full details will be added by webhook when installation event is received
+    };
+
+    try {
+      await saveSecret(secretName, JSON.stringify(basicInstallationData));
+      console.log(`[GitHub Callback] ✅ Basic installation data saved to Secret Manager: ${secretName}`);
+    } catch (error: any) {
+      console.error(`[GitHub Callback] ❌ Failed to save to Secret Manager:`, error);
+      console.error(`[GitHub Callback] Error details:`, {
+        message: error.message,
+        code: error.code,
+        stack: error.stack,
+      });
+      // Don't fail the callback, but log the error
+    }
+
+    // Immediately update Firestore integration record to show connected status
+    // The webhook will later update this with full installation details
+    try {
+      const collectionPath = getCollectionPath('integrations', domain);
+      console.log(`[GitHub Callback] Updating Firestore: collectionPath=${collectionPath}, secretName=${secretName}`);
+      
+      await db.collection(collectionPath).doc('github').set({
+        id: 'github',
+        name: 'GitHub',
+        connected: true,
+        connectedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        secretName,
+        installationId,
+      });
+      console.log(`[GitHub Callback] ✅ Integration record updated in Firestore for domain ${domain}`);
+    } catch (error: any) {
+      console.error(`[GitHub Callback] ❌ Failed to update integration record in Firestore:`, error);
+      console.error(`[GitHub Callback] Error details:`, {
+        message: error.message,
+        code: error.code,
+        stack: error.stack,
+      });
+      // Don't fail the callback if Firestore update fails, webhook will handle it
+      // But log it so we can debug
+    }
+
+    // Redirect back to the integrations page with success message
+    // Always use production URL for redirect (works for both dev and prod)
+    let redirectUrl: string = 'https://hub.leanworks.ai';
+    console.log(`[GitHub Callback] 🔄 Redirecting to production frontend: ${redirectUrl}`);
+    
+    // Override with FRONTEND_URL if explicitly set (for local testing)
+    if (process.env.FRONTEND_URL) {
+      redirectUrl = process.env.FRONTEND_URL;
+      console.log(`[GitHub Callback] ⚠️  Using FRONTEND_URL override: ${redirectUrl}`);
+    }
+    
+    const redirectPath = `${redirectUrl}/integrations?github=connected&installation_id=${installationId}`;
+    console.log(`[GitHub Callback] ✅ Redirecting to: ${redirectPath}`);
+    res.redirect(redirectPath);
+  } catch (error: any) {
+    console.error('[GitHub Callback] ❌ Fatal error:', error);
+    console.error('[GitHub Callback] Error details:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack,
+    });
+    
+    // Use same logic for error redirect - always use production URL
+    let redirectUrl: string = 'https://hub.leanworks.ai';
+    
+    // Override with FRONTEND_URL if explicitly set
+    if (process.env.FRONTEND_URL) {
+      redirectUrl = process.env.FRONTEND_URL;
+    }
+    
+    const errorPath = `${redirectUrl}/integrations?github=error`;
+    console.log(`[GitHub Callback] Redirecting to error page: ${errorPath}`);
+    res.redirect(errorPath);
+  }
+});
+
+// GitHub Webhook endpoint (no authentication required, uses webhook secret verification)
+app.post('/api/integrations/github/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const signature = req.headers['x-hub-signature-256'] as string;
+    const event = req.headers['x-github-event'] as string;
+    const deliveryId = req.headers['x-github-delivery'] as string;
+
+    if (!signature || !event || !deliveryId) {
+      return res.status(400).json({ error: 'Missing required GitHub webhook headers' });
+    }
+
+    // Get webhook secret from environment variable or GCP Secret Manager
+    // For now, using environment variable. You can enhance this to fetch from Secret Manager
+    const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      console.error('[GitHub Webhook] Webhook secret not configured');
+      return res.status(500).json({ error: 'Webhook secret not configured' });
+    }
+
+    // Verify webhook signature
+    const payload = req.body;
+    const hmac = crypto.createHmac('sha256', webhookSecret);
+    const digest = 'sha256=' + hmac.update(payload).digest('hex');
+    
+    if (signature !== digest) {
+      console.error('[GitHub Webhook] Invalid signature');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    // Parse the JSON payload
+    let payloadData;
+    try {
+      payloadData = JSON.parse(payload.toString());
+    } catch (error) {
+      console.error('[GitHub Webhook] Invalid JSON payload');
+      return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+
+    // Log the event for debugging
+    console.log(`[GitHub Webhook] Received event: ${event}, delivery: ${deliveryId}`);
+    console.log(`[GitHub Webhook] Action: ${payloadData.action || 'N/A'}`);
+
+    // Handle only installation and installation_repositories events
+    switch (event) {
+      case 'installation':
+        // GitHub App installation/removal
+        const installation = payloadData.installation;
+        if (!installation || !installation.id) {
+          console.error('[GitHub Webhook] Missing installation data');
+          return res.status(400).json({ error: 'Missing installation data' });
+        }
+
+        const installationId = installation.id;
+        const accountLogin = installation.account?.login || 'unknown';
+        const accountType = installation.account?.type || 'unknown'; // 'Organization' or 'User'
+
+        if (payloadData.action === 'created') {
+          console.log(`[GitHub Webhook] App installed for: ${accountLogin} (${accountType})`);
+          console.log(`[GitHub Webhook] Installation ID: ${installationId}`);
+
+          // Look up domain from installation mapping
+          let domain: string | null = null;
+          try {
+            const mappingDoc = await db.collection('github-installations').doc(installationId.toString()).get();
+            if (mappingDoc.exists) {
+              domain = mappingDoc.data()?.domain || null;
+              console.log(`[GitHub Webhook] Found domain mapping: ${domain}`);
+            } else {
+              console.warn(`[GitHub Webhook] No domain mapping found for installation ${installationId}`);
+            }
+          } catch (error: any) {
+            console.error(`[GitHub Webhook] Failed to look up domain mapping:`, error);
+          }
+
+          // Prepare installation data to save
+          const installationData = {
+            installationId,
+            domain, // Include domain if found
+            accountLogin,
+            accountType,
+            accountId: installation.account?.id,
+            targetType: installation.target_type, // 'User' or 'Organization'
+            targetId: installation.target_id,
+            appId: installation.app_id,
+            permissions: installation.permissions,
+            events: installation.events,
+            createdAt: installation.created_at,
+            updatedAt: installation.updated_at,
+            suspendedAt: installation.suspended_at,
+            suspendedBy: installation.suspended_by,
+            repositoriesUrl: installation.repositories_url,
+            repositories: [], // Will be populated by installation_repositories events
+          };
+
+          // Save to Secret Manager
+          // Use domain-based secret name if domain is available, otherwise use installation ID
+          const secretName = domain 
+            ? getSecretName(domain, 'github')
+            : `github-installation-${installationId}`;
+          
+          try {
+            await saveSecret(secretName, JSON.stringify(installationData));
+            console.log(`[GitHub Webhook] Installation data saved to Secret Manager: ${secretName}`);
+            
+            // Also update Firestore integration record if domain is known
+            if (domain) {
+              const collectionPath = getCollectionPath('integrations', domain);
+              await db.collection(collectionPath).doc('github').set({
+                id: 'github',
+                name: 'GitHub',
+                connected: true,
+                connectedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                secretName,
+                installationId,
+              });
+              console.log(`[GitHub Webhook] Integration record updated in Firestore for domain ${domain}`);
+            }
+          } catch (error: any) {
+            console.error(`[GitHub Webhook] Failed to save installation to Secret Manager:`, error);
+            return res.status(500).json({ error: 'Failed to save installation data' });
+          }
+        } else if (payloadData.action === 'deleted') {
+          console.log(`[GitHub Webhook] App uninstalled for: ${accountLogin}`);
+          console.log(`[GitHub Webhook] Installation ID: ${installationId}`);
+
+          // Look up domain from installation mapping
+          let domain: string | null = null;
+          try {
+            const mappingDoc = await db.collection('github-installations').doc(installationId.toString()).get();
+            if (mappingDoc.exists) {
+              domain = mappingDoc.data()?.domain || null;
+            }
+          } catch (error: any) {
+            console.error(`[GitHub Webhook] Failed to look up domain mapping:`, error);
+          }
+
+          // Delete from Secret Manager
+          const secretName = domain 
+            ? getSecretName(domain, 'github')
+            : `github-installation-${installationId}`;
+          
+          try {
+            await deleteSecret(secretName);
+            console.log(`[GitHub Webhook] Installation data deleted from Secret Manager: ${secretName}`);
+          } catch (error: any) {
+            console.error(`[GitHub Webhook] Failed to delete installation from Secret Manager:`, error);
+            // Don't fail the request if deletion fails (secret might not exist)
+          }
+
+          // Update Firestore integration record if domain is known
+          if (domain) {
+            try {
+              const collectionPath = getCollectionPath('integrations', domain);
+              await db.collection(collectionPath).doc('github').delete();
+              console.log(`[GitHub Webhook] Integration record deleted from Firestore for domain ${domain}`);
+            } catch (error: any) {
+              console.error(`[GitHub Webhook] Failed to delete integration record from Firestore:`, error);
+            }
+          }
+
+          // Delete the installation mapping
+          try {
+            await db.collection('github-installations').doc(installationId.toString()).delete();
+            console.log(`[GitHub Webhook] Installation mapping deleted`);
+          } catch (error: any) {
+            console.error(`[GitHub Webhook] Failed to delete installation mapping:`, error);
+          }
+        }
+        break;
+
+      case 'installation_repositories':
+        // Repositories added/removed from installation
+        const inst = payloadData.installation;
+        if (!inst || !inst.id) {
+          console.error('[GitHub Webhook] Missing installation data in installation_repositories event');
+          return res.status(400).json({ error: 'Missing installation data' });
+        }
+
+        const instId = inst.id;
+        const addedCount = payloadData.repositories_added?.length || 0;
+        const removedCount = payloadData.repositories_removed?.length || 0;
+        console.log(`[GitHub Webhook] Repositories ${payloadData.action}: ${addedCount} added, ${removedCount} removed`);
+        console.log(`[GitHub Webhook] Installation ID: ${instId}`);
+
+        // Get existing installation data from Secret Manager
+        const instSecretName = `github-installation-${instId}`;
+        let existingData: any = null;
+        try {
+          const projectId = serviceAccount.project_id;
+          const fullSecretName = `projects/${projectId}/secrets/${instSecretName}`;
+          const [version] = await secretManagerClient.accessSecretVersion({
+            name: `${fullSecretName}/versions/latest`,
+          });
+          if (version.payload?.data) {
+            existingData = JSON.parse(version.payload.data.toString());
+          }
+        } catch (error: any) {
+          if (error.code !== 5) { // NOT_FOUND
+            console.error(`[GitHub Webhook] Failed to read installation data:`, error);
+          }
+        }
+
+        // Update installation data with repository changes
+        if (existingData) {
+          const repositories = existingData.repositories || [];
+          const addedRepos = payloadData.repositories_added || [];
+          const removedRepos = payloadData.repositories_removed || [];
+
+          // Add new repositories
+          addedRepos.forEach((repo: any) => {
+            if (!repositories.find((r: any) => r.id === repo.id)) {
+              repositories.push({
+                id: repo.id,
+                name: repo.name,
+                fullName: repo.full_name,
+                private: repo.private,
+                htmlUrl: repo.html_url,
+              });
+            }
+          });
+
+          // Remove repositories
+          const removedRepoIds = new Set(removedRepos.map((r: any) => r.id));
+          const filteredRepos = repositories.filter((r: any) => !removedRepoIds.has(r.id));
+
+          // Update installation data
+          existingData.repositories = filteredRepos;
+          existingData.updatedAt = new Date().toISOString();
+          existingData.lastRepositoryUpdate = {
+            action: payloadData.action,
+            addedCount,
+            removedCount,
+            timestamp: new Date().toISOString(),
+          };
+
+          // Save updated data to Secret Manager
+          try {
+            await saveSecret(instSecretName, JSON.stringify(existingData));
+            console.log(`[GitHub Webhook] Installation data updated in Secret Manager: ${instSecretName}`);
+          } catch (error: any) {
+            console.error(`[GitHub Webhook] Failed to update installation in Secret Manager:`, error);
+            return res.status(500).json({ error: 'Failed to update installation data' });
+          }
+        } else {
+          console.warn(`[GitHub Webhook] Installation ${instId} not found in Secret Manager, skipping repository update`);
+        }
+
+        if (addedCount > 0) {
+          console.log(`[GitHub Webhook] Added repositories:`, payloadData.repositories_added?.map((r: any) => r.full_name));
+        }
+        if (removedCount > 0) {
+          console.log(`[GitHub Webhook] Removed repositories:`, payloadData.repositories_removed?.map((r: any) => r.full_name));
+        }
+        break;
+
+      default:
+        // Ignore other event types
+        console.log(`[GitHub Webhook] Ignoring event type: ${event}`);
+    }
+
+    // Always return 200 to acknowledge receipt
+    res.status(200).json({ received: true, event, deliveryId });
+  } catch (error) {
+    console.error('[GitHub Webhook] Error processing webhook:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to process webhook' });
   }
 });
 
