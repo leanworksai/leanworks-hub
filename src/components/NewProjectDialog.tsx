@@ -235,7 +235,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   // Convert TeamMember to ProjectMember
   const convertToProjectMember = (teamMember: TeamMember, teamName: string, index: number): ProjectMember => {
     return {
-      id: `${teamName}-${teamMember.name}-${index}`,
+      id: teamMember.email?.toLowerCase() || `${teamName}-${teamMember.name}-${index}`,
       name: teamMember.name,
       role: teamMember.role,
       avatar: teamMember.avatar,

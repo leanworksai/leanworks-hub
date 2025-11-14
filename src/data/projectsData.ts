@@ -1,5 +1,5 @@
 export interface ProjectMember {
-  id: string;
+  id: string; // Email address of the member
   name: string;
   role: string;
   avatar: string;
