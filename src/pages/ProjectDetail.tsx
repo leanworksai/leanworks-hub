@@ -14,6 +14,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
@@ -61,6 +66,7 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [hoveredTask, setHoveredTask] = useState<string | null>(null);
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   
@@ -373,7 +379,48 @@ export default function ProjectDetail() {
                       {getTaskIcon(task.status)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm mb-1">{task.title}</p>
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="font-medium text-sm">{task.title}</p>
+                        {task.reason && (
+                          <Popover open={hoveredTask === task.id} onOpenChange={(open) => setHoveredTask(open ? task.id : null)}>
+                            <PopoverTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-4 w-4 text-muted-foreground hover:text-foreground"
+                                onMouseEnter={() => setHoveredTask(task.id)}
+                                onMouseLeave={() => setHoveredTask(null)}
+                                title="Reason"
+                              >
+                                <div className="relative h-3 w-3">
+                                  <svg 
+                                    className="absolute left-0 top-0 h-3 w-3" 
+                                    viewBox="0 0 24 24" 
+                                    fill="currentColor"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                  >
+                                    <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z" />
+                                  </svg>
+                                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[6px] font-bold leading-none">R</span>
+                                </div>
+                              </Button>
+                            </PopoverTrigger>
+                            <PopoverContent 
+                              className="w-80" 
+                              onMouseEnter={() => setHoveredTask(task.id)}
+                              onMouseLeave={() => setHoveredTask(null)}
+                              align="start"
+                            >
+                              <div className="space-y-3">
+                                <p className="text-xs font-medium text-muted-foreground/70">REASON</p>
+                                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                  {task.reason}
+                                </p>
+                              </div>
+                            </PopoverContent>
+                          </Popover>
+                        )}
+                      </div>
                       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                         <span>Assignee: {task.assignee || "Unassigned"}</span>
                         <span>Due: {formatDate(task.dueDate)}</span>

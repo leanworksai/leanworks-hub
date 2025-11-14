@@ -18,6 +18,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { 
   Plus, 
   CheckCircle2, 
@@ -95,6 +100,7 @@ export default function Tasks() {
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const [hoveredTask, setHoveredTask] = useState<string | null>(null);
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -252,6 +258,47 @@ export default function Tasks() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <CardTitle className="text-lg">{task.title}</CardTitle>
+                      {task.reason && (
+                        <Popover open={hoveredTask === task.id} onOpenChange={(open) => setHoveredTask(open ? task.id : null)}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                              onClick={(e) => e.stopPropagation()}
+                              onMouseEnter={() => setHoveredTask(task.id)}
+                              onMouseLeave={() => setHoveredTask(null)}
+                              title="Reason"
+                            >
+                              <div className="relative h-4 w-4">
+                                <svg 
+                                  className="absolute left-0 top-0 h-4 w-4" 
+                                  viewBox="0 0 24 24" 
+                                  fill="currentColor"
+                                  xmlns="http://www.w3.org/2000/svg"
+                                >
+                                  <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z" />
+                                </svg>
+                                <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[8px] font-bold leading-none">R</span>
+                              </div>
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent 
+                            className="w-80" 
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseEnter={() => setHoveredTask(task.id)}
+                            onMouseLeave={() => setHoveredTask(null)}
+                            align="start"
+                          >
+                            <div className="space-y-3">
+                              <p className="text-xs font-medium text-muted-foreground/70">REASON</p>
+                              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                {task.reason}
+                              </p>
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                      )}
                       <Badge 
                         className={`${getPriorityColor(task.priority)} text-xs`}
                         variant="outline"

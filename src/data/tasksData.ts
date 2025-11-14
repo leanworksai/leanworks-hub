@@ -36,5 +36,6 @@ export interface Task {
   tags: string[];
   progressUpdates: TaskProgressUpdate[];
   comments: TaskComment[];
+  reason?: string; // Reason/context for the task (displayed similar to progress summary for projects)
 }
 

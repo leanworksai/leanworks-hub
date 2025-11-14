@@ -13,6 +13,7 @@ export interface Task {
   assignee?: string; // Display name of the assignee (used directly without joining users table)
   assigneeAvatar?: string; // Optional: cached avatar initials, can be derived from user name
   dueDate: string;
+  reason?: string; // Reason/context for the task (displayed similar to progress summary for projects)
 }
 
 export interface ProgressUpdate {

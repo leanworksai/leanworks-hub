@@ -525,6 +525,20 @@ export default function TaskDetail() {
           </p>
         )}
         
+        {/* Reason Section */}
+        {task.reason && (
+          <Card className="bg-gradient-card border-border shadow-card mb-4">
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-muted-foreground/70">REASON</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                {task.reason}
+              </p>
+            </CardContent>
+          </Card>
+        )}
+        
         {/* Task Meta Info */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
