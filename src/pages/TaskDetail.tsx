@@ -547,7 +547,7 @@ export default function TaskDetail() {
                     className="w-[250px] justify-between"
                   >
                     <div className="flex items-center gap-2">
-                        <Avatar className="h-5 w-5">
+                      <Avatar className="h-5 w-5">
                         <AvatarFallback className="bg-primary/10 text-primary text-xs">
                           {editedTask.assigneeAvatar || (editedTask.assignee ? getInitials(editedTask.assignee) : "?")}
                         </AvatarFallback>

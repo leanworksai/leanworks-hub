@@ -18,6 +18,7 @@ export const useTasks = () => {
 
 // Hook to get tasks filtered by current user's team membership (via projects or teams)
 export const useUserTasks = () => {
+  const { user } = useAuth();
   const { data: allTasks = [], isLoading: isLoadingTasks } = useTasks();
   const { data: userProjects = [], isLoading: isLoadingProjects } = useUserProjects();
   const { data: userTeams = [], isLoading: isLoadingTeams } = useUserTeams();
@@ -40,6 +41,7 @@ export const useUserTasks = () => {
   // Filter tasks to show:
   // 1. Tasks whose project is in user's projects (matched by ID or name)
   // 2. Tasks without a project but associated with user's teams
+  // 3. Tasks created by the user (even if no project/team association)
   const userTasks = allTasks.filter((task) => {
     // If task has a project, check if it's in user's projects
     if (task.projectId) {
@@ -65,6 +67,14 @@ export const useUserTasks = () => {
       return task.teams.some(teamName => 
         userTeamNames.has(teamName.toLowerCase())
       );
+    }
+    
+    // If task has no project and no teams, check if it was created by the current user
+    // This ensures user-created tasks are always visible to the creator
+    if (task.createdBy && user?.email) {
+      if (task.createdBy.toLowerCase() === user.email.toLowerCase()) {
+        return true;
+      }
     }
     
     return false;
