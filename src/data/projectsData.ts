@@ -10,6 +10,8 @@ export interface Task {
   title: string;
   status: "todo" | "in-progress" | "completed";
   assigneeId?: string; // User ID (email address) - display name is fetched from users table
+  assignee?: string; // Display name of the assignee (used directly without joining users table)
+  assigneeAvatar?: string; // Optional: cached avatar initials, can be derived from user name
   dueDate: string;
 }
 

@@ -656,8 +656,7 @@ export function Chatbot() {
     // Search through tasks
     if (filterType === "all" || filterType === "tasks") {
       selectedProject.tasks.forEach((task) => {
-        const assigneeUser = getUserById(allDomainUsers, task.assigneeId);
-        const assigneeName = getUserDisplayName(assigneeUser) || "Unassigned";
+        const assigneeName = task.assignee || "Unassigned";
         if (
           task.title.toLowerCase().includes(query) ||
           assigneeName.toLowerCase().includes(query) ||
@@ -669,7 +668,7 @@ export function Chatbot() {
             title: task.title,
             content: `Status: ${task.status} | Assignee: ${assigneeName} | Due: ${task.dueDate}`,
             memberName: assigneeName,
-            memberAvatar: getUserInitials(assigneeUser),
+            memberAvatar: task.assigneeAvatar || (assigneeName !== "Unassigned" ? assigneeName.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2) : "?"),
             date: task.dueDate,
           });
         }
@@ -1744,8 +1743,7 @@ export function Chatbot() {
     if (selectedTasks.length > 0) {
       tasksContextInfo = "\n\n[Context - Selected Tasks:]\n";
       selectedTasks.forEach((task) => {
-        const assigneeUser = getUserById(allDomainUsers, task.assigneeId);
-        const assigneeName = getUserDisplayName(assigneeUser) || "Unassigned";
+        const assigneeName = task.assignee || "Unassigned";
         tasksContextInfo += `- ${task.title}: ${task.description}\n`;
         tasksContextInfo += `  Status: ${task.status}, Priority: ${task.priority}\n`;
         tasksContextInfo += `  Assignee: ${assigneeName}, Due: ${task.dueDate}\n`;

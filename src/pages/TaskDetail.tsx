@@ -64,11 +64,19 @@ import { useToast } from "@/hooks/use-toast";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
-import { getUserById, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { format, parse } from "date-fns";
 import { useState, useEffect } from "react";
+
+const getInitials = (name: string): string => {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+};
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -539,12 +547,12 @@ export default function TaskDetail() {
                     className="w-[250px] justify-between"
                   >
                     <div className="flex items-center gap-2">
-                      <Avatar className="h-5 w-5">
+                        <Avatar className="h-5 w-5">
                         <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                          {getUserInitials(getUserById(users, editedTask.assigneeId))}
+                          {editedTask.assigneeAvatar || (editedTask.assignee ? getInitials(editedTask.assignee) : "?")}
                         </AvatarFallback>
                       </Avatar>
-                      <span>{getUserDisplayName(getUserById(users, editedTask.assigneeId)) || "Select assignee..."}</span>
+                      <span>{editedTask.assignee || "Select assignee..."}</span>
                     </div>
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -563,7 +571,10 @@ export default function TaskDetail() {
                               const selectedMember = teamMembers.find(m => m.name === member.name);
                               if (selectedMember && selectedMember.id) {
                                 setAssigneeJustSelected(true);
-                                handleFieldSave('assigneeId', selectedMember.id);
+                                handleFieldSave('assigneeId', selectedMember.id, {
+                                  assignee: selectedMember.name,
+                                  assigneeAvatar: selectedMember.avatar
+                                });
                                 setAssigneeOpen(false);
                               }
                             }}
@@ -595,14 +606,14 @@ export default function TaskDetail() {
               <div className="flex items-center gap-2">
                 <Avatar className="h-6 w-6">
                   <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                    {getUserInitials(getUserById(users, task.assigneeId))}
+                    {task.assigneeAvatar || (task.assignee ? getInitials(task.assignee) : "?")}
                   </AvatarFallback>
                 </Avatar>
                 <span 
                   className="text-foreground font-medium cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
                   onClick={() => handleFieldClick('assigneeId')}
                 >
-                  {getUserDisplayName(getUserById(users, task.assigneeId)) || "Unassigned"}
+                  {task.assignee || "Unassigned"}
                 </span>
               </div>
             )}

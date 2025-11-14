@@ -209,7 +209,9 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
         description: data.description,
         status: data.status,
         priority: data.priority,
-        assigneeId: selectedAssigneeId || undefined, // User ID (email address) - display name fetched from users table
+        assigneeId: selectedAssigneeId || undefined, // User ID (email address)
+        assignee: selectedAssignee || undefined, // Display name of the assignee
+        assigneeAvatar: selectedAssignee ? (projectMembers.find(m => m.name === selectedAssignee)?.avatar || getInitials(selectedAssignee)) : undefined,
         project: project?.name,
         projectId: project?.id || undefined, // Use the actual project ID, not the form value
         teams: teams,
