@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { SlackConnectDialog } from "@/components/SlackConnectDialog";
@@ -166,15 +166,6 @@ export default function Integrations() {
           <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
         </div>
       </div>
-
-      <Card className="bg-gradient-card border-border shadow-card">
-        <CardHeader>
-          <CardTitle>Connected Integrations</CardTitle>
-          <CardDescription>
-            {connectedIntegrations.size} integration{connectedIntegrations.size !== 1 ? 's' : ''} currently active
-          </CardDescription>
-        </CardHeader>
-      </Card>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {integrations.map((integration) => {
