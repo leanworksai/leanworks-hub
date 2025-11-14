@@ -375,9 +375,6 @@ export default function ProjectDetail() {
               <div className="space-y-3">
                 {project.tasks.map((task) => (
                   <div key={task.id} className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
-                    <div className="mt-0.5">
-                      {getTaskIcon(task.status)}
-                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <p className="font-medium text-sm">{task.title}</p>

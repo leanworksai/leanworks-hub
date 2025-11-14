@@ -449,9 +449,6 @@ export default function TaskDetail() {
       <div>
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-start gap-3 flex-1">
-            <div className="mt-1">
-              {getStatusIcon(task.status)}
-            </div>
             <div className="flex-1">
               {editingField === 'title' && editedTask ? (
                 <Input
@@ -479,13 +476,6 @@ export default function TaskDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge 
-              className={`${getPriorityColor(task.priority)} text-xs cursor-pointer`}
-              variant="outline"
-              onClick={() => handleFieldClick('priority')}
-            >
-              {task.priority}
-            </Badge>
             <Badge 
               className={`${getStatusColor(task.status)} text-xs cursor-pointer`}
               variant="outline"
@@ -631,6 +621,16 @@ export default function TaskDetail() {
                 </span>
               </div>
             )}
+          </div>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span className="mr-2">Priority:</span>
+            <Badge 
+              className={`${getPriorityColor(task.priority)} text-xs cursor-pointer`}
+              variant="outline"
+              onClick={() => handleFieldClick('priority')}
+            >
+              {task.priority}
+            </Badge>
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Calendar className="h-4 w-4" />

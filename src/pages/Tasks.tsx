@@ -252,9 +252,6 @@ export default function Tasks() {
                       className="mt-1 flex-shrink-0"
                     />
                   )}
-                  <div className="mt-1 flex-shrink-0">
-                    {getStatusIcon(task.status)}
-                  </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <CardTitle className="text-lg">{task.title}</CardTitle>
@@ -300,12 +297,6 @@ export default function Tasks() {
                         </Popover>
                       )}
                       <Badge 
-                        className={`${getPriorityColor(task.priority)} text-xs`}
-                        variant="outline"
-                      >
-                        {task.priority}
-                      </Badge>
-                      <Badge 
                         className={`${getStatusColor(task.status)} text-xs`}
                         variant="outline"
                       >
@@ -319,6 +310,12 @@ export default function Tasks() {
                         <User className="h-4 w-4" />
                         <span>{task.assignee || "Unassigned"}</span>
                       </div>
+                      <Badge 
+                        className={`${getPriorityColor(task.priority)} text-xs`}
+                        variant="outline"
+                      >
+                        {task.priority}
+                      </Badge>
                       <div className="flex items-center gap-1">
                         <Calendar className="h-4 w-4" />
                         <span>{task.dueDate}</span>
