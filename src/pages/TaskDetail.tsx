@@ -265,7 +265,12 @@ export default function TaskDetail() {
   // Update editedTask when task changes
   useEffect(() => {
     if (task) {
-      setEditedTask({ ...task });
+      setEditedTask({ 
+        ...task,
+        tags: task.tags || [], // Ensure tags is always an array
+        progressUpdates: task.progressUpdates || [],
+        comments: task.comments || [],
+      });
     }
   }, [task]);
 
@@ -360,7 +365,12 @@ export default function TaskDetail() {
 
   const handleFieldCancel = () => {
     if (task) {
-      setEditedTask({ ...task });
+      setEditedTask({ 
+        ...task,
+        tags: task.tags || [], // Ensure tags is always an array
+        progressUpdates: task.progressUpdates || [],
+        comments: task.comments || [],
+      });
     }
     setEditingField(null);
   };
@@ -391,7 +401,7 @@ export default function TaskDetail() {
   // Combine and sort activities (updates and comments) by date
   const getActivities = () => {
     const activities = [
-      ...task.progressUpdates.map(update => ({
+      ...(task.progressUpdates || []).map(update => ({
         id: update.id,
         type: "update" as const,
         memberName: update.memberName,
@@ -400,7 +410,7 @@ export default function TaskDetail() {
         content: update.update,
         updateType: update.type,
       })),
-      ...task.comments.map(comment => ({
+      ...(task.comments || []).map(comment => ({
         id: comment.id,
         type: "comment" as const,
         memberName: comment.memberName,
@@ -780,15 +790,15 @@ export default function TaskDetail() {
         {editingField === 'tags' && editedTask ? (
           <div className="mb-4">
             <Input
-              value={editedTask.tags.join(', ')}
+              value={(editedTask.tags || []).join(', ')}
               onChange={(e) => {
                 const tags = e.target.value.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
                 setEditedTask({ ...editedTask, tags });
               }}
-              onBlur={() => handleFieldSave('tags', editedTask.tags)}
+              onBlur={() => handleFieldSave('tags', editedTask.tags || [])}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  handleFieldSave('tags', editedTask.tags);
+                  handleFieldSave('tags', editedTask.tags || []);
                 } else if (e.key === 'Escape') {
                   handleFieldCancel();
                 }
@@ -803,7 +813,7 @@ export default function TaskDetail() {
             className="flex flex-wrap gap-2 mb-4 cursor-pointer hover:bg-muted/50 rounded p-2 -mx-2 transition-colors"
             onClick={() => handleFieldClick('tags')}
           >
-            {task.tags.length > 0 ? (
+            {task.tags && task.tags.length > 0 ? (
               task.tags.map((tag) => (
                 <Badge key={tag} variant="outline" className="text-xs">
                   <Tag className="h-3 w-3 mr-1" />
@@ -826,7 +836,7 @@ export default function TaskDetail() {
                 <div className="flex items-center gap-2">
                   <Activity className="h-5 w-5 text-muted-foreground" />
                   <CardTitle className="text-xl">
-                    Activities ({task.progressUpdates.length + task.comments.length})
+                    Activities ({(task.progressUpdates?.length || 0) + (task.comments?.length || 0)})
                   </CardTitle>
                 </div>
                 <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 data-[state=open]:rotate-180" />

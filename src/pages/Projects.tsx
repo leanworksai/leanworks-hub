@@ -27,6 +27,7 @@ import {
 import { Plus, MoreVertical, Users, Calendar, Trash2, Star } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useUserProjects, useDeleteProject } from "@/hooks/useProjects";
+import { useUpdateSummaries } from "@/hooks/useUpdateSummaries";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
@@ -42,6 +43,7 @@ export default function Projects() {
   const { toggleProject, isProjectSelected, selectedProjects } = useSelectedProjects();
   const { isSelectionMode } = useSelectionMode();
   const { data: projects = [], isLoading } = useUserProjects();
+  const { data: updateSummaries = {}, isLoading: isLoadingSummaries } = useUpdateSummaries();
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
@@ -83,7 +85,7 @@ export default function Projects() {
     }
   };
 
-  if (isLoading) {
+  if (isLoading || isLoadingSummaries) {
     return (
       <div className="space-y-6 animate-fade-in">
         <div className="text-center py-12">
@@ -137,12 +139,7 @@ export default function Projects() {
                       />
                     )}
                     <CardTitle className="text-xl">{project.name}</CardTitle>
-                    {project.summary && (
-                      project.summary.accomplishment || 
-                      project.summary.decision || 
-                      project.summary.risk || 
-                      project.summary.direction
-                    ) && (
+                    {updateSummaries[project.id]?.update_summary && (
                       <Popover open={hoveredProject === project.name} onOpenChange={(open) => setHoveredProject(open ? project.name : null)}>
                         <PopoverTrigger asChild>
                           <Button
@@ -176,32 +173,14 @@ export default function Projects() {
                         >
                           <div className="space-y-3">
                             <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
-                            <ul className="space-y-2 text-sm text-muted-foreground">
-                              {project.summary.accomplishment && (
-                                <li>
-                                  <span className="font-medium">Accomplishment: </span>
-                                  {project.summary.accomplishment}
-                                </li>
-                              )}
-                              {project.summary.decision && (
-                                <li>
-                                  <span className="font-medium">Decision: </span>
-                                  {project.summary.decision}
-                                </li>
-                              )}
-                              {project.summary.risk && (
-                                <li>
-                                  <span className="font-medium">Risk: </span>
-                                  {project.summary.risk}
-                                </li>
-                              )}
-                              {project.summary.direction && (
-                                <li>
-                                  <span className="font-medium">Direction: </span>
-                                  {project.summary.direction}
-                                </li>
-                              )}
-                            </ul>
+                            {updateSummaries[project.id]?.date_id && (
+                              <p className="text-xs text-muted-foreground/60">
+                                Date: {updateSummaries[project.id].date_id}
+                              </p>
+                            )}
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                              {updateSummaries[project.id].update_summary}
+                            </p>
                           </div>
                         </PopoverContent>
                       </Popover>

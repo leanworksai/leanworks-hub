@@ -22,7 +22,12 @@ export const useUserTasks = () => {
   const { data: userProjects = [], isLoading: isLoadingProjects } = useUserProjects();
   const { data: userTeams = [], isLoading: isLoadingTeams } = useUserTeams();
 
-  // Create a set of project names from user's projects
+  // Create a set of project IDs from user's projects
+  const userProjectIds = new Set(
+    userProjects.map((project) => project.id)
+  );
+
+  // Create a set of project names from user's projects (for backward compatibility with legacy tasks)
   const userProjectNames = new Set(
     userProjects.map((project) => project.name.toLowerCase())
   );
@@ -33,13 +38,26 @@ export const useUserTasks = () => {
   );
 
   // Filter tasks to show:
-  // 1. Tasks whose project is in user's projects
+  // 1. Tasks whose project is in user's projects (matched by ID or name)
   // 2. Tasks without a project but associated with user's teams
   const userTasks = allTasks.filter((task) => {
     // If task has a project, check if it's in user's projects
-    if (task.project || task.projectId) {
-      const projectName = (task.project?.toLowerCase() || task.projectId?.toLowerCase());
-      return projectName && userProjectNames.has(projectName);
+    if (task.projectId) {
+      // Match by project ID (UUID format)
+      if (userProjectIds.has(task.projectId)) {
+        return true;
+      }
+      // Fallback: if projectId is actually a name (legacy data), try matching by name
+      if (userProjectNames.has(task.projectId.toLowerCase())) {
+        return true;
+      }
+    }
+    
+    // If task has project name but no ID (legacy format)
+    if (task.project) {
+      if (userProjectNames.has(task.project.toLowerCase())) {
+        return true;
+      }
     }
     
     // If task has no project, check if it's associated with user's teams

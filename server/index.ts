@@ -2287,6 +2287,105 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
   }
 });
 
+// Update Summaries endpoints
+// Get latest update summaries for all projects or a specific project
+app.get('/api/update-summaries', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const projectId = req.query.projectId as string | undefined;
+    const collectionPath = getCollectionPath('update_summaries', domain);
+    
+    let snapshot;
+    if (projectId) {
+      // Get all summaries for a specific project, sorted by date_id descending
+      try {
+        snapshot = await db.collection(collectionPath)
+          .where('project_id', '==', projectId)
+          .orderBy('date_id', 'desc')
+          .limit(1)
+          .get();
+      } catch (error: any) {
+        // If index error, fetch without orderBy and sort in memory
+        if (error.code === 9 || error.message?.includes('index')) {
+          const allDocs = await db.collection(collectionPath)
+            .where('project_id', '==', projectId)
+            .get();
+          // Sort by date_id descending in memory
+          const sortedDocs = allDocs.docs.sort((a, b) => {
+            const aDate = a.data().date_id || '';
+            const bDate = b.data().date_id || '';
+            return bDate.localeCompare(aDate); // Descending
+          });
+          snapshot = { docs: sortedDocs.slice(0, 1), empty: sortedDocs.length === 0 };
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      // Get latest summary for each project by date_id
+      // Fetch all summaries and group by project_id, keeping only the latest date_id for each
+      snapshot = await db.collection(collectionPath).get();
+    }
+    
+    if (projectId) {
+      // Return single summary for specific project (already filtered to latest by date_id)
+      if (snapshot.empty) {
+        return res.json(null);
+      }
+      const doc = snapshot.docs[0];
+      const data = doc.data();
+      res.json({
+        project_id: data.project_id,
+        date_id: data.date_id,
+        update_summary: data.update_summary,
+      });
+    } else {
+      // Group by project_id and keep only the latest summary for each project (by date_id)
+      // date_id format is "YYYY-MM-DD", so string comparison works correctly
+      const summariesByProject = new Map<string, { date_id: string; update_summary: string }>();
+      
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const pid = data.project_id;
+        const dateId = data.date_id || '';
+        
+        if (!pid || !dateId) return; // Skip entries without project_id or date_id
+        
+        // Keep only the latest summary for each project (by date_id)
+        // date_id is in "YYYY-MM-DD" format, so string comparison gives correct ordering
+        const existing = summariesByProject.get(pid);
+        if (!existing) {
+          // First summary for this project
+          summariesByProject.set(pid, {
+            date_id: dateId,
+            update_summary: data.update_summary || '',
+          });
+        } else {
+          // Compare date_id strings - "YYYY-MM-DD" format allows direct string comparison
+          // If current date_id is greater (later date), replace the existing one
+          if (dateId > existing.date_id) {
+            summariesByProject.set(pid, {
+              date_id: dateId,
+              update_summary: data.update_summary || '',
+            });
+          }
+        }
+      });
+      
+      // Convert to object format: { project_id: { date_id, update_summary } }
+      const result: Record<string, { date_id: string; update_summary: string }> = {};
+      summariesByProject.forEach((summary, projectId) => {
+        result[projectId] = summary;
+      });
+      
+      res.json(result);
+    }
+  } catch (error) {
+    console.error('Get update summaries error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch update summaries' });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Firestore proxy server running on http://0.0.0.0:${PORT}`);
   console.log(`📊 Using project: ${serviceAccount.project_id}`);

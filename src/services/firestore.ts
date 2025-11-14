@@ -578,3 +578,29 @@ export const messagesService = {
   },
 };
 
+// Update Summaries Service
+export interface UpdateSummary {
+  project_id: string;
+  date_id: string;
+  update_summary: string;
+}
+
+export const updateSummariesService = {
+  async getAll(): Promise<Record<string, { date_id: string; update_summary: string }>> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/update-summaries` : `${API_BASE}/update-summaries`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch update summaries');
+    return response.json();
+  },
+
+  async getByProjectId(projectId: string): Promise<UpdateSummary | null> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/update-summaries?projectId=${encodeURIComponent(projectId)}` 
+      : `${API_BASE}/update-summaries?projectId=${encodeURIComponent(projectId)}`;
+    const response = await authenticatedFetch(url);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error('Failed to fetch update summary');
+    return response.json();
+  },
+};
+
