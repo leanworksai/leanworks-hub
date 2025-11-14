@@ -604,3 +604,26 @@ export const updateSummariesService = {
   },
 };
 
+// Updates Service
+export interface Update {
+  update_id: string;
+  associated_tasks: string[];
+  date_id: string;
+  project_id: string;
+  reason: string;
+  ts: string;
+  update: string;
+  user_id: string;
+}
+
+export const updatesService = {
+  async getByTaskId(taskId: string): Promise<Update[]> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/updates/task/${encodeURIComponent(taskId)}` 
+      : `${API_BASE}/updates/task/${encodeURIComponent(taskId)}`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch updates');
+    return response.json();
+  },
+};
+

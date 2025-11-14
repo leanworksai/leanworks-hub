@@ -2386,6 +2386,65 @@ app.get('/api/update-summaries', authenticateUser, async (req, res) => {
   }
 });
 
+// Updates endpoints
+// Get updates by task ID
+app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const taskId = req.params.taskId;
+    const collectionPath = getCollectionPath('updates', domain);
+    
+    // Fetch all updates and filter by task ID
+    // Since associated_tasks is stored as a JSON string, we need to parse it
+    const snapshot = await db.collection(collectionPath).get();
+    
+    const updates = snapshot.docs
+      .map(doc => {
+        const data = doc.data();
+        let associatedTasks: string[] = [];
+        
+        // Parse associated_tasks - it's stored as a JSON string
+        try {
+          if (typeof data.associated_tasks === 'string') {
+            associatedTasks = JSON.parse(data.associated_tasks);
+          } else if (Array.isArray(data.associated_tasks)) {
+            associatedTasks = data.associated_tasks;
+          }
+        } catch (e) {
+          // If parsing fails, skip this update
+          console.warn('Failed to parse associated_tasks:', data.associated_tasks);
+        }
+        
+        // Check if this update is associated with the task
+        if (associatedTasks.includes(taskId)) {
+          return {
+            update_id: doc.id,
+            associated_tasks: associatedTasks,
+            date_id: data.date_id || '',
+            project_id: data.project_id || '',
+            reason: data.reason || '',
+            ts: data.ts?.toDate ? data.ts.toDate().toISOString() : (data.ts || ''),
+            update: data.update || '',
+            user_id: data.user_id || '',
+          };
+        }
+        return null;
+      })
+      .filter(update => update !== null)
+      .sort((a, b) => {
+        // Sort by timestamp descending (newest first)
+        const aTime = a.ts ? new Date(a.ts).getTime() : 0;
+        const bTime = b.ts ? new Date(b.ts).getTime() : 0;
+        return bTime - aTime;
+      });
+    
+    res.json(updates);
+  } catch (error) {
+    console.error('Get updates by task ID error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to fetch updates' });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Firestore proxy server running on http://0.0.0.0:${PORT}`);
   console.log(`📊 Using project: ${serviceAccount.project_id}`);

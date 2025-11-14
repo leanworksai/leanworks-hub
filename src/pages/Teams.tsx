@@ -497,7 +497,7 @@ export default function Teams() {
                       </Avatar>
                       <div>
                         <CardTitle className="text-base">{team.name}</CardTitle>
-                        <CardDescription className="text-xs">
+                        <CardDescription className="text-xs text-foreground">
                           {team.description}
                         </CardDescription>
                       </div>
@@ -625,7 +625,7 @@ export default function Teams() {
                         </Avatar>
                         <div>
                           <CardTitle className="text-base">{team.name}</CardTitle>
-                          <CardDescription className="text-xs">
+                          <CardDescription className="text-xs text-foreground">
                             {team.description}
                           </CardDescription>
                         </div>

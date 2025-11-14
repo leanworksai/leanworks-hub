@@ -508,25 +508,11 @@ export default function TaskDetail() {
           />
         ) : (
           <p 
-            className="text-muted-foreground text-lg mb-4 cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
+            className="text-foreground text-lg mb-4 cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
             onClick={() => handleFieldClick('description')}
           >
             {task.description}
           </p>
-        )}
-        
-        {/* Reason Section */}
-        {task.reason && (
-          <Card className="bg-gradient-card border-border shadow-card mb-4">
-            <CardHeader>
-              <CardTitle className="text-sm font-medium text-muted-foreground/70">REASON</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                {task.reason}
-              </p>
-            </CardContent>
-          </Card>
         )}
         
         {/* Task Meta Info */}
@@ -917,27 +903,29 @@ export default function TaskDetail() {
                             </AvatarFallback>
                           </Avatar>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              <p className="font-medium text-sm">{activity.memberName}</p>
+                            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="font-medium text-sm">{activity.memberName}</p>
+                                {activity.type === "update" && activity.updateType && (
+                                  <Badge 
+                                    className={`${getUpdateTypeColor(activity.updateType)} text-xs flex items-center gap-1`}
+                                    variant="outline"
+                                  >
+                                    {getUpdateTypeIcon(activity.updateType)}
+                                    <span>{activity.updateType}</span>
+                                  </Badge>
+                                )}
+                                {activity.type === "comment" && (
+                                  <Badge 
+                                    className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"
+                                    variant="outline"
+                                  >
+                                    <MessageSquare className="h-3 w-3" />
+                                    <span>comment</span>
+                                  </Badge>
+                                )}
+                              </div>
                               <span className="text-xs text-muted-foreground">{activity.date}</span>
-                              {activity.type === "update" && activity.updateType && (
-                                <Badge 
-                                  className={`${getUpdateTypeColor(activity.updateType)} text-xs flex items-center gap-1`}
-                                  variant="outline"
-                                >
-                                  {getUpdateTypeIcon(activity.updateType)}
-                                  <span>{activity.updateType}</span>
-                                </Badge>
-                              )}
-                              {activity.type === "comment" && (
-                                <Badge 
-                                  className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"
-                                  variant="outline"
-                                >
-                                  <MessageSquare className="h-3 w-3" />
-                                  <span>comment</span>
-                                </Badge>
-                              )}
                             </div>
                             <p className="text-sm text-muted-foreground leading-relaxed">
                               {activity.content}

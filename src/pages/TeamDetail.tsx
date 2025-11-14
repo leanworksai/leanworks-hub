@@ -263,7 +263,7 @@ export default function TeamDetail() {
           </Avatar>
           <div>
             <h1 className="text-3xl font-bold tracking-tight">{team.name}</h1>
-            <p className="text-muted-foreground">{team.description}</p>
+            <p className="text-foreground">{team.description}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -291,9 +291,6 @@ export default function TeamDetail() {
       <Card className="bg-gradient-card border-border shadow-card">
         <CardHeader>
           <CardTitle>Team Members</CardTitle>
-          <CardDescription>
-            Manage members in this team
-          </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">

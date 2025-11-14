@@ -24,7 +24,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Users, Calendar, Trash2, Star } from "lucide-react";
+import { Plus, MoreVertical, Users, Calendar, Trash2, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useUserProjects, useDeleteProject } from "@/hooks/useProjects";
 import { useUpdateSummaries } from "@/hooks/useUpdateSummaries";
@@ -121,11 +121,51 @@ export default function Projects() {
         {projects.map((project) => (
           <Card 
             key={project.name} 
-            className={`bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow ${
+            className={`relative bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow ${
               isProjectSelected(project.name) ? 'ring-2 ring-primary' : ''
             }`}
             onClick={() => handleCardClick(project.id)}
           >
+            {updateSummaries[project.id]?.update_summary && (
+              <div className="absolute top-2 left-2 z-10">
+                <Popover open={hoveredProject === project.name} onOpenChange={(open) => setHoveredProject(open ? project.name : null)}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseEnter={() => setHoveredProject(project.name)}
+                      onMouseLeave={() => setHoveredProject(null)}
+                      title="AI Progress Summary"
+                    >
+                      <Sparkles className="h-4 w-4" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent 
+                    className="w-80" 
+                    onClick={(e) => e.stopPropagation()}
+                    onMouseEnter={() => setHoveredProject(project.name)}
+                    onMouseLeave={() => setHoveredProject(null)}
+                    align="start"
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
+                        {updateSummaries[project.id]?.date_id && (
+                          <p className="text-xs text-muted-foreground/60">
+                            {updateSummaries[project.id].date_id}
+                          </p>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                        {updateSummaries[project.id].update_summary}
+                      </p>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            )}
             <CardHeader>
               <div className="flex items-start justify-between">
                 <div className="space-y-1 flex-1 mr-2">
@@ -139,54 +179,8 @@ export default function Projects() {
                       />
                     )}
                     <CardTitle className="text-xl">{project.name}</CardTitle>
-                    {updateSummaries[project.id]?.update_summary && (
-                      <Popover open={hoveredProject === project.name} onOpenChange={(open) => setHoveredProject(open ? project.name : null)}>
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                            onClick={(e) => e.stopPropagation()}
-                            onMouseEnter={() => setHoveredProject(project.name)}
-                            onMouseLeave={() => setHoveredProject(null)}
-                            title="Progress Summary"
-                          >
-                            <div className="relative h-4 w-4">
-                              <svg 
-                                className="absolute left-0 top-0 h-4 w-4" 
-                                viewBox="0 0 24 24" 
-                                fill="currentColor"
-                                xmlns="http://www.w3.org/2000/svg"
-                              >
-                                <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z" />
-                              </svg>
-                              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[8px] font-bold leading-none">L</span>
-                            </div>
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent 
-                          className="w-80" 
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseEnter={() => setHoveredProject(project.name)}
-                          onMouseLeave={() => setHoveredProject(null)}
-                          align="start"
-                        >
-                          <div className="space-y-3">
-                            <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
-                            {updateSummaries[project.id]?.date_id && (
-                              <p className="text-xs text-muted-foreground/60">
-                                Date: {updateSummaries[project.id].date_id}
-                              </p>
-                            )}
-                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                              {updateSummaries[project.id].update_summary}
-                            </p>
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-                    )}
                   </div>
-                  <CardDescription className={`line-clamp-2 ${isSelectionMode ? 'ml-7' : ''}`}>{project.description}</CardDescription>
+                  <CardDescription className={`line-clamp-2 text-foreground ${isSelectionMode ? 'ml-7' : ''}`}>{project.description}</CardDescription>
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>

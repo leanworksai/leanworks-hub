@@ -14,11 +14,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
@@ -29,6 +24,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
+import { TaskTooltip } from "@/components/TaskTooltip";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -66,7 +62,6 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [hoveredTask, setHoveredTask] = useState<string | null>(null);
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   
@@ -296,7 +291,7 @@ export default function ProjectDetail() {
             Delete Project
           </Button>
         </div>
-        <p className="text-muted-foreground text-lg mb-4">{project.description}</p>
+        <p className="text-foreground text-lg mb-4">{project.description}</p>
         <div className="flex items-center gap-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
@@ -374,49 +369,13 @@ export default function ProjectDetail() {
             <CardContent>
               <div className="space-y-3">
                 {project.tasks.map((task) => (
-                  <div key={task.id} className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
+                  <div key={task.id} className="relative flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
+                    <div className="absolute top-2 left-2 z-10">
+                      <TaskTooltip taskId={task.id} taskReason={task.reason} />
+                    </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
                         <p className="font-medium text-sm">{task.title}</p>
-                        {task.reason && (
-                          <Popover open={hoveredTask === task.id} onOpenChange={(open) => setHoveredTask(open ? task.id : null)}>
-                            <PopoverTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-4 w-4 text-muted-foreground hover:text-foreground"
-                                onMouseEnter={() => setHoveredTask(task.id)}
-                                onMouseLeave={() => setHoveredTask(null)}
-                                title="Reason"
-                              >
-                                <div className="relative h-3 w-3">
-                                  <svg 
-                                    className="absolute left-0 top-0 h-3 w-3" 
-                                    viewBox="0 0 24 24" 
-                                    fill="currentColor"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                  >
-                                    <path d="M12 2L14.5 9.5L22 12L14.5 14.5L12 22L9.5 14.5L2 12L9.5 9.5L12 2Z" />
-                                  </svg>
-                                  <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-[6px] font-bold leading-none">R</span>
-                                </div>
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent 
-                              className="w-80" 
-                              onMouseEnter={() => setHoveredTask(task.id)}
-                              onMouseLeave={() => setHoveredTask(null)}
-                              align="start"
-                            >
-                              <div className="space-y-3">
-                                <p className="text-xs font-medium text-muted-foreground/70">REASON</p>
-                                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                                  {task.reason}
-                                </p>
-                              </div>
-                            </PopoverContent>
-                          </Popover>
-                        )}
                       </div>
                       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                         <span>Assignee: {task.assignee || "Unassigned"}</span>
@@ -489,27 +448,29 @@ export default function ProjectDetail() {
                             </AvatarFallback>
                           </Avatar>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1 flex-wrap">
-                              <p className="font-medium text-sm">{activity.memberName}</p>
+                            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="font-medium text-sm">{activity.memberName}</p>
+                                {activity.type === "comment" && (
+                                  <Badge 
+                                    className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"
+                                    variant="outline"
+                                  >
+                                    <MessageSquare className="h-3 w-3" />
+                                    <span>comment</span>
+                                  </Badge>
+                                )}
+                                {activity.type === "update" && (
+                                  <Badge 
+                                    className="bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20 text-xs flex items-center gap-1"
+                                    variant="outline"
+                                  >
+                                    <Activity className="h-3 w-3" />
+                                    <span>update</span>
+                                  </Badge>
+                                )}
+                              </div>
                               <span className="text-xs text-muted-foreground">{formatDate(activity.date)}</span>
-                              {activity.type === "comment" && (
-                                <Badge 
-                                  className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"
-                                  variant="outline"
-                                >
-                                  <MessageSquare className="h-3 w-3" />
-                                  <span>comment</span>
-                                </Badge>
-                              )}
-                              {activity.type === "update" && (
-                                <Badge 
-                                  className="bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20 text-xs flex items-center gap-1"
-                                  variant="outline"
-                                >
-                                  <Activity className="h-3 w-3" />
-                                  <span>update</span>
-                                </Badge>
-                              )}
                             </div>
                             <p className="text-sm text-muted-foreground">{activity.content}</p>
                           </div>
