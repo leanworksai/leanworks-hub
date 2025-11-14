@@ -77,6 +77,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
   const { user } = useAuth();
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
+  const [selectedAssigneeId, setSelectedAssigneeId] = useState<string | null>(null);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
 
@@ -144,6 +145,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
   useEffect(() => {
     if (selectedProjectId) {
       setSelectedAssignee(null);
+      setSelectedAssigneeId(null);
       form.setValue("assignee", "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,6 +157,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
       form.reset();
       setSelectedProjectId("");
       setSelectedAssignee(null);
+      setSelectedAssigneeId(null);
       setAssigneeOpen(false);
       setProjectMembers([]);
     }
@@ -195,9 +198,6 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
         ? data.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0)
         : [];
 
-      // Get assignee avatar if assignee is provided
-      const assigneeAvatar = data.assignee ? getInitials(data.assignee) : undefined;
-
       // If no project, associate task with user's teams
       const teams = !project && userTeams.length > 0 
         ? userTeams.map(team => team.name)
@@ -209,8 +209,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
         description: data.description,
         status: data.status,
         priority: data.priority,
-        assignee: data.assignee || undefined,
-        assigneeAvatar: assigneeAvatar,
+        assigneeId: selectedAssigneeId || undefined, // User ID (email address) - display name fetched from users table
         project: project?.name,
         projectId: project?.id || undefined, // Use the actual project ID, not the form value
         teams: teams,
@@ -384,6 +383,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                                   value={member.name}
                                   onSelect={() => {
                                     setSelectedAssignee(member.name);
+                                    setSelectedAssigneeId(member.id);
                                     setAssigneeOpen(false);
                                   }}
                                 >

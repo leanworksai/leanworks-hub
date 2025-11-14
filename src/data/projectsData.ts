@@ -9,7 +9,7 @@ export interface Task {
   id: string;
   title: string;
   status: "todo" | "in-progress" | "completed";
-  assignee: string;
+  assigneeId?: string; // User ID (email address) - display name is fetched from users table
   dueDate: string;
 }
 

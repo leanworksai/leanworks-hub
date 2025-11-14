@@ -23,6 +23,8 @@ import { useQueries } from "@tanstack/react-query";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { useUsers } from "@/hooks/useUsers";
+import { getUserById, getUserDisplayName } from "@/lib/utils";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -68,6 +70,7 @@ export default function ProjectDetail() {
   const { data: projects = [] } = useUserProjects();
   const { user } = useAuth();
   const { data: userTeams = [] } = useUserTeams();
+  const { data: users = [] } = useUsers();
   
   const isLoading = isLoadingProject;
   
@@ -373,7 +376,7 @@ export default function ProjectDetail() {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-sm mb-1">{task.title}</p>
                       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                        <span>Assignee: {task.assignee}</span>
+                        <span>Assignee: {getUserDisplayName(getUserById(users, task.assigneeId)) || "Unassigned"}</span>
                         <span>Due: {formatDate(task.dueDate)}</span>
                       </div>
                     </div>

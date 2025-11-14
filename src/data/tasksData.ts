@@ -21,8 +21,8 @@ export interface Task {
   description: string;
   status: "todo" | "in-progress" | "review" | "completed" | "blocked";
   priority: "low" | "medium" | "high" | "urgent";
-  assignee?: string;
-  assigneeAvatar?: string;
+  assigneeId?: string; // User ID (email address) - display name is fetched from users table
+  assigneeAvatar?: string; // Optional: cached avatar initials, can be derived from user name
   project?: string;
   projectId?: string;
   teams?: string[]; // Teams that can see this task (for tasks without projects)

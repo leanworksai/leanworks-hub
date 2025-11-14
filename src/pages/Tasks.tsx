@@ -39,6 +39,8 @@ import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useToast } from "@/hooks/use-toast";
+import { useUsers } from "@/hooks/useUsers";
+import { getUserById, getUserDisplayName } from "@/lib/utils";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -88,6 +90,7 @@ export default function Tasks() {
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
   const { isSelectionMode } = useSelectionMode();
   const { data: tasks = [], isLoading } = useUserTasks();
+  const { data: users = [] } = useUsers();
   const deleteTask = useDeleteTask();
   const { toast } = useToast();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
@@ -269,7 +272,7 @@ export default function Tasks() {
                     <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
                       <div className="flex items-center gap-1">
                         <User className="h-4 w-4" />
-                        <span>{task.assignee}</span>
+                        <span>{getUserDisplayName(getUserById(users, task.assigneeId)) || "Unassigned"}</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <Calendar className="h-4 w-4" />

@@ -64,6 +64,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
+import { getUserById, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { format, parse } from "date-fns";
@@ -140,13 +141,14 @@ const getUpdateTypeColor = (type?: string) => {
 
 // Get all unique team members from projects
 const getAllTeamMembers = (projects: any[]) => {
-  const memberMap = new Map<string, { name: string; avatar: string; role: string }>();
+  const memberMap = new Map<string, { id?: string; name: string; avatar: string; role: string }>();
   
   // Collect from project members
   projects.forEach(project => {
     project.members?.forEach((member: any) => {
       if (!memberMap.has(member.name)) {
         memberMap.set(member.name, {
+          id: member.id, // Include the ID (email address)
           name: member.name,
           avatar: member.avatar,
           role: member.role,
@@ -377,7 +379,7 @@ export default function TaskDetail() {
 
   const handleFieldClick = (field: string) => {
     setEditingField(field);
-    if (field === 'assignee') {
+    if (field === 'assigneeId') {
       setAssigneeOpen(true);
     } else if (field === 'dueDate') {
       setDueDateOpen(true);
@@ -520,7 +522,7 @@ export default function TaskDetail() {
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <User className="h-4 w-4" />
             <span className="mr-2">Assignee:</span>
-            {editingField === 'assignee' && editedTask ? (
+            {editingField === 'assigneeId' && editedTask ? (
               <Popover open={assigneeOpen} onOpenChange={(open) => {
                 setAssigneeOpen(open);
                 if (!open && !assigneeJustSelected) {
@@ -539,10 +541,10 @@ export default function TaskDetail() {
                     <div className="flex items-center gap-2">
                       <Avatar className="h-5 w-5">
                         <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                          {teamMembers.find(m => m.name === editedTask.assignee)?.avatar || editedTask.assigneeAvatar}
+                          {getUserInitials(getUserById(users, editedTask.assigneeId))}
                         </AvatarFallback>
                       </Avatar>
-                      <span>{editedTask.assignee || "Select assignee..."}</span>
+                      <span>{getUserDisplayName(getUserById(users, editedTask.assigneeId)) || "Select assignee..."}</span>
                     </div>
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -559,16 +561,16 @@ export default function TaskDetail() {
                             value={member.name}
                             onSelect={() => {
                               const selectedMember = teamMembers.find(m => m.name === member.name);
-                              if (selectedMember) {
+                              if (selectedMember && selectedMember.id) {
                                 setAssigneeJustSelected(true);
-                                handleFieldSave('assignee', selectedMember.name, { assigneeAvatar: selectedMember.avatar });
+                                handleFieldSave('assigneeId', selectedMember.id);
                                 setAssigneeOpen(false);
                               }
                             }}
                           >
                             <Check
                               className={`mr-2 h-4 w-4 ${
-                                editedTask.assignee === member.name ? "opacity-100" : "opacity-0"
+                                editedTask.assigneeId === member.id ? "opacity-100" : "opacity-0"
                               }`}
                             />
                             <div className="flex items-center gap-2 flex-1">
@@ -593,14 +595,14 @@ export default function TaskDetail() {
               <div className="flex items-center gap-2">
                 <Avatar className="h-6 w-6">
                   <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                    {task.assigneeAvatar}
+                    {getUserInitials(getUserById(users, task.assigneeId))}
                   </AvatarFallback>
                 </Avatar>
                 <span 
                   className="text-foreground font-medium cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
-                  onClick={() => handleFieldClick('assignee')}
+                  onClick={() => handleFieldClick('assigneeId')}
                 >
-                  {task.assignee}
+                  {getUserDisplayName(getUserById(users, task.assigneeId)) || "Unassigned"}
                 </span>
               </div>
             )}

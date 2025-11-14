@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, getUserById, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
@@ -656,18 +656,20 @@ export function Chatbot() {
     // Search through tasks
     if (filterType === "all" || filterType === "tasks") {
       selectedProject.tasks.forEach((task) => {
+        const assigneeUser = getUserById(allDomainUsers, task.assigneeId);
+        const assigneeName = getUserDisplayName(assigneeUser) || "Unassigned";
         if (
           task.title.toLowerCase().includes(query) ||
-          task.assignee.toLowerCase().includes(query) ||
+          assigneeName.toLowerCase().includes(query) ||
           task.status.toLowerCase().includes(query)
         ) {
           results.push({
             id: task.id,
             type: "task",
             title: task.title,
-            content: `Status: ${task.status} | Assignee: ${task.assignee} | Due: ${task.dueDate}`,
-            memberName: task.assignee,
-            memberAvatar: task.assignee.charAt(0).toUpperCase(),
+            content: `Status: ${task.status} | Assignee: ${assigneeName} | Due: ${task.dueDate}`,
+            memberName: assigneeName,
+            memberAvatar: getUserInitials(assigneeUser),
             date: task.dueDate,
           });
         }
@@ -1742,9 +1744,11 @@ export function Chatbot() {
     if (selectedTasks.length > 0) {
       tasksContextInfo = "\n\n[Context - Selected Tasks:]\n";
       selectedTasks.forEach((task) => {
+        const assigneeUser = getUserById(allDomainUsers, task.assigneeId);
+        const assigneeName = getUserDisplayName(assigneeUser) || "Unassigned";
         tasksContextInfo += `- ${task.title}: ${task.description}\n`;
         tasksContextInfo += `  Status: ${task.status}, Priority: ${task.priority}\n`;
-        tasksContextInfo += `  Assignee: ${task.assignee}, Due: ${task.dueDate}\n`;
+        tasksContextInfo += `  Assignee: ${assigneeName}, Due: ${task.dueDate}\n`;
         tasksContextInfo += `  Project: ${task.project}\n`;
         tasksContextInfo += `  Progress Updates: ${task.progressUpdates.length}\n`;
       });
