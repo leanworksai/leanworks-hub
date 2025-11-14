@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Check } from "lucide-react";
 import { SlackConnectDialog } from "@/components/SlackConnectDialog";
 import { AtlassianConnectDialog } from "@/components/AtlassianConnectDialog";
 import { OutlookConnectDialog } from "@/components/OutlookConnectDialog";
@@ -195,11 +194,6 @@ export default function Integrations() {
                       </Badge>
                     </div>
                   </div>
-                  {isConnected && (
-                    <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary">
-                      <Check className="h-4 w-4 text-primary-foreground" />
-                    </div>
-                  )}
                 </div>
               </CardHeader>
               <CardContent>
