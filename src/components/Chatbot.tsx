@@ -763,6 +763,30 @@ export function Chatbot() {
     return parts.length > 0 ? parts : content;
   }, []);
 
+  // Play notification sound for received messages
+  const playNotificationSound = useCallback(() => {
+    try {
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      // Create a pleasant notification sound (two-tone beep)
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      oscillator.frequency.setValueAtTime(600, audioContext.currentTime + 0.1);
+      
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+      
+      oscillator.start(audioContext.currentTime);
+      oscillator.stop(audioContext.currentTime + 0.3);
+    } catch (error) {
+      console.error('Failed to play notification sound:', error);
+    }
+  }, []);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -1195,6 +1219,9 @@ export function Chatbot() {
                       newMap.set(chatId, unreadCount);
                       return newMap;
                     });
+                    
+                    // Play notification sound for new messages
+                    playNotificationSound();
                   } else {
                     // Clear unread count if it's 0
                     setUnreadCounts((prev) => {
@@ -1789,6 +1816,17 @@ export function Chatbot() {
                   existingIds.size !== mergedIds.size || 
                   ![...existingIds].every(id => mergedIds.has(id)) ||
                   merged.length !== existing.length) {
+                // Check if there are new messages from other users in project channel
+                const newMessagesFromOthers = merged.filter(msg => 
+                  !existingIds.has(msg.id) && 
+                  msg.userId?.toLowerCase() !== user?.email?.toLowerCase()
+                );
+                
+                // Play notification sound if there are new messages from others
+                if (newMessagesFromOthers.length > 0 && isCurrentChat) {
+                  playNotificationSound();
+                }
+                
                 newMap.set(selectedProjectId, merged);
                 // Save to cache when messages update (after state update)
                 setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
@@ -1820,6 +1858,17 @@ export function Chatbot() {
                   existingIds.size !== mergedIds.size || 
                   ![...existingIds].every(id => mergedIds.has(id)) ||
                   merged.length !== existing.length) {
+                // Check if there are new messages from other users in team channel
+                const newMessagesFromOthers = merged.filter(msg => 
+                  !existingIds.has(msg.id) && 
+                  msg.userId?.toLowerCase() !== user?.email?.toLowerCase()
+                );
+                
+                // Play notification sound if there are new messages from others
+                if (newMessagesFromOthers.length > 0 && isCurrentChat) {
+                  playNotificationSound();
+                }
+                
                 newMap.set(selectedTeamId, merged);
                 // Save to cache when messages update (after state update)
                 setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
@@ -1848,6 +1897,18 @@ export function Chatbot() {
                 // Merge with existing messages, preserving optimistic updates
                 const merged = mergeMessages(prev, filteredMessages, true);
                 
+                // Check if there are new messages from other users (not current user)
+                const existingIds = new Set(prev.map(m => m.id));
+                const newMessagesFromOthers = merged.filter(msg => 
+                  !existingIds.has(msg.id) && 
+                  (msg.role === 'assistant' || msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
+                );
+                
+                // Play notification sound if there are new messages from others
+                if (newMessagesFromOthers.length > 0 && isCurrentChat) {
+                  playNotificationSound();
+                }
+                
                 // Always return merged if we have optimistic messages (they need to be matched)
                 // Save to cache when messages update (after state update)
                 setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
@@ -1869,6 +1930,17 @@ export function Chatbot() {
               if (existingIds.size !== mergedIds.size || 
                   ![...existingIds].every(id => mergedIds.has(id)) ||
                   merged.length !== prev.length) {
+                // Check if there are new messages from other users (not current user)
+                const newMessagesFromOthers = merged.filter(msg => 
+                  !existingIds.has(msg.id) && 
+                  (msg.role === 'assistant' || msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
+                );
+                
+                // Play notification sound if there are new messages from others
+                if (newMessagesFromOthers.length > 0 && isCurrentChat) {
+                  playNotificationSound();
+                }
+                
                 // Save to cache when messages update (after state update)
                 setTimeout(() => saveCachedMessages(chatId, firestoreMessages), 0);
                 return merged;
