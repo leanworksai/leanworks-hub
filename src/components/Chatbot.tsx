@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare } from "lucide-react";
+import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign } from "lucide-react";
 import { cn, getUserById, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
@@ -18,6 +18,8 @@ import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { messagesService, type ChatMessage } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
+import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface Message {
   id: string;
@@ -111,6 +113,10 @@ export function Chatbot() {
   const [lastReadTimestamps, setLastReadTimestamps] = useState<Map<string, number>>(new Map()); // chatId -> last read timestamp
   const [allChatCaches, setAllChatCaches] = useState<Map<string, { messages: ChatMessage[], lastSync: number }>>(new Map()); // chatId -> cached messages
   const [cacheLoadedForSession, setCacheLoadedForSession] = useState(false); // Track if cache has been loaded for this session
+  const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionCursorPos, setMentionCursorPos] = useState(0);
+  const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
@@ -590,6 +596,172 @@ export function Chatbot() {
     "lean".includes(memberSearchQuery.toLowerCase()) ||
     "ai project manager".includes(memberSearchQuery.toLowerCase()) ||
     "project manager".includes(memberSearchQuery.toLowerCase());
+
+  // Get mentionable users for the current channel
+  const getMentionableUsers = useMemo(() => {
+    const mentionable: TeamMember[] = [];
+    
+    // Always add lean (AI assistant)
+    mentionable.push({ id: "lean", name: "lean", role: "AI Project Manager", avatar: "AI" });
+    
+    // Add channel-specific members
+    if (isProjectChannel && selectedProject) {
+      // Add project members
+      selectedProject.members?.forEach(member => {
+        const user = allDomainUsers.find(u => u.email === member.id || u.email === member.email);
+        if (user) {
+          mentionable.push({
+            id: user.email,
+            name: `${user.firstName} ${user.lastName}`,
+            role: member.role,
+            avatar: getUserInitials(`${user.firstName} ${user.lastName}`),
+            email: user.email,
+          });
+        }
+      });
+    } else if (isTeamChannel && selectedTeam) {
+      // Add team members (this would need to fetch team details)
+      // For now, add all domain users from the team
+      allTeamMembers.forEach(member => {
+        if (!mentionable.find(m => m.id === member.id)) {
+          mentionable.push(member);
+        }
+      });
+    }
+    
+    return mentionable;
+  }, [isProjectChannel, isTeamChannel, selectedProject, selectedTeam, allDomainUsers, allTeamMembers]);
+
+  // Filter mentionable users based on query
+  const filteredMentionUsers = useMemo(() => {
+    if (!mentionQuery) return getMentionableUsers;
+    const query = mentionQuery.toLowerCase();
+    return getMentionableUsers.filter(user => 
+      user.name.toLowerCase().includes(query) || 
+      user.email?.toLowerCase().includes(query)
+    );
+  }, [getMentionableUsers, mentionQuery]);
+
+  // Detect @ mentions in input
+  const detectMention = useCallback((text: string, cursorPos: number) => {
+    const textBeforeCursor = text.substring(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    
+    if (lastAtIndex === -1) {
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+      return;
+    }
+    
+    // Check if there's a space before @ or it's at the start
+    const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
+    if (charBeforeAt !== ' ' && lastAtIndex !== 0) {
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+      return;
+    }
+    
+    // Get text after @ until cursor
+    const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
+    
+    // Check if there's a space in the text after @ (means mention was completed)
+    if (afterAt.includes(' ')) {
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+      return;
+    }
+    
+    setMentionQuery(afterAt);
+    setMentionCursorPos(lastAtIndex);
+    setSelectedMentionIndex(0);
+    setShowMentionSuggestions(true);
+  }, []);
+
+  // Insert mention into input
+  const insertMention = useCallback((user: TeamMember) => {
+    const beforeMention = input.substring(0, mentionCursorPos);
+    const afterCursor = input.substring(inputRef.current?.selectionStart || input.length);
+    // Extract first name only (everything before the first space)
+    const firstName = user.name.split(' ')[0];
+    const newInput = `${beforeMention}@${firstName} ${afterCursor}`;
+    setInput(newInput);
+    setShowMentionSuggestions(false);
+    setMentionQuery("");
+    setSelectedMentionIndex(0);
+    
+    // Focus input and move cursor after mention
+    setTimeout(() => {
+      if (inputRef.current) {
+        const newCursorPos = beforeMention.length + firstName.length + 2; // +2 for @ and space
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
+  }, [input, mentionCursorPos]);
+
+  // Handle keyboard navigation for mentions
+  const handleMentionKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showMentionSuggestions || filteredMentionUsers.length === 0) return;
+    
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedMentionIndex((prev) => 
+        prev < filteredMentionUsers.length - 1 ? prev + 1 : 0
+      );
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedMentionIndex((prev) => 
+        prev > 0 ? prev - 1 : filteredMentionUsers.length - 1
+      );
+    } else if (e.key === 'Enter' && showMentionSuggestions) {
+      e.preventDefault();
+      const selectedUser = filteredMentionUsers[selectedMentionIndex];
+      if (selectedUser) {
+        insertMention(selectedUser);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+    }
+  }, [showMentionSuggestions, filteredMentionUsers, selectedMentionIndex, insertMention]);
+
+  // Render message content with highlighted mentions
+  const renderMessageContent = useCallback((content: string) => {
+    // Match @mentions - matches @username (single word) or @"Full Name" (with spaces in quotes)
+    // Simple pattern: @word where word can contain letters, numbers, and underscores
+    const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?)(?=\s|$|[.,!?;:])/g;
+    const parts: (string | JSX.Element)[] = [];
+    let lastIndex = 0;
+    let match;
+    
+    while ((match = mentionRegex.exec(content)) !== null) {
+      // Add text before mention
+      if (match.index > lastIndex) {
+        parts.push(content.substring(lastIndex, match.index));
+      }
+      
+      // Add highlighted mention
+      const mentionName = match[1];
+      parts.push(
+        <span
+          key={match.index}
+          className="text-primary font-semibold"
+        >
+          @{mentionName}
+        </span>
+      );
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < content.length) {
+      parts.push(content.substring(lastIndex));
+    }
+    
+    return parts.length > 0 ? parts : content;
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -2618,24 +2790,11 @@ export function Chatbot() {
                                 </span>
                               </div>
                             )}
-                            <div
-                              className={cn(
-                                "rounded-lg px-4 py-2",
-                                isSent
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted-foreground/10 border border-border"
-                              )}
-                            >
-                              <p className={cn(
-                                "text-sm whitespace-pre-wrap",
-                                isSent ? "text-primary-foreground" : "text-foreground"
-                              )}>
-                                {message.content}
+                            <div className="rounded-lg px-4 py-2 bg-muted border border-border">
+                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
+                                {renderMessageContent(message.content)}
                               </p>
-                              <p className={cn(
-                                "text-xs mt-1",
-                                isSent ? "opacity-80" : "opacity-60"
-                              )}>
+                              <p className="text-xs mt-1 opacity-60">
                                 {message.timestamp.toLocaleTimeString([], {
                                   hour: "2-digit",
                                   minute: "2-digit",
@@ -2647,7 +2806,7 @@ export function Chatbot() {
                           {/* Avatar for sent messages (current user) */}
                           {isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className="bg-primary text-primary-foreground">
+                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
                                 {message.memberAvatar}
                               </AvatarFallback>
                             </Avatar>
@@ -2713,24 +2872,11 @@ export function Chatbot() {
                                 </span>
                               </div>
                             )}
-                            <div
-                              className={cn(
-                                "rounded-lg px-4 py-2",
-                                isSent
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted-foreground/10 border border-border"
-                              )}
-                            >
-                              <p className={cn(
-                                "text-sm whitespace-pre-wrap",
-                                isSent ? "text-primary-foreground" : "text-foreground"
-                              )}>
-                                {message.content}
+                            <div className="rounded-lg px-4 py-2 bg-muted border border-border">
+                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
+                                {renderMessageContent(message.content)}
                               </p>
-                              <p className={cn(
-                                "text-xs mt-1",
-                                isSent ? "opacity-80" : "opacity-60"
-                              )}>
+                              <p className="text-xs mt-1 opacity-60">
                                 {message.timestamp.toLocaleTimeString([], {
                                   hour: "2-digit",
                                   minute: "2-digit",
@@ -2742,7 +2888,7 @@ export function Chatbot() {
                           {/* Avatar for sent messages (current user) */}
                           {isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className="bg-primary text-primary-foreground">
+                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
                                 {message.memberAvatar}
                               </AvatarFallback>
                             </Avatar>
@@ -2795,24 +2941,13 @@ export function Chatbot() {
                 {/* Message bubble */}
                 <div
                   className={cn(
-                    "rounded-lg px-4 py-2 max-w-[80%]",
-                    isSent
-                      ? "bg-primary text-primary-foreground"
-                      : message.role === "assistant"
-                      ? "bg-muted"
-                      : "bg-muted-foreground/10 border border-border"
+                    "rounded-lg px-4 py-2 max-w-[80%] bg-muted border border-border"
                   )}
                 >
-                  <p className={cn(
-                    "text-sm whitespace-pre-wrap",
-                    isSent ? "text-primary-foreground" : "text-foreground"
-                  )}>
-                    {message.content}
+                  <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
+                    {renderMessageContent(message.content)}
                   </p>
-                  <p className={cn(
-                    "text-xs mt-1",
-                    isSent ? "opacity-80" : "opacity-60"
-                  )}>
+                  <p className="text-xs mt-1 opacity-60">
                     {message.timestamp.toLocaleTimeString([], {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -2823,7 +2958,7 @@ export function Chatbot() {
                 {/* Avatar for sent messages */}
                 {isSent && (
                   <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className="bg-primary text-primary-foreground">
+                    <AvatarFallback className="bg-muted-foreground/20 text-foreground">
                       <User className="h-4 w-4" />
                     </AvatarFallback>
                   </Avatar>
@@ -2895,14 +3030,73 @@ export function Chatbot() {
                   </div>
                 </div>
               )}
-              <div className="p-4">
+              <div className="p-4 relative">
+                {/* Mention Suggestions Dropdown */}
+                {showMentionSuggestions && filteredMentionUsers.length > 0 && (isProjectChannel || isTeamChannel) && (
+                  <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border rounded-md shadow-lg z-50 max-h-60 overflow-auto">
+                    <div className="p-2">
+                      <div className="text-xs font-semibold text-muted-foreground px-2 mb-1">Mention</div>
+                      <div className="space-y-0.5">
+                        {filteredMentionUsers.map((user, index) => (
+                          <div
+                            key={user.id}
+                            onClick={() => insertMention(user)}
+                            onMouseEnter={() => setSelectedMentionIndex(index)}
+                            className={cn(
+                              "flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer transition-colors",
+                              index === selectedMentionIndex 
+                                ? "bg-primary text-primary-foreground" 
+                                : ""
+                            )}
+                          >
+                            <Avatar className="h-6 w-6">
+                              <AvatarFallback className="text-xs">
+                                {user.avatar}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium truncate">{user.name}</div>
+                              <div className={cn(
+                                "text-xs truncate",
+                                index === selectedMentionIndex 
+                                  ? "text-primary-foreground/80" 
+                                  : "text-muted-foreground"
+                              )}>{user.role}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
                 <div className="flex gap-2">
                   <Input
                     ref={inputRef}
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      const cursorPos = e.target.selectionStart || 0;
+                      if (isProjectChannel || isTeamChannel) {
+                        detectMention(e.target.value, cursorPos);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      handleMentionKeyDown(e);
+                    }}
                     onKeyPress={handleKeyPress}
-                    placeholder={isProjectChannel ? "Type a message in the project channel..." : "Type your message..."}
+                    onClick={(e) => {
+                      // Detect mention on click (cursor position change)
+                      const cursorPos = (e.target as HTMLInputElement).selectionStart || 0;
+                      if (isProjectChannel || isTeamChannel) {
+                        detectMention(input, cursorPos);
+                      }
+                    }}
+                    placeholder={
+                      isProjectChannel || isTeamChannel 
+                        ? "Type @ to mention someone..." 
+                        : "Type your message..."
+                    }
                     disabled={isLoading}
                     className="flex-1"
                   />
