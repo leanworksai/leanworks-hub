@@ -580,13 +580,13 @@ export const messagesService = {
 
 // Update Summaries Service
 export interface UpdateSummary {
-  project_id: string;
-  date_id: string;
-  update_summary: string;
+  projectId: string;
+  dateId: string;
+  updateSummary: string;
 }
 
 export const updateSummariesService = {
-  async getAll(): Promise<Record<string, { date_id: string; update_summary: string }>> {
+  async getAll(): Promise<Record<string, { dateId: string; updateSummary: string }>> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/update-summaries` : `${API_BASE}/update-summaries`;
     const response = await authenticatedFetch(url);
     if (!response.ok) throw new Error('Failed to fetch update summaries');
@@ -606,14 +606,14 @@ export const updateSummariesService = {
 
 // Updates Service
 export interface Update {
-  update_id: string;
-  associated_tasks: string[];
-  date_id: string;
-  project_id: string;
+  updateId: string;
+  associatedTasks: string[];
+  dateId: string;
+  projectId: string;
   reason: string;
-  ts: string;
+  timestamp: string;
   update: string;
-  user_id: string;
+  userId: string;
 }
 
 export const updatesService = {

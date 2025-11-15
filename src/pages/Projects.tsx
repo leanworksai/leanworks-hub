@@ -126,7 +126,7 @@ export default function Projects() {
             }`}
             onClick={() => handleCardClick(project.id)}
           >
-            {updateSummaries[project.id]?.update_summary && (
+            {updateSummaries[project.id]?.updateSummary && (
               <div className="absolute top-2 left-2 z-10">
                 <Popover open={hoveredProject === project.name} onOpenChange={(open) => setHoveredProject(open ? project.name : null)}>
                   <PopoverTrigger asChild>
@@ -152,14 +152,14 @@ export default function Projects() {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
-                        {updateSummaries[project.id]?.date_id && (
+                        {updateSummaries[project.id]?.dateId && (
                           <p className="text-xs text-muted-foreground/60">
-                            {updateSummaries[project.id].date_id}
+                            {updateSummaries[project.id].dateId}
                           </p>
                         )}
                       </div>
                       <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                        {updateSummaries[project.id].update_summary}
+                        {updateSummaries[project.id].updateSummary}
                       </p>
                     </div>
                   </PopoverContent>

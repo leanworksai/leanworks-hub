@@ -54,9 +54,9 @@ export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
-                {latestUpdate.ts && (
+                {latestUpdate.timestamp && (
                   <p className="text-xs text-muted-foreground/60">
-                    {new Date(latestUpdate.ts).toLocaleDateString()}
+                    {new Date(latestUpdate.timestamp).toLocaleDateString()}
                   </p>
                 )}
               </div>

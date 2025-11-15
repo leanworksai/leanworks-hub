@@ -2297,23 +2297,23 @@ app.get('/api/update-summaries', authenticateUser, async (req, res) => {
     
     let snapshot;
     if (projectId) {
-      // Get all summaries for a specific project, sorted by date_id descending
+      // Get all summaries for a specific project, sorted by dateId descending
       try {
         snapshot = await db.collection(collectionPath)
-          .where('project_id', '==', projectId)
-          .orderBy('date_id', 'desc')
+          .where('projectId', '==', projectId)
+          .orderBy('dateId', 'desc')
           .limit(1)
           .get();
       } catch (error: any) {
         // If index error, fetch without orderBy and sort in memory
         if (error.code === 9 || error.message?.includes('index')) {
           const allDocs = await db.collection(collectionPath)
-            .where('project_id', '==', projectId)
+            .where('projectId', '==', projectId)
             .get();
-          // Sort by date_id descending in memory
+          // Sort by dateId descending in memory
           const sortedDocs = allDocs.docs.sort((a, b) => {
-            const aDate = a.data().date_id || '';
-            const bDate = b.data().date_id || '';
+            const aDate = a.data().dateId || '';
+            const bDate = b.data().dateId || '';
             return bDate.localeCompare(aDate); // Descending
           });
           snapshot = { docs: sortedDocs.slice(0, 1), empty: sortedDocs.length === 0 };
@@ -2322,58 +2322,58 @@ app.get('/api/update-summaries', authenticateUser, async (req, res) => {
         }
       }
     } else {
-      // Get latest summary for each project by date_id
-      // Fetch all summaries and group by project_id, keeping only the latest date_id for each
+      // Get latest summary for each project by dateId
+      // Fetch all summaries and group by projectId, keeping only the latest dateId for each
       snapshot = await db.collection(collectionPath).get();
     }
     
     if (projectId) {
-      // Return single summary for specific project (already filtered to latest by date_id)
+      // Return single summary for specific project (already filtered to latest by dateId)
       if (snapshot.empty) {
         return res.json(null);
       }
       const doc = snapshot.docs[0];
       const data = doc.data();
       res.json({
-        project_id: data.project_id,
-        date_id: data.date_id,
-        update_summary: data.update_summary,
+        projectId: data.projectId,
+        dateId: data.dateId,
+        updateSummary: data.updateSummary,
       });
     } else {
-      // Group by project_id and keep only the latest summary for each project (by date_id)
-      // date_id format is "YYYY-MM-DD", so string comparison works correctly
-      const summariesByProject = new Map<string, { date_id: string; update_summary: string }>();
+      // Group by projectId and keep only the latest summary for each project (by dateId)
+      // dateId format is "YYYY-MM-DD", so string comparison works correctly
+      const summariesByProject = new Map<string, { dateId: string; updateSummary: string }>();
       
       snapshot.docs.forEach(doc => {
         const data = doc.data();
-        const pid = data.project_id;
-        const dateId = data.date_id || '';
+        const pid = data.projectId;
+        const dateId = data.dateId || '';
         
-        if (!pid || !dateId) return; // Skip entries without project_id or date_id
+        if (!pid || !dateId) return; // Skip entries without projectId or dateId
         
-        // Keep only the latest summary for each project (by date_id)
-        // date_id is in "YYYY-MM-DD" format, so string comparison gives correct ordering
+        // Keep only the latest summary for each project (by dateId)
+        // dateId is in "YYYY-MM-DD" format, so string comparison gives correct ordering
         const existing = summariesByProject.get(pid);
         if (!existing) {
           // First summary for this project
           summariesByProject.set(pid, {
-            date_id: dateId,
-            update_summary: data.update_summary || '',
+            dateId: dateId,
+            updateSummary: data.updateSummary || '',
           });
         } else {
-          // Compare date_id strings - "YYYY-MM-DD" format allows direct string comparison
-          // If current date_id is greater (later date), replace the existing one
-          if (dateId > existing.date_id) {
+          // Compare dateId strings - "YYYY-MM-DD" format allows direct string comparison
+          // If current dateId is greater (later date), replace the existing one
+          if (dateId > existing.dateId) {
             summariesByProject.set(pid, {
-              date_id: dateId,
-              update_summary: data.update_summary || '',
+              dateId: dateId,
+              updateSummary: data.updateSummary || '',
             });
           }
         }
       });
       
-      // Convert to object format: { project_id: { date_id, update_summary } }
-      const result: Record<string, { date_id: string; update_summary: string }> = {};
+      // Convert to object format: { projectId: { dateId, updateSummary } }
+      const result: Record<string, { dateId: string; updateSummary: string }> = {};
       summariesByProject.forEach((summary, projectId) => {
         result[projectId] = summary;
       });
@@ -2395,7 +2395,7 @@ app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
     const collectionPath = getCollectionPath('updates', domain);
     
     // Fetch all updates and filter by task ID
-    // Since associated_tasks is stored as a JSON string, we need to parse it
+    // Since associatedTasks is stored as a JSON string, we need to parse it
     const snapshot = await db.collection(collectionPath).get();
     
     const updates = snapshot.docs
@@ -2403,29 +2403,29 @@ app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
         const data = doc.data();
         let associatedTasks: string[] = [];
         
-        // Parse associated_tasks - it's stored as a JSON string
+        // Parse associatedTasks - it's stored as a JSON string
         try {
-          if (typeof data.associated_tasks === 'string') {
-            associatedTasks = JSON.parse(data.associated_tasks);
-          } else if (Array.isArray(data.associated_tasks)) {
-            associatedTasks = data.associated_tasks;
+          if (typeof data.associatedTasks === 'string') {
+            associatedTasks = JSON.parse(data.associatedTasks);
+          } else if (Array.isArray(data.associatedTasks)) {
+            associatedTasks = data.associatedTasks;
           }
         } catch (e) {
           // If parsing fails, skip this update
-          console.warn('Failed to parse associated_tasks:', data.associated_tasks);
+          console.warn('Failed to parse associatedTasks:', data.associatedTasks);
         }
         
         // Check if this update is associated with the task
         if (associatedTasks.includes(taskId)) {
           return {
-            update_id: doc.id,
-            associated_tasks: associatedTasks,
-            date_id: data.date_id || '',
-            project_id: data.project_id || '',
+            updateId: doc.id,
+            associatedTasks: associatedTasks,
+            dateId: data.dateId || '',
+            projectId: data.projectId || '',
             reason: data.reason || '',
-            ts: data.ts?.toDate ? data.ts.toDate().toISOString() : (data.ts || ''),
+            timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : (data.timestamp || ''),
             update: data.update || '',
-            user_id: data.user_id || '',
+            userId: data.userId || '',
           };
         }
         return null;
@@ -2433,8 +2433,8 @@ app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
       .filter(update => update !== null)
       .sort((a, b) => {
         // Sort by timestamp descending (newest first)
-        const aTime = a.ts ? new Date(a.ts).getTime() : 0;
-        const bTime = b.ts ? new Date(b.ts).getTime() : 0;
+        const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
         return bTime - aTime;
       });
     
