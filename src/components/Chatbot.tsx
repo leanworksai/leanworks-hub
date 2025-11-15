@@ -578,17 +578,18 @@ export function Chatbot() {
       );
 
   const currentMember = selectedMember === "ai-assistant" 
-    ? { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" }
+    ? { id: "ai-assistant", name: "lean", role: "AI Project Manager", avatar: "AI" }
     : isProjectChannel && selectedProject
     ? { id: selectedMember, name: selectedProject.name, role: "Project Channel", avatar: "#" }
     : isTeamChannel && selectedTeam
     ? { id: selectedMember, name: selectedTeam.name, role: "Team Channel", avatar: "👥" }
-    : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "AI Assistant", role: "Assistant", avatar: "AI" };
+    : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "lean", role: "AI Project Manager", avatar: "AI" };
 
   // Check if AI Assistant matches search query
   const aiAssistantMatches = memberSearchQuery.trim() === "" || 
-    "ai assistant".includes(memberSearchQuery.toLowerCase()) ||
-    "assistant".includes(memberSearchQuery.toLowerCase());
+    "lean".includes(memberSearchQuery.toLowerCase()) ||
+    "ai project manager".includes(memberSearchQuery.toLowerCase()) ||
+    "project manager".includes(memberSearchQuery.toLowerCase());
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1189,7 +1190,7 @@ export function Chatbot() {
             {
               id: "greeting",
               role: "assistant",
-              content: "Hello! I'm your AI assistant. How can I help you today?",
+              content: "Hello! I'm lean, your AI Project Manager. How can I help you today?",
               timestamp: new Date(),
             },
           ]);
@@ -1406,7 +1407,7 @@ export function Chatbot() {
                 {
                   id: "greeting",
                   role: "assistant",
-                  content: "Hello! I'm your AI assistant. How can I help you today?",
+                  content: "Hello! I'm lean, your AI Project Manager. How can I help you today?",
                   timestamp: new Date(),
                 },
               ]);
@@ -1450,7 +1451,7 @@ export function Chatbot() {
             {
               id: "greeting",
               role: "assistant",
-              content: "Hello! I'm your AI assistant. How can I help you today?",
+              content: "Hello! I'm lean, your AI Project Manager. How can I help you today?",
               timestamp: new Date(),
             },
           ]);
@@ -2279,7 +2280,7 @@ export function Chatbot() {
                 {aiAssistantMatches && (
                   <div className="px-2 py-1.5">
                     <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
-                      AI Assistant
+                      AI Project Manager
                     </div>
                     <button
                       onClick={() => {
@@ -2298,7 +2299,7 @@ export function Chatbot() {
                       <Bot className="h-4 w-4 flex-shrink-0" />
                       <span className={cn(
                         (unreadCounts.get("ai-assistant") || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
-                      )}>AI Assistant</span>
+                      )}>lean</span>
                     </button>
                   </div>
                 )}
@@ -2464,7 +2465,7 @@ export function Chatbot() {
                 <div className="flex flex-col min-w-0">
                   <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
                   <p className="text-xs text-muted-foreground">
-                    {selectedMember === "ai-assistant" ? "AI Assistant" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
+                    {selectedMember === "ai-assistant" ? "AI Project Manager" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
                   </p>
                 </div>
               </div>
