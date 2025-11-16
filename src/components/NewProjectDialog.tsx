@@ -178,9 +178,6 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
             avatar: avatar,
           });
           memberTeamMap.set(fullName, teamName);
-        } else if (!teamName) {
-          // Log warning if user doesn't have a team assigned
-          console.warn(`User ${fullName} (${user.email}) found in filtered users but not in any team details`);
         }
       });
       

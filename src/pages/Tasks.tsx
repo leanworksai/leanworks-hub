@@ -9,6 +9,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -29,7 +34,8 @@ import {
   User,
   ArrowRight,
   MoreVertical,
-  Trash2
+  Trash2,
+  Sparkles
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
@@ -96,6 +102,7 @@ export default function Tasks() {
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -236,8 +243,61 @@ export default function Tasks() {
             }`}
             onClick={() => handleTaskClick(task.id)}
           >
-            <div className="absolute top-2 left-2 z-10">
+            <div className="absolute top-2 left-2 z-10 flex gap-1">
               <TaskTooltip taskId={task.id} taskReason={task.reason} />
+              {/* Progress Update Popover - similar to project cards */}
+              {task.progressUpdates && Array.isArray(task.progressUpdates) && task.progressUpdates.length > 0 && (() => {
+                // Get the latest progress update (sorted by date, newest first)
+                const sortedUpdates = [...task.progressUpdates].sort((a, b) => {
+                  const dateA = a.date ? new Date(a.date).getTime() : 0;
+                  const dateB = b.date ? new Date(b.date).getTime() : 0;
+                  return dateB - dateA;
+                });
+                const latestUpdate = sortedUpdates[0];
+                
+                if (!latestUpdate || !latestUpdate.update) {
+                  return null;
+                }
+                
+                return (
+                  <Popover open={hoveredTask === task.id} onOpenChange={(open) => setHoveredTask(open ? task.id : null)}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseEnter={() => setHoveredTask(task.id)}
+                        onMouseLeave={() => setHoveredTask(null)}
+                        title="Latest Progress Update"
+                      >
+                        <Sparkles className="h-4 w-4" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent 
+                      className="w-80" 
+                      onClick={(e) => e.stopPropagation()}
+                      onMouseEnter={() => setHoveredTask(task.id)}
+                      onMouseLeave={() => setHoveredTask(null)}
+                      align="start"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
+                          {latestUpdate.date && (
+                            <p className="text-xs text-muted-foreground/60">
+                              {latestUpdate.date}
+                            </p>
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                          {latestUpdate.update}
+                        </p>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                );
+              })()}
             </div>
             <CardHeader>
               <div className="flex items-start justify-between gap-3">

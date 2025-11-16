@@ -72,8 +72,6 @@ export default function ProjectDetail() {
   const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
   
-  const isLoading = isLoadingProject;
-  
   // Fetch team details to check project access
   const teamDetailsQueries = useQueries({
     queries: userTeams.map((team) => ({
@@ -84,27 +82,63 @@ export default function ProjectDetail() {
     })),
   });
   
+  // Check if team details are still loading
+  const isLoadingTeamDetails = teamDetailsQueries.some((query) => query.isLoading);
+  const allTeamDetailsLoaded = teamDetailsQueries.length === 0 || teamDetailsQueries.every(
+    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
+  );
+  
+  const isLoading = isLoadingProject || isLoadingTeamDetails || !allTeamDetailsLoaded;
+  
   // Get all team member names from user's teams
   const userTeamMemberNames = new Set<string>();
-  teamDetailsQueries.forEach((query) => {
-    if (query.data?.members) {
-      query.data.members.forEach((member) => {
-        userTeamMemberNames.add(member.name.toLowerCase());
-      });
+  if (allTeamDetailsLoaded) {
+    teamDetailsQueries.forEach((query) => {
+      if (query.data?.members) {
+        query.data.members.forEach((member) => {
+          userTeamMemberNames.add(member.name.toLowerCase());
+        });
+      }
+    });
+  }
+  
+  // Get user's email for access check
+  const userEmail = user?.email?.toLowerCase();
+  
+  // Check if user has access to the project:
+  // 1. User is the owner, OR
+  // 2. User is a project member (by email match), OR
+  // 3. At least one project member is from user's teams (by name match)
+  // Only check access after all data is loaded
+  const hasAccess = project && allTeamDetailsLoaded ? (() => {
+    // Always allow if user is the owner
+    if (userEmail && project.ownerEmail?.toLowerCase() === userEmail) {
+      return true;
     }
-  });
+    
+    // Check if user is a project member by email
+    if (userEmail && project.members.some((member) => 
+      member.email?.toLowerCase() === userEmail
+    )) {
+      return true;
+    }
+    
+    // Check if any project member is from user's teams (by name match)
+    if (userTeamMemberNames.size > 0) {
+      return project.members.some((member) =>
+        userTeamMemberNames.has(member.name.toLowerCase())
+      );
+    }
+    
+    return false;
+  })() : true; // Default to true while loading to avoid premature redirects
   
-  // Check if user has access to the project
-  const hasAccess = project ? project.members.some((member) =>
-    userTeamMemberNames.has(member.name.toLowerCase())
-  ) : false;
-  
-  // Redirect if user doesn't have access
+  // Redirect if user doesn't have access (only after all data is loaded)
   useEffect(() => {
-    if (!isLoading && project && userTeamMemberNames.size > 0 && !hasAccess) {
+    if (!isLoading && !isLoadingTeamDetails && project && allTeamDetailsLoaded && !hasAccess) {
       navigate("/projects");
     }
-  }, [isLoading, project, hasAccess, userTeamMemberNames.size, navigate]);
+  }, [isLoading, isLoadingTeamDetails, project, hasAccess, allTeamDetailsLoaded, navigate]);
 
   const handleDelete = async () => {
     if (!project) return;
@@ -141,8 +175,8 @@ export default function ProjectDetail() {
     );
   }
 
-  // Show access denied if user doesn't have access
-  if (project && userTeamMemberNames.size > 0 && !hasAccess && !isLoading) {
+  // Show access denied if user doesn't have access (only after all data is loaded)
+  if (project && allTeamDetailsLoaded && !hasAccess && !isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
         <Button variant="ghost" onClick={() => navigate("/projects")}>

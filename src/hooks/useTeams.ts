@@ -8,7 +8,10 @@ export const useTeams = () => {
   
   return useQuery({
     queryKey: ['teams'],
-    queryFn: () => teamsService.getAll(),
+    queryFn: async () => {
+      const teams = await teamsService.getAll();
+      return teams;
+    },
     enabled: !loading && !!user, // Only fetch when user is authenticated
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
@@ -89,10 +92,12 @@ export const useCreateTeam = () => {
     mutationFn: ({ team, teamDetail }: { team: Team; teamDetail: TeamDetailData }) =>
       teamsService.create(team, teamDetail),
     onSuccess: (_, variables) => {
-      // Invalidate all team queries to refetch the list
+      // Invalidate and refetch all team queries to show the new team immediately
       queryClient.invalidateQueries({ queryKey: ['teams'] });
+      queryClient.refetchQueries({ queryKey: ['teams'] });
       // Invalidate the specific team detail query so useUserTeams can find it
       queryClient.invalidateQueries({ queryKey: ['teams', variables.team.id] });
+      queryClient.refetchQueries({ queryKey: ['teams', variables.team.id] });
     },
   });
 };
@@ -127,7 +132,7 @@ export const useDeleteTeam = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (teamName: string) => teamsService.delete(teamName),
+    mutationFn: (teamId: string) => teamsService.delete(teamId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['teams'] });
     },

@@ -159,7 +159,6 @@ const App = () => {
   useEffect(() => {
     try {
       initFirestore();
-      console.log('Firestore initialized successfully');
     } catch (error) {
       console.error('Failed to initialize Firestore:', error);
     }

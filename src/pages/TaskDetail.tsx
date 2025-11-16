@@ -514,7 +514,19 @@ export default function TaskDetail() {
             {task.description}
           </p>
         )}
-        
+
+        {/* Reason Section - only show if reason is not empty */}
+        {task.reason && task.reason.trim() && (
+          <Card className="bg-gradient-card border-border shadow-card mb-4">
+            <CardContent className="pt-6">
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-muted-foreground/70 uppercase tracking-wide">Reason</p>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{task.reason}</p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Task Meta Info */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

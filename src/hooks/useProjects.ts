@@ -52,13 +52,35 @@ export const useUserProjects = () => {
     });
   }
 
-  // Filter projects where at least one member is from user's teams
-  const userProjects = allQueriesCompleted && !isLoadingDetails && userTeamMemberNames.size > 0
+  // Get user's email for owner check
+  const userEmail = user?.email?.toLowerCase();
+
+  // Filter projects where:
+  // 1. User is the owner, OR
+  // 2. At least one project member is from user's teams (by name match), OR
+  // 3. User is a project member (by email match)
+  const userProjects = allQueriesCompleted && !isLoadingDetails
     ? allProjects.filter((project) => {
-        // Check if any project member is from user's teams
-        return project.members.some((member) =>
-          userTeamMemberNames.has(member.name.toLowerCase())
-        );
+        // Always show projects where user is the owner
+        if (userEmail && project.ownerEmail?.toLowerCase() === userEmail) {
+          return true;
+        }
+        
+        // Check if user is a project member by email
+        if (userEmail && project.members.some((member) => 
+          member.email?.toLowerCase() === userEmail
+        )) {
+          return true;
+        }
+        
+        // Check if any project member is from user's teams (by name match)
+        if (userTeamMemberNames.size > 0) {
+          return project.members.some((member) =>
+            userTeamMemberNames.has(member.name.toLowerCase())
+          );
+        }
+        
+        return false;
       })
     : [];
 
@@ -85,7 +107,9 @@ export const useCreateProject = () => {
   return useMutation({
     mutationFn: (project: Project) => projectsService.create(project),
     onSuccess: () => {
+      // Invalidate and refetch to show the new project immediately
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.refetchQueries({ queryKey: ['projects'] });
     },
   });
 };

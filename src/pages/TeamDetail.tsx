@@ -86,11 +86,11 @@ export default function TeamDetail() {
 
   // Handle remove member
   const handleRemoveMember = async () => {
-    if (!teamName || !removeMemberDialog.memberEmail) return;
+    if (!team?.name || !removeMemberDialog.memberEmail) return;
     
     try {
       await removeMemberMutation.mutateAsync({
-        teamName,
+        teamName: team.name,
         memberEmail: removeMemberDialog.memberEmail,
       });
       toast({
@@ -109,10 +109,10 @@ export default function TeamDetail() {
 
   // Handle leave team
   const handleLeaveTeam = async () => {
-    if (!teamName) return;
+    if (!team?.name) return;
     
     try {
-      await leaveTeamMutation.mutateAsync(teamName);
+      await leaveTeamMutation.mutateAsync(team.name);
       toast({
         title: "Left team",
         description: "You have successfully left the team.",
@@ -166,7 +166,7 @@ export default function TeamDetail() {
 
   // Handle invite members
   const handleInviteMembers = async () => {
-    if (!teamName || !team || selectedUserEmails.size === 0) return;
+    if (!team?.name || !team || selectedUserEmails.size === 0) return;
 
     try {
       // Get selected users
@@ -175,7 +175,7 @@ export default function TeamDetail() {
       // Send invitations to all selected users
       const invitationPromises = selectedUsers.map(user => 
         inviteMemberMutation.mutateAsync({
-          teamName,
+          teamName: team.name,
           inviteeEmail: user.email,
         })
       );

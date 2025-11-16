@@ -4,7 +4,7 @@ import { Project } from "@/data/projectsData";
 interface SelectedProjectsContextType {
   selectedProjects: Project[];
   toggleProject: (project: Project) => void;
-  isProjectSelected: (projectName: string) => boolean;
+  isProjectSelected: (projectId: string) => boolean;
   clearSelection: () => void;
 }
 
@@ -15,17 +15,17 @@ export function SelectedProjectsProvider({ children }: { children: ReactNode }) 
 
   const toggleProject = (project: Project) => {
     setSelectedProjects((prev) => {
-      const isSelected = prev.some((p) => p.name === project.name);
+      const isSelected = prev.some((p) => p.id === project.id);
       if (isSelected) {
-        return prev.filter((p) => p.name !== project.name);
+        return prev.filter((p) => p.id !== project.id);
       } else {
         return [...prev, project];
       }
     });
   };
 
-  const isProjectSelected = (projectName: string) => {
-    return selectedProjects.some((p) => p.name === projectName);
+  const isProjectSelected = (projectId: string) => {
+    return selectedProjects.some((p) => p.id === projectId);
   };
 
   const clearSelection = () => {

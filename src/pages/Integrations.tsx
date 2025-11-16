@@ -54,11 +54,9 @@ export default function Integrations() {
     try {
       setLoading(true);
       const integrations = await integrationsService.getAll();
-      console.log('[Integrations] Loaded integrations:', integrations);
       const connected = new Set(
         integrations.filter(i => i.connected).map(i => i.id)
       );
-      console.log('[Integrations] Connected integration IDs:', Array.from(connected));
       setConnectedIntegrations(connected);
     } catch (error) {
       console.error("Failed to load integrations:", error);
@@ -78,7 +76,6 @@ export default function Integrations() {
     const installationId = params.get('installation_id');
     
     if (githubStatus === 'connected') {
-      console.log('[Integrations] GitHub callback detected, installation_id:', installationId);
       toast({
         title: "Success",
         description: "GitHub integration connected successfully",

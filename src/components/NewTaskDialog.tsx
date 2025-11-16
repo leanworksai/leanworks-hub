@@ -321,7 +321,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                       {projects.map((project) => {
                         const slug = project.name.toLowerCase().replace(/\s+/g, '-');
                         return (
-                          <SelectItem key={project.name} value={slug}>
+                          <SelectItem key={project.id} value={slug}>
                             {project.name}
                           </SelectItem>
                         );

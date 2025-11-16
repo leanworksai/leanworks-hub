@@ -70,6 +70,55 @@ fi
 echo -e "${YELLOW}Getting GKE cluster credentials...${NC}"
 gcloud container clusters get-credentials "$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID"
 
+# Create Kubernetes secret for GCP credentials (for Cloud SQL Proxy)
+echo -e "${YELLOW}Creating Kubernetes secret for GCP credentials...${NC}"
+if kubectl get secret gcp-credentials -n default &>/dev/null; then
+    echo -e "${YELLOW}Secret already exists, updating...${NC}"
+    kubectl create secret generic gcp-credentials \
+        --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    echo -e "${GREEN}Secret updated!${NC}"
+else
+    kubectl create secret generic gcp-credentials \
+        --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE"
+    echo -e "${GREEN}Secret created!${NC}"
+fi
+
+# Extract service account email for verification
+if command -v jq &> /dev/null; then
+    GSA_EMAIL=$(jq -r '.client_email' "$GCP_CREDENTIAL_FILE")
+elif command -v python3 &> /dev/null; then
+    GSA_EMAIL=$(python3 -c "import json, sys; print(json.load(open('$GCP_CREDENTIAL_FILE'))['client_email'])")
+else
+    GSA_EMAIL=$(grep -o '"client_email"[[:space:]]*:[[:space:]]*"[^"]*"' "$GCP_CREDENTIAL_FILE" | sed 's/.*"client_email"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
+fi
+
+if [ -z "$GSA_EMAIL" ]; then
+    echo -e "${RED}Error: Could not extract client_email from $GCP_CREDENTIAL_FILE${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}Using GCP service account: ${GSA_EMAIL}${NC}"
+
+# Grant Cloud SQL Client role to the service account (if needed)
+echo -e "${YELLOW}Verifying Cloud SQL Client role for ${GSA_EMAIL}...${NC}"
+if gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${GSA_EMAIL}" \
+    --role="roles/cloudsql.client" \
+    --condition=None \
+    --quiet 2>/dev/null; then
+    echo -e "${GREEN}Cloud SQL Client role granted successfully.${NC}"
+else
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo -e "${YELLOW}⚠️  Could not grant Cloud SQL Client role automatically (exit code: $EXIT_CODE).${NC}"
+        echo -e "${YELLOW}   The role may already be granted. If not, please run manually:${NC}"
+        echo -e "   gcloud projects add-iam-policy-binding ${PROJECT_ID} \\"
+        echo -e "     --member=\"serviceAccount:${GSA_EMAIL}\" \\"
+        echo -e "     --role=\"roles/cloudsql.client\""
+    fi
+fi
+
 # Generate a unique tag based on timestamp
 IMAGE_TAG=$(date +%Y%m%d-%H%M%S)
 FULL_IMAGE_NAME="${IMAGE_NAME}:${IMAGE_TAG}"

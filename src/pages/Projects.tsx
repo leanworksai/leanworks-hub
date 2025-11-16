@@ -48,7 +48,7 @@ export default function Projects() {
   const { toast } = useToast();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
-  const [hoveredProject, setHoveredProject] = useState<string | null>(null);
+  const [hoveredProject, setHoveredProject] = useState<string | null>(null); // Stores project ID
 
   const handleCardClick = (projectId: string) => {
     // Don't navigate if in selection mode
@@ -120,22 +120,22 @@ export default function Projects() {
       <div className="grid gap-4 md:grid-cols-2">
         {projects.map((project) => (
           <Card 
-            key={project.name} 
+            key={project.id} 
             className={`relative bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow ${
-              isProjectSelected(project.name) ? 'ring-2 ring-primary' : ''
+              isProjectSelected(project.id) ? 'ring-2 ring-primary' : ''
             }`}
             onClick={() => handleCardClick(project.id)}
           >
             {updateSummaries[project.id]?.updateSummary && (
               <div className="absolute top-2 left-2 z-10">
-                <Popover open={hoveredProject === project.name} onOpenChange={(open) => setHoveredProject(open ? project.name : null)}>
+                <Popover open={hoveredProject === project.id} onOpenChange={(open) => setHoveredProject(open ? project.id : null)}>
                   <PopoverTrigger asChild>
                     <Button
                       variant="ghost"
                       size="icon"
                       className="h-5 w-5 text-muted-foreground hover:text-foreground"
                       onClick={(e) => e.stopPropagation()}
-                      onMouseEnter={() => setHoveredProject(project.name)}
+                      onMouseEnter={() => setHoveredProject(project.id)}
                       onMouseLeave={() => setHoveredProject(null)}
                       title="AI Progress Summary"
                     >
@@ -145,7 +145,7 @@ export default function Projects() {
                   <PopoverContent 
                     className="w-80" 
                     onClick={(e) => e.stopPropagation()}
-                    onMouseEnter={() => setHoveredProject(project.name)}
+                    onMouseEnter={() => setHoveredProject(project.id)}
                     onMouseLeave={() => setHoveredProject(null)}
                     align="start"
                   >
@@ -172,7 +172,7 @@ export default function Projects() {
                   <div className="flex items-center gap-3">
                     {isSelectionMode && (
                       <Checkbox
-                        checked={isProjectSelected(project.name)}
+                        checked={isProjectSelected(project.id)}
                         onCheckedChange={() => toggleProject(project)}
                         onClick={handleCheckboxClick}
                         className="mt-1"

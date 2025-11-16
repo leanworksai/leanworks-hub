@@ -76,7 +76,7 @@ export default function Teams() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [teamToEdit, setTeamToEdit] = useState<Team | null>(null);
-  const [teamToDelete, setTeamToDelete] = useState<string | null>(null);
+  const [teamToDelete, setTeamToDelete] = useState<string | null>(null); // Stores team ID
   const [searchQuery, setSearchQuery] = useState("");
   const [formData, setFormData] = useState({
     name: "",
@@ -336,9 +336,9 @@ export default function Teams() {
     }
   };
 
-  const handleDeleteClick = (e: React.MouseEvent, teamName: string) => {
+  const handleDeleteClick = (e: React.MouseEvent, teamId: string) => {
     e.stopPropagation();
-    setTeamToDelete(teamName);
+    setTeamToDelete(teamId);
   };
 
   const handleDeleteConfirm = async () => {
@@ -460,7 +460,7 @@ export default function Teams() {
         </TabsList>
 
         <TabsContent value="all-teams" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {allTeams.map((team) => {
               const isMember = isUserMemberOfTeam(team.name);
               const hasPending = hasPendingRequest(team.name);
@@ -468,7 +468,7 @@ export default function Teams() {
               return (
                 <Card 
                   key={team.name} 
-                  className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
+                  className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] min-h-[180px] ${
                     isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
                   }`}
                     onClick={() => {
@@ -480,26 +480,18 @@ export default function Teams() {
                       }
                     }}
                 >
-                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <div className="flex items-center gap-3">
+                  <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-4 px-6 pt-6">
+                    <div className="flex items-start gap-3 flex-1 min-w-0 pr-2">
                       {isSelectionMode && (
                         <Checkbox
                           checked={isTeamSelected(team.name)}
                           onCheckedChange={() => toggleTeam(team)}
                           onClick={(e) => e.stopPropagation()}
-                          className="flex-shrink-0"
+                          className="flex-shrink-0 mt-1"
                         />
                       )}
-                      <Avatar className="h-10 w-10 bg-primary">
-                        <AvatarFallback className="bg-primary text-primary-foreground">
-                          {team.avatar}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <CardTitle className="text-base">{team.name}</CardTitle>
-                        <CardDescription className="text-xs text-foreground">
-                          {team.description}
-                        </CardDescription>
+                      <div className="flex-1 min-w-0">
+                        <CardTitle className="text-lg font-semibold leading-tight break-words">{team.name}</CardTitle>
                       </div>
                     </div>
                     {!isSelectionMode && (
@@ -528,7 +520,7 @@ export default function Teams() {
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 className="text-destructive focus:text-destructive"
-                                onClick={(e) => handleDeleteClick(e, team.name)}
+                                onClick={(e) => handleDeleteClick(e, team.id)}
                               >
                                 <Trash2 className="mr-2 h-4 w-4" />
                                 Delete
@@ -539,17 +531,15 @@ export default function Teams() {
                       </DropdownMenu>
                     )}
                   </CardHeader>
-                  <CardContent>
-                    <div className="flex justify-between items-center">
-                      <div className="flex justify-between text-sm flex-1">
-                        <div>
-                          <p className="text-muted-foreground">Members</p>
-                          <p className="text-xl font-bold">{team.members}</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Projects</p>
-                          <p className="text-xl font-bold">{team.projects}</p>
-                        </div>
+                  <CardContent className="px-6 pb-6">
+                    <div className="flex justify-between items-start gap-6 mb-4">
+                      <div className="flex-1">
+                        <p className="text-xs text-muted-foreground mb-2 font-medium">Members</p>
+                        <p className="text-2xl font-bold">{team.members}</p>
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-xs text-muted-foreground mb-2 font-medium">Projects</p>
+                        <p className="text-2xl font-bold">{team.projects}</p>
                       </div>
                     </div>
                     {!isMember && !isSelectionMode && (
@@ -593,12 +583,12 @@ export default function Teams() {
               </p>
             </div>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
               {userTeams.map((team) => {
                 return (
                   <Card 
                     key={team.name} 
-                    className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-105 ${
+                    className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] min-h-[180px] ${
                       isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
                     }`}
                     onClick={() => {
@@ -608,26 +598,18 @@ export default function Teams() {
                       }
                     }}
                   >
-                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                      <div className="flex items-center gap-3">
+                    <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-4 px-6 pt-6">
+                      <div className="flex items-start gap-3 flex-1 min-w-0 pr-2">
                         {isSelectionMode && (
                           <Checkbox
                             checked={isTeamSelected(team.name)}
                             onCheckedChange={() => toggleTeam(team)}
                             onClick={(e) => e.stopPropagation()}
-                            className="flex-shrink-0"
+                            className="flex-shrink-0 mt-1"
                           />
                         )}
-                        <Avatar className="h-10 w-10 bg-primary">
-                          <AvatarFallback className="bg-primary text-primary-foreground">
-                            {team.avatar}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <CardTitle className="text-base">{team.name}</CardTitle>
-                          <CardDescription className="text-xs text-foreground">
-                            {team.description}
-                          </CardDescription>
+                        <div className="flex-1 min-w-0">
+                          <CardTitle className="text-lg font-semibold leading-tight break-words">{team.name}</CardTitle>
                         </div>
                       </div>
                       {!isSelectionMode && (
@@ -654,7 +636,7 @@ export default function Teams() {
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               className="text-destructive focus:text-destructive"
-                              onClick={(e) => handleDeleteClick(e, team.name)}
+                              onClick={(e) => handleDeleteClick(e, team.id)}
                             >
                               <Trash2 className="mr-2 h-4 w-4" />
                               Delete
@@ -663,15 +645,15 @@ export default function Teams() {
                         </DropdownMenu>
                       )}
                     </CardHeader>
-                    <CardContent>
-                      <div className="flex justify-between text-sm">
-                        <div>
-                          <p className="text-muted-foreground">Members</p>
-                          <p className="text-xl font-bold">{team.members}</p>
+                    <CardContent className="px-6 pb-6">
+                      <div className="flex justify-between items-start gap-6 mb-4">
+                        <div className="flex-1">
+                          <p className="text-xs text-muted-foreground mb-2 font-medium">Members</p>
+                          <p className="text-2xl font-bold">{team.members}</p>
                         </div>
-                        <div>
-                          <p className="text-muted-foreground">Projects</p>
-                          <p className="text-xl font-bold">{team.projects}</p>
+                        <div className="flex-1">
+                          <p className="text-xs text-muted-foreground mb-2 font-medium">Projects</p>
+                          <p className="text-2xl font-bold">{team.projects}</p>
                         </div>
                       </div>
                     </CardContent>
@@ -990,7 +972,7 @@ export default function Teams() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Team</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{teamToDelete}"? This action cannot be undone.
+              Are you sure you want to delete "{teamToDelete ? (allTeams.find(t => t.id === teamToDelete)?.name || userTeams.find(t => t.id === teamToDelete)?.name || 'this team') : 'this team'}"? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

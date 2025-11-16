@@ -9,241 +9,222 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import crypto from 'crypto';
+import { getTenantPool, getDomainFromEmail } from '../database/multi-tenant-pool.js';
+import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Read service account credentials
-// Using fs.readFileSync to avoid module import issues with JSON files
 const serviceAccountPath = join(__dirname, '../gcp_credential.json');
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+  console.log('✅ Loaded GCP credentials from:', serviceAccountPath);
+} catch (error) {
+  console.error('❌ Failed to load GCP credentials from:', serviceAccountPath);
+  console.error('Error:', error);
+  process.exit(1);
+}
 
-// Initialize Firebase Admin SDK
+// Initialize Firebase Admin SDK (for auth and messages only)
 let firebaseApp;
-if (getApps().length === 0) {
-  firebaseApp = initializeApp({
-    credential: cert(serviceAccount),
-    projectId: serviceAccount.project_id,
-  });
-} else {
-  firebaseApp = getApps()[0];
+try {
+  if (getApps().length === 0) {
+    firebaseApp = initializeApp({
+      credential: cert(serviceAccount),
+      projectId: serviceAccount.project_id,
+    });
+    console.log('✅ Firebase Admin SDK initialized');
+  } else {
+    firebaseApp = getApps()[0];
+    console.log('✅ Using existing Firebase Admin SDK instance');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize Firebase Admin SDK:', error);
+  throw error;
 }
 
 const db = getFirestore(firebaseApp, 'leanworks-prod');
 const auth = getAuth(firebaseApp);
-// Initialize Secret Manager client with explicit service account credentials
+console.log('✅ Firestore and Auth initialized');
+
+// Initialize Secret Manager client
 const secretManagerClient = new SecretManagerServiceClient({
   credentials: serviceAccount,
   projectId: serviceAccount.project_id,
 });
+
 const app = express();
 const PORT = 3001;
 
 app.use(cors());
-// GitHub webhook needs raw body for signature verification, so we'll handle JSON parsing per-route
-// For most routes, we'll use express.json() middleware
-// For the webhook route, we'll use express.raw()
+
+// JSON parsing middleware (except for GitHub webhook)
 app.use((req, res, next) => {
-  // Skip JSON parsing for GitHub webhook endpoint
-  if (req.path === '/api/integrations/github/webhook') {
-    return next();
+  if (req.path === '/api/integrations/github/webhooks') {
+    next();
+  } else {
+    express.json()(req, res, next);
   }
-  express.json()(req, res, next);
 });
 
-// Extract domain from email
-function extractDomain(email: string): string {
-  return email.split('@')[1]?.toLowerCase() || '';
-}
+// ============================================================================
+// AUTHENTICATION MIDDLEWARE
+// ============================================================================
 
-// Validate business email (not personal email domain)
-const PERSONAL_EMAIL_DOMAINS = [
-  'gmail.com',
-  'yahoo.com',
-  'hotmail.com',
-  'outlook.com',
-  'icloud.com',
-  'aol.com',
-  'mail.com',
-  'protonmail.com',
-  'yandex.com',
-  'zoho.com',
-  'gmx.com',
-  'live.com',
-  'msn.com',
-  'me.com',
-  'mac.com',
-];
-
-function isBusinessEmail(email: string): boolean {
-  const domain = extractDomain(email);
-  return !PERSONAL_EMAIL_DOMAINS.includes(domain);
-}
-
-// Authentication middleware
 async function authenticateUser(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const authHeader = req.headers.authorization;
+    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized: No token provided' });
+      return res.status(401).json({ error: 'No token provided' });
     }
 
-    const token = authHeader.split('Bearer ')[1];
+    const token = authHeader.substring(7);
     
     // Try to verify as ID token first (normal flow when Firebase Auth works)
     try {
       const decodedToken = await auth.verifyIdToken(token);
-      // Attach user info to request
-      (req as any).user = decodedToken;
-      (req as any).userDomain = extractDomain(decodedToken.email || '');
+    (req as any).user = decodedToken;
+    (req as any).userEmail = decodedToken.email;
+    (req as any).userDomain = getDomainFromEmail(decodedToken.email!);
       next();
       return;
     } catch (idTokenError: any) {
       // If ID token verification fails, try to verify as custom token
-      // Custom tokens from createCustomToken are JWTs that can be verified
       // by decoding and checking the UID
-      try {
-        // Decode the JWT without verification first to get the UID
-        // Custom tokens have the format: {uid: "...", ...}
-        const parts = token.split('.');
-        if (parts.length === 3) {
-          // It's a JWT, try to decode it
-          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-          
-          // If it has a uid, it's likely a custom token
-          if (payload.uid) {
-            // Verify the user exists and get their info
-            const userRecord = await auth.getUser(payload.uid);
+      if (idTokenError.code === 'auth/argument-error' && idTokenError.message?.includes('custom token')) {
+        try {
+          // Decode the JWT without verification first to get the UID
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
             
-            // Create a decoded token-like object
-            (req as any).user = {
-              uid: userRecord.uid,
-              email: userRecord.email,
-              email_verified: userRecord.emailVerified,
-            };
-            (req as any).userDomain = extractDomain(userRecord.email || '');
-            next();
-            return;
+            // If it has a uid, it's likely a custom token
+            if (payload.uid) {
+              // Verify the user exists and get their info
+              const userRecord = await auth.getUser(payload.uid);
+              
+              // Create a decoded token-like object
+              const decodedToken = {
+                uid: userRecord.uid,
+                email: userRecord.email,
+                email_verified: userRecord.emailVerified,
+              };
+              
+              (req as any).user = decodedToken;
+              (req as any).userEmail = userRecord.email;
+              (req as any).userDomain = getDomainFromEmail(userRecord.email!);
+    next();
+              return;
+            }
           }
+        } catch (customTokenError: any) {
+          // If custom token handling fails, log and throw original error
+          console.error('Custom token handling failed:', customTokenError.message);
+          throw idTokenError;
         }
-        
-        // If we can't decode it, reject
-        throw new Error('Invalid token format');
-      } catch (customTokenError: any) {
-        console.error('Token verification failed:', customTokenError.message);
-        return res.status(401).json({ error: 'Unauthorized: Invalid token' });
       }
+      
+      // If we get here, both methods failed or it's not a custom token error
+      throw idTokenError;
     }
   } catch (error) {
-    console.error('Authentication error:', error);
-    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    console.error('Auth error:', error);
+    res.status(401).json({ error: 'Invalid token' });
   }
 }
 
-// Helper to get domain-based collection path
-function getCollectionPath(collectionName: string, domain: string): string {
-  return `domains/${domain}/${collectionName}`;
+// Helper to get Firestore collection path (only for messages now)
+function getCollectionPath(collection: string, domain: string) {
+  return `domains/${domain}/${collection}`;
 }
 
-// Helper function to get team ID by team name
-async function getTeamIdByName(domain: string, teamName: string): Promise<string | null> {
-  const teamsPath = getCollectionPath('teams', domain);
-  const snapshot = await db.collection(teamsPath)
-    .where('name', '==', teamName)
-    .limit(1)
-    .get();
-  
-  if (snapshot.empty) {
-    return null;
+// Helper to convert snake_case to camelCase
+function toCamelCase(str: string): string {
+  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+// Transform database row to camelCase
+function transformRow(row: any): any {
+  const transformed: any = {};
+  for (const [key, value] of Object.entries(row)) {
+    const camelKey = toCamelCase(key);
+    transformed[camelKey] = value;
   }
-  
-  // Return the document ID (which is the team.id)
-  return snapshot.docs[0].id;
+  return transformed;
 }
 
-// Email whitelist - only these emails can signup and login
-const EMAIL_WHITELIST = [
-  'testuser@leanworks.ai',
-  'yanfu@leanworks.ai',
-  'vijay@leanworks.ai',
-  'qianwen@leanworks.ai',
-  // Add more whitelisted emails here
-];
-
-function isEmailWhitelisted(email: string): boolean {
-  return EMAIL_WHITELIST.includes(email.toLowerCase());
+// Transform members array to match frontend expectations
+function transformMembers(members: any[] | null): any[] {
+  if (!members || !Array.isArray(members)) return [];
+  return members.map(m => ({
+    id: m.email || m.id, // Frontend expects 'id' to be email
+    email: m.email,
+    name: m.name || `${m.firstName || ''} ${m.lastName || ''}`.trim() || m.email,
+    role: m.role || 'member',
+    avatar: m.avatar || null
+  }));
 }
 
-// Authentication endpoints
+// ============================================================================
+// HEALTH CHECK
+// ============================================================================
+
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok',
+    message: 'Leanworks Hub API',
+    health: '/api/health'
+  });
+});
+
+app.get('/api/health', async (req, res) => {
+  res.json({ 
+    status: 'healthy',
+    database: 'hybrid',
+    postgres: 'primary',
+    firestore: 'messages-only'
+  });
+});
+
+// ============================================================================
+// USER ENDPOINTS (PostgreSQL)
+// ============================================================================
+
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { email, password, firstName, lastName, jobTitle, responsibilities } = req.body;
-
-    if (!email || !password || !firstName || !lastName || !jobTitle) {
-      return res.status(400).json({ error: 'Email, password, first name, last name, and job title are required' });
-    }
-
-    // Check if email is whitelisted
-    if (!isEmailWhitelisted(email)) {
-      return res.status(403).json({ error: 'Your email is not authorized to sign up. Please contact your administrator.' });
-    }
-
-    // Get domain and collection path
-    const domain = extractDomain(email);
-    const usersCollectionPath = getCollectionPath('users', domain);
+    const { email, password, firstName, lastName, jobTitle } = req.body;
     
-    // Check if user already exists in Firestore
-    const usersCollection = db.collection(usersCollectionPath);
-    const userDoc = await usersCollection.doc(email.toLowerCase()).get();
-    
-    if (userDoc.exists) {
-      return res.status(400).json({ error: 'Account already exists. Please sign in instead.' });
-    }
-
-    // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // Store user in Firestore users collection (domain-based)
-    const userData = {
-      email: email.toLowerCase(),
-      password: hashedPassword,
-      firstName,
-      lastName,
-      jobTitle,
-      responsibilities: responsibilities || '',
-      createdAt: new Date(),
-      domain: domain,
-    };
-
-    await usersCollection.doc(email.toLowerCase()).set(userData);
-
-    // Create Firebase Auth user (for custom token generation)
-    let userRecord;
-    try {
-      userRecord = await auth.createUser({
-        email: email.toLowerCase(),
-        password,
-        emailVerified: true, // No email verification needed
-      });
-    } catch (error: any) {
-      // If user already exists in Firebase Auth, get it
-      if (error.code === 'auth/email-already-exists') {
-        userRecord = await auth.getUserByEmail(email.toLowerCase());
-      } else {
-        throw error;
-      }
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'Account created successfully!',
-      userId: userRecord.uid,
+    // Create user in Firebase Auth
+    const userRecord = await auth.createUser({
+      email,
+      password,
+      displayName: `${firstName} ${lastName}`,
     });
-  } catch (error: any) {
+
+    // Get tenant pool
+    const pool = await getTenantPool(email);
+    
+    // Hash password for PostgreSQL
+    const passwordHash = await bcrypt.hash(password, 10);
+    
+    // Store in PostgreSQL
+    await pool.query(`
+      INSERT INTO users (email, password_hash, first_name, last_name, job_title, created_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+    `, [email.toLowerCase(), passwordHash, firstName, lastName, jobTitle]);
+
+    res.status(201).json({ 
+      success: true, 
+      uid: userRecord.uid,
+      email: userRecord.email 
+    });
+  } catch (error) {
     console.error('Signup error:', error);
-    res.status(500).json({ error: error.message || 'Failed to create account' });
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
@@ -255,33 +236,32 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Check if email is whitelisted
-    if (!isEmailWhitelisted(email)) {
+    // Get tenant pool
+    const pool = await getTenantPool(email);
+
+    // Get user from PostgreSQL
+    const userResult = await pool.query(
+      'SELECT email, password_hash, first_name, last_name FROM users WHERE email = $1',
+      [email.toLowerCase()]
+    );
+    
+    if (userResult.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    // Get domain and collection path
-    const domain = extractDomain(email);
-    const usersCollectionPath = getCollectionPath('users', domain);
-    
-    // Get user from Firestore users collection (domain-based)
-    const usersCollection = db.collection(usersCollectionPath);
-    const userDoc = await usersCollection.doc(email.toLowerCase()).get();
-    
-    if (!userDoc.exists) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    const userData = userDoc.data();
-    if (!userData) {
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
+    const userData = userResult.rows[0];
 
     // Verify password
-    const isPasswordValid = await bcrypt.compare(password, userData.password);
+    const isPasswordValid = await bcrypt.compare(password, userData.password_hash);
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+
+    // Update last login
+    await pool.query(
+      'UPDATE users SET last_login = NOW() WHERE email = $1',
+      [email.toLowerCase()]
+    );
 
     // Get or create Firebase Auth user (for custom token generation)
     let userRecord;
@@ -289,45 +269,26 @@ app.post('/api/auth/login', async (req, res) => {
       userRecord = await auth.getUserByEmail(email.toLowerCase());
     } catch (error: any) {
       if (error.code === 'auth/user-not-found') {
-        // Create user in Firebase Auth if it doesn't exist
-        try {
+        // Create Firebase Auth user if it doesn't exist
         userRecord = await auth.createUser({
           email: email.toLowerCase(),
           password,
           emailVerified: true,
+          displayName: `${userData.first_name} ${userData.last_name}`,
         });
-        } catch (createError: any) {
-          console.error('Error creating Firebase Auth user:', createError);
-          console.error('Error code:', createError.code);
-          console.error('Error message:', createError.message);
-          throw createError;
-        }
       } else {
-        console.error('Error getting Firebase Auth user:', error);
-        console.error('Error code:', error.code);
-        console.error('Error message:', error.message);
         throw error;
       }
     }
 
-    // Ensure user is verified (no email verification needed, but keep it true)
+    // Ensure user is verified
     if (!userRecord.emailVerified) {
       await auth.updateUser(userRecord.uid, { emailVerified: true });
-      // Fetch updated user record to get the latest emailVerified value
       userRecord = await auth.getUser(userRecord.uid);
     }
 
-    // Create custom token for the user
-    let customToken;
-    try {
-      customToken = await auth.createCustomToken(userRecord.uid);
-    } catch (tokenError: any) {
-      console.error('Error creating custom token:', tokenError);
-      console.error('Error code:', tokenError.code);
-      console.error('Error message:', tokenError.message);
-      console.error('Project ID:', serviceAccount.project_id);
-      throw tokenError;
-    }
+    // Create custom token
+    const customToken = await auth.createCustomToken(userRecord.uid);
 
     res.json({ 
       success: true,
@@ -340,342 +301,233 @@ app.post('/api/auth/login', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Login error:', error);
-    console.error('Error code:', error.code);
-    console.error('Error message:', error.message);
-    console.error('Full error:', JSON.stringify(error, null, 2));
     res.status(500).json({ error: error.message || 'Failed to sign in' });
   }
 });
 
-// Email verification endpoints removed - no email verification required
-
-// User profile endpoint
-app.get('/api/users/profile', authenticateUser, async (req, res) => {
-  try {
-    const userEmail = (req as any).user.email;
-    if (!userEmail) {
-      return res.status(400).json({ error: 'User email not found' });
-    }
-
-    const domain = (req as any).userDomain;
-    const usersCollectionPath = getCollectionPath('users', domain);
-    const userDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User profile not found' });
-    }
-
-    const userData = userDoc.data();
-    if (!userData) {
-      return res.status(404).json({ error: 'User profile not found' });
-    }
-
-    // Remove password from response
-    const { password, ...profileData } = userData;
-    
-    // Convert createdAt timestamp if it exists
-    const profile = {
-      ...profileData,
-      createdAt: userData.createdAt?.toDate ? userData.createdAt.toDate().toISOString() : userData.createdAt,
-    };
-
-    res.json(profile);
-  } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch profile' });
-  }
-});
-
-// Get all users endpoint
 app.get('/api/users', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const usersCollectionPath = getCollectionPath('users', domain);
-    const snapshot = await db.collection(usersCollectionPath).get();
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
     
-    const users = snapshot.docs.map(doc => {
-      const userData = doc.data();
-      // Remove password from response
-      const { password, ...userWithoutPassword } = userData;
-      
-      // Convert createdAt timestamp if it exists
-      return {
-        ...userWithoutPassword,
-        createdAt: userData.createdAt?.toDate ? userData.createdAt.toDate().toISOString() : userData.createdAt,
-      };
+    const result = await pool.query(`
+      SELECT email, first_name, last_name, job_title, responsibilities, created_at
+      FROM users
+      ORDER BY created_at DESC
+    `);
+    
+    // Transform to camelCase and add full name
+    const transformed = result.rows.map(row => {
+      const user = transformRow(row);
+      // Combine first_name and last_name into name field
+      const firstName = user.firstName || '';
+      const lastName = user.lastName || '';
+      user.name = `${firstName} ${lastName}`.trim() || user.email;
+      return user;
     });
     
-    res.json(users);
+    res.json(transformed);
   } catch (error) {
     console.error('Get users error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch users' });
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Helper to convert Firestore timestamps
-// Helper function to convert Firestore timestamps recursively
-const convertTimestamp = (value: any): any => {
-  // Check if it's a Firestore Timestamp
-  if (value && typeof value === 'object' && 'toDate' in value && typeof (value as any).toDate === 'function') {
-    const date = (value as any).toDate();
-    // Convert to date string (YYYY-MM-DD format)
-    return date.toISOString().split('T')[0];
-  }
-  
-  // Check if it's an array
-  if (Array.isArray(value)) {
-    return value.map(item => convertTimestamp(item));
-  }
-  
-  // Check if it's a plain object (not null, not Date, not Array)
-  if (value && typeof value === 'object' && value.constructor === Object) {
-    const converted: any = {};
-    for (const [key, val] of Object.entries(value)) {
-      // For createdAt, preserve as timestamp in milliseconds if it's a timestamp
-      if (key === 'createdAt' && val && typeof val === 'object' && 'toDate' in val) {
-        const date = (val as any).toDate();
-        converted[key] = date.getTime();
-      } else {
-        converted[key] = convertTimestamp(val);
-      }
+// Specific routes must come before parameterized routes
+app.get('/api/users/profile', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT email, first_name, last_name, job_title, responsibilities, created_at, last_login
+      FROM users
+      WHERE email = $1
+    `, [userEmail]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
     }
-    return converted;
-  }
-  
-  // Return primitive values as-is
-  return value;
-};
-
-const convertDoc = (doc: any) => {
-  const data = doc.data();
-  if (!data) return null;
-  
-  // Convert Firestore timestamps recursively
-  return convertTimestamp(data);
-};
-
-// Projects endpoints
-app.get('/api/projects', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('projects', domain);
-    const snapshot = await db.collection(collectionPath).get();
-    const projects = snapshot.docs.map(doc => convertDoc(doc));
-    res.json(projects);
+    
+    const user = transformRow(result.rows[0]);
+    res.json({
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      jobTitle: user.jobTitle,
+      responsibilities: user.responsibilities,
+      createdAt: user.createdAt ? new Date(user.createdAt).toISOString() : null,
+      lastLogin: user.lastLogin ? new Date(user.lastLogin).toISOString() : null
+    });
   } catch (error) {
+    console.error('Get user profile error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.get('/api/projects/:id', authenticateUser, async (req, res) => {
+app.get('/api/users/:email', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('projects', domain);
-    const doc = await db.collection(collectionPath).doc(req.params.id).get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: 'Project not found' });
+    const userEmail = (req as any).userEmail;
+    const targetEmail = req.params.email;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT email, first_name, last_name, job_title, responsibilities, created_at, last_login
+      FROM users
+      WHERE email = $1
+    `, [targetEmail]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
     }
-    res.json(convertDoc(doc));
+    
+    res.json(result.rows[0]);
   } catch (error) {
+    console.error('Get user error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.post('/api/projects', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('projects', domain);
-    const project = req.body;
-    if (!project.id) {
-      return res.status(400).json({ error: 'Project ID is required' });
-    }
-    await db.collection(collectionPath).doc(project.id).set(project);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
+// ============================================================================
+// TEAM ENDPOINTS (PostgreSQL)
+// ============================================================================
 
-app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('projects', domain);
-    await db.collection(collectionPath).doc(req.params.id).update(req.body);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.delete('/api/projects/:id', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('projects', domain);
-    await db.collection(collectionPath).doc(req.params.id).delete();
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-// Tasks endpoints
-app.get('/api/tasks', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('tasks', domain);
-    const snapshot = await db.collection(collectionPath).get();
-    const tasks = snapshot.docs.map(doc => convertDoc(doc));
-    res.json(tasks);
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('tasks', domain);
-    const doc = await db.collection(collectionPath).doc(req.params.id).get();
-    if (!doc.exists) {
-      return res.status(404).json({ error: 'Task not found' });
-    }
-    res.json(convertDoc(doc));
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('tasks', domain);
-    const snapshot = await db.collection(collectionPath)
-      .where('projectId', '==', req.params.projectId)
-      .get();
-    const tasks = snapshot.docs.map(doc => convertDoc(doc));
-    res.json(tasks);
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.post('/api/tasks', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('tasks', domain);
-    const task = req.body;
-    await db.collection(collectionPath).doc(task.id).set(task);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.patch('/api/tasks/:id', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('tasks', domain);
-    await db.collection(collectionPath).doc(req.params.id).update(req.body);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.delete('/api/tasks/:id', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('tasks', domain);
-    await db.collection(collectionPath).doc(req.params.id).delete();
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-// Teams endpoints
 app.get('/api/teams', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('teams', domain);
-    const snapshot = await db.collection(collectionPath).get();
-    const teams = snapshot.docs.map(doc => doc.data());
-    res.json(teams);
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.name,
+        t.description,
+        t.avatar,
+        t.owner_email,
+        t.created_at,
+        t.updated_at,
+        COALESCE((SELECT json_agg(json_build_object(
+          'email', tm.user_email,
+          'role', tm.role,
+          'avatar', tm.avatar,
+          'name', COALESCE(u.first_name || ' ' || u.last_name, tm.user_email)
+        )) FROM team_members tm
+        LEFT JOIN users u ON tm.user_email = u.email
+        WHERE tm.team_id = t.id), '[]'::json) as members,
+        (SELECT COUNT(*) FROM team_members WHERE team_id = t.id) as member_count
+      FROM teams t
+      ORDER BY t.created_at DESC
+    `);
+    
+    // Transform to camelCase and backfill missing team members
+    const transformed = await Promise.all(result.rows.map(async (row) => {
+      const team = transformRow(row);
+      const ownerEmail = team.ownerEmail || (row as any).owner_email;
+      
+      // Ensure members is always an array
+      const membersArray = Array.isArray(team.members) ? team.members : (team.members ? [team.members] : []);
+      const memberList = transformMembers(membersArray);
+      // Use member_count from query if available, otherwise use array length
+      // member_count is transformed to memberCount by transformRow
+      let memberCount = (team as any).memberCount !== undefined ? parseInt((team as any).memberCount) : memberList.length;
+      
+      // Backfill: If team has no members, add the owner
+      if (memberCount === 0 && ownerEmail) {
+        try {
+          await pool.query(`
+            INSERT INTO team_members (team_id, user_email, role)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (team_id, user_email) DO NOTHING
+          `, [team.id, ownerEmail, 'owner']);
+          memberCount = 1;
+        } catch (error) {
+          console.error(`Failed to add owner as member:`, error);
+        }
+      }
+      
+      // Ensure we have at least 0 members (not undefined)
+      const finalMemberCount = isNaN(memberCount) ? 0 : memberCount;
+      
+      // Frontend Team interface expects members as number (count)
+      team.members = finalMemberCount; // Count for display
+      (team as any).memberList = memberList; // Full member list (for detail view if needed)
+      (team as any).projects = 0; // Project count (can be calculated later)
+      
+      // Ensure ownerEmail is set (transformRow should convert owner_email to ownerEmail)
+      if (!team.ownerEmail && ownerEmail) {
+        team.ownerEmail = ownerEmail;
+      }
+      
+      return team;
+    }));
+    
+    res.json(transformed);
   } catch (error) {
+    console.error('Get teams error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Team join request endpoints - must come before /api/teams/:name to avoid route conflicts
+// Specific routes must come before parameterized routes
+// Team join request endpoints - must come before /api/teams/:id to avoid route conflicts
 app.post('/api/teams/:teamName/join-request', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
+    const userEmail = (req as any).userEmail;
     const teamName = req.params.teamName;
+    const pool = await getTenantPool(userEmail);
     
-    // Get team ID by name
-    const teamId = await getTeamIdByName(domain, teamName);
-    if (!teamId) {
+    // Get team by name
+    const teamResult = await pool.query(`
+      SELECT id, owner_email FROM teams WHERE name = $1
+    `, [teamName]);
+    
+    if (teamResult.rows.length === 0) {
       return res.status(404).json({ error: 'Team not found' });
     }
     
-    // Get team details to find owner
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
-    
-    if (!teamDetailDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const teamDetail = teamDetailDoc.data();
-    if (!teamDetail) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
+    const team = teamResult.rows[0];
+    const teamId = team.id;
+    const normalizedUserEmail = userEmail.toLowerCase();
     
     // Check if user is already a member
-    const isMember = teamDetail.members?.some(
-      (member: any) => member.email?.toLowerCase() === userEmail.toLowerCase()
-    );
+    const memberCheck = await pool.query(`
+      SELECT user_email FROM team_members WHERE team_id = $1 AND user_email = $2
+    `, [teamId, normalizedUserEmail]);
     
-    if (isMember) {
+    if (memberCheck.rows.length > 0) {
       return res.status(400).json({ error: 'You are already a member of this team' });
     }
     
     // Check if there's already a pending request
-    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
-    const existingRequests = await db.collection(joinRequestsPath)
-      .where('teamName', '==', teamName)
-      .where('userEmail', '==', userEmail.toLowerCase())
-      .where('status', '==', 'pending')
-      .get();
+    const existingRequest = await pool.query(`
+      SELECT id FROM team_join_requests 
+      WHERE team_id = $1 AND user_email = $2 AND status = 'pending'
+    `, [teamId, normalizedUserEmail]);
     
-    if (!existingRequests.empty) {
+    if (existingRequest.rows.length > 0) {
       return res.status(400).json({ error: 'You already have a pending request for this team' });
     }
     
-    // Get user info for the request
-    const usersCollectionPath = getCollectionPath('users', domain);
-    const userDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
-    const userData = userDoc.data();
+    // Get user info
+    const userResult = await pool.query(`
+      SELECT first_name, last_name FROM users WHERE email = $1
+    `, [normalizedUserEmail]);
+    
+    const userData = userResult.rows[0];
     const userName = userData 
-      ? `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || userEmail
-      : userEmail;
+      ? `${userData.first_name || ''} ${userData.last_name || ''}`.trim() || normalizedUserEmail
+      : normalizedUserEmail;
     
     // Create join request
-    const requestData = {
-      teamName,
-      userEmail: userEmail.toLowerCase(),
-      userName,
-      status: 'pending',
-      ownerEmail: teamDetail.ownerEmail || teamDetail.members?.[0]?.email || '',
-      createdAt: new Date(),
-    };
-    
-    const requestRef = await db.collection(joinRequestsPath).add(requestData);
+    const requestResult = await pool.query(`
+      INSERT INTO team_join_requests (team_id, user_email, user_name, status, owner_email)
+      VALUES ($1, $2, $3, 'pending', $4)
+      RETURNING id
+    `, [teamId, normalizedUserEmail, userName, team.owner_email]);
     
     res.json({ 
       success: true, 
-      requestId: requestRef.id,
+      requestId: requestResult.rows[0].id,
       message: 'Join request sent successfully'
     });
   } catch (error) {
@@ -684,1770 +536,1790 @@ app.post('/api/teams/:teamName/join-request', authenticateUser, async (req, res)
   }
 });
 
-// Get join requests for teams owned by the user
 app.get('/api/teams/join-requests', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
     
-    // Get all pending requests for teams owned by this user
-    // Note: If orderBy fails due to missing index, remove it and sort in memory
-    let snapshot;
-    try {
-      snapshot = await db.collection(joinRequestsPath)
-        .where('ownerEmail', '==', userEmail.toLowerCase())
-        .where('status', '==', 'pending')
-        .orderBy('createdAt', 'desc')
-        .get();
-    } catch (error: any) {
-      // If index error, fetch without orderBy and sort in memory
-      if (error.code === 9 || error.message?.includes('index')) {
-        snapshot = await db.collection(joinRequestsPath)
-          .where('ownerEmail', '==', userEmail.toLowerCase())
-          .where('status', '==', 'pending')
-          .get();
-        // Sort in memory
-        const docs = snapshot.docs.sort((a, b) => {
-          const aTime = a.data().createdAt?.toDate?.()?.getTime() || 0;
-          const bTime = b.data().createdAt?.toDate?.()?.getTime() || 0;
-          return bTime - aTime; // Descending
-        });
-        // Create a new QuerySnapshot-like object
-        snapshot = { docs, empty: docs.length === 0 };
-      } else {
-        throw error;
-      }
-    }
+    // Get pending join requests for teams owned by the user
+    const result = await pool.query(`
+      SELECT 
+        tjr.*,
+        t.name as team_name,
+        t.description as team_description
+      FROM team_join_requests tjr
+      JOIN teams t ON tjr.team_id = t.id
+      WHERE tjr.status = 'pending' AND t.owner_email = $1
+      ORDER BY tjr.created_at DESC
+    `, [userEmail]);
     
-    const requests = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      createdAt: doc.data().createdAt?.toDate ? doc.data().createdAt.toDate().toISOString() : doc.data().createdAt,
-    }));
+    const requests = result.rows.map(row => {
+      const request = transformRow(row);
+      return {
+        id: request.id,
+        teamId: request.teamId,
+        teamName: request.teamName,
+        teamDescription: request.teamDescription,
+        userEmail: request.userEmail,
+        userName: request.userName,
+        status: request.status,
+        ownerEmail: request.ownerEmail,
+        createdAt: request.createdAt ? new Date(request.createdAt).toISOString() : null
+      };
+    });
     
     res.json(requests);
   } catch (error) {
     console.error('Get join requests error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch join requests' });
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Get invitations for the current user
-app.get('/api/teams/invitations', authenticateUser, async (req, res) => {
+app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const invitationsPath = getCollectionPath('teamInvitations', domain);
+    const userEmail = (req as any).userEmail;
+    const requestId = req.params.requestId;
+    const pool = await getTenantPool(userEmail);
     
-    // Get all pending invitations for this user
-    let snapshot;
-    try {
-      snapshot = await db.collection(invitationsPath)
-        .where('inviteeEmail', '==', userEmail.toLowerCase())
-        .where('status', '==', 'pending')
-        .orderBy('createdAt', 'desc')
-        .get();
-    } catch (error: any) {
-      // If index error, fetch without orderBy and sort in memory
-      if (error.code === 9 || error.message?.includes('index')) {
-        snapshot = await db.collection(invitationsPath)
-          .where('inviteeEmail', '==', userEmail.toLowerCase())
-          .where('status', '==', 'pending')
-          .get();
-        // Sort in memory
-        const docs = snapshot.docs.sort((a, b) => {
-          const aTime = a.data().createdAt?.toDate?.()?.getTime() || 0;
-          const bTime = b.data().createdAt?.toDate?.()?.getTime() || 0;
-          return bTime - aTime; // Descending
-        });
-        // Create a new QuerySnapshot-like object
-        snapshot = { docs, empty: docs.length === 0 };
-      } else {
-        throw error;
-      }
+    // Get the request with team info
+    const requestResult = await pool.query(`
+      SELECT 
+        jr.*,
+        t.id as team_id,
+        t.owner_email
+      FROM team_join_requests jr
+      JOIN teams t ON jr.team_id = t.id
+      WHERE jr.id = $1
+    `, [requestId]);
+    
+    if (requestResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Join request not found' });
     }
     
-    const invitations = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      createdAt: doc.data().createdAt?.toDate ? doc.data().createdAt.toDate().toISOString() : doc.data().createdAt,
-    }));
+    const request = requestResult.rows[0];
+    const normalizedUserEmail = userEmail.toLowerCase();
+    
+    // Verify the user is the owner
+    if (request.owner_email?.toLowerCase() !== normalizedUserEmail) {
+      return res.status(403).json({ error: 'Only the team owner can approve requests' });
+    }
+    
+    // Check if already processed
+    if (request.status !== 'pending') {
+      return res.status(400).json({ error: 'This request has already been processed' });
+    }
+    
+    // Check if user is already a member
+    const memberCheck = await pool.query(`
+      SELECT user_email FROM team_members WHERE team_id = $1 AND user_email = $2
+    `, [request.team_id, request.user_email]);
+    
+    if (memberCheck.rows.length > 0) {
+      // Just update request status
+      await pool.query(
+        'UPDATE team_join_requests SET status = $1, processed_by = $2, processed_at = NOW() WHERE id = $3',
+        ['approved', normalizedUserEmail, requestId]
+      );
+      return res.json({ success: true, message: 'User is already a member' });
+    }
+    
+    // Get user info
+    const userResult = await pool.query(`
+      SELECT first_name, last_name, job_title FROM users WHERE email = $1
+    `, [request.user_email]);
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const userData = userResult.rows[0];
+    const firstName = userData.first_name || '';
+    const lastName = userData.last_name || '';
+    const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || request.user_email.charAt(0).toUpperCase();
+    
+    // Add user to team
+    await pool.query(`
+      INSERT INTO team_members (team_id, user_email, role, avatar)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (team_id, user_email) DO UPDATE SET
+        role = EXCLUDED.role,
+        avatar = EXCLUDED.avatar
+    `, [request.team_id, request.user_email, userData.job_title || 'member', initials]);
+    
+    // Update request status
+    await pool.query(
+      'UPDATE team_join_requests SET status = $1, processed_by = $2, processed_at = NOW() WHERE id = $3',
+      ['approved', normalizedUserEmail, requestId]
+    );
+    
+    res.json({ success: true, message: 'Join request approved successfully' });
+  } catch (error) {
+    console.error('Approve join request error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const requestId = req.params.requestId;
+    const pool = await getTenantPool(userEmail);
+    
+    // Get the request with team info
+    const requestResult = await pool.query(`
+      SELECT 
+        jr.*,
+        t.owner_email
+      FROM team_join_requests jr
+      JOIN teams t ON jr.team_id = t.id
+      WHERE jr.id = $1
+    `, [requestId]);
+    
+    if (requestResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Join request not found' });
+    }
+    
+    const request = requestResult.rows[0];
+    const normalizedUserEmail = userEmail.toLowerCase();
+    
+    // Verify the user is the owner
+    if (request.owner_email?.toLowerCase() !== normalizedUserEmail) {
+      return res.status(403).json({ error: 'Only the team owner can reject requests' });
+    }
+    
+    // Check if already processed
+    if (request.status !== 'pending') {
+      return res.status(400).json({ error: 'This request has already been processed' });
+    }
+    
+    // Update request status
+    await pool.query(
+      'UPDATE team_join_requests SET status = $1, processed_by = $2, processed_at = NOW() WHERE id = $3',
+      ['rejected', normalizedUserEmail, requestId]
+    );
+    
+    res.json({ success: true, message: 'Join request rejected' });
+  } catch (error) {
+    console.error('Reject join request error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/teams/invitations', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    // Get pending invitations for the current user
+    const result = await pool.query(`
+      SELECT 
+        ti.*,
+        t.name as team_name,
+        t.description as team_description
+      FROM team_invitations ti
+      JOIN teams t ON ti.team_id = t.id
+      WHERE ti.invitee_email = $1 AND ti.status = 'pending'
+      ORDER BY ti.created_at DESC
+    `, [userEmail]);
+    
+    const invitations = result.rows.map(row => {
+      const invitation = transformRow(row);
+      return {
+        id: invitation.id,
+        teamId: invitation.teamId,
+        teamName: invitation.teamName,
+        teamDescription: invitation.teamDescription,
+        inviteeEmail: invitation.inviteeEmail,
+        inviterEmail: invitation.inviterEmail,
+        inviterName: invitation.inviterName,
+        status: invitation.status,
+        createdAt: invitation.createdAt ? new Date(invitation.createdAt).toISOString() : null
+      };
+    });
     
     res.json(invitations);
   } catch (error) {
     console.error('Get invitations error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch invitations' });
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
 app.get('/api/teams/:id', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('teamDetails', domain);
+    const userEmail = (req as any).userEmail;
     const teamId = req.params.id;
+    const pool = await getTenantPool(userEmail);
     
-    // Only use team ID for lookup
-    const doc = await db.collection(collectionPath).doc(teamId).get();
+    const result = await pool.query(`
+      SELECT 
+        t.*,
+        COALESCE((SELECT json_agg(json_build_object(
+          'email', tm.user_email,
+          'role', tm.role,
+          'avatar', tm.avatar,
+          'name', u.first_name || ' ' || u.last_name
+        )) FROM team_members tm
+        LEFT JOIN users u ON tm.user_email = u.email
+        WHERE tm.team_id = t.id), '[]'::json) as members
+      FROM teams t
+      WHERE t.id = $1
+    `, [teamId]);
     
-    if (!doc.exists) {
+    if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Team not found' });
     }
-    res.json(doc.data());
+    
+    // Transform to camelCase
+    const team = transformRow(result.rows[0]);
+    team.members = transformMembers(team.members);
+    
+    res.json(team);
   } catch (error) {
+    console.error('Get team error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
 app.post('/api/teams', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
+    const userEmail = (req as any).userEmail;
     const { team, teamDetail } = req.body;
     
-    if (!team.id || !teamDetail.id) {
-      return res.status(400).json({ error: 'Team ID is required' });
+    // Extract data from team object (frontend sends { team, teamDetail })
+    const name = team?.name || teamDetail?.name;
+    const description = team?.description || teamDetail?.description;
+    const avatar = team?.avatar || teamDetail?.avatar;
+    const teamId = team?.id || teamDetail?.id;
+    
+    if (!name) {
+      return res.status(400).json({ error: 'Team name is required' });
     }
     
-    // Add owner email to team and team detail
-    const teamWithOwner = { ...team, ownerEmail: userEmail };
-    const teamDetailWithOwner = { ...teamDetail, ownerEmail: userEmail };
+    const pool = await getTenantPool(userEmail);
     
-    // Use team.id as document ID for consistent matching
-    await db.collection(teamsPath).doc(team.id).set(teamWithOwner);
-    await db.collection(teamDetailsPath).doc(teamDetail.id).set(teamDetailWithOwner);
-    res.json({ success: true });
+    // Normalize email to lowercase (emails are stored in lowercase in users table)
+    const normalizedEmail = userEmail.toLowerCase();
+    
+    // Verify user exists in users table (required for foreign key constraint)
+    const userCheck = await pool.query(`
+      SELECT email FROM users WHERE email = $1
+    `, [normalizedEmail]);
+    
+    if (userCheck.rows.length === 0) {
+      console.error(`❌ User ${normalizedEmail} does not exist in users table`);
+      return res.status(400).json({ 
+        error: `User ${normalizedEmail} does not exist. Please ensure you are properly registered.` 
+      });
+    }
+    
+    // Use provided teamId or generate a new one
+    const finalTeamId = teamId || crypto.randomBytes(16).toString('hex');
+    
+    await pool.query(`
+      INSERT INTO teams (id, name, description, avatar, owner_email, created_at)
+      VALUES ($1, $2, $3, $4, $5, NOW())
+    `, [finalTeamId, name, description, avatar, normalizedEmail]);
+    
+    // Always add owner as member (owner should always be in team_members table)
+    try {
+      const ownerResult = await pool.query(`
+        INSERT INTO team_members (team_id, user_email, role)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (team_id, user_email) DO UPDATE SET role = 'owner'
+        RETURNING id
+      `, [finalTeamId, normalizedEmail, 'owner']);
+    } catch (error: any) {
+      console.error(`❌ Failed to add owner as member:`, error);
+      // Check if it's a foreign key constraint error
+      if (error.code === '23503') {
+        throw new Error(`User ${normalizedEmail} does not exist in users table. Please ensure the user is registered.`);
+      }
+      throw error;
+    }
+    
+    // Add all members from teamDetail (excluding owner to avoid duplicate)
+    const members = teamDetail?.members || [];
+    
+    // Add all members from teamDetail
+    if (members && members.length > 0) {
+      for (const member of members) {
+        const memberEmail = member.email?.toLowerCase();
+        if (memberEmail && memberEmail !== normalizedEmail) {
+          try {
+            const memberResult = await pool.query(`
+              INSERT INTO team_members (team_id, user_email, role, avatar)
+              VALUES ($1, $2, $3, $4)
+              ON CONFLICT (team_id, user_email) DO NOTHING
+              RETURNING id
+            `, [finalTeamId, memberEmail, member.role || 'member', member.avatar]);
+          } catch (error: any) {
+            console.error(`❌ Failed to add member ${memberEmail}:`, error.message);
+            // Check if it's a foreign key constraint error
+            if (error.code === '23503') {
+              console.warn(`⚠️  User ${memberEmail} does not exist in users table, skipping...`);
+              // Continue with other members instead of failing
+            } else {
+              throw error;
+            }
+          }
+        }
+      }
+    }
+    
+    // Get member count from database
+    const memberCountResult = await pool.query(`
+      SELECT COUNT(*) as count FROM team_members WHERE team_id = $1
+    `, [finalTeamId]);
+    const memberCount = parseInt(memberCountResult.rows[0]?.count || '1');
+    
+    // Return response in camelCase format matching frontend Team interface
+    res.status(201).json({ 
+      id: finalTeamId, 
+      name, 
+      description, 
+      avatar, 
+      ownerEmail: normalizedEmail,
+      members: memberCount,
+      projects: 0 // No projects yet
+    });
   } catch (error) {
+    console.error('Create team error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/teams/:id', authenticateUser, async (req, res) => {
+// Remove a member from a team (only for owners)
+// NOTE: More specific routes must come before less specific routes like /api/teams/:id
+app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('teams', domain);
-    await db.collection(collectionPath).doc(req.params.id).update(req.body);
-    res.json({ success: true });
+    const userEmail = (req as any).userEmail;
+    const teamName = req.params.name;
+    const memberEmail = decodeURIComponent(req.params.memberEmail).toLowerCase();
+    const pool = await getTenantPool(userEmail);
+    
+    // Get team by name
+    const teamResult = await pool.query(`
+      SELECT id, owner_email FROM teams WHERE name = $1
+    `, [teamName]);
+    
+    if (teamResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const team = teamResult.rows[0];
+    const teamId = team.id;
+    const ownerEmail = team.owner_email?.toLowerCase();
+    const normalizedUserEmail = userEmail.toLowerCase();
+    
+    // Verify the user is the owner
+    if (ownerEmail !== normalizedUserEmail) {
+      return res.status(403).json({ error: 'Only the team owner can remove members' });
+    }
+    
+    // Prevent owner from removing themselves
+    if (memberEmail === normalizedUserEmail) {
+      return res.status(400).json({ error: 'Team owner cannot remove themselves. Transfer ownership first or delete the team.' });
+    }
+    
+    // Check if member exists in team
+    const memberCheck = await pool.query(`
+      SELECT user_email FROM team_members WHERE team_id = $1 AND user_email = $2
+    `, [teamId, memberEmail]);
+    
+    if (memberCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Member not found in team' });
+    }
+    
+    // Remove member
+    await pool.query(`
+      DELETE FROM team_members WHERE team_id = $1 AND user_email = $2
+    `, [teamId, memberEmail]);
+    
+    res.json({ success: true, message: 'Member removed successfully' });
   } catch (error) {
+    console.error('Remove member error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/teams/:id/detail', authenticateUser, async (req, res) => {
+// Leave a team (for members)
+// NOTE: More specific routes must come before less specific routes like /api/teams/:id
+app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('teamDetails', domain);
-    await db.collection(collectionPath).doc(req.params.id).update(req.body);
-    res.json({ success: true });
+    const userEmail = (req as any).userEmail;
+    const teamName = req.params.name;
+    const pool = await getTenantPool(userEmail);
+    
+    // Get team by name
+    const teamResult = await pool.query(`
+      SELECT id, owner_email FROM teams WHERE name = $1
+    `, [teamName]);
+    
+    if (teamResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const team = teamResult.rows[0];
+    const teamId = team.id;
+    const ownerEmail = team.owner_email?.toLowerCase();
+    const normalizedUserEmail = userEmail.toLowerCase();
+    
+    // Prevent owner from leaving (they should transfer ownership or delete team)
+    if (ownerEmail === normalizedUserEmail) {
+      return res.status(400).json({ error: 'Team owner cannot leave the team. Transfer ownership first or delete the team.' });
+    }
+    
+    // Check if user is a member
+    const memberCheck = await pool.query(`
+      SELECT user_email FROM team_members WHERE team_id = $1 AND user_email = $2
+    `, [teamId, normalizedUserEmail]);
+    
+    if (memberCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'You are not a member of this team' });
+    }
+    
+    // Remove user from team
+    await pool.query(`
+      DELETE FROM team_members WHERE team_id = $1 AND user_email = $2
+    `, [teamId, normalizedUserEmail]);
+    
+    res.json({ success: true, message: 'Left team successfully' });
   } catch (error) {
+    console.error('Leave team error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
 app.delete('/api/teams/:id', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    await db.collection(teamsPath).doc(req.params.id).delete();
-    await db.collection(teamDetailsPath).doc(req.params.id).delete();
+    const userEmail = (req as any).userEmail;
+    const teamId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    // Verify team exists and user is owner
+    const teamResult = await pool.query(`
+      SELECT owner_email FROM teams WHERE id = $1
+    `, [teamId]);
+    
+    if (teamResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Team not found' });
+    }
+    
+    const team = teamResult.rows[0];
+    if (team.owner_email?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Only the team owner can delete the team' });
+    }
+    
+    // Delete team (team_members and team_join_requests will be cascaded)
+    await pool.query('DELETE FROM teams WHERE id = $1', [teamId]);
+    
     res.json({ success: true });
   } catch (error) {
+    console.error('Delete team error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Approve join request
-app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async (req, res) => {
+// ============================================================================
+// PROJECT ENDPOINTS (PostgreSQL)
+// ============================================================================
+
+app.get('/api/projects', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const requestId = req.params.requestId;
-    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
     
-    // Get the request
-    const requestDoc = await db.collection(joinRequestsPath).doc(requestId).get();
-    if (!requestDoc.exists) {
-      return res.status(404).json({ error: 'Join request not found' });
-    }
+    const result = await pool.query(`
+      SELECT 
+        p.*,
+        COALESCE((SELECT json_agg(json_build_object(
+          'email', pm.user_email,
+          'role', pm.role,
+          'avatar', pm.avatar,
+          'name', COALESCE(u.first_name || ' ' || u.last_name, pm.user_email)
+        )) FROM project_members pm
+        LEFT JOIN users u ON pm.user_email = u.email
+        WHERE pm.project_id = p.id), '[]'::json) as members,
+        COALESCE((SELECT json_agg(json_build_object(
+          'id', t.id,
+          'title', t.title,
+          'description', t.description,
+          'status', t.status,
+          'priority', t.priority,
+          'assigneeId', t.assignee_id,
+          'assignee', t.assignee_name,
+          'assigneeAvatar', t.assignee_avatar,
+          'dueDate', CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END,
+          'createdDate', CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END,
+          'createdAt', t.created_at,
+          'tags', t.tags,
+          'reason', t.reason,
+          'projectId', t.project_id,
+          'project', p2.name
+        )) FROM tasks t
+        LEFT JOIN projects p2 ON t.project_id = p2.id
+        WHERE t.project_id = p.id), '[]'::json) as tasks
+      FROM projects p
+      ORDER BY p.created_at DESC
+    `);
     
-    const requestData = requestDoc.data();
-    if (!requestData) {
-      return res.status(404).json({ error: 'Join request not found' });
-    }
-    
-    // Verify the user is the owner
-    if (requestData.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'Only the team owner can approve requests' });
-    }
-    
-    // Check if already processed
-    if (requestData.status !== 'pending') {
-      return res.status(400).json({ error: 'This request has already been processed' });
-    }
-    
-    // Get user info to add to team
-    const usersCollectionPath = getCollectionPath('users', domain);
-    const userDoc = await db.collection(usersCollectionPath).doc(requestData.userEmail).get();
-    const userData = userDoc.data();
-    
-    if (!userData) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    // Get team ID by name
-    const teamId = await getTeamIdByName(domain, requestData.teamName);
-    if (!teamId) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Add user to team
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
-    
-    if (!teamDetailDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const teamDetail = teamDetailDoc.data();
-    if (!teamDetail) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Check if user is already a member
-    const isAlreadyMember = teamDetail.members?.some(
-      (member: any) => member.email?.toLowerCase() === requestData.userEmail.toLowerCase()
-    );
-    
-    if (isAlreadyMember) {
-      // Just mark request as approved
-      await db.collection(joinRequestsPath).doc(requestId).update({ status: 'approved' });
-      return res.json({ success: true, message: 'User is already a member' });
-    }
-    
-    // Add new member
-    const firstName = userData.firstName || '';
-    const lastName = userData.lastName || '';
-    const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || requestData.userEmail.charAt(0).toUpperCase();
-    
-    const newMember = {
-      name: `${firstName} ${lastName}`.trim() || requestData.userEmail,
-      role: userData.jobTitle || 'Member',
-      email: requestData.userEmail,
-      avatar: initials,
-    };
-    
-    const updatedMembers = [...(teamDetail.members || []), newMember];
-    
-    // Update team detail
-    await db.collection(teamDetailsPath).doc(teamId).update({
-      members: updatedMembers,
+    // Transform to camelCase and fix members structure
+    const transformed = result.rows.map(row => {
+      const project = transformRow(row);
+      project.members = transformMembers(project.members || []);
+      
+      // Ensure arrays are always arrays, never null
+      project.tasks = Array.isArray(project.tasks) ? project.tasks : [];
+      project.progressUpdates = [];
+      project.comments = [];
+      
+      // Transform tasks (already in camelCase from JSON query, just need to parse tags and add defaults)
+      project.tasks = project.tasks.map((task: any) => {
+        // Tasks are already in camelCase from JSON query
+        task.tags = Array.isArray(task.tags) ? task.tags : (task.tags ? (typeof task.tags === 'string' ? JSON.parse(task.tags) : []) : []);
+        task.progressUpdates = [];
+        task.comments = [];
+        task.dueDate = task.dueDate ? (typeof task.dueDate === 'string' ? task.dueDate.split('T')[0] : new Date(task.dueDate).toISOString().split('T')[0]) : null;
+        task.createdDate = task.createdDate ? (typeof task.createdDate === 'string' ? task.createdDate.split('T')[0] : new Date(task.createdDate).toISOString().split('T')[0]) : null;
+        return task;
+      });
+      
+      // Add default values for missing fields
+      project.detailedDescription = project.detailedDescription || project.description || '';
+      project.statusColor = project.statusColor || '#3b82f6';
+      // Frontend uses project.team to display member count (members are already transformed above)
+      project.team = Array.isArray(project.members) ? project.members.length : 0;
+      project.summary = project.summary || {
+        accomplishment: '',
+        decision: '',
+        risk: '',
+        direction: ''
+      };
+      // Format dates
+      project.dueDate = project.dueDate ? (typeof project.dueDate === 'string' ? project.dueDate.split('T')[0] : new Date(project.dueDate).toISOString().split('T')[0]) : null;
+      project.createdDate = project.createdDate ? (typeof project.createdDate === 'string' ? project.createdDate.split('T')[0] : new Date(project.createdDate).toISOString().split('T')[0]) : (project.createdAt ? new Date(project.createdAt).toISOString().split('T')[0] : null);
+      return project;
     });
     
-    // Update team member count
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
-    if (teamDoc.exists) {
-      await db.collection(teamsPath).doc(teamId).update({
-        members: updatedMembers.length,
+    res.json(transformed);
+  } catch (error) {
+    console.error('Get projects error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/projects/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const projectId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        p.id,
+        p.name,
+        p.description,
+        p.team_id,
+        p.status,
+        p.priority,
+        p.start_date,
+        p.end_date,
+        CASE WHEN p.due_date IS NOT NULL THEN p.due_date::text ELSE NULL END as due_date,
+        p.owner_email,
+        p.created_at,
+        p.updated_at,
+        COALESCE((SELECT json_agg(json_build_object(
+          'email', pm.user_email,
+          'role', pm.role,
+          'avatar', pm.avatar,
+          'name', u.first_name || ' ' || u.last_name
+        )) FROM project_members pm
+        LEFT JOIN users u ON pm.user_email = u.email
+        WHERE pm.project_id = p.id), '[]'::json) as members,
+        COALESCE((SELECT json_agg(json_build_object(
+          'id', pc.id,
+          'memberName', pc.member_name,
+          'memberAvatar', pc.member_avatar,
+          'date', pc.date,
+          'comment', pc.comment
+        ) ORDER BY pc.created_at DESC) FROM project_comments pc WHERE pc.project_id = p.id), '[]'::json) as comments,
+        COALESCE((SELECT json_agg(json_build_object(
+          'id', upd.update_id,
+          'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
+          'memberAvatar', COALESCE(
+            CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+              THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+              ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
+            END,
+            'U'
+          ),
+          'date', upd.date_id,
+          'update', upd.update_text,
+          'type', 'progress'
+        ) ORDER BY upd.timestamp DESC) FROM updates upd
+        LEFT JOIN users u ON upd.user_id = u.email
+        WHERE upd.project_id = p.id), '[]'::json) as progressUpdates,
+        COALESCE((SELECT json_agg(json_build_object(
+          'id', t.id,
+          'title', t.title,
+          'description', t.description,
+          'status', t.status,
+          'priority', t.priority,
+          'assigneeId', t.assignee_id,
+          'assignee', t.assignee_name,
+          'assigneeAvatar', t.assignee_avatar,
+          'dueDate', CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END,
+          'createdDate', CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END,
+          'createdAt', t.created_at,
+          'tags', t.tags,
+          'reason', t.reason,
+          'projectId', t.project_id,
+          'project', p2.name
+        )) FROM tasks t
+        LEFT JOIN projects p2 ON t.project_id = p2.id
+        WHERE t.project_id = p.id), '[]'::json) as tasks
+      FROM projects p
+      WHERE p.id = $1
+    `, [projectId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Transform to camelCase
+    const project = transformRow(result.rows[0]);
+    project.members = transformMembers(project.members || []);
+    
+    // Ensure arrays are always arrays, never null
+    project.comments = Array.isArray(project.comments) ? project.comments : [];
+    project.progressUpdates = Array.isArray(project.progressUpdates) ? project.progressUpdates : [];
+    project.tasks = Array.isArray(project.tasks) ? project.tasks : [];
+    
+    // Transform tasks
+    project.tasks = project.tasks.map((task: any) => {
+      const transformedTask = transformRow(task);
+      transformedTask.tags = Array.isArray(transformedTask.tags) ? transformedTask.tags : (transformedTask.tags ? (typeof transformedTask.tags === 'string' ? JSON.parse(transformedTask.tags) : []) : []);
+      transformedTask.progressUpdates = [];
+      transformedTask.comments = [];
+      transformedTask.dueDate = transformedTask.dueDate ? (typeof transformedTask.dueDate === 'string' ? transformedTask.dueDate.split('T')[0] : new Date(transformedTask.dueDate).toISOString().split('T')[0]) : null;
+      transformedTask.createdDate = transformedTask.createdDate ? (typeof transformedTask.createdDate === 'string' ? transformedTask.createdDate.split('T')[0] : new Date(transformedTask.createdDate).toISOString().split('T')[0]) : null;
+      return transformedTask;
+    });
+    
+    // Transform progressUpdates to ensure proper format
+    project.progressUpdates = project.progressUpdates.map((update: any) => {
+      // Updates are already in camelCase from JSON query
+      return {
+        id: update.id || update.updateId || '',
+        memberName: update.memberName || '',
+        memberAvatar: update.memberAvatar || '',
+        date: update.date ? (typeof update.date === 'string' ? update.date.split('T')[0] : new Date(update.date).toISOString().split('T')[0]) : new Date().toISOString().split('T')[0],
+        update: update.update || update.updateText || '',
+        type: update.type || 'progress'
+      };
+    });
+    
+    // Transform comments to ensure proper format
+    project.comments = project.comments.map((comment: any) => {
+      const transformed = transformRow(comment);
+      return {
+        id: transformed.id || '',
+        memberName: transformed.memberName || '',
+        memberAvatar: transformed.memberAvatar || '',
+        date: transformed.date || new Date().toISOString().split('T')[0],
+        comment: transformed.comment || ''
+      };
+    });
+    
+    project.detailedDescription = project.detailedDescription || project.description || '';
+    project.statusColor = project.statusColor || '#3b82f6';
+    // Frontend uses project.team to display member count (members are already transformed above)
+    project.team = Array.isArray(project.members) ? project.members.length : 0;
+    project.summary = project.summary || {
+      accomplishment: '',
+      decision: '',
+      risk: '',
+      direction: ''
+    };
+    // Format dates
+    // Handle dueDate (DATE field)
+    if (project.dueDate) {
+      if (typeof project.dueDate === 'string') {
+        project.dueDate = project.dueDate.split('T')[0]; // Already formatted as YYYY-MM-DD
+      } else if (project.dueDate instanceof Date) {
+        project.dueDate = project.dueDate.toISOString().split('T')[0];
+      } else {
+        // Try to parse as date
+        const date = new Date(project.dueDate);
+        if (!isNaN(date.getTime())) {
+          project.dueDate = date.toISOString().split('T')[0];
+        } else {
+          project.dueDate = null;
+        }
+      }
+    } else {
+      project.dueDate = null;
+    }
+    
+    // Handle createdDate (DATE field) or use created_at (TIMESTAMP) as fallback
+    if (project.createdDate) {
+      if (typeof project.createdDate === 'string') {
+        project.createdDate = project.createdDate.split('T')[0];
+      } else if (project.createdDate instanceof Date) {
+        project.createdDate = project.createdDate.toISOString().split('T')[0];
+      } else {
+        const date = new Date(project.createdDate);
+        if (!isNaN(date.getTime())) {
+          project.createdDate = date.toISOString().split('T')[0];
+        } else {
+          project.createdDate = null;
+        }
+      }
+    } else if (project.createdAt) {
+      // Fallback to created_at (TIMESTAMP)
+      const timestamp = project.createdAt instanceof Date 
+        ? project.createdAt.getTime() 
+        : (typeof project.createdAt === 'string' ? new Date(project.createdAt).getTime() : project.createdAt);
+      if (!isNaN(timestamp)) {
+        project.createdDate = new Date(timestamp).toISOString().split('T')[0];
+      } else {
+        project.createdDate = null;
+      }
+    } else {
+      project.createdDate = null;
+    }
+    
+    res.json(project);
+  } catch (error) {
+    console.error('Get project error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post('/api/projects', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    // Extract data from project object (frontend sends full Project object)
+    const project = req.body;
+    const name = project?.name;
+    const description = project?.description || '';
+    const teamId = project?.teamId || null; // Can be null if project is not tied to a specific team
+    const status = project?.status || 'active';
+    const priority = project?.priority || 'medium';
+    const dueDate = project?.dueDate || null;
+    
+    if (!name) {
+      return res.status(400).json({ error: 'Project name is required' });
+    }
+    
+    // Normalize email to lowercase
+    const normalizedEmail = userEmail.toLowerCase();
+    
+    // Use provided project ID or generate a new one
+    const projectId = project?.id || crypto.randomBytes(16).toString('hex');
+    
+    // Insert project
+    await pool.query(`
+      INSERT INTO projects (id, name, description, team_id, status, priority, owner_email, due_date, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    `, [projectId, name, description, teamId, status, priority, normalizedEmail, dueDate]);
+    
+    // Add project members if provided
+    const members = project?.members || [];
+    if (members && members.length > 0) {
+      for (const member of members) {
+        if (member.email) {
+          try {
+            const memberEmail = member.email.toLowerCase();
+            await pool.query(`
+              INSERT INTO project_members (project_id, user_email, role, avatar)
+              VALUES ($1, $2, $3, $4)
+              ON CONFLICT (project_id, user_email) DO NOTHING
+            `, [projectId, memberEmail, member.role || 'member', member.avatar]);
+          } catch (error: any) {
+            console.error(`❌ Failed to add project member ${member.email}:`, error.message);
+            // Continue with other members instead of failing
+          }
+        }
+      }
+    }
+    
+    // Always add owner as project member (owner should always be in project_members table)
+    try {
+      const ownerResult = await pool.query(`
+        INSERT INTO project_members (project_id, user_email, role)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (project_id, user_email) DO UPDATE SET role = 'owner'
+        RETURNING id
+      `, [projectId, normalizedEmail, 'owner']);
+    } catch (error: any) {
+      console.error(`❌ Failed to add owner as project member:`, error);
+      // Check if it's a foreign key constraint error
+      if (error.code === '23503') {
+        throw new Error(`User ${normalizedEmail} does not exist in users table. Please ensure the user is registered.`);
+      }
+      throw error;
+    }
+    
+    // Get member count
+    const memberCountResult = await pool.query(`
+      SELECT COUNT(*) as count FROM project_members WHERE project_id = $1
+    `, [projectId]);
+    const memberCount = parseInt(memberCountResult.rows[0]?.count || '1');
+    
+    // Return response matching frontend Project interface
+    res.status(201).json({ 
+      id: projectId, 
+      name, 
+      description, 
+      teamId,
+      status, 
+      priority,
+      ownerEmail: normalizedEmail,
+      dueDate,
+      members: memberCount
+    });
+  } catch (error) {
+    console.error('Create project error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const projectId = req.params.id;
+    const updates = req.body;
+    const pool = await getTenantPool(userEmail);
+    
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    // Map camelCase to snake_case for database
+    const fieldMap: { [key: string]: string } = {
+      name: 'name',
+      description: 'description',
+      teamId: 'team_id',
+      status: 'status',
+      priority: 'priority',
+      dueDate: 'due_date',
+      startDate: 'start_date',
+      endDate: 'end_date',
+      ownerEmail: 'owner_email'
+    };
+    
+    Object.entries(updates).forEach(([key, value]) => {
+      if (key !== 'id' && fieldMap[key]) {
+        const dbField = fieldMap[key];
+        setClauses.push(`${dbField} = $${paramIndex}`);
+        values.push(value);
+        paramIndex++;
+      }
+    });
+    
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+    
+    setClauses.push(`updated_at = NOW()`);
+    values.push(projectId);
+    
+    await pool.query(`
+      UPDATE projects 
+      SET ${setClauses.join(', ')}
+      WHERE id = $${paramIndex}
+    `, values);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update project error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.delete('/api/projects/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const projectId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    await pool.query('DELETE FROM projects WHERE id = $1', [projectId]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete project error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// TASK ENDPOINTS (PostgreSQL)
+// ============================================================================
+
+app.get('/api/tasks', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.title,
+        t.description,
+        t.status,
+        t.priority,
+        t.assignee_id,
+        t.assignee_name,
+        t.assignee_avatar,
+        t.project_id,
+        t.project_name,
+        t.created_by,
+        CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
+        CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
+        t.created_at,
+        t.estimated_hours,
+        t.actual_hours,
+        t.tags,
+        t.reason,
+        t.updated_at,
+        p.team_id,
+        p.name as project_name,
+        (SELECT COALESCE(json_agg(update_data), '[]'::json) FROM (
+          SELECT json_build_object(
+            'id', upd.update_id,
+            'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
+            'memberAvatar', COALESCE(
+              CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+                THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+                ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
+              END,
+              'U'
+            ),
+            'date', CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END,
+            'update', upd.update_text,
+            'type', 'progress'
+          ) as update_data
+          FROM updates upd
+          LEFT JOIN users u ON upd.user_id = u.email
+          WHERE upd.associated_tasks @> jsonb_build_array(t.id)
+          ORDER BY upd.timestamp DESC
+          LIMIT 1
+        ) latest_update) as progressUpdates
+      FROM tasks t
+      LEFT JOIN projects p ON t.project_id = p.id
+      ORDER BY t.created_at DESC
+    `);
+    
+    // Transform to camelCase
+    const transformed = result.rows.map(row => {
+      const task = transformRow(row);
+      // Map fields to frontend expectations
+      task.assigneeId = task.assigneeId || null;
+      task.assignee = task.assigneeName || null;
+      task.assigneeAvatar = task.assigneeAvatar || null;
+      
+      // Format dueDate (DATE field)
+      if (task.dueDate) {
+        if (typeof task.dueDate === 'string') {
+          task.dueDate = task.dueDate.split('T')[0];
+        } else {
+          task.dueDate = new Date(task.dueDate).toISOString().split('T')[0];
+        }
+      } else {
+        task.dueDate = null;
+      }
+      
+      // Format createdDate (DATE field) or use created_at (BIGINT timestamp) as fallback
+      if (task.createdDate) {
+        if (typeof task.createdDate === 'string') {
+          task.createdDate = task.createdDate.split('T')[0];
+        } else {
+          task.createdDate = new Date(task.createdDate).toISOString().split('T')[0];
+        }
+      } else if (task.createdAt) {
+        // Fallback to created_at (BIGINT timestamp in milliseconds)
+        const timestamp = typeof task.createdAt === 'number' ? task.createdAt : parseInt(task.createdAt);
+        if (!isNaN(timestamp)) {
+          task.createdDate = new Date(timestamp).toISOString().split('T')[0];
+        } else {
+          task.createdDate = null;
+        }
+      } else {
+        task.createdDate = null;
+      }
+      
+      // Add required arrays
+      task.tags = Array.isArray(task.tags) ? task.tags : (task.tags ? JSON.parse(task.tags) : []);
+      
+      // Handle progressUpdates - PostgreSQL converts unquoted identifiers to lowercase
+      // So progressUpdates becomes progressupdates after transformRow
+      if (!task.progressUpdates) {
+        const rawProgressUpdates = row.progressupdates || row.progressUpdates;
+        if (rawProgressUpdates !== undefined && rawProgressUpdates !== null) {
+          task.progressUpdates = rawProgressUpdates;
+        }
+      }
+      
+      // Handle progressUpdates - it comes as JSON from the SQL query
+      if (task.progressUpdates && typeof task.progressUpdates === 'string') {
+        try {
+          task.progressUpdates = JSON.parse(task.progressUpdates);
+        } catch (e) {
+          task.progressUpdates = [];
+        }
+      }
+      
+      // Ensure progressUpdates is an array and format dates
+      if (task.progressUpdates && Array.isArray(task.progressUpdates)) {
+        task.progressUpdates = task.progressUpdates.map((update: any) => {
+          let formattedDate = null;
+          if (update.date) {
+            if (typeof update.date === 'string') {
+              formattedDate = update.date.split('T')[0];
+            } else if (update.date instanceof Date) {
+              formattedDate = update.date.toISOString().split('T')[0];
+            } else {
+              formattedDate = String(update.date).split('T')[0];
+            }
+          }
+          
+          return {
+            id: update.id || update.update_id || '',
+            memberName: update.memberName || '',
+            memberAvatar: update.memberAvatar || 'U',
+            date: formattedDate,
+            update: update.update || update.update_text || '',
+            type: update.type || 'progress'
+          };
+        });
+      } else {
+        task.progressUpdates = [];
+      }
+      
+      task.comments = task.comments || [];
+      task.project = task.projectName || null;
+      return task;
+    });
+    
+    res.json(transformed);
+  } catch (error) {
+    console.error('Get tasks error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const projectId = req.params.projectId;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.title,
+        t.description,
+        t.status,
+        t.priority,
+        t.assignee_id,
+        t.assignee_name,
+        t.assignee_avatar,
+        t.project_id,
+        t.project_name,
+        t.created_by,
+        CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
+        CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
+        t.created_at,
+        t.estimated_hours,
+        t.actual_hours,
+        t.tags,
+        t.reason,
+        t.updated_at,
+        p.team_id,
+        p.name as project_name
+      FROM tasks t
+      LEFT JOIN projects p ON t.project_id = p.id
+      WHERE t.project_id = $1
+      ORDER BY t.created_at DESC
+    `, [projectId]);
+    
+    // Transform to camelCase
+    const transformed = result.rows.map(row => {
+      const task = transformRow(row);
+      task.assigneeId = task.assigneeId || null;
+      task.assignee = task.assigneeName || null;
+      task.assigneeAvatar = task.assigneeAvatar || null;
+      
+      // Format dueDate (DATE field)
+      if (task.dueDate) {
+        if (typeof task.dueDate === 'string') {
+          task.dueDate = task.dueDate.split('T')[0];
+        } else {
+          task.dueDate = new Date(task.dueDate).toISOString().split('T')[0];
+        }
+      } else {
+        task.dueDate = null;
+      }
+      
+      // Format createdDate (DATE field) or use created_at (BIGINT timestamp) as fallback
+      if (task.createdDate) {
+        if (typeof task.createdDate === 'string') {
+          task.createdDate = task.createdDate.split('T')[0];
+        } else {
+          task.createdDate = new Date(task.createdDate).toISOString().split('T')[0];
+        }
+      } else if (task.createdAt) {
+        // Fallback to created_at (BIGINT timestamp in milliseconds)
+        const timestamp = typeof task.createdAt === 'number' ? task.createdAt : parseInt(task.createdAt);
+        if (!isNaN(timestamp)) {
+          task.createdDate = new Date(timestamp).toISOString().split('T')[0];
+        } else {
+          task.createdDate = null;
+        }
+      } else {
+        task.createdDate = null;
+      }
+      
+      // Add required arrays
+      task.tags = Array.isArray(task.tags) ? task.tags : (task.tags ? JSON.parse(task.tags) : []);
+      task.progressUpdates = task.progressUpdates || [];
+      task.comments = task.comments || [];
+      task.project = task.projectName || null;
+      return task;
+    });
+    
+    res.json(transformed);
+  } catch (error) {
+    console.error('Get tasks by project error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const taskId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        t.id,
+        t.title,
+        t.description,
+        t.status,
+        t.priority,
+        t.assignee_id,
+        t.assignee_name,
+        t.assignee_avatar,
+        t.project_id,
+        t.project_name,
+        t.created_by,
+        CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
+        CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
+        t.created_at,
+        t.estimated_hours,
+        t.actual_hours,
+        t.tags,
+        t.reason,
+        t.updated_at,
+        p.team_id,
+        p.name as project_name,
+        (SELECT json_agg(json_build_object(
+          'id', tc.id,
+          'memberName', tc.member_name,
+          'memberAvatar', tc.member_avatar,
+          'date', tc.date,
+          'comment', tc.comment
+        ) ORDER BY tc.created_at DESC) FROM task_comments tc WHERE tc.task_id = t.id) as comments,
+        COALESCE((SELECT json_agg(json_build_object(
+          'id', upd.update_id,
+          'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
+          'memberAvatar', COALESCE(
+            CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+              THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+              ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
+            END,
+            'U'
+          ),
+          'date', CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END,
+          'update', upd.update_text,
+          'type', 'progress'
+        ) ORDER BY upd.timestamp DESC) FROM updates upd
+        LEFT JOIN users u ON upd.user_id = u.email
+        WHERE upd.associated_tasks @> $2::jsonb), '[]'::json) as progressUpdates
+      FROM tasks t
+      LEFT JOIN projects p ON t.project_id = p.id
+      WHERE t.id = $1
+    `, [taskId, JSON.stringify([taskId])]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
+    // Transform to camelCase
+    const task = transformRow(result.rows[0]);
+    
+    // Handle progressUpdates - it comes as JSON from the SQL query
+    // transformRow converts progressUpdates (already camelCase) correctly, but we need to ensure it's parsed
+    if (task.progressUpdates && typeof task.progressUpdates === 'string') {
+      try {
+        task.progressUpdates = JSON.parse(task.progressUpdates);
+      } catch (e) {
+        console.error('Error parsing progressUpdates:', e);
+        task.progressUpdates = [];
+      }
+    }
+    
+    // If progressUpdates is still undefined, check if it's in the raw row with different casing
+    // PostgreSQL converts unquoted identifiers to lowercase, so progressUpdates becomes progressupdates
+    if (task.progressUpdates === undefined) {
+      // Check both lowercase and camelCase versions
+      const rawProgressUpdates = result.rows[0].progressupdates || result.rows[0].progressUpdates;
+      if (rawProgressUpdates !== undefined && rawProgressUpdates !== null) {
+        task.progressUpdates = rawProgressUpdates;
+      } else {
+        task.progressUpdates = [];
+      }
+    }
+    
+    task.assigneeId = task.assigneeId || null;
+    task.assignee = task.assigneeName || null;
+    task.assigneeAvatar = task.assigneeAvatar || null;
+    
+    // Format dueDate (DATE field)
+    if (task.dueDate) {
+      if (typeof task.dueDate === 'string') {
+        task.dueDate = task.dueDate.split('T')[0]; // Already formatted
+      } else {
+        task.dueDate = new Date(task.dueDate).toISOString().split('T')[0];
+      }
+    } else {
+      task.dueDate = null;
+    }
+    
+    // Format createdDate (DATE field) or use created_at (BIGINT timestamp) as fallback
+    if (task.createdDate) {
+      if (typeof task.createdDate === 'string') {
+        task.createdDate = task.createdDate.split('T')[0];
+      } else {
+        task.createdDate = new Date(task.createdDate).toISOString().split('T')[0];
+      }
+    } else if (task.createdAt) {
+      // Fallback to created_at (BIGINT timestamp in milliseconds)
+      const timestamp = typeof task.createdAt === 'number' ? task.createdAt : parseInt(task.createdAt);
+      if (!isNaN(timestamp)) {
+        task.createdDate = new Date(timestamp).toISOString().split('T')[0];
+      } else {
+        task.createdDate = null;
+      }
+    } else {
+      task.createdDate = null;
+    }
+    
+    // Add required arrays
+    task.tags = Array.isArray(task.tags) ? task.tags : (task.tags ? JSON.parse(task.tags) : []);
+    // Ensure progressUpdates is an array and format dates
+    // progressUpdates comes from the JSON aggregation in the SQL query
+    if (task.progressUpdates && Array.isArray(task.progressUpdates)) {
+      task.progressUpdates = task.progressUpdates.map((update: any) => {
+        // Handle date formatting - date_id might be a Date object or string
+        let formattedDate = null;
+        if (update.date) {
+          if (typeof update.date === 'string') {
+            formattedDate = update.date.split('T')[0]; // Remove time portion if present
+          } else if (update.date instanceof Date) {
+            formattedDate = update.date.toISOString().split('T')[0];
+          } else {
+            formattedDate = String(update.date).split('T')[0];
+          }
+        }
+        
+        return {
+          id: update.id || update.update_id || '',
+          memberName: update.memberName || '',
+          memberAvatar: update.memberAvatar || 'U',
+          date: formattedDate,
+          update: update.update || update.update_text || '',
+          type: update.type || 'progress'
+        };
       });
+    } else {
+      task.progressUpdates = [];
     }
+    task.comments = task.comments || [];
+    task.project = task.projectName || null;
     
-    // Update request status
-    await db.collection(joinRequestsPath).doc(requestId).update({ status: 'approved' });
-    
-    res.json({ success: true, message: 'Join request approved successfully' });
+    res.json(task);
   } catch (error) {
-    console.error('Approve join request error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to approve join request' });
+    console.error('Get task error:', error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Reject join request
-app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, async (req, res) => {
+app.post('/api/tasks', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const requestId = req.params.requestId;
-    const joinRequestsPath = getCollectionPath('teamJoinRequests', domain);
+    const userEmail = (req as any).userEmail;
+    const { title, description, projectId, assigneeId, status, priority, dueDate } = req.body;
+    const pool = await getTenantPool(userEmail);
     
-    // Get the request
-    const requestDoc = await db.collection(joinRequestsPath).doc(requestId).get();
-    if (!requestDoc.exists) {
-      return res.status(404).json({ error: 'Join request not found' });
-    }
+    const taskId = crypto.randomBytes(16).toString('hex');
     
-    const requestData = requestDoc.data();
-    if (!requestData) {
-      return res.status(404).json({ error: 'Join request not found' });
-    }
+    await pool.query(`
+      INSERT INTO tasks (
+        id, title, description, project_id, assignee_id, status, 
+        priority, due_date, created_by, created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `, [
+      taskId, 
+      title, 
+      description, 
+      projectId, 
+      assigneeId, 
+      status || 'todo',
+      priority || 'medium',
+      dueDate,
+      userEmail,
+      Date.now()
+    ]);
     
-    // Verify the user is the owner
-    if (requestData.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'Only the team owner can reject requests' });
-    }
-    
-    // Check if already processed
-    if (requestData.status !== 'pending') {
-      return res.status(400).json({ error: 'This request has already been processed' });
-    }
-    
-    // Update request status
-    await db.collection(joinRequestsPath).doc(requestId).update({ status: 'rejected' });
-    
-    res.json({ success: true, message: 'Join request rejected' });
+    res.status(201).json({ id: taskId, title, description, projectId, assigneeId, status, priority });
   } catch (error) {
-    console.error('Reject join request error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to reject join request' });
+    console.error('Create task error:', error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Team Invitation endpoints
-// Create team invitation (owner only)
-app.post('/api/teams/:teamName/invitations', authenticateUser, async (req, res) => {
+app.put('/api/tasks/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const taskId = req.params.id;
+    const updates = req.body;
+    const pool = await getTenantPool(userEmail);
+    
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    // Map camelCase to snake_case for database
+    const fieldMap: { [key: string]: string } = {
+      title: 'title',
+      description: 'description',
+      projectId: 'project_id',
+      assigneeId: 'assignee_id',
+      assigneeName: 'assignee_name',
+      assigneeAvatar: 'assignee_avatar',
+      status: 'status',
+      priority: 'priority',
+      dueDate: 'due_date',
+      createdDate: 'created_date',
+      createdBy: 'created_by',
+      estimatedHours: 'estimated_hours',
+      actualHours: 'actual_hours',
+      reason: 'reason'
+    };
+    
+    Object.entries(updates).forEach(([key, value]) => {
+      if (key !== 'id' && fieldMap[key]) {
+        const dbField = fieldMap[key];
+        // Handle tags as JSONB
+        if (key === 'tags' && Array.isArray(value)) {
+          setClauses.push(`tags = $${paramIndex}::jsonb`);
+          values.push(JSON.stringify(value));
+        } else {
+          setClauses.push(`${dbField} = $${paramIndex}`);
+          values.push(value);
+        }
+        paramIndex++;
+      }
+    });
+    
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+    
+    setClauses.push(`updated_at = NOW()`);
+    values.push(taskId);
+    
+    await pool.query(`
+      UPDATE tasks 
+      SET ${setClauses.join(', ')}
+      WHERE id = $${paramIndex}
+    `, values);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update task error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.patch('/api/tasks/:id', authenticateUser, async (req, res) => {
+  // PATCH uses same logic as PUT
+  try {
+    const userEmail = (req as any).userEmail;
+    const taskId = req.params.id;
+    const updates = req.body;
+    const pool = await getTenantPool(userEmail);
+    
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    // Map camelCase to snake_case for database
+    const fieldMap: { [key: string]: string } = {
+      title: 'title',
+      description: 'description',
+      projectId: 'project_id',
+      assigneeId: 'assignee_id',
+      assigneeName: 'assignee_name',
+      assigneeAvatar: 'assignee_avatar',
+      status: 'status',
+      priority: 'priority',
+      dueDate: 'due_date',
+      createdDate: 'created_date',
+      createdBy: 'created_by',
+      estimatedHours: 'estimated_hours',
+      actualHours: 'actual_hours',
+      reason: 'reason'
+    };
+    
+    Object.entries(updates).forEach(([key, value]) => {
+      if (key !== 'id' && fieldMap[key]) {
+        const dbField = fieldMap[key];
+        // Handle tags as JSONB
+        if (key === 'tags' && Array.isArray(value)) {
+          setClauses.push(`tags = $${paramIndex}::jsonb`);
+          values.push(JSON.stringify(value));
+        } else {
+          setClauses.push(`${dbField} = $${paramIndex}`);
+        values.push(value);
+        }
+        paramIndex++;
+      }
+    });
+    
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+    
+    setClauses.push(`updated_at = NOW()`);
+    values.push(taskId);
+    
+    await pool.query(`
+      UPDATE tasks 
+      SET ${setClauses.join(', ')}
+      WHERE id = $${paramIndex}
+    `, values);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update task error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.delete('/api/tasks/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const taskId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    await pool.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete task error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// MESSAGES ENDPOINTS (Firestore Only)
+// ============================================================================
+
+app.get('/api/messages', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const teamName = req.params.teamName;
-    const { inviteeEmail } = req.body;
+    const collectionPath = getCollectionPath('messages', domain);
     
-    if (!inviteeEmail) {
-      return res.status(400).json({ error: 'Invitee email is required' });
-    }
-    
-    // Get team ID by name
-    const teamId = await getTeamIdByName(domain, teamName);
-    if (!teamId) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Get team details to verify ownership
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
-    
-    if (!teamDetailDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const teamDetail = teamDetailDoc.data();
-    if (!teamDetail) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Verify the user is the owner
-    if (teamDetail.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'Only the team owner can send invitations' });
-    }
-    
-    // Check if user is already a member
-    const isMember = teamDetail.members?.some(
-      (member: any) => member.email?.toLowerCase() === inviteeEmail.toLowerCase()
-    );
-    
-    if (isMember) {
-      return res.status(400).json({ error: 'User is already a member of this team' });
-    }
-    
-    // Check if there's already a pending invitation
-    const invitationsPath = getCollectionPath('teamInvitations', domain);
-    const existingInvitations = await db.collection(invitationsPath)
-      .where('teamName', '==', teamName)
-      .where('inviteeEmail', '==', inviteeEmail.toLowerCase())
-      .where('status', '==', 'pending')
+    const snapshot = await db.collection(collectionPath)
+      .orderBy('timestamp', 'desc')
+      .limit(100)
       .get();
     
-    if (!existingInvitations.empty) {
-      return res.status(400).json({ error: 'An invitation has already been sent to this user' });
-    }
+    const messages = snapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
     
-    // Get owner info for the invitation
-    const usersCollectionPath = getCollectionPath('users', domain);
-    const ownerDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
-    const ownerData = ownerDoc.data();
-    const ownerName = ownerData 
-      ? `${ownerData.firstName || ''} ${ownerData.lastName || ''}`.trim() || userEmail
-      : userEmail;
-    
-    // Create invitation
-    const invitationData = {
-      teamName,
-      teamDescription: teamDetail.description || '',
-      inviteeEmail: inviteeEmail.toLowerCase(),
-      inviterEmail: userEmail.toLowerCase(),
-      inviterName: ownerName,
-      status: 'pending',
-      createdAt: new Date(),
-    };
-    
-    const invitationRef = await db.collection(invitationsPath).add(invitationData);
-    
-    res.json({ 
-      success: true, 
-      invitationId: invitationRef.id,
-      message: 'Invitation sent successfully'
-    });
+    res.json(messages);
   } catch (error) {
-    console.error('Create invitation error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to create invitation' });
+    console.error('Get messages error:', error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Accept team invitation
-app.post('/api/teams/invitations/:invitationId/accept', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const invitationId = req.params.invitationId;
-    const invitationsPath = getCollectionPath('teamInvitations', domain);
-    
-    // Get the invitation
-    const invitationDoc = await db.collection(invitationsPath).doc(invitationId).get();
-    if (!invitationDoc.exists) {
-      return res.status(404).json({ error: 'Invitation not found' });
-    }
-    
-    const invitationData = invitationDoc.data();
-    if (!invitationData) {
-      return res.status(404).json({ error: 'Invitation not found' });
-    }
-    
-    // Verify the invitation is for the current user
-    if (invitationData.inviteeEmail?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'This invitation is not for you' });
-    }
-    
-    // Check if already processed
-    if (invitationData.status !== 'pending') {
-      return res.status(400).json({ error: 'This invitation has already been processed' });
-    }
-    
-    // Get user info to add to team
-    const usersCollectionPath = getCollectionPath('users', domain);
-    const userDoc = await db.collection(usersCollectionPath).doc(userEmail).get();
-    const userData = userDoc.data();
-    
-    if (!userData) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-    
-    // Get team ID by name
-    const teamId = await getTeamIdByName(domain, invitationData.teamName);
-    if (!teamId) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Add user to team
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
-    
-    if (!teamDetailDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const teamDetail = teamDetailDoc.data();
-    if (!teamDetail) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Check if user is already a member
-    const isAlreadyMember = teamDetail.members?.some(
-      (member: any) => member.email?.toLowerCase() === userEmail.toLowerCase()
-    );
-    
-    if (isAlreadyMember) {
-      // Just mark invitation as accepted
-      await db.collection(invitationsPath).doc(invitationId).update({ status: 'accepted' });
-      return res.json({ success: true, message: 'User is already a member' });
-    }
-    
-    // Add new member
-    const firstName = userData.firstName || '';
-    const lastName = userData.lastName || '';
-    const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || userEmail.charAt(0).toUpperCase();
-    
-    const newMember = {
-      name: `${firstName} ${lastName}`.trim() || userEmail,
-      role: userData.jobTitle || 'Member',
-      email: userEmail,
-      avatar: initials,
-    };
-    
-    const updatedMembers = [...(teamDetail.members || []), newMember];
-    
-    // Update team detail
-    await db.collection(teamDetailsPath).doc(teamId).update({
-      members: updatedMembers,
-    });
-    
-    // Update team member count
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
-    if (teamDoc.exists) {
-      await db.collection(teamsPath).doc(teamId).update({
-        members: updatedMembers.length,
-      });
-    }
-    
-    // Update invitation status
-    await db.collection(invitationsPath).doc(invitationId).update({ status: 'accepted' });
-    
-    res.json({ success: true, message: 'Invitation accepted successfully' });
-  } catch (error) {
-    console.error('Accept invitation error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to accept invitation' });
-  }
-});
-
-// Decline team invitation
-app.post('/api/teams/invitations/:invitationId/decline', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const invitationId = req.params.invitationId;
-    const invitationsPath = getCollectionPath('teamInvitations', domain);
-    
-    // Get the invitation
-    const invitationDoc = await db.collection(invitationsPath).doc(invitationId).get();
-    if (!invitationDoc.exists) {
-      return res.status(404).json({ error: 'Invitation not found' });
-    }
-    
-    const invitationData = invitationDoc.data();
-    if (!invitationData) {
-      return res.status(404).json({ error: 'Invitation not found' });
-    }
-    
-    // Verify the invitation is for the current user
-    if (invitationData.inviteeEmail?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'This invitation is not for you' });
-    }
-    
-    // Check if already processed
-    if (invitationData.status !== 'pending') {
-      return res.status(400).json({ error: 'This invitation has already been processed' });
-    }
-    
-    // Update invitation status
-    await db.collection(invitationsPath).doc(invitationId).update({ status: 'declined' });
-    
-    res.json({ success: true, message: 'Invitation declined' });
-  } catch (error) {
-    console.error('Decline invitation error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to decline invitation' });
-  }
-});
-
-// Remove a member from a team (only for owners)
-app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const teamName = req.params.name;
-    const memberEmail = decodeURIComponent(req.params.memberEmail);
-    
-    // Get team ID by name
-    const teamId = await getTeamIdByName(domain, teamName);
-    if (!teamId) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    
-    // Get team to verify ownership
-    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
-    if (!teamDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const team = teamDoc.data();
-    if (!team) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Verify the user is the owner
-    if (team.ownerEmail?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'Only the team owner can remove members' });
-    }
-    
-    // Prevent owner from removing themselves
-    if (memberEmail.toLowerCase() === userEmail.toLowerCase()) {
-      return res.status(400).json({ error: 'Team owner cannot remove themselves. Transfer ownership first or delete the team.' });
-    }
-    
-    // Get team details
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
-    if (!teamDetailDoc.exists) {
-      return res.status(404).json({ error: 'Team details not found' });
-    }
-    
-    const teamDetail = teamDetailDoc.data();
-    if (!teamDetail) {
-      return res.status(404).json({ error: 'Team details not found' });
-    }
-    
-    // Check if member exists
-    const members = teamDetail.members || [];
-    const memberIndex = members.findIndex(
-      (member: any) => member.email?.toLowerCase() === memberEmail.toLowerCase()
-    );
-    
-    if (memberIndex === -1) {
-      return res.status(404).json({ error: 'Member not found in team' });
-    }
-    
-    // Remove member
-    const updatedMembers = members.filter(
-      (member: any) => member.email?.toLowerCase() !== memberEmail.toLowerCase()
-    );
-    
-    // Update team details
-    await db.collection(teamDetailsPath).doc(teamId).update({
-      members: updatedMembers,
-    });
-    
-    // Update team member count
-    await db.collection(teamsPath).doc(teamId).update({
-      members: updatedMembers.length,
-    });
-    
-    res.json({ success: true, message: 'Member removed successfully' });
-  } catch (error) {
-    console.error('Remove member error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to remove member' });
-  }
-});
-
-// Leave a team (for members)
-app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const teamName = req.params.name;
-    
-    // Get team ID by name
-    const teamId = await getTeamIdByName(domain, teamName);
-    if (!teamId) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    
-    // Get team to check ownership
-    const teamDoc = await db.collection(teamsPath).doc(teamId).get();
-    if (!teamDoc.exists) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    const team = teamDoc.data();
-    if (!team) {
-      return res.status(404).json({ error: 'Team not found' });
-    }
-    
-    // Prevent owner from leaving (they should transfer ownership or delete team)
-    if (team.ownerEmail?.toLowerCase() === userEmail.toLowerCase()) {
-      return res.status(400).json({ error: 'Team owner cannot leave the team. Transfer ownership first or delete the team.' });
-    }
-    
-    // Get team details
-    const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamId).get();
-    if (!teamDetailDoc.exists) {
-      return res.status(404).json({ error: 'Team details not found' });
-    }
-    
-    const teamDetail = teamDetailDoc.data();
-    if (!teamDetail) {
-      return res.status(404).json({ error: 'Team details not found' });
-    }
-    
-    // Check if user is a member
-    const members = teamDetail.members || [];
-    const isMember = members.some(
-      (member: any) => member.email?.toLowerCase() === userEmail.toLowerCase()
-    );
-    
-    if (!isMember) {
-      return res.status(400).json({ error: 'You are not a member of this team' });
-    }
-    
-    // Remove user from members
-    const updatedMembers = members.filter(
-      (member: any) => member.email?.toLowerCase() !== userEmail.toLowerCase()
-    );
-    
-    // Update team details
-    await db.collection(teamDetailsPath).doc(teamId).update({
-      members: updatedMembers,
-    });
-    
-    // Update team member count
-    await db.collection(teamsPath).doc(teamId).update({
-      members: updatedMembers.length,
-    });
-    
-    res.json({ success: true, message: 'Left team successfully' });
-  } catch (error) {
-    console.error('Leave team error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to leave team' });
-  }
-});
-
-// Migration endpoint to backfill ownerEmail for teams
-app.post('/api/teams/migrate-owners', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const teamsPath = getCollectionPath('teams', domain);
-    const teamDetailsPath = getCollectionPath('teamDetails', domain);
-    
-    // Get all teams
-    const teamsSnapshot = await db.collection(teamsPath).get();
-    const teams = teamsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-    
-    const results = {
-      updated: [] as string[],
-      skipped: [] as string[],
-      errors: [] as string[],
-    };
-    
-    // Process each team
-    for (const team of teams) {
-      try {
-        const teamName = team.name || team.id;
-        
-        // Skip if team already has an ownerEmail
-        if (team.ownerEmail) {
-          results.skipped.push(teamName);
-          continue;
-        }
-        
-        // Get team details to find members
-        const teamDetailDoc = await db.collection(teamDetailsPath).doc(teamName).get();
-        
-        if (!teamDetailDoc.exists) {
-          results.errors.push(`${teamName}: Team details not found`);
-          continue;
-        }
-        
-        const teamDetail = teamDetailDoc.data();
-        
-        // Find the first member to set as owner
-        let ownerEmail: string | null = null;
-        
-        if (teamDetail?.members && Array.isArray(teamDetail.members) && teamDetail.members.length > 0) {
-          // Use the first member's email as the owner
-          ownerEmail = teamDetail.members[0].email;
-        }
-        
-        if (!ownerEmail) {
-          results.errors.push(`${teamName}: No members found to set as owner`);
-          continue;
-        }
-        
-        // Update both teams and teamDetails collections
-        await db.collection(teamsPath).doc(teamName).update({
-          ownerEmail: ownerEmail,
-        });
-        
-        await db.collection(teamDetailsPath).doc(teamName).update({
-          ownerEmail: ownerEmail,
-        });
-        
-        results.updated.push(teamName);
-      } catch (error: any) {
-        const teamName = team.name || team.id;
-        results.errors.push(`${teamName}: ${error.message}`);
-      }
-    }
-    
-    res.json({
-      success: true,
-      message: `Migration completed. Updated: ${results.updated.length}, Skipped: ${results.skipped.length}, Errors: ${results.errors.length}`,
-      results,
-    });
-  } catch (error) {
-    console.error('Migrate owners error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to migrate team owners' });
-  }
-});
-
-// Helper function to create secret name for domain and integration
-// Follows the pattern: integrations-{client-domain}-{tool-name}
-// Domain and tool name contain only alphanumeric characters (no special characters)
-// Example: integrations-examplecom-slack
-function getSecretName(domain: string, integrationId: string): string {
-  // Sanitize domain name: remove all special characters, keep only alphanumeric
-  // Convert to lowercase for consistency
-  const sanitizedDomain = domain
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, ''); // Remove all non-alphanumeric characters
-  
-  // Sanitize integration ID: remove all special characters, keep only alphanumeric
-  const sanitizedIntegrationId = integrationId
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, ''); // Remove all non-alphanumeric characters
-  
-  // Return in format: integrations-{client-domain}-{tool-name}
-  // Only hyphens are used as separators between parts
-  return `integrations-${sanitizedDomain}-${sanitizedIntegrationId}`;
-}
-
-// Helper function to save secret to GCP Secret Manager
-async function saveSecret(secretName: string, secretValue: string): Promise<void> {
-  const projectId = serviceAccount.project_id;
-  const parent = `projects/${projectId}`;
-  const fullSecretName = `${parent}/secrets/${secretName}`;
-
-  console.log(`[Secret Manager] Attempting to save secret: ${secretName}`);
-  console.log(`[Secret Manager] Full secret path: ${fullSecretName}`);
-  console.log(`[Secret Manager] Using service account: ${serviceAccount.client_email}`);
-  console.log(`[Secret Manager] Project ID: ${projectId}`);
-
-  try {
-    // Try to create the secret first (if it doesn't exist)
-    // This avoids needing secretmanager.secrets.get permission
-    try {
-      console.log(`[Secret Manager] Attempting to create secret: ${secretName}`);
-      await secretManagerClient.createSecret({
-        parent,
-        secretId: secretName,
-        secret: {
-          replication: {
-            automatic: {},
-          },
-        },
-      });
-      console.log(`[Secret Manager] Secret created successfully: ${secretName}`);
-    } catch (error: any) {
-      // If secret already exists (error code 6 = ALREADY_EXISTS), that's fine
-      // We'll proceed to add a version
-      if (error.code === 6) { // ALREADY_EXISTS
-        console.log(`[Secret Manager] Secret already exists: ${secretName}`);
-      } else {
-        console.error(`[Secret Manager] Error creating secret:`, {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          serviceAccount: serviceAccount.client_email,
-        });
-        throw error;
-      }
-    }
-
-    // Add a new version with the secret value
-    console.log(`[Secret Manager] Adding version to secret: ${secretName}`);
-    await secretManagerClient.addSecretVersion({
-      parent: fullSecretName,
-      payload: {
-        data: Buffer.from(secretValue, 'utf8'),
-      },
-    });
-    console.log(`[Secret Manager] Secret version added successfully: ${secretName}`);
-  } catch (error: any) {
-    console.error('[Secret Manager] Error saving secret:', {
-      secretName,
-      projectId,
-      serviceAccount: serviceAccount.client_email,
-      errorCode: error.code,
-      errorMessage: error.message,
-      errorDetails: error.details,
-      fullError: error,
-    });
-    
-    // Provide more helpful error message
-    if (error.code === 7) { // PERMISSION_DENIED
-      throw new Error(
-        `Permission denied for service account '${serviceAccount.client_email}'. ` +
-        `Please verify that this service account has the 'roles/secretmanager.admin' role. ` +
-        `Error details: ${error.message}`
-      );
-    }
-    
-    throw new Error(`Failed to save secret: ${error.message}`);
-  }
-}
-
-// Helper function to delete secret from GCP Secret Manager
-async function deleteSecret(secretName: string): Promise<void> {
-  const projectId = serviceAccount.project_id;
-  const fullSecretName = `projects/${projectId}/secrets/${secretName}`;
-
-  try {
-    await secretManagerClient.deleteSecret({ name: fullSecretName });
-  } catch (error: any) {
-    // If secret doesn't exist, that's fine
-    if (error.code !== 5) { // NOT_FOUND
-      console.error('Error deleting secret:', error);
-      throw new Error(`Failed to delete secret: ${error.message}`);
-    }
-  }
-}
-
-// Integrations endpoints
-app.get('/api/integrations', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('integrations', domain);
-    const snapshot = await db.collection(collectionPath).get();
-    
-    // Map Firestore documents to integration objects
-    // Only return integrations that exist in Firestore (connected integrations)
-    const integrations = snapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        name: data.name || doc.id.charAt(0).toUpperCase() + doc.id.slice(1),
-        connected: data.connected || true, // If record exists, it's connected
-        secretName: data.secretName, // Include secret name for reference
-        connectedAt: data.connectedAt,
-        updatedAt: data.updatedAt,
-      };
-    });
-
-    // Ensure we return all integrations with their connection status
-    // Only show connected integrations from Firestore (which are in sync with Secret Manager)
-    const allIntegrations = [
-      { id: 'slack', name: 'Slack' },
-      { id: 'atlassian', name: 'Atlassian' },
-      { id: 'github', name: 'GitHub' },
-      { id: 'outlook', name: 'Outlook' },
-    ].map(integration => {
-      const existing = integrations.find(i => i.id === integration.id);
-      return {
-        id: integration.id,
-        name: integration.name,
-        connected: existing ? true : false, // Only connected if record exists in Firestore
-        secretName: existing?.secretName, // Include secret name if connected
-        connectedAt: existing?.connectedAt,
-        updatedAt: existing?.updatedAt,
-      };
-    });
-
-    res.json(allIntegrations);
-  } catch (error) {
-    console.error('Get integrations error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch integrations' });
-  }
-});
-
-// Unified endpoint for connecting integrations
-app.post('/api/integrations/:integrationId/connect', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const integrationId = req.params.integrationId;
-    const body = req.body;
-
-    // Validate integration ID
-    if (!['slack', 'atlassian', 'outlook'].includes(integrationId)) {
-      return res.status(400).json({ error: 'Invalid integration ID' });
-    }
-
-    // Integration-specific validation and credential extraction
-    let credentials: any;
-    let integrationName: string;
-
-    switch (integrationId) {
-      case 'slack':
-        if (!body.botToken) {
-          return res.status(400).json({ error: 'Bot token is required' });
-        }
-        credentials = { botToken: body.botToken };
-        integrationName = 'Slack';
-        break;
-
-      case 'atlassian':
-        if (!body.email || !body.domain || !body.apiToken) {
-          return res.status(400).json({ error: 'Email, Atlassian domain, and API token are required' });
-        }
-        credentials = { 
-          email: body.email, 
-          domain: body.domain, 
-          apiToken: body.apiToken 
-        };
-        integrationName = 'Atlassian';
-        break;
-
-      case 'outlook':
-        if (!body.clientId || !body.clientSecret || !body.tenantId) {
-          return res.status(400).json({ error: 'Client ID, Client Secret, and Tenant ID are required' });
-        }
-        credentials = { 
-          clientId: body.clientId, 
-          clientSecret: body.clientSecret, 
-          tenantId: body.tenantId 
-        };
-        integrationName = 'Outlook';
-        break;
-
-      default:
-        return res.status(400).json({ error: 'Unsupported integration type' });
-    }
-
-    // Generate secret name
-    const secretName = getSecretName(domain, integrationId);
-    
-    // Save credentials to GCP Secret Manager first
-    await saveSecret(secretName, JSON.stringify(credentials));
-
-    // Only update Firestore if Secret Manager operation succeeds
-    // Store integration record with secret name to keep in sync
-    const collectionPath = getCollectionPath('integrations', domain);
-    await db.collection(collectionPath).doc(integrationId).set({
-      id: integrationId,
-      name: integrationName,
-      connected: true,
-      secretName: secretName, // Store the secret name for reference
-      connectedAt: new Date(),
-      updatedAt: new Date(),
-    }, { merge: true });
-
-    console.log(`[Integrations] ${integrationName} connected for domain ${domain}, secret: ${secretName}`);
-    res.json({ success: true, message: `${integrationName} connected successfully` });
-  } catch (error) {
-    console.error(`Connect ${req.params.integrationId} error:`, error);
-    res.status(500).json({ error: (error as Error).message || `Failed to connect ${req.params.integrationId}` });
-  }
-});
-
-app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const integrationId = req.params.integrationId;
-
-    if (!['slack', 'atlassian', 'github', 'outlook'].includes(integrationId)) {
-      return res.status(400).json({ error: 'Invalid integration ID' });
-    }
-
-    // Get the secret name from Firestore if it exists, otherwise generate it
-    const collectionPath = getCollectionPath('integrations', domain);
-    const integrationDoc = await db.collection(collectionPath).doc(integrationId).get();
-    const secretName = integrationDoc.exists && integrationDoc.data()?.secretName 
-      ? integrationDoc.data()!.secretName 
-      : getSecretName(domain, integrationId);
-
-    // Delete secret from GCP Secret Manager first
-    // deleteSecret handles the case where secret doesn't exist, so it's safe to call
-    await deleteSecret(secretName);
-
-    // Delete the Firestore record to keep in sync with Secret Manager
-    // Only delete if Secret Manager operation succeeds
-    await db.collection(collectionPath).doc(integrationId).delete();
-
-    console.log(`[Integrations] ${integrationId} disconnected for domain ${domain}, secret deleted: ${secretName}`);
-    res.json({ success: true, message: 'Integration disconnected successfully' });
-  } catch (error) {
-    console.error('Disconnect integration error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to disconnect integration' });
-  }
-});
-
-// GitHub App installation callback endpoint
-// This endpoint is called by GitHub after the user installs the app
-// It receives the installation_id and state (which contains the domain)
-app.get('/api/integrations/github/callback', async (req, res) => {
-  console.log('[GitHub Callback] ===== Route hit =====');
-  console.log('[GitHub Callback] URL:', req.url);
-  console.log('[GitHub Callback] Query params:', JSON.stringify(req.query, null, 2));
-  console.log('[GitHub Callback] Method:', req.method);
-  
-  try {
-    const { installation_id, setup_action, state } = req.query;
-
-    if (!installation_id) {
-      console.error('[GitHub Callback] Missing installation_id parameter');
-      return res.status(400).send('Missing installation_id parameter');
-    }
-
-    if (!state) {
-      console.error('[GitHub Callback] Missing state parameter');
-      return res.status(400).send('Missing state parameter');
-    }
-
-    const installationId = parseInt(installation_id as string, 10);
-    if (isNaN(installationId)) {
-      console.error('[GitHub Callback] Invalid installation_id:', installation_id);
-      return res.status(400).send('Invalid installation_id parameter');
-    }
-    
-    const domain = state as string;
-
-    console.log(`[GitHub Callback] Processing: Installation ID=${installationId}, Domain=${domain}, Setup Action=${setup_action}`);
-
-    // Store mapping between installation ID and domain in Firestore
-    // This allows us to identify which client installed the app
-    try {
-      const mappingCollectionPath = 'github-installations';
-      await db.collection(mappingCollectionPath).doc(installationId.toString()).set({
-        installationId,
-        domain,
-        setupAction: setup_action || 'install',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-      console.log(`[GitHub Callback] ✅ Mapped installation ${installationId} to domain ${domain}`);
-    } catch (error: any) {
-      console.error(`[GitHub Callback] ❌ Failed to store installation mapping:`, error);
-      throw error; // Re-throw to be caught by outer catch
-    }
-
-    // Save installation data to Secret Manager
-    // The webhook will later update this with full installation details, but we save basic info now
-    const secretName = getSecretName(domain, 'github');
-    const basicInstallationData = {
-      installationId,
-      domain,
-      connectedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      // Full details will be added by webhook when installation event is received
-    };
-
-    try {
-      await saveSecret(secretName, JSON.stringify(basicInstallationData));
-      console.log(`[GitHub Callback] ✅ Basic installation data saved to Secret Manager: ${secretName}`);
-    } catch (error: any) {
-      console.error(`[GitHub Callback] ❌ Failed to save to Secret Manager:`, error);
-      console.error(`[GitHub Callback] Error details:`, {
-        message: error.message,
-        code: error.code,
-        stack: error.stack,
-      });
-      // Don't fail the callback, but log the error
-    }
-
-    // Immediately update Firestore integration record to show connected status
-    // The webhook will later update this with full installation details
-    try {
-      const collectionPath = getCollectionPath('integrations', domain);
-      console.log(`[GitHub Callback] Updating Firestore: collectionPath=${collectionPath}, secretName=${secretName}`);
-      
-      await db.collection(collectionPath).doc('github').set({
-        id: 'github',
-        name: 'GitHub',
-        connected: true,
-        connectedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        secretName,
-        installationId,
-      });
-      console.log(`[GitHub Callback] ✅ Integration record updated in Firestore for domain ${domain}`);
-    } catch (error: any) {
-      console.error(`[GitHub Callback] ❌ Failed to update integration record in Firestore:`, error);
-      console.error(`[GitHub Callback] Error details:`, {
-        message: error.message,
-        code: error.code,
-        stack: error.stack,
-      });
-      // Don't fail the callback if Firestore update fails, webhook will handle it
-      // But log it so we can debug
-    }
-
-    // Redirect back to the integrations page with success message
-    // Always use production URL for redirect (works for both dev and prod)
-    let redirectUrl: string = 'https://hub.leanworks.ai';
-    console.log(`[GitHub Callback] 🔄 Redirecting to production frontend: ${redirectUrl}`);
-    
-    // Override with FRONTEND_URL if explicitly set (for local testing)
-    if (process.env.FRONTEND_URL) {
-      redirectUrl = process.env.FRONTEND_URL;
-      console.log(`[GitHub Callback] ⚠️  Using FRONTEND_URL override: ${redirectUrl}`);
-    }
-    
-    const redirectPath = `${redirectUrl}/integrations?github=connected&installation_id=${installationId}`;
-    console.log(`[GitHub Callback] ✅ Redirecting to: ${redirectPath}`);
-    res.redirect(redirectPath);
-  } catch (error: any) {
-    console.error('[GitHub Callback] ❌ Fatal error:', error);
-    console.error('[GitHub Callback] Error details:', {
-      message: error.message,
-      code: error.code,
-      stack: error.stack,
-    });
-    
-    // Use same logic for error redirect - always use production URL
-    let redirectUrl: string = 'https://hub.leanworks.ai';
-    
-    // Override with FRONTEND_URL if explicitly set
-    if (process.env.FRONTEND_URL) {
-      redirectUrl = process.env.FRONTEND_URL;
-    }
-    
-    const errorPath = `${redirectUrl}/integrations?github=error`;
-    console.log(`[GitHub Callback] Redirecting to error page: ${errorPath}`);
-    res.redirect(errorPath);
-  }
-});
-
-// GitHub Webhook endpoint (no authentication required, uses webhook secret verification)
-app.post('/api/integrations/github/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  try {
-    const signature = req.headers['x-hub-signature-256'] as string;
-    const event = req.headers['x-github-event'] as string;
-    const deliveryId = req.headers['x-github-delivery'] as string;
-
-    if (!signature || !event || !deliveryId) {
-      return res.status(400).json({ error: 'Missing required GitHub webhook headers' });
-    }
-
-    // Get webhook secret from environment variable or GCP Secret Manager
-    // For now, using environment variable. You can enhance this to fetch from Secret Manager
-    const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
-    if (!webhookSecret) {
-      console.error('[GitHub Webhook] Webhook secret not configured');
-      return res.status(500).json({ error: 'Webhook secret not configured' });
-    }
-
-    // Verify webhook signature
-    const payload = req.body;
-    const hmac = crypto.createHmac('sha256', webhookSecret);
-    const digest = 'sha256=' + hmac.update(payload).digest('hex');
-    
-    if (signature !== digest) {
-      console.error('[GitHub Webhook] Invalid signature');
-      return res.status(401).json({ error: 'Invalid signature' });
-    }
-
-    // Parse the JSON payload
-    let payloadData;
-    try {
-      payloadData = JSON.parse(payload.toString());
-    } catch (error) {
-      console.error('[GitHub Webhook] Invalid JSON payload');
-      return res.status(400).json({ error: 'Invalid JSON payload' });
-    }
-
-    // Log the event for debugging
-    console.log(`[GitHub Webhook] Received event: ${event}, delivery: ${deliveryId}`);
-    console.log(`[GitHub Webhook] Action: ${payloadData.action || 'N/A'}`);
-
-    // Handle only installation and installation_repositories events
-    switch (event) {
-      case 'installation':
-        // GitHub App installation/removal
-        const installation = payloadData.installation;
-        if (!installation || !installation.id) {
-          console.error('[GitHub Webhook] Missing installation data');
-          return res.status(400).json({ error: 'Missing installation data' });
-        }
-
-        const installationId = installation.id;
-        const accountLogin = installation.account?.login || 'unknown';
-        const accountType = installation.account?.type || 'unknown'; // 'Organization' or 'User'
-
-        if (payloadData.action === 'created') {
-          console.log(`[GitHub Webhook] App installed for: ${accountLogin} (${accountType})`);
-          console.log(`[GitHub Webhook] Installation ID: ${installationId}`);
-
-          // Look up domain from installation mapping
-          let domain: string | null = null;
-          try {
-            const mappingDoc = await db.collection('github-installations').doc(installationId.toString()).get();
-            if (mappingDoc.exists) {
-              domain = mappingDoc.data()?.domain || null;
-              console.log(`[GitHub Webhook] Found domain mapping: ${domain}`);
-            } else {
-              console.warn(`[GitHub Webhook] No domain mapping found for installation ${installationId}`);
-            }
-          } catch (error: any) {
-            console.error(`[GitHub Webhook] Failed to look up domain mapping:`, error);
-          }
-
-          // Prepare installation data to save
-          const installationData = {
-            installationId,
-            domain, // Include domain if found
-            accountLogin,
-            accountType,
-            accountId: installation.account?.id,
-            targetType: installation.target_type, // 'User' or 'Organization'
-            targetId: installation.target_id,
-            appId: installation.app_id,
-            permissions: installation.permissions,
-            events: installation.events,
-            createdAt: installation.created_at,
-            updatedAt: installation.updated_at,
-            suspendedAt: installation.suspended_at,
-            suspendedBy: installation.suspended_by,
-            repositoriesUrl: installation.repositories_url,
-            repositories: [], // Will be populated by installation_repositories events
-          };
-
-          // Save to Secret Manager
-          // Use domain-based secret name if domain is available, otherwise use installation ID
-          const secretName = domain 
-            ? getSecretName(domain, 'github')
-            : `github-installation-${installationId}`;
-          
-          try {
-            await saveSecret(secretName, JSON.stringify(installationData));
-            console.log(`[GitHub Webhook] Installation data saved to Secret Manager: ${secretName}`);
-            
-            // Also update Firestore integration record if domain is known
-            if (domain) {
-              const collectionPath = getCollectionPath('integrations', domain);
-              await db.collection(collectionPath).doc('github').set({
-                id: 'github',
-                name: 'GitHub',
-                connected: true,
-                connectedAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                secretName,
-                installationId,
-              });
-              console.log(`[GitHub Webhook] Integration record updated in Firestore for domain ${domain}`);
-            }
-          } catch (error: any) {
-            console.error(`[GitHub Webhook] Failed to save installation to Secret Manager:`, error);
-            return res.status(500).json({ error: 'Failed to save installation data' });
-          }
-        } else if (payloadData.action === 'deleted') {
-          console.log(`[GitHub Webhook] App uninstalled for: ${accountLogin}`);
-          console.log(`[GitHub Webhook] Installation ID: ${installationId}`);
-
-          // Look up domain from installation mapping
-          let domain: string | null = null;
-          try {
-            const mappingDoc = await db.collection('github-installations').doc(installationId.toString()).get();
-            if (mappingDoc.exists) {
-              domain = mappingDoc.data()?.domain || null;
-            }
-          } catch (error: any) {
-            console.error(`[GitHub Webhook] Failed to look up domain mapping:`, error);
-          }
-
-          // Delete from Secret Manager
-          const secretName = domain 
-            ? getSecretName(domain, 'github')
-            : `github-installation-${installationId}`;
-          
-          try {
-            await deleteSecret(secretName);
-            console.log(`[GitHub Webhook] Installation data deleted from Secret Manager: ${secretName}`);
-          } catch (error: any) {
-            console.error(`[GitHub Webhook] Failed to delete installation from Secret Manager:`, error);
-            // Don't fail the request if deletion fails (secret might not exist)
-          }
-
-          // Update Firestore integration record if domain is known
-          if (domain) {
-            try {
-              const collectionPath = getCollectionPath('integrations', domain);
-              await db.collection(collectionPath).doc('github').delete();
-              console.log(`[GitHub Webhook] Integration record deleted from Firestore for domain ${domain}`);
-            } catch (error: any) {
-              console.error(`[GitHub Webhook] Failed to delete integration record from Firestore:`, error);
-            }
-          }
-
-          // Delete the installation mapping
-          try {
-            await db.collection('github-installations').doc(installationId.toString()).delete();
-            console.log(`[GitHub Webhook] Installation mapping deleted`);
-          } catch (error: any) {
-            console.error(`[GitHub Webhook] Failed to delete installation mapping:`, error);
-          }
-        }
-        break;
-
-      case 'installation_repositories':
-        // Repositories added/removed from installation
-        const inst = payloadData.installation;
-        if (!inst || !inst.id) {
-          console.error('[GitHub Webhook] Missing installation data in installation_repositories event');
-          return res.status(400).json({ error: 'Missing installation data' });
-        }
-
-        const instId = inst.id;
-        const addedCount = payloadData.repositories_added?.length || 0;
-        const removedCount = payloadData.repositories_removed?.length || 0;
-        console.log(`[GitHub Webhook] Repositories ${payloadData.action}: ${addedCount} added, ${removedCount} removed`);
-        console.log(`[GitHub Webhook] Installation ID: ${instId}`);
-
-        // Get existing installation data from Secret Manager
-        const instSecretName = `github-installation-${instId}`;
-        let existingData: any = null;
-        try {
-          const projectId = serviceAccount.project_id;
-          const fullSecretName = `projects/${projectId}/secrets/${instSecretName}`;
-          const [version] = await secretManagerClient.accessSecretVersion({
-            name: `${fullSecretName}/versions/latest`,
-          });
-          if (version.payload?.data) {
-            existingData = JSON.parse(version.payload.data.toString());
-          }
-        } catch (error: any) {
-          if (error.code !== 5) { // NOT_FOUND
-            console.error(`[GitHub Webhook] Failed to read installation data:`, error);
-          }
-        }
-
-        // Update installation data with repository changes
-        if (existingData) {
-          const repositories = existingData.repositories || [];
-          const addedRepos = payloadData.repositories_added || [];
-          const removedRepos = payloadData.repositories_removed || [];
-
-          // Add new repositories
-          addedRepos.forEach((repo: any) => {
-            if (!repositories.find((r: any) => r.id === repo.id)) {
-              repositories.push({
-                id: repo.id,
-                name: repo.name,
-                fullName: repo.full_name,
-                private: repo.private,
-                htmlUrl: repo.html_url,
-              });
-            }
-          });
-
-          // Remove repositories
-          const removedRepoIds = new Set(removedRepos.map((r: any) => r.id));
-          const filteredRepos = repositories.filter((r: any) => !removedRepoIds.has(r.id));
-
-          // Update installation data
-          existingData.repositories = filteredRepos;
-          existingData.updatedAt = new Date().toISOString();
-          existingData.lastRepositoryUpdate = {
-            action: payloadData.action,
-            addedCount,
-            removedCount,
-            timestamp: new Date().toISOString(),
-          };
-
-          // Save updated data to Secret Manager
-          try {
-            await saveSecret(instSecretName, JSON.stringify(existingData));
-            console.log(`[GitHub Webhook] Installation data updated in Secret Manager: ${instSecretName}`);
-          } catch (error: any) {
-            console.error(`[GitHub Webhook] Failed to update installation in Secret Manager:`, error);
-            return res.status(500).json({ error: 'Failed to update installation data' });
-          }
-        } else {
-          console.warn(`[GitHub Webhook] Installation ${instId} not found in Secret Manager, skipping repository update`);
-        }
-
-        if (addedCount > 0) {
-          console.log(`[GitHub Webhook] Added repositories:`, payloadData.repositories_added?.map((r: any) => r.full_name));
-        }
-        if (removedCount > 0) {
-          console.log(`[GitHub Webhook] Removed repositories:`, payloadData.repositories_removed?.map((r: any) => r.full_name));
-        }
-        break;
-
-      default:
-        // Ignore other event types
-        console.log(`[GitHub Webhook] Ignoring event type: ${event}`);
-    }
-
-    // Always return 200 to acknowledge receipt
-    res.status(200).json({ received: true, event, deliveryId });
-  } catch (error) {
-    console.error('[GitHub Webhook] Error processing webhook:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to process webhook' });
-  }
-});
-
-// Messages endpoints
 app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
-    const chatId = req.params.chatId;
-    const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : null;
+    const chatId = decodeURIComponent(req.params.chatId);
+    const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : undefined;
     const collectionPath = getCollectionPath('messages', domain);
     
-    // Query messages for this chat, ordered by timestamp
-    // If afterTimestamp is provided, only fetch messages after that timestamp
-    // If index doesn't exist, fetch without orderBy and sort in memory
-    let snapshot;
+    let docs: any[] = [];
     try {
-      if (afterTimestamp) {
-        // Fetch only messages after the specified timestamp
-        snapshot = await db.collection(collectionPath)
-          .where('chatId', '==', chatId)
-          .where('timestamp', '>', afterTimestamp)
-          .orderBy('timestamp', 'asc')
+      // Query by chatId (may need Firestore index)
+      let query = db.collection(collectionPath)
+        .where('chatId', '==', chatId)
+        .limit(100);
+      
+      const snapshot = await query.get();
+      docs = Array.from(snapshot.docs);
+      
+    } catch (queryError: any) {
+      // If query fails (e.g., missing index), fetch all and filter in memory
+      if (queryError.code === 9 || queryError.message?.includes('index')) {
+        console.warn('ChatId index missing, fetching all messages and filtering:', queryError.message);
+        const snapshot = await db.collection(collectionPath)
+          .limit(500) // Get more to filter
           .get();
-      } else {
-        // Fetch all messages
-        snapshot = await db.collection(collectionPath)
-          .where('chatId', '==', chatId)
-          .orderBy('timestamp', 'asc')
-          .get();
-      }
-    } catch (error: any) {
-      // If index error, fetch without orderBy and sort in memory
-      if (error.code === 9 || error.message?.includes('index')) {
-        snapshot = await db.collection(collectionPath)
-          .where('chatId', '==', chatId)
-          .get();
-        // Sort in memory and filter by timestamp if needed
-        let docs = snapshot.docs.sort((a, b) => {
-          const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
-          const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
-          return aTime - bTime; // Ascending
+        
+        // Filter by chatId in memory
+        docs = Array.from(snapshot.docs).filter(doc => {
+          const data = doc.data();
+          return data.chatId === chatId || (!data.chatId && chatId === 'general');
         });
-        
-        // Filter by timestamp if afterTimestamp is provided
-        if (afterTimestamp) {
-          docs = docs.filter(doc => {
-            const docTime = doc.data().timestamp?.toDate?.()?.getTime() || 0;
-            return docTime > afterTimestamp.getTime();
-          });
-        }
-        
-        // Create a new QuerySnapshot-like object
-        snapshot = { docs, empty: docs.length === 0 };
       } else {
-        throw error;
+        throw queryError;
       }
     }
     
-    const messages = snapshot.docs.map(doc => {
+    // Sort by timestamp in memory (descending)
+    docs.sort((a, b) => {
+      const aTime = a.data().timestamp || 0;
+      const bTime = b.data().timestamp || 0;
+      return bTime - aTime; // Descending
+    });
+    
+    // Filter by afterTimestamp if provided
+    if (afterTimestamp) {
+      docs = docs.filter(doc => {
+        const timestamp = doc.data().timestamp || 0;
+        return timestamp > afterTimestamp.getTime();
+      });
+    }
+    
+    // Limit to 100
+    docs = docs.slice(0, 100);
+    
+    const messages = docs.map(doc => {
       const data = doc.data();
       return {
         id: doc.id,
-        ...data,
-        timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
+        chatId: data.chatId || chatId,
+        role: data.role || 'user',
+        content: data.content || '',
+        timestamp: data.timestamp ? (typeof data.timestamp === 'number' ? new Date(data.timestamp).toISOString() : data.timestamp) : new Date().toISOString(),
+        userId: data.userId || null,
+        projectId: data.projectId || null,
+        teamId: data.teamId || null,
+        memberName: data.memberName || null,
+        memberAvatar: data.memberAvatar || null
       };
     });
     
     res.json(messages);
   } catch (error) {
-    console.error('Get messages error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch messages' });
+    console.error('Get messages by chatId error:', error);
+    // Return empty array instead of error to prevent frontend crashes
+    res.json([]);
   }
 });
 
 app.post('/api/messages', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
-    const userEmail = (req as any).user.email;
-    const { chatId, role, content, memberName, memberAvatar, projectId, teamId } = req.body;
-
-    if (!chatId || !content) {
-      return res.status(400).json({ error: 'chatId and content are required' });
-    }
-
-    // Get user info for memberName and memberAvatar if not provided
-    let finalMemberName = memberName || 'You';
-    let finalMemberAvatar = memberAvatar || 'U';
-    
-    if (!memberName || !memberAvatar) {
-      const usersCollectionPath = getCollectionPath('users', domain);
-      const userDoc = await db.collection(usersCollectionPath).doc(userEmail.toLowerCase()).get();
-      if (userDoc.exists) {
-        const userData = userDoc.data();
-        if (userData) {
-          const firstName = userData.firstName || '';
-          const lastName = userData.lastName || '';
-          finalMemberName = `${firstName} ${lastName}`.trim() || userEmail;
-          finalMemberAvatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || userEmail.charAt(0).toUpperCase();
-        }
-      }
-    }
-
+    const userEmail = (req as any).userEmail;
+    const { 
+      chatId, 
+      role, 
+      content, 
+      projectId, 
+      teamId, 
+      memberName, 
+      memberAvatar 
+    } = req.body;
     const collectionPath = getCollectionPath('messages', domain);
+    
     const messageData: any = {
-      chatId,
+      chatId: chatId || 'general',
       role: role || 'user',
-      content,
-      timestamp: new Date(),
-      userId: userEmail.toLowerCase(),
+      content: content || '',
+      timestamp: Date.now(),
+      createdAt: new Date().toISOString(),
+      userId: userEmail
     };
-
-    // Add project-specific fields for project channel messages
-    if (projectId) {
-      messageData.projectId = projectId;
-      messageData.memberName = finalMemberName;
-      messageData.memberAvatar = finalMemberAvatar;
-    }
-
-    // Add team-specific fields for team channel messages
-    if (teamId) {
-      messageData.teamId = teamId;
-      messageData.memberName = finalMemberName;
-      messageData.memberAvatar = finalMemberAvatar;
-    }
-
+    
+    if (projectId) messageData.projectId = projectId;
+    if (teamId) messageData.teamId = teamId;
+    if (memberName) messageData.memberName = memberName;
+    if (memberAvatar) messageData.memberAvatar = memberAvatar;
+    
     const docRef = await db.collection(collectionPath).add(messageData);
     
-    res.json({
-      success: true,
-      messageId: docRef.id,
-      message: {
-        id: docRef.id,
-        ...messageData,
-        timestamp: messageData.timestamp.toISOString(),
-      },
+    res.status(201).json({ 
+      id: docRef.id,
+      chatId: messageData.chatId,
+      role: messageData.role,
+      content: messageData.content,
+      timestamp: new Date(messageData.timestamp).toISOString(),
+      userId: messageData.userId,
+      projectId: messageData.projectId || null,
+      teamId: messageData.teamId || null,
+      memberName: messageData.memberName || null,
+      memberAvatar: messageData.memberAvatar || null
     });
   } catch (error) {
     console.error('Create message error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to create message' });
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Update Summaries endpoints
-// Get latest update summaries for all projects or a specific project
+// ============================================================================
+// INTEGRATIONS ENDPOINTS (PostgreSQL + Secret Manager)
+// ============================================================================
+
+setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAccount, db);
+
+// ============================================================================
+// UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
+// ============================================================================
+
 app.get('/api/update-summaries', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
+    const userEmail = (req as any).userEmail;
     const projectId = req.query.projectId as string | undefined;
-    const collectionPath = getCollectionPath('update_summaries', domain);
+    const pool = await getTenantPool(userEmail);
     
-    let snapshot;
+    let query = `
+      SELECT 
+        us.project_id,
+        us.date_id,
+        us.update_summary,
+        us.generated_at
+      FROM update_summaries us
+    `;
+    const params: any[] = [];
+    
     if (projectId) {
-      // Get all summaries for a specific project, sorted by dateId descending
-      try {
-        snapshot = await db.collection(collectionPath)
-          .where('projectId', '==', projectId)
-          .orderBy('dateId', 'desc')
-          .limit(1)
-          .get();
-      } catch (error: any) {
-        // If index error, fetch without orderBy and sort in memory
-        if (error.code === 9 || error.message?.includes('index')) {
-          const allDocs = await db.collection(collectionPath)
-            .where('projectId', '==', projectId)
-            .get();
-          // Sort by dateId descending in memory
-          const sortedDocs = allDocs.docs.sort((a, b) => {
-            const aDate = a.data().dateId || '';
-            const bDate = b.data().dateId || '';
-            return bDate.localeCompare(aDate); // Descending
-          });
-          snapshot = { docs: sortedDocs.slice(0, 1), empty: sortedDocs.length === 0 };
-        } else {
-          throw error;
-        }
-      }
-    } else {
-      // Get latest summary for each project by dateId
-      // Fetch all summaries and group by projectId, keeping only the latest dateId for each
-      snapshot = await db.collection(collectionPath).get();
+      query += ` WHERE us.project_id = $1`;
+      params.push(projectId);
     }
     
-    if (projectId) {
-      // Return single summary for specific project (already filtered to latest by dateId)
-      if (snapshot.empty) {
-        return res.json(null);
+    query += ` ORDER BY us.date_id DESC, us.project_id`;
+    
+    const result = await pool.query(query, params);
+    
+    // Transform to the format expected by frontend
+    // Frontend expects: Record<string, { dateId: string; updateSummary: string }>
+    // Keyed by projectId
+    const summaries: Record<string, { dateId: string; updateSummary: string }> = {};
+    
+    result.rows.forEach(row => {
+      const projectId = row.project_id;
+      if (!summaries[projectId]) {
+        summaries[projectId] = {
+          dateId: row.date_id ? new Date(row.date_id).toISOString().split('T')[0] : '',
+          updateSummary: row.update_summary || ''
+        };
       }
-      const doc = snapshot.docs[0];
-      const data = doc.data();
-      res.json({
-        projectId: data.projectId,
-        dateId: data.dateId,
-        updateSummary: data.updateSummary,
-      });
+    });
+    
+    // If projectId was specified, return single object or null
+    if (projectId) {
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
+        res.json({
+          projectId: row.project_id,
+          dateId: row.date_id ? new Date(row.date_id).toISOString().split('T')[0] : '',
+          updateSummary: row.update_summary || ''
+        });
+      } else {
+        res.json(null);
+      }
     } else {
-      // Group by projectId and keep only the latest summary for each project (by dateId)
-      // dateId format is "YYYY-MM-DD", so string comparison works correctly
-      const summariesByProject = new Map<string, { dateId: string; updateSummary: string }>();
-      
-      snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        const pid = data.projectId;
-        const dateId = data.dateId || '';
-        
-        if (!pid || !dateId) return; // Skip entries without projectId or dateId
-        
-        // Keep only the latest summary for each project (by dateId)
-        // dateId is in "YYYY-MM-DD" format, so string comparison gives correct ordering
-        const existing = summariesByProject.get(pid);
-        if (!existing) {
-          // First summary for this project
-          summariesByProject.set(pid, {
-            dateId: dateId,
-            updateSummary: data.updateSummary || '',
-          });
-        } else {
-          // Compare dateId strings - "YYYY-MM-DD" format allows direct string comparison
-          // If current dateId is greater (later date), replace the existing one
-          if (dateId > existing.dateId) {
-            summariesByProject.set(pid, {
-              dateId: dateId,
-              updateSummary: data.updateSummary || '',
-            });
-          }
-        }
-      });
-      
-      // Convert to object format: { projectId: { dateId, updateSummary } }
-      const result: Record<string, { dateId: string; updateSummary: string }> = {};
-      summariesByProject.forEach((summary, projectId) => {
-        result[projectId] = summary;
-      });
-      
-      res.json(result);
+      res.json(summaries);
     }
   } catch (error) {
     console.error('Get update summaries error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch update summaries' });
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
-// Updates endpoints
-// Get updates by task ID
+// GET updates by task ID
 app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
+    const userEmail = (req as any).userEmail;
     const taskId = req.params.taskId;
-    const collectionPath = getCollectionPath('updates', domain);
+    const pool = await getTenantPool(userEmail);
     
-    // Fetch all updates and filter by task ID
-    // Since associatedTasks is stored as a JSON string, we need to parse it
-    const snapshot = await db.collection(collectionPath).get();
+    const result = await pool.query(`
+      SELECT 
+        upd.update_id as id,
+        upd.update_id,
+        upd.project_id,
+        upd.user_id,
+        upd.associated_tasks,
+        CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END as date_id,
+        upd.reason,
+        upd.update_text as update,
+        upd.timestamp,
+        COALESCE(u.first_name || ' ' || u.last_name, upd.user_id) as memberName,
+        COALESCE(
+          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+            ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
+          END,
+          'U'
+        ) as memberAvatar
+      FROM updates upd
+      LEFT JOIN users u ON upd.user_id = u.email
+      WHERE upd.associated_tasks @> $1::jsonb
+      ORDER BY upd.timestamp DESC
+    `, [JSON.stringify([taskId])]);
     
-    const updates = snapshot.docs
-      .map(doc => {
-        const data = doc.data();
-        let associatedTasks: string[] = [];
-        
-        // Parse associatedTasks - it's stored as a JSON string
-        try {
-          if (typeof data.associatedTasks === 'string') {
-            associatedTasks = JSON.parse(data.associatedTasks);
-          } else if (Array.isArray(data.associatedTasks)) {
-            associatedTasks = data.associatedTasks;
-          }
-        } catch (e) {
-          // If parsing fails, skip this update
-          console.warn('Failed to parse associatedTasks:', data.associatedTasks);
-        }
-        
-        // Check if this update is associated with the task
-        if (associatedTasks.includes(taskId)) {
-          return {
-            updateId: doc.id,
-            associatedTasks: associatedTasks,
-            dateId: data.dateId || '',
-            projectId: data.projectId || '',
-            reason: data.reason || '',
-            timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : (data.timestamp || ''),
-            update: data.update || '',
-            userId: data.userId || '',
-          };
-        }
-        return null;
-      })
-      .filter(update => update !== null)
-      .sort((a, b) => {
-        // Sort by timestamp descending (newest first)
-        const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-        const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-        return bTime - aTime;
-      });
+    // Transform to the format expected by frontend
+    // Note: PostgreSQL returns unquoted column names in lowercase
+    const updates = result.rows.map(row => ({
+      updateId: row.update_id,
+      associatedTasks: row.associated_tasks,
+      dateId: row.date_id || '',
+      projectId: row.project_id || '',
+      reason: row.reason || '',
+      timestamp: row.timestamp ? (typeof row.timestamp === 'string' ? row.timestamp : new Date(row.timestamp).toISOString()) : '',
+      update: row.update || '',
+      userId: row.user_id || '',
+      memberName: row.membername || row.user_id || '',
+      memberAvatar: row.memberavatar || 'U',
+    }));
     
     res.json(updates);
   } catch (error) {
-    console.error('Get updates by task ID error:', error);
-    res.status(500).json({ error: (error as Error).message || 'Failed to fetch updates' });
+    console.error('Get updates by task error:', error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
+// ============================================================================
+// START SERVER
+// ============================================================================
+
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Firestore proxy server running on http://0.0.0.0:${PORT}`);
-  console.log(`📊 Using project: ${serviceAccount.project_id}`);
-  console.log(`🗄️  Database: leanworks-prod`);
+  console.log(`✅ Server started on port ${PORT}`);
+  console.log(`✅ Health check available at http://0.0.0.0:${PORT}/api/health`);
 });
 

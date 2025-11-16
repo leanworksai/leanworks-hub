@@ -1251,8 +1251,7 @@ export function Chatbot() {
               }
             }
           } catch (error) {
-            // Silently fail for background sync - don't spam console
-            console.debug(`Background sync failed for chat ${chatId}:`, error);
+            // Silently fail for background sync
           }
         })
       );
@@ -2239,7 +2238,9 @@ export function Chatbot() {
           memberName: savedMessage.memberName || "You",
           memberAvatar: savedMessage.memberAvatar || "U",
           content: savedMessage.content,
-          timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
+          timestamp: savedMessage.timestamp 
+            ? (savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp))
+            : new Date(),
           teamId: selectedTeamId,
           userId: savedMessage.userId || user.email?.toLowerCase(),
         };
@@ -2568,7 +2569,7 @@ export function Chatbot() {
                           const isSelected = selectedMember === projectChatId;
                           return (
                             <button
-                              key={`project-${projectId}`}
+                              key={project.id}
                               onClick={() => {
                                 setSelectedMember(projectChatId);
                                 setMemberSearchQuery("");
@@ -3067,7 +3068,7 @@ export function Chatbot() {
                     <FolderOpen className="h-3.5 w-3.5 text-primary flex-shrink-0" />
                     <span className="text-xs font-medium text-primary">Cited Projects:</span>
                     {selectedProjects.map((project) => (
-                      <Badge key={project.name} variant="secondary" className="text-xs">
+                      <Badge key={project.id} variant="secondary" className="text-xs">
                         {project.name}
                       </Badge>
                     ))}

@@ -9,11 +9,7 @@ const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 
 // Initialize Firestore - uses proxy API in development
 export const initFirestore = () => {
-  if (import.meta.env.DEV) {
-    console.log('🔧 Using Firestore proxy API (gcp_credential.json)');
-  } else {
-    console.log('🌐 Using Firebase JS SDK');
-  }
+  // Firestore initialization
 };
 
 // Helper to get auth token for API requests
@@ -448,9 +444,14 @@ export const messagesService = {
       throw new Error(error.error || 'Failed to create message');
     }
     const data = await response.json();
+    if (!data.message) {
+      throw new Error('Invalid response: message data is missing');
+    }
     return {
       ...data.message,
-      timestamp: typeof data.message.timestamp === 'string' ? new Date(data.message.timestamp) : data.message.timestamp,
+      timestamp: data.message.timestamp 
+        ? (typeof data.message.timestamp === 'string' ? new Date(data.message.timestamp) : data.message.timestamp)
+        : new Date(),
     };
   },
 
@@ -522,11 +523,10 @@ export const messagesService = {
           
           return unsubscribe;
         }).catch((error) => {
-          console.log('Firestore import failed, using polling:', error);
           return this.subscribeViaPolling(chatId, callback);
         });
       } catch (error) {
-        console.log('Firestore setup error, using polling:', error);
+        // Fallback to polling
       }
     }
     

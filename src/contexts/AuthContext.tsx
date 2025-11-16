@@ -121,7 +121,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             } else if (savedUserData) {
               // If Firebase Auth says no user but we have saved data, keep the saved user
               // This handles cases where Firebase Auth isn't fully initialized
-              console.log('Firebase Auth reports no user, but using cached user data');
             } else {
               setUser(null);
               // Clear cache if no user
