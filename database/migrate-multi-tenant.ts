@@ -230,6 +230,24 @@ async function migrateProjectsForDomain(domain: string, pool: Pool) {
         }
       }
       
+      // owner_email is required (NOT NULL) - must be the creator
+      // Try to get ownerEmail from projectData, or infer from first member, or skip if unavailable
+      let ownerEmail = projectData.ownerEmail;
+      if (!ownerEmail && projectData.members && Array.isArray(projectData.members) && projectData.members.length > 0) {
+        // Try to infer from first member if ownerEmail is missing
+        const firstMember = projectData.members[0];
+        ownerEmail = typeof firstMember === 'string' ? firstMember : (firstMember.email || firstMember.id);
+      }
+      
+      if (!ownerEmail) {
+        console.warn(`⚠️  Skipping project ${projectId}: ownerEmail is required but not found`);
+        errors++;
+        continue;
+      }
+      
+      // Normalize email to lowercase
+      ownerEmail = ownerEmail.toLowerCase();
+      
       await pool.query(`
         INSERT INTO projects (
           id, name, description, team_id, status, priority,
@@ -256,7 +274,7 @@ async function migrateProjectsForDomain(domain: string, pool: Pool) {
         timestampToDate(projectData.startDate),
         timestampToDate(projectData.endDate),
         timestampToDate(projectData.dueDate),
-        projectData.ownerEmail || null,
+        ownerEmail,
         timestampToDate(projectData.createdAt) || new Date()
       ]);
       
@@ -331,10 +349,12 @@ async function migrateTasksForDomain(domain: string, pool: Pool) {
       const createdAtTimestamp = taskData.createdAt || Date.now();
       
       // Validate assignee - must be email format or null (to satisfy foreign key)
-      const assigneeValue = taskData.assignee || taskData.assigneeId;
+      // assignee_id maps to assigneeId in Firestore
+      const assigneeValue = taskData.assigneeId;
       const isEmail = assigneeValue && assigneeValue.includes('@');
       const assigneeId = isEmail ? assigneeValue : null;
-      const assigneeName = !isEmail && assigneeValue ? assigneeValue : (taskData.assigneeName || null);
+      // assignee_name maps to 'assignee' in Firestore
+      const assigneeName = taskData.assignee || null;
       
       // Validate created_by - must be email format or null
       const createdByValue = taskData.reporter || taskData.createdBy;
@@ -353,31 +373,42 @@ async function migrateTasksForDomain(domain: string, pool: Pool) {
         }
       }
       
+      // project_name maps to 'project' in Firestore
+      const projectName = taskData.project || null;
+      
+      // reason maps from 'reason' in Firestore
+      const reason = taskData.reason || null;
+      
       await pool.query(`
         INSERT INTO tasks (
-          id, title, description, project_id, assignee_id, assignee_name,
-          created_by, status, priority, due_date, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          id, title, description, project_id, project_name, assignee_id, assignee_name,
+          created_by, status, priority, due_date, reason, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         ON CONFLICT (id) DO UPDATE SET
           title = EXCLUDED.title,
           description = EXCLUDED.description,
+          project_id = EXCLUDED.project_id,
+          project_name = EXCLUDED.project_name,
           assignee_id = EXCLUDED.assignee_id,
           assignee_name = EXCLUDED.assignee_name,
           status = EXCLUDED.status,
           priority = EXCLUDED.priority,
           due_date = EXCLUDED.due_date,
+          reason = EXCLUDED.reason,
           updated_at = NOW()
       `, [
         taskId,
         taskData.title || 'Untitled Task',
         taskData.description || null,
         projectId,
+        projectName,
         assigneeId,
         assigneeName,
         createdBy,
         taskData.status || 'todo',
         taskData.priority || 'medium',
         timestampToDate(taskData.dueDate),
+        reason,
         createdAtTimestamp
       ]);
       

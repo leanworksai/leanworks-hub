@@ -1399,6 +1399,7 @@ app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
     let paramIndex = 1;
     
     // Map camelCase to snake_case for database
+    // Note: ownerEmail is intentionally excluded - owner_email should always be the creator and cannot be changed
     const fieldMap: { [key: string]: string } = {
       name: 'name',
       description: 'description',
@@ -1407,8 +1408,7 @@ app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
       priority: 'priority',
       dueDate: 'due_date',
       startDate: 'start_date',
-      endDate: 'end_date',
-      ownerEmail: 'owner_email'
+      endDate: 'end_date'
     };
     
     Object.entries(updates).forEach(([key, value]) => {

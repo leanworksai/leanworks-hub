@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS projects (
   start_date DATE,
   end_date DATE,
   due_date DATE,
-  owner_email VARCHAR(255) REFERENCES users(email) ON DELETE SET NULL,
+  owner_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );

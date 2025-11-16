@@ -46,7 +46,6 @@ import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
-import { TaskTooltip } from "@/components/TaskTooltip";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -244,18 +243,21 @@ export default function Tasks() {
             onClick={() => handleTaskClick(task.id)}
           >
             <div className="absolute top-2 left-2 z-10 flex gap-1">
-              <TaskTooltip taskId={task.id} taskReason={task.reason} />
-              {/* Progress Update Popover - similar to project cards */}
-              {task.progressUpdates && Array.isArray(task.progressUpdates) && task.progressUpdates.length > 0 && (() => {
+              {/* Progress Update and Reason Popover */}
+              {((task.progressUpdates && Array.isArray(task.progressUpdates) && task.progressUpdates.length > 0) || task.reason) && (() => {
                 // Get the latest progress update (sorted by date, newest first)
-                const sortedUpdates = [...task.progressUpdates].sort((a, b) => {
+                const sortedUpdates = task.progressUpdates ? [...task.progressUpdates].sort((a, b) => {
                   const dateA = a.date ? new Date(a.date).getTime() : 0;
                   const dateB = b.date ? new Date(b.date).getTime() : 0;
                   return dateB - dateA;
-                });
+                }) : [];
                 const latestUpdate = sortedUpdates[0];
                 
-                if (!latestUpdate || !latestUpdate.update) {
+                // Show icon if there's a progress update or reason
+                const hasProgressUpdate = latestUpdate && latestUpdate.update;
+                const hasReason = task.reason;
+                
+                if (!hasProgressUpdate && !hasReason) {
                   return null;
                 }
                 
@@ -269,30 +271,46 @@ export default function Tasks() {
                         onClick={(e) => e.stopPropagation()}
                         onMouseEnter={() => setHoveredTask(task.id)}
                         onMouseLeave={() => setHoveredTask(null)}
-                        title="Latest Progress Update"
+                        title="Latest Progress Update & Reason"
                       >
                         <Sparkles className="h-4 w-4" />
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent 
-                      className="w-80" 
+                      className="w-96 max-h-[500px] overflow-y-auto" 
                       onClick={(e) => e.stopPropagation()}
                       onMouseEnter={() => setHoveredTask(task.id)}
                       onMouseLeave={() => setHoveredTask(null)}
                       align="start"
                     >
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
-                          {latestUpdate.date && (
-                            <p className="text-xs text-muted-foreground/60">
-                              {latestUpdate.date}
+                      <div className="space-y-4">
+                        {/* Latest Progress Update */}
+                        {hasProgressUpdate && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
+                              {latestUpdate.date && (
+                                <p className="text-xs text-muted-foreground/60">
+                                  {latestUpdate.date}
+                                </p>
+                              )}
+                            </div>
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                              {latestUpdate.update}
                             </p>
-                          )}
-                        </div>
-                        <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                          {latestUpdate.update}
-                        </p>
+                          </div>
+                        )}
+                        
+                        {/* Reason */}
+                        {hasReason && (
+                          <div className="space-y-2">
+                            {hasProgressUpdate && <div className="border-t border-border pt-2" />}
+                            <p className="text-xs font-medium text-muted-foreground/70">REASON</p>
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                              {task.reason}
+                            </p>
+                          </div>
+                        )}
                       </div>
                     </PopoverContent>
                   </Popover>
