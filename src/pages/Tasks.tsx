@@ -23,6 +23,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { 
   Plus, 
   CheckCircle2, 
@@ -35,17 +45,21 @@ import {
   ArrowRight,
   MoreVertical,
   Trash2,
-  Sparkles
+  Sparkles,
+  Check,
+  ChevronsUpDown
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
 import { useState } from "react";
-import { useUserTasks, useDeleteTask } from "@/hooks/useTasks";
+import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserProjects } from "@/hooks/useProjects";
+import { format, parse } from "date-fns";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -90,18 +104,53 @@ const getPriorityColor = (priority: Task["priority"]) => {
   }
 };
 
+// Get all unique team members from projects
+const getAllTeamMembers = (projects: any[]) => {
+  const memberMap = new Map<string, { id?: string; name: string; avatar: string; role: string }>();
+  
+  // Collect from project members
+  projects.forEach(project => {
+    project.members?.forEach((member: any) => {
+      if (!memberMap.has(member.name)) {
+        memberMap.set(member.name, {
+          id: member.id,
+          name: member.name,
+          avatar: member.avatar,
+          role: member.role,
+        });
+      }
+    });
+  });
+  
+  return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+};
+
+const getInitials = (name: string): string => {
+  return name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+};
+
 export default function Tasks() {
   const navigate = useNavigate();
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
   const { isSelectionMode } = useSelectionMode();
   const { data: tasks = [], isLoading } = useUserTasks();
   const deleteTask = useDeleteTask();
+  const updateTaskMutation = useUpdateTask();
   const { toast } = useToast();
+  const { data: projects = [] } = useUserProjects();
+  const { data: users = [] } = useUsers();
+  const teamMembers = getAllTeamMembers(projects);
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover
+  const [openDropdowns, setOpenDropdowns] = useState<Record<string, { status?: boolean; priority?: boolean; assignee?: boolean; dueDate?: boolean }>>({});
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -154,6 +203,49 @@ export default function Tasks() {
         variant: "destructive",
       });
     }
+  };
+
+  const handleFieldSave = async (taskId: string, field: keyof Task, value: any, additionalData?: Record<string, any>) => {
+    try {
+      await updateTaskMutation.mutateAsync({ 
+        taskId, 
+        updates: { [field]: value, ...additionalData } 
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to update task",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const setDropdownOpen = (taskId: string, field: 'status' | 'priority' | 'assignee' | 'dueDate', open: boolean) => {
+    setOpenDropdowns(prev => ({
+      ...prev,
+      [taskId]: {
+        ...prev[taskId],
+        [field]: open
+      }
+    }));
+  };
+
+  const isDropdownOpen = (taskId: string, field: 'status' | 'priority' | 'assignee' | 'dueDate') => {
+    return openDropdowns[taskId]?.[field] || false;
+  };
+
+  // Parse date string to Date object
+  const parseDateString = (dateString: string): Date | undefined => {
+    try {
+      return parse(dateString, "MMM d, yyyy", new Date());
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Format Date object to date string
+  const formatDateString = (date: Date): string => {
+    return format(date, "MMM d, yyyy");
   };
 
   if (isLoading) {
@@ -331,30 +423,201 @@ export default function Tasks() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <CardTitle className="text-lg">{task.title}</CardTitle>
-                      <Badge 
-                        className={`${getStatusColor(task.status)} text-xs`}
-                        variant="outline"
+                      <Popover 
+                        open={isDropdownOpen(task.id, 'status')} 
+                        onOpenChange={(open) => setDropdownOpen(task.id, 'status', open)}
                       >
-                        {task.status.replace("-", " ")}
-                      </Badge>
+                        <PopoverTrigger asChild>
+                          <button 
+                            type="button" 
+                            className="inline-flex items-center border-0 bg-transparent p-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Badge 
+                              className={`${getStatusColor(task.status)} text-xs cursor-pointer`}
+                              variant="outline"
+                            >
+                              {task.status.replace("-", " ")}
+                            </Badge>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[200px] p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                          <Command>
+                            <CommandList>
+                              <CommandGroup>
+                                {(["todo", "in-progress", "review", "blocked", "completed"] as const).map((status) => (
+                                  <CommandItem
+                                    key={status}
+                                    value={status}
+                                    onSelect={() => {
+                                      handleFieldSave(task.id, 'status', status);
+                                      setDropdownOpen(task.id, 'status', false);
+                                    }}
+                                  >
+                                    <Check
+                                      className={`mr-2 h-4 w-4 ${
+                                        task.status === status ? "opacity-100" : "opacity-0"
+                                      }`}
+                                    />
+                                    {status.replace("-", " ")}
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
                     </div>
                     
                     {/* Task Meta Info */}
                     <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
-                      <div className="flex items-center gap-1">
-                        <User className="h-4 w-4" />
-                        <span>{task.assignee || "Unassigned"}</span>
-                      </div>
-                      <Badge 
-                        className={`${getPriorityColor(task.priority)} text-xs`}
-                        variant="outline"
+                      <Popover 
+                        open={isDropdownOpen(task.id, 'assignee')} 
+                        onOpenChange={(open) => setDropdownOpen(task.id, 'assignee', open)}
                       >
-                        {task.priority}
-                      </Badge>
-                      <div className="flex items-center gap-1">
-                        <Calendar className="h-4 w-4" />
-                        <span>{task.dueDate}</span>
-                      </div>
+                        <PopoverTrigger asChild>
+                          <button 
+                            type="button"
+                            className="flex items-center gap-1 border-0 bg-transparent p-0 hover:opacity-80"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <User className="h-4 w-4" />
+                            <span className="cursor-pointer">{task.assignee || "Unassigned"}</span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[300px] p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                          <Command>
+                            <CommandInput placeholder="Search team members..." />
+                            <CommandList>
+                              <CommandEmpty>No team member found.</CommandEmpty>
+                              <CommandGroup>
+                                <CommandItem
+                                  value="unassigned"
+                                  onSelect={() => {
+                                    handleFieldSave(task.id, 'assigneeId', undefined, {
+                                      assignee: undefined,
+                                      assigneeAvatar: undefined
+                                    });
+                                    setDropdownOpen(task.id, 'assignee', false);
+                                  }}
+                                >
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${
+                                      !task.assignee ? "opacity-100" : "opacity-0"
+                                    }`}
+                                  />
+                                  Unassigned
+                                </CommandItem>
+                                {teamMembers.map((member) => (
+                                  <CommandItem
+                                    key={member.name}
+                                    value={member.name}
+                                    onSelect={() => {
+                                      if (member.id) {
+                                        handleFieldSave(task.id, 'assigneeId', member.id, {
+                                          assignee: member.name,
+                                          assigneeAvatar: member.avatar
+                                        });
+                                        setDropdownOpen(task.id, 'assignee', false);
+                                      }
+                                    }}
+                                  >
+                                    <Check
+                                      className={`mr-2 h-4 w-4 ${
+                                        task.assigneeId === member.id ? "opacity-100" : "opacity-0"
+                                      }`}
+                                    />
+                                    <div className="flex items-center gap-2 flex-1">
+                                      <Avatar className="h-6 w-6">
+                                        <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                          {member.avatar}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <div className="flex flex-col">
+                                        <span>{member.name}</span>
+                                        <span className="text-xs text-muted-foreground">{member.role}</span>
+                                      </div>
+                                    </div>
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                      <Popover 
+                        open={isDropdownOpen(task.id, 'priority')} 
+                        onOpenChange={(open) => setDropdownOpen(task.id, 'priority', open)}
+                      >
+                        <PopoverTrigger asChild>
+                          <button 
+                            type="button" 
+                            className="inline-flex items-center border-0 bg-transparent p-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Badge 
+                              className={`${getPriorityColor(task.priority)} text-xs cursor-pointer`}
+                              variant="outline"
+                            >
+                              {task.priority}
+                            </Badge>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[200px] p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                          <Command>
+                            <CommandList>
+                              <CommandGroup>
+                                {(["low", "medium", "high", "urgent"] as const).map((priority) => (
+                                  <CommandItem
+                                    key={priority}
+                                    value={priority}
+                                    onSelect={() => {
+                                      handleFieldSave(task.id, 'priority', priority);
+                                      setDropdownOpen(task.id, 'priority', false);
+                                    }}
+                                  >
+                                    <Check
+                                      className={`mr-2 h-4 w-4 ${
+                                        task.priority === priority ? "opacity-100" : "opacity-0"
+                                      }`}
+                                    />
+                                    {priority}
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                            </CommandList>
+                          </Command>
+                        </PopoverContent>
+                      </Popover>
+                      <Popover 
+                        open={isDropdownOpen(task.id, 'dueDate')} 
+                        onOpenChange={(open) => setDropdownOpen(task.id, 'dueDate', open)}
+                      >
+                        <PopoverTrigger asChild>
+                          <button 
+                            type="button"
+                            className="flex items-center gap-1 border-0 bg-transparent p-0 hover:opacity-80"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Calendar className="h-4 w-4" />
+                            <span className="cursor-pointer">{task.dueDate}</span>
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                          <CalendarComponent
+                            mode="single"
+                            selected={parseDateString(task.dueDate)}
+                            onSelect={(date) => {
+                              if (date) {
+                                const formattedDate = formatDateString(date);
+                                handleFieldSave(task.id, 'dueDate', formattedDate);
+                                setDropdownOpen(task.id, 'dueDate', false);
+                              }
+                            }}
+                            initialFocus
+                          />
+                        </PopoverContent>
+                      </Popover>
                       {task.projectId && (
                         <button
                           onClick={(e) => handleProjectClick(e, task.projectId!)}

@@ -198,6 +198,8 @@ export default function TaskDetail() {
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeJustSelected, setAssigneeJustSelected] = useState(false);
   const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
+  const [priorityOpen, setPriorityOpen] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   
   const { data: task, isLoading } = useTask(taskId || '');
@@ -476,13 +478,6 @@ export default function TaskDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge 
-              className={`${getStatusColor(task.status)} text-xs cursor-pointer`}
-              variant="outline"
-              onClick={() => handleFieldClick('status')}
-            >
-              {task.status.replace("-", " ")}
-            </Badge>
             <Button
               variant="destructive"
               size="sm"
@@ -621,14 +616,84 @@ export default function TaskDetail() {
             )}
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span className="mr-2">Status:</span>
+            <Popover open={statusOpen} onOpenChange={setStatusOpen}>
+              <PopoverTrigger asChild>
+                <button type="button" className="inline-flex items-center border-0 bg-transparent p-0">
+                  <Badge 
+                    className={`${getStatusColor(task.status)} text-xs cursor-pointer`}
+                    variant="outline"
+                  >
+                    {task.status.replace("-", " ")}
+                  </Badge>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[200px] p-0" align="start">
+                <Command>
+                  <CommandList>
+                    <CommandGroup>
+                      {(["todo", "in-progress", "review", "blocked", "completed"] as const).map((status) => (
+                        <CommandItem
+                          key={status}
+                          value={status}
+                          onSelect={() => {
+                            handleFieldSave('status', status);
+                            setStatusOpen(false);
+                          }}
+                        >
+                          <Check
+                            className={`mr-2 h-4 w-4 ${
+                              task.status === status ? "opacity-100" : "opacity-0"
+                            }`}
+                          />
+                          {status.replace("-", " ")}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <span className="mr-2">Priority:</span>
-            <Badge 
-              className={`${getPriorityColor(task.priority)} text-xs cursor-pointer`}
-              variant="outline"
-              onClick={() => handleFieldClick('priority')}
-            >
-              {task.priority}
-            </Badge>
+            <Popover open={priorityOpen} onOpenChange={setPriorityOpen}>
+              <PopoverTrigger asChild>
+                <button type="button" className="inline-flex items-center border-0 bg-transparent p-0">
+                  <Badge 
+                    className={`${getPriorityColor(task.priority)} text-xs cursor-pointer`}
+                    variant="outline"
+                  >
+                    {task.priority}
+                  </Badge>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[200px] p-0" align="start">
+                <Command>
+                  <CommandList>
+                    <CommandGroup>
+                      {(["low", "medium", "high", "urgent"] as const).map((priority) => (
+                        <CommandItem
+                          key={priority}
+                          value={priority}
+                          onSelect={() => {
+                            handleFieldSave('priority', priority);
+                            setPriorityOpen(false);
+                          }}
+                        >
+                          <Check
+                            className={`mr-2 h-4 w-4 ${
+                              task.priority === priority ? "opacity-100" : "opacity-0"
+                            }`}
+                          />
+                          {priority}
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Calendar className="h-4 w-4" />
@@ -751,65 +816,6 @@ export default function TaskDetail() {
             </button>
           </div>
         </div>
-
-        {/* Status and Priority Dropdowns */}
-        {(editingField === 'status' || editingField === 'priority') && editedTask && (
-          <div className="mb-4 p-4 border rounded-lg bg-muted/50">
-            {editingField === 'status' && (
-              <div className="space-y-2">
-                <Label>Status</Label>
-                <Select
-                  value={editedTask.status}
-                  onValueChange={(value) => {
-                    handleFieldSave('status', value as Task["status"]);
-                  }}
-                  onOpenChange={(open) => {
-                    if (!open && editingField === 'status') {
-                      setEditingField(null);
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="todo">Todo</SelectItem>
-                    <SelectItem value="in-progress">In Progress</SelectItem>
-                    <SelectItem value="review">Review</SelectItem>
-                    <SelectItem value="blocked">Blocked</SelectItem>
-                    <SelectItem value="completed">Completed</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            {editingField === 'priority' && (
-              <div className="space-y-2">
-                <Label>Priority</Label>
-                <Select
-                  value={editedTask.priority}
-                  onValueChange={(value) => {
-                    handleFieldSave('priority', value as Task["priority"]);
-                  }}
-                  onOpenChange={(open) => {
-                    if (!open && editingField === 'priority') {
-                      setEditingField(null);
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low</SelectItem>
-                    <SelectItem value="medium">Medium</SelectItem>
-                    <SelectItem value="high">High</SelectItem>
-                    <SelectItem value="urgent">Urgent</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Tags */}
         {editingField === 'tags' && editedTask ? (
