@@ -66,6 +66,17 @@ const getDirectMessageChatId = (userEmail: string, otherUserEmail: string): stri
   return `dm-${emails[0]}-${emails[1]}`;
 };
 
+// Generate a user-specific chatId for AI assistant conversations
+// This ensures each user has a private conversation with the AI
+const getAIAssistantChatId = (userEmail: string): string => {
+  return `ai-assistant-${userEmail.toLowerCase()}`;
+};
+
+// Check if a chatId is for an AI assistant conversation
+const isAIAssistantChatId = (chatId: string): boolean => {
+  return chatId.startsWith('ai-assistant-');
+};
+
 export function Chatbot() {
   const { selectedProjects } = useSelectedProjects();
   const { selectedTasks } = useSelectedTasks();
@@ -929,7 +940,7 @@ export function Chatbot() {
       const allChatIds: string[] = [];
 
       // Add AI assistant chat
-      allChatIds.push("ai-assistant");
+      allChatIds.push(getAIAssistantChatId(user.email));
 
       // Add all project channels
       projects.forEach((project) => {
@@ -973,7 +984,7 @@ export function Chatbot() {
               const isAfterLastRead = msgTime > lastRead;
               // For AI assistant, count assistant messages as unread; for others, count messages not from current user
               const isUnread =
-                chatId === "ai-assistant"
+                isAIAssistantChatId(chatId)
                   ? msg.role === "assistant" ||
                     (msg.role === "user" &&
                       msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
@@ -1004,7 +1015,7 @@ export function Chatbot() {
               if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
                 currentChatId = selectedMember;
               } else if (selectedMember === "ai-assistant") {
-                currentChatId = "ai-assistant";
+                currentChatId = getAIAssistantChatId(user.email);
               } else {
                 const selectedMemberData = allTeamMembers.find((m) => m.id === selectedMember);
                 if (selectedMemberData?.email) {
@@ -1048,7 +1059,7 @@ export function Chatbot() {
       const caches = new Map<string, { messages: ChatMessage[], lastSync: number }>();
 
       // Add AI assistant chat
-      allChatIds.push("ai-assistant");
+      allChatIds.push(getAIAssistantChatId(user.email));
 
       // Add all project channels
       projects.forEach((project) => {
@@ -1094,7 +1105,7 @@ export function Chatbot() {
       const allChatIds: string[] = [];
 
       // Add AI assistant chat
-      allChatIds.push("ai-assistant");
+      allChatIds.push(getAIAssistantChatId(user.email));
 
       // Add all project channels
       projects.forEach((project) => {
@@ -1207,7 +1218,7 @@ export function Chatbot() {
                   const unreadCount = allMessages.filter((msg) => {
                     const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
                     const isAfterLastRead = msgTime > lastRead;
-                    const isUnread = chatId === "ai-assistant"
+                    const isUnread = isAIAssistantChatId(chatId)
                       ? msg.role === "assistant" || (msg.role === "user" && msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
                       : msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
                     return isAfterLastRead && isUnread;
@@ -1282,7 +1293,7 @@ export function Chatbot() {
     if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
       chatId = selectedMember;
     } else if (selectedMember === "ai-assistant") {
-      chatId = "ai-assistant";
+      chatId = getAIAssistantChatId(user.email);
     } else {
       if (selectedMember.includes('@')) {
         chatId = getDirectMessageChatId(user.email, selectedMember);
@@ -1369,7 +1380,7 @@ export function Chatbot() {
           return newMap;
         });
       } else {
-        const filteredCached = chatId === "ai-assistant" 
+        const filteredCached = isAIAssistantChatId(chatId) 
           ? cached.messages 
           : cached.messages.filter(msg => msg.role === 'user');
         
@@ -1383,7 +1394,7 @@ export function Chatbot() {
         
         if (cachedRegularMsgs.length > 0) {
           setMessages(cachedRegularMsgs);
-        } else if (chatId === "ai-assistant") {
+        } else if (isAIAssistantChatId(chatId)) {
           setMessages([
             {
               id: "greeting",
@@ -1585,7 +1596,7 @@ export function Chatbot() {
           
           // For team member chats, only show user messages (no assistant messages)
           // For AI Assistant, show both user and assistant messages
-          const filteredMessages = chatId === "ai-assistant" 
+          const filteredMessages = isAIAssistantChatId(chatId) 
             ? allMessages 
             : allMessages.filter(msg => msg.role === 'user');
           
@@ -1600,7 +1611,7 @@ export function Chatbot() {
           // Only update state if it's initial load (state is empty)
           // Otherwise, real-time listener will handle updates
           if (isInitialLoad) {
-            if (regularMsgs.length === 0 && chatId === "ai-assistant") {
+            if (regularMsgs.length === 0 && isAIAssistantChatId(chatId)) {
               setMessages([
                 {
                   id: "greeting",
@@ -1609,7 +1620,7 @@ export function Chatbot() {
                   timestamp: new Date(),
                 },
               ]);
-            } else if (regularMsgs.length === 0 && chatId !== "ai-assistant") {
+            } else if (regularMsgs.length === 0 && !isAIAssistantChatId(chatId)) {
               // For private chats with no messages, set empty array
               setMessages([]);
             } else {
@@ -1722,7 +1733,7 @@ export function Chatbot() {
           if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
             currentChatId = selectedMember;
           } else if (selectedMember === "ai-assistant") {
-            currentChatId = "ai-assistant";
+            currentChatId = getAIAssistantChatId(user.email);
           } else {
             if (selectedMember.includes('@')) {
               currentChatId = getDirectMessageChatId(user.email, selectedMember);
@@ -1889,7 +1900,7 @@ export function Chatbot() {
               if (hasUnconfirmedOptimistic) {
                 // For AI Assistant, show both user and assistant messages
                 // For team member chats, only show user messages
-                const filteredMessages = chatId === "ai-assistant" 
+                const filteredMessages = isAIAssistantChatId(chatId) 
                   ? firestoreMessages 
                   : firestoreMessages.filter(msg => msg.role === 'user');
                 
@@ -1915,7 +1926,7 @@ export function Chatbot() {
               }
               
               // Normal merge for confirmed messages
-              const filteredMessages = chatId === "ai-assistant" 
+              const filteredMessages = isAIAssistantChatId(chatId) 
                 ? firestoreMessages 
                 : firestoreMessages.filter(msg => msg.role === 'user');
               
@@ -2292,7 +2303,7 @@ export function Chatbot() {
     // Determine the correct chatId
     let chatId: string;
     if (selectedMember === "ai-assistant") {
-      chatId = "ai-assistant";
+      chatId = getAIAssistantChatId(user.email);
     } else {
       // For team member chats, generate consistent chatId from both users' emails
       // selectedMember is now the email (since we changed ID to email)
@@ -2536,14 +2547,14 @@ export function Chatbot() {
                         "w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors relative",
                         selectedMember === "ai-assistant"
                           ? "bg-primary text-primary-foreground"
-                          : (unreadCounts.get("ai-assistant") || 0) > 0
+                          : (unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0
                           ? "bg-primary/10 hover:bg-primary/20"
                           : "hover:bg-muted"
                       )}
                     >
                       <Bot className="h-4 w-4 flex-shrink-0" />
                       <span className={cn(
-                        (unreadCounts.get("ai-assistant") || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
+                        (unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
                       )}>lean</span>
                     </button>
                   </div>

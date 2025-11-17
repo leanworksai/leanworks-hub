@@ -1156,7 +1156,7 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
           'date', upd.date_id,
           'update', upd.update_text,
           'type', 'progress'
-        ) ORDER BY upd.timestamp DESC) FROM updates upd
+        ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd
         LEFT JOIN users u ON upd.user_id = u.email
         WHERE upd.project_id = p.id), '[]'::json) as progressUpdates,
         COALESCE((SELECT json_agg(json_build_object(
@@ -1502,7 +1502,7 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
             'update', upd.update_text,
             'type', 'progress'
           ) as update_data
-          FROM updates upd
+          FROM task_progress_updates upd
           LEFT JOIN users u ON upd.user_id = u.email
           WHERE upd.associated_tasks @> jsonb_build_array(t.id)
           ORDER BY upd.timestamp DESC
@@ -1747,7 +1747,7 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
           'date', CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END,
           'update', upd.update_text,
           'type', 'progress'
-        ) ORDER BY upd.timestamp DESC) FROM updates upd
+        ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd
         LEFT JOIN users u ON upd.user_id = u.email
         WHERE upd.associated_tasks @> $2::jsonb), '[]'::json) as progressUpdates
       FROM tasks t
@@ -2066,9 +2066,19 @@ app.get('/api/messages', authenticateUser, async (req, res) => {
 app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
   try {
     const domain = (req as any).userDomain;
+    const userEmail = (req as any).user?.email?.toLowerCase() || (req as any).userEmail?.toLowerCase();
     const chatId = decodeURIComponent(req.params.chatId);
     const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : undefined;
     const collectionPath = getCollectionPath('messages', domain);
+    
+    // For AI assistant conversations, ensure privacy by filtering by userId
+    // This provides an additional security layer even if chatId is somehow compromised
+    if (chatId.startsWith('ai-assistant-')) {
+      if (userEmail && !chatId.endsWith(`-${userEmail}`)) {
+        // User is trying to access another user's AI conversation - deny access
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
     
     let docs: any[] = [];
     try {
@@ -2076,6 +2086,11 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       let query = db.collection(collectionPath)
         .where('chatId', '==', chatId)
         .limit(100);
+      
+      // For AI assistant conversations, also filter by userId for privacy
+      if (chatId.startsWith('ai-assistant-') && userEmail) {
+        query = query.where('userId', '==', userEmail);
+      }
       
       const snapshot = await query.get();
       docs = Array.from(snapshot.docs);
@@ -2088,10 +2103,15 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           .limit(500) // Get more to filter
           .get();
         
-        // Filter by chatId in memory
+        // Filter by chatId in memory (and userId for AI assistant conversations)
         docs = Array.from(snapshot.docs).filter(doc => {
           const data = doc.data();
-          return data.chatId === chatId || (!data.chatId && chatId === 'general');
+          const matchesChatId = data.chatId === chatId || (!data.chatId && chatId === 'general');
+          // For AI assistant conversations, also check userId
+          if (chatId.startsWith('ai-assistant-') && userEmail) {
+            return matchesChatId && data.userId?.toLowerCase() === userEmail;
+          }
+          return matchesChatId;
         });
       } else {
         throw queryError;
@@ -2211,7 +2231,7 @@ app.get('/api/update-summaries', authenticateUser, async (req, res) => {
         us.date_id,
         us.update_summary,
         us.generated_at
-      FROM update_summaries us
+      FROM project_progress_updates us
     `;
     const params: any[] = [];
     
@@ -2286,7 +2306,7 @@ app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
           END,
           'U'
         ) as memberAvatar
-      FROM updates upd
+      FROM task_progress_updates upd
       LEFT JOIN users u ON upd.user_id = u.email
       WHERE upd.associated_tasks @> $1::jsonb
       ORDER BY upd.timestamp DESC

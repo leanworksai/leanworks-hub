@@ -464,7 +464,7 @@ export const messagesService = {
         import('firebase/firestore').then((firestore) => {
           const { collection, query, where, orderBy, onSnapshot } = firestore;
           
-          const userEmail = auth.currentUser?.email;
+          const userEmail = auth.currentUser?.email?.toLowerCase();
           if (!userEmail) {
             // Fallback to polling if no user
             return this.subscribeViaPolling(chatId, callback);
@@ -473,21 +473,42 @@ export const messagesService = {
           const domain = userEmail.split('@')[1]?.toLowerCase() || '';
           const messagesRef = collection(db, `domains/${domain}/messages`);
           
+          // For AI assistant conversations, filter by userId for privacy
+          const isAIAssistantChat = chatId.startsWith('ai-assistant-');
+          
           // Try to create query with orderBy, fallback if index doesn't exist
           let q;
           try {
-            q = query(
-              messagesRef,
-              where('chatId', '==', chatId),
-              orderBy('timestamp', 'asc')
-            );
+            if (isAIAssistantChat) {
+              // For AI assistant, filter by both chatId and userId for privacy
+              q = query(
+                messagesRef,
+                where('chatId', '==', chatId),
+                where('userId', '==', userEmail),
+                orderBy('timestamp', 'asc')
+              );
+            } else {
+              q = query(
+                messagesRef,
+                where('chatId', '==', chatId),
+                orderBy('timestamp', 'asc')
+              );
+            }
           } catch (error: any) {
             // If index error, query without orderBy
             if (error.code === 9 || error.message?.includes('index')) {
-              q = query(
-                messagesRef,
-                where('chatId', '==', chatId)
-              );
+              if (isAIAssistantChat) {
+                q = query(
+                  messagesRef,
+                  where('chatId', '==', chatId),
+                  where('userId', '==', userEmail)
+                );
+              } else {
+                q = query(
+                  messagesRef,
+                  where('chatId', '==', chatId)
+                );
+              }
             } else {
               throw error;
             }

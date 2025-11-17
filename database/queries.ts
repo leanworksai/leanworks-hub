@@ -305,12 +305,20 @@ export const projectQueries = {
           )
         ) FILTER (WHERE pm.user_email IS NOT NULL) as members,
         (SELECT json_agg(json_build_object(
-          'id', pu.id,
-          'memberName', pu.member_name,
-          'memberAvatar', pu.member_avatar,
-          'date', pu.date,
-          'update', pu.update_text
-        ) ORDER BY pu.date DESC) FROM project_progress_updates pu WHERE pu.project_id = p.id) as "progressUpdates",
+          'id', upd.update_id,
+          'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
+          'memberAvatar', COALESCE(
+            CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+              THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+              ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
+            END,
+            'U'
+          ),
+          'date', upd.date_id,
+          'update', upd.update_text
+        ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd 
+        LEFT JOIN users u ON upd.user_id = u.email
+        WHERE upd.project_id = p.id) as "progressUpdates",
         (SELECT json_agg(json_build_object(
           'id', pc.id,
           'memberName', pc.member_name,
@@ -615,11 +623,11 @@ export const updateSummaryQueries = {
   async getByProjectId(projectId: string, domain: string) {
     return queryOne(
       `SELECT project_id, date_id, update_summary 
-       FROM update_summaries 
-       WHERE project_id = $1 AND domain = $2 
+       FROM project_progress_updates 
+       WHERE project_id = $1 
        ORDER BY date_id DESC 
        LIMIT 1`,
-      [projectId, domain]
+      [projectId]
     );
   },
 
@@ -627,10 +635,9 @@ export const updateSummaryQueries = {
     const result = await queryMany(
       `SELECT DISTINCT ON (project_id) 
         project_id, date_id, update_summary 
-       FROM update_summaries 
-       WHERE domain = $1 
+       FROM project_progress_updates 
        ORDER BY project_id, date_id DESC`,
-      [domain]
+      []
     );
     
     // Convert to object format

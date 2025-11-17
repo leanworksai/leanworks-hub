@@ -205,8 +205,8 @@ CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 -- UPDATES TABLES
 -- ============================================================================
 
--- Updates table (replaces domains/{domain}/updates)
-CREATE TABLE IF NOT EXISTS updates (
+-- Task progress updates table (replaces domains/{domain}/updates)
+CREATE TABLE IF NOT EXISTS task_progress_updates (
   id SERIAL PRIMARY KEY,
   update_id VARCHAR(50) UNIQUE,
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE CASCADE,
@@ -218,13 +218,13 @@ CREATE TABLE IF NOT EXISTS updates (
   timestamp TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_updates_project ON updates(project_id);
-CREATE INDEX IF NOT EXISTS idx_updates_date ON updates(date_id);
-CREATE INDEX IF NOT EXISTS idx_updates_user ON updates(user_id);
-CREATE INDEX IF NOT EXISTS idx_updates_timestamp ON updates(timestamp);
+CREATE INDEX IF NOT EXISTS idx_task_progress_updates_project ON task_progress_updates(project_id);
+CREATE INDEX IF NOT EXISTS idx_task_progress_updates_date ON task_progress_updates(date_id);
+CREATE INDEX IF NOT EXISTS idx_task_progress_updates_user ON task_progress_updates(user_id);
+CREATE INDEX IF NOT EXISTS idx_task_progress_updates_timestamp ON task_progress_updates(timestamp);
 
--- Update summaries (replaces domains/{domain}/update_summaries)
-CREATE TABLE IF NOT EXISTS update_summaries (
+-- Project progress updates (replaces domains/{domain}/update_summaries)
+CREATE TABLE IF NOT EXISTS project_progress_updates (
   id SERIAL PRIMARY KEY,
   project_id VARCHAR(50) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   date_id DATE NOT NULL,
@@ -233,7 +233,7 @@ CREATE TABLE IF NOT EXISTS update_summaries (
   UNIQUE(project_id, date_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_update_summaries_project_date ON update_summaries(project_id, date_id);
+CREATE INDEX IF NOT EXISTS idx_project_progress_updates_project_date ON project_progress_updates(project_id, date_id);
 
 -- ============================================================================
 -- INTEGRATIONS TABLES

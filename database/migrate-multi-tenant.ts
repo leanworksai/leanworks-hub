@@ -48,8 +48,8 @@ async function dropAllTables(pool: Pool): Promise<void> {
     -- Drop tables in reverse dependency order
     DROP TABLE IF EXISTS github_installations CASCADE;
     DROP TABLE IF EXISTS integrations CASCADE;
-    DROP TABLE IF EXISTS update_summaries CASCADE;
-    DROP TABLE IF EXISTS updates CASCADE;
+    DROP TABLE IF EXISTS project_progress_updates CASCADE;
+    DROP TABLE IF EXISTS task_progress_updates CASCADE;
     DROP TABLE IF EXISTS task_comments CASCADE;
     DROP TABLE IF EXISTS task_teams CASCADE;
     DROP TABLE IF EXISTS tasks CASCADE;
@@ -466,7 +466,7 @@ async function migrateUpdatesForDomain(domain: string, pool: Pool) {
       }
       
       await pool.query(`
-        INSERT INTO updates (
+        INSERT INTO task_progress_updates (
           update_id, project_id, user_id, associated_tasks,
           date_id, reason, update_text, timestamp
         ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
@@ -511,7 +511,7 @@ async function migrateUpdateSummariesForDomain(domain: string, pool: Pool) {
       const summaryData = summaryDoc.data();
       
       await pool.query(`
-        INSERT INTO update_summaries (
+        INSERT INTO project_progress_updates (
           project_id, date_id, update_summary, generated_at
         ) VALUES ($1, $2, $3, $4)
         ON CONFLICT (project_id, date_id) DO UPDATE SET

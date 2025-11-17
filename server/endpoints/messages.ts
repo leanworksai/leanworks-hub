@@ -17,6 +17,7 @@ export function setupMessageEndpoints(
   app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
     try {
       const domain = (req as any).userDomain;
+      const userEmail = (req as any).user.email?.toLowerCase();
       const chatId = req.params.chatId;
       const afterTimestamp = req.query.afterTimestamp 
         ? new Date(req.query.afterTimestamp as string) 
@@ -24,6 +25,17 @@ export function setupMessageEndpoints(
       
       const messagesPath = `domains/${domain}/messages`;
       let query = db.collection(messagesPath).where('chatId', '==', chatId);
+      
+      // For AI assistant conversations, ensure privacy by filtering by userId
+      // This provides an additional security layer even if chatId is somehow compromised
+      if (chatId.startsWith('ai-assistant-')) {
+        if (userEmail && !chatId.endsWith(`-${userEmail}`)) {
+          // User is trying to access another user's AI conversation - deny access
+          return res.status(403).json({ error: 'Access denied' });
+        }
+        // Also filter by userId for additional security
+        query = query.where('userId', '==', userEmail);
+      }
       
       if (afterTimestamp) {
         query = query.where('timestamp', '>', afterTimestamp);

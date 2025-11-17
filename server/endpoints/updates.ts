@@ -47,10 +47,10 @@ export function setupUpdateEndpoints(
         `SELECT 
           id, update_id, project_id, user_id, associated_tasks,
           date_id, reason, update_text, timestamp
-         FROM updates
-         WHERE domain = $1 AND associated_tasks @> $2::jsonb
+         FROM task_progress_updates
+         WHERE associated_tasks @> $1::jsonb
          ORDER BY timestamp DESC`,
-        [domain, JSON.stringify([taskId])]
+        [JSON.stringify([taskId])]
       );
       
       res.json(updates.map(update => convertToFirestoreFormat(update)));
