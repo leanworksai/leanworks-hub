@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { getAvatarColor } from '@/lib/utils';
 
 interface UserProfile {
   email: string;
@@ -118,7 +119,7 @@ export default function Profile() {
         <CardHeader>
           <div className="flex items-center gap-4">
             <Avatar className="h-16 w-16">
-              <AvatarFallback className="bg-primary text-primary-foreground text-xl">
+              <AvatarFallback className={`${getAvatarColor(profile?.email || `${profile?.firstName}${profile?.lastName}`)} text-xl`}>
                 {getInitials(profile?.firstName, profile?.lastName)}
               </AvatarFallback>
             </Avatar>

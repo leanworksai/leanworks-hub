@@ -1,11 +1,12 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, Moon, Sun, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users } from "lucide-react";
+import { Bell, Search, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { Badge } from "./ui/badge";
 import { toast } from "./ui/sonner";
+import { getAvatarColor } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,7 +15,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
-import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
@@ -37,8 +37,6 @@ interface UserProfile {
 }
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
-  const { theme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const navigate = useNavigate();
   const { user, logout } = useAuth();
@@ -70,9 +68,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const pendingInvitationsCount = userInvitations.length;
   const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount;
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -227,18 +222,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                     Clear All ({totalSelections})
                   </Button>
                 )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                  aria-label="Toggle theme"
-                >
-                  {mounted && theme === "dark" ? (
-                    <Sun className="h-5 w-5" />
-                  ) : (
-                    <Moon className="h-5 w-5" />
-                  )}
-                </Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="relative">
@@ -279,7 +262,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                           >
                             <div className="flex items-start gap-3 mb-3">
                               <Avatar className="h-10 w-10 flex-shrink-0">
-                                <AvatarFallback className="bg-primary text-primary-foreground text-xs">
+                                <AvatarFallback className={`${getAvatarColor(invitation.inviterEmail || invitation.inviterName)} text-xs`}>
                                   {getUserInitials(invitation.inviterName, invitation.inviterEmail)}
                                 </AvatarFallback>
                               </Avatar>
@@ -339,7 +322,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                           >
                             <div className="flex items-start gap-3 mb-3">
                               <Avatar className="h-10 w-10 flex-shrink-0">
-                                <AvatarFallback className="bg-primary text-primary-foreground text-xs">
+                                <AvatarFallback className={`${getAvatarColor(request.userEmail || request.userName)} text-xs`}>
                                   {getUserInitials(request.userName, request.userEmail)}
                                 </AvatarFallback>
                               </Avatar>
@@ -398,7 +381,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" className="relative h-10 w-10 rounded-full">
                       <Avatar>
-                        <AvatarFallback className="bg-primary text-primary-foreground">
+                        <AvatarFallback className={getAvatarColor(userProfile?.email || `${userProfile?.firstName}${userProfile?.lastName}`)}>
                           {getInitials(userProfile?.firstName, userProfile?.lastName)}
                         </AvatarFallback>
                       </Avatar>

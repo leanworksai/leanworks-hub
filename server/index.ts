@@ -2191,21 +2191,75 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
     
     const docRef = await db.collection(collectionPath).add(messageData);
     
+    // Return response in format expected by frontend: { success: true, messageId, message: {...} }
     res.status(201).json({ 
-      id: docRef.id,
-      chatId: messageData.chatId,
-      role: messageData.role,
-      content: messageData.content,
-      timestamp: new Date(messageData.timestamp).toISOString(),
-      userId: messageData.userId,
-      projectId: messageData.projectId || null,
-      teamId: messageData.teamId || null,
-      memberName: messageData.memberName || null,
-      memberAvatar: messageData.memberAvatar || null
+      success: true,
+      messageId: docRef.id,
+      message: {
+        id: docRef.id,
+        chatId: messageData.chatId,
+        role: messageData.role,
+        content: messageData.content,
+        timestamp: new Date(messageData.timestamp).toISOString(),
+        userId: messageData.userId,
+        projectId: messageData.projectId || null,
+        teamId: messageData.teamId || null,
+        memberName: messageData.memberName || null,
+        memberAvatar: messageData.memberAvatar || null
+      }
     });
   } catch (error) {
     console.error('Create message error:', error);
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// ASK API KEY ENDPOINT (Secret Manager)
+// ============================================================================
+
+// Cache for API key to avoid repeated Secret Manager calls
+let cachedApiKey: string | null = null;
+let apiKeyCacheTime: number = 0;
+const API_KEY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getApiKeyFromSecretManager(): Promise<string> {
+  // Return cached key if still valid
+  if (cachedApiKey && Date.now() - apiKeyCacheTime < API_KEY_CACHE_TTL) {
+    return cachedApiKey;
+  }
+
+  try {
+    const projectId = serviceAccount.project_id;
+    const secretName = `projects/${projectId}/secrets/api-key/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
+    const apiKey = version.payload?.data?.toString() || '';
+    
+    if (apiKey) {
+      cachedApiKey = apiKey;
+      apiKeyCacheTime = Date.now();
+      console.log('✅ API key fetched from Secret Manager');
+      return apiKey;
+    } else {
+      throw new Error('API key is empty');
+    }
+  } catch (error) {
+    console.error('❌ Failed to fetch API key from Secret Manager:', error);
+    // Fallback to environment variable for local development
+    const fallbackKey = process.env.ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+    console.log('⚠️ Using fallback API key from environment variable');
+    return fallbackKey;
+  }
+}
+
+// Endpoint to get API key for local development
+app.get('/api/ask-api-key', authenticateUser, async (req, res) => {
+  try {
+    const apiKey = await getApiKeyFromSecretManager();
+    res.json({ apiKey });
+  } catch (error) {
+    console.error('Error fetching API key:', error);
+    res.status(500).json({ error: 'Failed to fetch API key' });
   }
 });
 

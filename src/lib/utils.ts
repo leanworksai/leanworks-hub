@@ -43,3 +43,37 @@ export function getUserById(users: User[], assigneeId?: string): User | undefine
   if (!assigneeId) return undefined;
   return users.find(user => user.email.toLowerCase() === assigneeId.toLowerCase());
 }
+
+/**
+ * Get avatar color class based on user identifier
+ * Returns consistent colors for the same user
+ */
+export function getAvatarColor(identifier?: string | null): string {
+  if (!identifier) {
+    return "bg-primary text-primary-foreground";
+  }
+
+  // Create a simple hash from the identifier
+  let hash = 0;
+  const str = identifier.toLowerCase();
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+
+  // Use absolute value and modulo to get a consistent index
+  const colorIndex = Math.abs(hash) % 8;
+
+  // Color palette - using vibrant but not too bright colors
+  const colors = [
+    "bg-blue-500 text-white",
+    "bg-green-500 text-white",
+    "bg-purple-500 text-white",
+    "bg-pink-500 text-white",
+    "bg-orange-500 text-white",
+    "bg-teal-500 text-white",
+    "bg-indigo-500 text-white",
+    "bg-red-500 text-white",
+  ];
+
+  return colors[colorIndex];
+}

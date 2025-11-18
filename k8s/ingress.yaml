@@ -18,6 +18,37 @@ spec:
   - host: hub.leanworks.ai
     http:
       paths:
+      # Leanworks-app API endpoints (must come before catch-all)
+      - path: /api/ask
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      - path: /api/verify
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      - path: /api/cache/clear
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      # Legacy /ask path for backward compatibility
+      - path: /ask
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      # All other paths (including leanworks-hub /api/* routes) go to frontend
       - path: /
         pathType: Prefix
         backend:

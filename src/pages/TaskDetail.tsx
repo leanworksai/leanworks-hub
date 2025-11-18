@@ -96,15 +96,15 @@ const getStatusIcon = (status: Task["status"]) => {
 const getStatusColor = (status: Task["status"]) => {
   switch (status) {
     case "completed":
-      return "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20";
+      return "bg-green-500/10 text-green-700  border-green-500/20";
     case "in-progress":
-      return "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20";
+      return "bg-blue-500/10 text-blue-700  border-blue-500/20";
     case "review":
-      return "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400 border-yellow-500/20";
+      return "bg-yellow-500/10 text-yellow-700  border-yellow-500/20";
     case "blocked":
-      return "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20";
+      return "bg-red-500/10 text-red-700  border-red-500/20";
     default:
-      return "bg-gray-500/10 text-gray-700 dark:text-gray-400 border-gray-500/20";
+      return "bg-gray-500/10 text-gray-700  border-gray-500/20";
   }
 };
 
@@ -137,13 +137,13 @@ const getUpdateTypeIcon = (type?: string) => {
 const getUpdateTypeColor = (type?: string) => {
   switch (type) {
     case "milestone":
-      return "bg-purple-500/10 text-purple-700 dark:text-purple-400 border-purple-500/20";
+      return "bg-purple-500/10 text-purple-700  border-purple-500/20";
     case "blocker":
-      return "bg-red-500/10 text-red-700 dark:text-red-400 border-red-500/20";
+      return "bg-red-500/10 text-red-700  border-red-500/20";
     case "question":
-      return "bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20";
+      return "bg-blue-500/10 text-blue-700  border-blue-500/20";
     default:
-      return "bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20";
+      return "bg-green-500/10 text-green-700  border-green-500/20";
   }
 };
 
@@ -483,8 +483,7 @@ export default function TaskDetail() {
               size="sm"
               onClick={() => setShowDeleteDialog(true)}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
-              Delete Task
+              <Trash2 className="h-4 w-4" />
             </Button>
           </div>
         </div>
@@ -935,7 +934,7 @@ export default function TaskDetail() {
                                 )}
                                 {activity.type === "comment" && (
                                   <Badge 
-                                    className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"
+                                    className="bg-blue-500/10 text-blue-700  border-blue-500/20 text-xs flex items-center gap-1"
                                     variant="outline"
                                   >
                                     <MessageSquare className="h-3 w-3" />

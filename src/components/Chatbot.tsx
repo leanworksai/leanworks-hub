@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign } from "lucide-react";
 import { cn, getUserById, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
@@ -13,6 +13,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Project } from "@/data/projectsData";
+import { Task } from "@/data/tasksData";
+import { Team } from "@/data/teamsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
@@ -27,6 +29,11 @@ interface Message {
   content: string;
   timestamp: Date;
   userId?: string;
+  citedContext?: {
+    projects?: Project[];
+    tasks?: Task[];
+    teams?: Team[];
+  };
 }
 
 interface TeamMember {
@@ -78,9 +85,9 @@ const isAIAssistantChatId = (chatId: string): boolean => {
 };
 
 export function Chatbot() {
-  const { selectedProjects } = useSelectedProjects();
-  const { selectedTasks } = useSelectedTasks();
-  const { selectedTeams } = useSelectedTeams();
+  const { selectedProjects, clearSelection: clearSelectedProjects } = useSelectedProjects();
+  const { selectedTasks, clearSelection: clearSelectedTasks } = useSelectedTasks();
+  const { selectedTeams, clearSelection: clearSelectedTeams } = useSelectedTeams();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
@@ -368,11 +375,12 @@ export function Chatbot() {
     isTeam: boolean = false
   ): ChannelMessage[] => {
     // Filter incoming messages for this project or team
+    // Include both user messages and assistant messages (lean's responses)
     const channelMessages = incoming.filter(msg => {
       if (isTeam) {
-        return msg.role === 'user' && msg.teamId === projectIdOrTeamId;
+        return (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === projectIdOrTeamId;
       } else {
-        return msg.role === 'user' && msg.projectId === projectIdOrTeamId;
+        return (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === projectIdOrTeamId;
       }
     });
 
@@ -403,14 +411,14 @@ export function Chatbot() {
           // Update with incoming message
           existingMap.set(incomingId, {
             id: incomingId,
-            memberName: incomingMsg.memberName || 'You',
-            memberAvatar: incomingMsg.memberAvatar || 'U',
+            memberName: incomingMsg.memberName || (incomingMsg.role === 'assistant' ? 'lean' : 'You'),
+            memberAvatar: incomingMsg.memberAvatar || (incomingMsg.role === 'assistant' ? 'AI' : 'U'),
             content: incomingMsg.content,
             timestamp: incomingMsg.timestamp instanceof Date 
               ? incomingMsg.timestamp 
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
-            userId: incomingMsg.userId,
+            userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
           });
         }
       } else {
@@ -439,27 +447,27 @@ export function Chatbot() {
           existingMap.delete(matchedOptimistic.id);
           existingMap.set(incomingId, {
             id: incomingId,
-            memberName: incomingMsg.memberName || 'You',
-            memberAvatar: incomingMsg.memberAvatar || 'U',
+            memberName: incomingMsg.memberName || (incomingMsg.role === 'assistant' ? 'lean' : 'You'),
+            memberAvatar: incomingMsg.memberAvatar || (incomingMsg.role === 'assistant' ? 'AI' : 'U'),
             content: incomingMsg.content,
             timestamp: incomingMsg.timestamp instanceof Date 
               ? incomingMsg.timestamp 
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
-            userId: incomingMsg.userId,
+            userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
           });
         } else {
           // New message, add it
           existingMap.set(incomingId, {
             id: incomingId,
-            memberName: incomingMsg.memberName || 'You',
-            memberAvatar: incomingMsg.memberAvatar || 'U',
+            memberName: incomingMsg.memberName || (incomingMsg.role === 'assistant' ? 'lean' : 'You'),
+            memberAvatar: incomingMsg.memberAvatar || (incomingMsg.role === 'assistant' ? 'AI' : 'U'),
             content: incomingMsg.content,
             timestamp: incomingMsg.timestamp instanceof Date 
               ? incomingMsg.timestamp 
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
-            userId: incomingMsg.userId,
+            userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
           });
         }
       }
@@ -1345,15 +1353,15 @@ export function Chatbot() {
       setIsLoadingMessages(false);
       if (isProjectChannel && selectedProjectId) {
         const cachedChannelMsgs: ChannelMessage[] = cached.messages
-          .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
+          .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
           .map(msg => ({
             id: msg.id,
-            memberName: msg.memberName || 'You',
-            memberAvatar: msg.memberAvatar || 'U',
+            memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
+            memberAvatar: msg.memberAvatar || (msg.role === 'assistant' ? 'AI' : 'U'),
             content: msg.content,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             projectId: msg.projectId || selectedProjectId,
-            userId: msg.userId,
+            userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
           }));
         
         setChannelMessages((prev) => {
@@ -1363,15 +1371,15 @@ export function Chatbot() {
         });
       } else if (isTeamChannel && selectedTeamId) {
         const cachedChannelMsgs: ChannelMessage[] = cached.messages
-          .filter(msg => msg.role === 'user' && msg.teamId === selectedTeamId)
+          .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
           .map(msg => ({
             id: msg.id,
-            memberName: msg.memberName || 'You',
-            memberAvatar: msg.memberAvatar || 'U',
+            memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
+            memberAvatar: msg.memberAvatar || (msg.role === 'assistant' ? 'AI' : 'U'),
             content: msg.content,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             teamId: msg.teamId || selectedTeamId,
-            userId: msg.userId,
+            userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
           }));
         
         setChannelMessages((prev) => {
@@ -1467,15 +1475,15 @@ export function Chatbot() {
           });
           
           const channelMsgs: ChannelMessage[] = allMessages
-            .filter(msg => msg.role === 'user' && msg.projectId === selectedProjectId)
+            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
             .map(msg => ({
               id: msg.id,
-              memberName: msg.memberName || 'You',
-              memberAvatar: msg.memberAvatar || 'U',
+              memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
+              memberAvatar: msg.memberAvatar || (msg.role === 'assistant' ? 'AI' : 'U'),
               content: msg.content,
               timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
               projectId: msg.projectId || selectedProjectId,
-              userId: msg.userId,
+              userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
             }));
           
           // Only update state if it's initial load (state is empty)
@@ -1530,17 +1538,17 @@ export function Chatbot() {
           return aTime - bTime;
         });
         
-        const channelMsgs: ChannelMessage[] = allMessages
-          .filter(msg => msg.role === 'user' && msg.teamId === selectedTeamId)
-          .map(msg => ({
-            id: msg.id,
-            memberName: msg.memberName || 'You',
-            memberAvatar: msg.memberAvatar || 'U',
-            content: msg.content,
-            timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
-            teamId: msg.teamId || selectedTeamId,
-            userId: msg.userId,
-          }));
+          const channelMsgs: ChannelMessage[] = allMessages
+            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
+            .map(msg => ({
+              id: msg.id,
+              memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
+              memberAvatar: msg.memberAvatar || (msg.role === 'assistant' ? 'AI' : 'U'),
+              content: msg.content,
+              timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+              teamId: msg.teamId || selectedTeamId,
+              userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+            }));
         
         // Only update state if it's initial load (state is empty)
         // Otherwise, real-time listener will handle updates
@@ -1974,154 +1982,308 @@ export function Chatbot() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages, allChatCaches]);
 
-  const generateResponse = async (userMessage: string): Promise<string> => {
-    // Simulate API call delay
-    await new Promise((resolve) => setTimeout(resolve, 1000 + Math.random() * 1000));
+  // Check if "lean" is mentioned in a message
+  const isLeanMentioned = useCallback((message: string): boolean => {
+    const mentionRegex = /@lean\b/i;
+    return mentionRegex.test(message);
+  }, []);
 
-    const lowerMessage = userMessage.toLowerCase();
+  // Extract query from message, removing @lean mention
+  const extractQueryFromMessage = useCallback((message: string): string => {
+    // Remove @lean mentions (case-insensitive)
+    return message.replace(/@lean\b/gi, '').trim();
+  }, []);
 
-    // Build context from selected projects
-    let contextInfo = "";
-    if (selectedProjects.length > 0) {
-      contextInfo = "\n\n[Context - Selected Projects:]\n";
-      selectedProjects.forEach((project) => {
-        contextInfo += `- ${project.name}: ${project.description}\n`;
-        contextInfo += `  Status: ${project.status}, Due: ${project.dueDate}\n`;
-        contextInfo += `  Team: ${project.team} members\n`;
-        contextInfo += `  Summary: ${project.summary.accomplishment}\n`;
-        contextInfo += `  Tasks: ${project.tasks.length} total (${project.tasks.filter(t => t.status === "completed").length} completed, ${project.tasks.filter(t => t.status === "in-progress").length} in progress)\n`;
-      });
+  // Generate AI response for channel mentions
+  const generateChannelAIResponse = async (
+    query: string,
+    chatId: string,
+    channelContext?: { type: 'project' | 'team'; id: string; name: string; description?: string }
+  ): Promise<string> => {
+    if (!user?.email) {
+      throw new Error('User must be authenticated to use AI assistant');
     }
 
-    // Build context from selected tasks
-    let tasksContextInfo = "";
-    if (selectedTasks.length > 0) {
-      tasksContextInfo = "\n\n[Context - Selected Tasks:]\n";
-      selectedTasks.forEach((task) => {
-        const assigneeName = task.assignee || "Unassigned";
-        tasksContextInfo += `- ${task.title}: ${task.description}\n`;
-        tasksContextInfo += `  Status: ${task.status}, Priority: ${task.priority}\n`;
-        tasksContextInfo += `  Assignee: ${assigneeName}, Due: ${task.dueDate}\n`;
-        tasksContextInfo += `  Project: ${task.project}\n`;
-        tasksContextInfo += `  Progress Updates: ${task.progressUpdates.length}\n`;
-      });
+    const isLocalDev = import.meta.env.DEV;
+    const customToken = (window as any).__customToken;
+    if (!isLocalDev && !customToken) {
+      throw new Error('Authentication token not found. Please sign in again.');
     }
 
-    // Build context from selected teams
-    let teamsContextInfo = "";
-    if (selectedTeams.length > 0) {
-      teamsContextInfo = "\n\n[Context - Selected Teams:]\n";
-      selectedTeams.forEach((team) => {
-        teamsContextInfo += `- ${team.name}: ${team.description}\n`;
-        teamsContextInfo += `  Members: ${team.members}, Projects: ${team.projects}\n`;
-      });
-    }
+    // Build context from channel and selected items
+    let citedContext = "";
+    const contextParts: string[] = [];
 
-    // Simple response logic - can be replaced with actual AI API
-    if (lowerMessage.includes("hello") || lowerMessage.includes("hi") || lowerMessage.includes("hey")) {
-      let greeting = "Hello! I'm here to help you with any questions about your projects, tasks, or team. What would you like to know?";
-      if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) {
-        const parts = [];
-        if (selectedProjects.length > 0) {
-          parts.push(`${selectedProjects.length} project(s): ${selectedProjects.map(p => p.name).join(", ")}`);
+    // Add channel context
+    if (channelContext) {
+      if (channelContext.type === 'project') {
+        contextParts.push(`Channel Context: Project Channel - ${channelContext.name}`);
+        if (channelContext.description) {
+          contextParts.push(`Project Description: ${channelContext.description}`);
         }
-        if (selectedTasks.length > 0) {
-          parts.push(`${selectedTasks.length} task(s): ${selectedTasks.map(t => t.title).join(", ")}`);
+      } else if (channelContext.type === 'team') {
+        contextParts.push(`Channel Context: Team Channel - ${channelContext.name}`);
+        if (channelContext.description) {
+          contextParts.push(`Team Description: ${channelContext.description}`);
         }
-        if (selectedTeams.length > 0) {
-          parts.push(`${selectedTeams.length} team(s): ${selectedTeams.map(t => t.name).join(", ")}`);
-        }
-        greeting += `\n\nI can see you have ${parts.join(" and ")} selected. Feel free to ask me anything about them!`;
       }
-      return greeting;
     }
 
-    if (lowerMessage.includes("project")) {
-      let response = "I can help you with project-related questions. You can view all your projects on the Projects page, and see detailed information including tasks, team members, and progress updates for each project.";
-      if (selectedProjects.length > 0) {
-        response += contextInfo;
-        response += "\nYou can ask me specific questions about any of these selected projects!";
-      }
-      return response;
-    }
-
-    if (lowerMessage.includes("task")) {
-      let response = "Tasks are displayed on the Tasks page where you can see all tasks with their progress updates. Each task shows status, priority, assignee, and a timeline of progress updates. You can filter tasks by status or priority.";
-      if (selectedTasks.length > 0) {
-        response += tasksContextInfo;
-        response += "\nI can provide details about any of these selected tasks!";
-      } else if (selectedProjects.length > 0) {
-        response += contextInfo;
-        response += "\nI can provide details about tasks in your selected projects!";
-      }
-      return response;
-    }
-
-    if (lowerMessage.includes("team")) {
-      let response = "Teams are managed on the Teams page. You can see team members, their roles, and team details. Teams are associated with projects and help organize collaboration.";
-      if (selectedTeams.length > 0) {
-        response += teamsContextInfo;
-        response += "\nI can provide details about any of these selected teams!";
-      } else if (selectedProjects.length > 0) {
-        response += contextInfo;
-        response += "\nI can tell you about the teams working on your selected projects!";
-      }
-      return response;
-    }
-
-    if (lowerMessage.includes("help") || lowerMessage.includes("what can you do")) {
-      let response = "I can help you with:\n• Questions about projects and their status\n• Information about tasks and progress\n• Team and collaboration queries\n• General navigation and feature questions\n\nJust ask me anything!";
-      if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) {
-        if (selectedProjects.length > 0) {
-          response += contextInfo;
-        }
-        if (selectedTasks.length > 0) {
-          response += tasksContextInfo;
-        }
-        if (selectedTeams.length > 0) {
-          response += teamsContextInfo;
-        }
-        response += "\n\nI have context about your selected items, so I can provide more specific answers!";
-      }
-      return response;
-    }
-
-    if (lowerMessage.includes("status") || lowerMessage.includes("progress")) {
-      let response = "You can check project status on the Projects page, and task progress on the Tasks page. Each task shows detailed progress updates in a timeline format, making it easy to track what's happening.";
-      if (selectedTasks.length > 0) {
-        response += tasksContextInfo;
-        response += "\nAsk me about the status or progress of any selected task!";
-      } else if (selectedProjects.length > 0) {
-        response += contextInfo;
-        response += "\nAsk me about the status or progress of any selected project!";
-      }
-      return response;
-    }
-
-    if (lowerMessage.includes("due date") || lowerMessage.includes("deadline")) {
-      let response = "Due dates are displayed for both projects and tasks. On the Projects page, you'll see project due dates. On the Tasks page, each task shows its due date along with other details.";
-      if (selectedProjects.length > 0) {
-        response += contextInfo;
-        response += "\nI can tell you about the deadlines for your selected projects!";
-      }
-      return response;
-    }
-
-    // Default response with context
-    let defaultResponse = `I understand you're asking about "${userMessage}". While I'm a helpful assistant, I'm currently set up to answer questions about your projects, tasks, teams, and general navigation. Could you rephrase your question, or would you like to know more about a specific feature?`;
+    // Add selected projects, tasks, and teams if any
     if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) {
       if (selectedProjects.length > 0) {
-        defaultResponse += contextInfo;
+        contextParts.push("Selected Projects:");
+        selectedProjects.forEach((project) => {
+          contextParts.push(`- ${project.name} (ID: ${project.id}): ${project.description}`);
+          contextParts.push(`  Status: ${project.status}, Due: ${project.dueDate}`);
+          contextParts.push(`  Team: ${project.team} members`);
+          contextParts.push(`  Summary: ${project.summary.accomplishment}`);
+          contextParts.push(`  Tasks: ${project.tasks.length} total (${project.tasks.filter(t => t.status === "completed").length} completed, ${project.tasks.filter(t => t.status === "in-progress").length} in progress)`);
+        });
       }
+
       if (selectedTasks.length > 0) {
-        defaultResponse += tasksContextInfo;
+        contextParts.push("Selected Tasks:");
+        selectedTasks.forEach((task) => {
+          const assigneeName = task.assignee || "Unassigned";
+          contextParts.push(`- ${task.title} (ID: ${task.id}): ${task.description}`);
+          contextParts.push(`  Status: ${task.status}, Priority: ${task.priority}`);
+          contextParts.push(`  Assignee: ${assigneeName}, Due: ${task.dueDate}`);
+          contextParts.push(`  Project: ${task.project}`);
+          contextParts.push(`  Progress Updates: ${task.progressUpdates.length}`);
+        });
       }
+
       if (selectedTeams.length > 0) {
-        defaultResponse += teamsContextInfo;
+        contextParts.push("Selected Teams:");
+        selectedTeams.forEach((team) => {
+          contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
+          contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
+        });
       }
-      defaultResponse += "\n\nI have information about your selected items that might help answer your question!";
     }
-    return defaultResponse;
+
+    if (contextParts.length > 0) {
+      citedContext = contextParts.join("\n");
+    }
+
+    // Determine API base URL and authentication method
+    const API_BASE = isLocalDev ? 'http://0.0.0.0:8081' : '';
+    const apiUrl = `${API_BASE}/api/ask`;
+
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (isLocalDev) {
+      try {
+        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
+        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${customToken || ''}`,
+          },
+        });
+
+        if (!apiKeyResponse.ok) {
+          throw new Error('Failed to fetch API key from backend');
+        }
+
+        const apiKeyData = await apiKeyResponse.json();
+        headers['X-API-Key'] = apiKeyData.apiKey;
+      } catch (error) {
+        console.error('Failed to fetch API key from backend, using fallback:', error);
+        const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+        headers['X-API-Key'] = fallbackKey;
+      }
+    } else {
+      headers['Authorization'] = `Bearer ${customToken}`;
+    }
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          user_id: user.email.toLowerCase(),
+          query: query,
+          session_id: chatId,
+          cited_context: citedContext || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status} ${response.statusText}` }));
+        throw new Error(errorData.error || `API request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Handle different possible response formats
+      if (typeof data === 'string') {
+        return data;
+      } else if (data.content) {
+        return data.content;
+      } else if (data.response) {
+        return data.response;
+      } else if (data.text) {
+        return data.text;
+      } else {
+        console.warn('Unexpected API response format:', data);
+        return JSON.stringify(data);
+      }
+    } catch (error) {
+      console.error('Error calling ask API:', error);
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to generate response. Please try again.');
+    }
+  };
+
+  const generateResponse = async (userMessage: string, chatId: string): Promise<string> => {
+    if (!user?.email) {
+      throw new Error('User must be authenticated to use AI assistant');
+    }
+
+    const isLocalDev = import.meta.env.DEV;
+    
+    // Get authentication token (only required for production)
+    const customToken = (window as any).__customToken;
+    if (!isLocalDev && !customToken) {
+      throw new Error('Authentication token not found. Please sign in again.');
+    }
+
+    // Build context from selected projects, tasks, and teams for cited_context
+    let citedContext = "";
+    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) {
+      const contextParts: string[] = [];
+      
+      if (selectedProjects.length > 0) {
+        contextParts.push("Selected Projects:");
+        selectedProjects.forEach((project) => {
+          contextParts.push(`- ${project.name} (ID: ${project.id}): ${project.description}`);
+          contextParts.push(`  Status: ${project.status}, Due: ${project.dueDate}`);
+          contextParts.push(`  Team: ${project.team} members`);
+          contextParts.push(`  Summary: ${project.summary.accomplishment}`);
+          contextParts.push(`  Tasks: ${project.tasks.length} total (${project.tasks.filter(t => t.status === "completed").length} completed, ${project.tasks.filter(t => t.status === "in-progress").length} in progress)`);
+        });
+      }
+
+      if (selectedTasks.length > 0) {
+        contextParts.push("Selected Tasks:");
+        selectedTasks.forEach((task) => {
+          const assigneeName = task.assignee || "Unassigned";
+          contextParts.push(`- ${task.title} (ID: ${task.id}): ${task.description}`);
+          contextParts.push(`  Status: ${task.status}, Priority: ${task.priority}`);
+          contextParts.push(`  Assignee: ${assigneeName}, Due: ${task.dueDate}`);
+          contextParts.push(`  Project: ${task.project}`);
+          contextParts.push(`  Progress Updates: ${task.progressUpdates.length}`);
+        });
+      }
+
+      if (selectedTeams.length > 0) {
+        contextParts.push("Selected Teams:");
+        selectedTeams.forEach((team) => {
+          contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
+          contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
+        });
+      }
+
+      citedContext = contextParts.join("\n");
+    }
+
+    // Determine API base URL and authentication method
+    // For local dev, use the ask API endpoint directly (http://0.0.0.0:8081)
+    // For production, use relative path (will be proxied through ingress)
+    const API_BASE = isLocalDev ? 'http://0.0.0.0:8081' : '';
+    const apiUrl = `${API_BASE}/api/ask`;
+
+    // Prepare headers - use X-API-Key for local dev, Bearer token for production
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (isLocalDev) {
+      // For local development, fetch API key from backend Secret Manager
+      try {
+        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
+        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${customToken || ''}`,
+          },
+        });
+
+        if (!apiKeyResponse.ok) {
+          throw new Error('Failed to fetch API key from backend');
+        }
+
+        const apiKeyData = await apiKeyResponse.json();
+        headers['X-API-Key'] = apiKeyData.apiKey;
+      } catch (error) {
+        console.error('Failed to fetch API key from backend, using fallback:', error);
+        // Fallback to environment variable or default for local dev
+        const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+        headers['X-API-Key'] = fallbackKey;
+      }
+    } else {
+      // For production, use Bearer token
+      headers['Authorization'] = `Bearer ${customToken}`;
+    }
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          user_id: user.email.toLowerCase(),
+          query: userMessage,
+          session_id: chatId, // Use chatId as session_id for conversation continuity
+          cited_context: citedContext || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status} ${response.statusText}` }));
+        throw new Error(errorData.error || `API request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Extract response content from API response
+      // The API returns an object with 'content' field based on the leanworks-app implementation
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Handle different possible response formats
+      if (typeof data === 'string') {
+        return data;
+      } else if (data.content) {
+        return data.content;
+      } else if (data.response) {
+        return data.response;
+      } else if (data.text) {
+        return data.text;
+      } else {
+        // Fallback: try to stringify the response
+        console.warn('Unexpected API response format:', data);
+        return JSON.stringify(data);
+      }
+    } catch (error) {
+      console.error('Error calling ask API:', error);
+      // Return a user-friendly error message
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to generate response. Please try again.');
+    }
   };
 
   const handleSend = async () => {
@@ -2200,6 +2362,85 @@ export function Chatbot() {
           return newMap;
         });
         setIsSendingMessage(false);
+
+        // Check if lean is mentioned and generate AI response
+        if (isLeanMentioned(messageContent)) {
+          const query = extractQueryFromMessage(messageContent);
+          if (query) {
+            // Generate AI response asynchronously (don't block UI)
+            generateChannelAIResponse(
+              query,
+              selectedMember,
+              selectedProject ? {
+                type: 'project',
+                id: selectedProject.id,
+                name: selectedProject.name,
+                description: selectedProject.description,
+              } : undefined
+            ).then((aiResponse) => {
+              // Create AI assistant message for the channel
+              const aiChannelMessage: ChannelMessage = {
+                id: `temp-ai-${Date.now()}`,
+                memberName: "lean",
+                memberAvatar: "AI",
+                content: aiResponse,
+                timestamp: new Date(),
+                projectId: selectedProjectId,
+                userId: "ai-assistant",
+              };
+
+              // Add AI message to state
+              setChannelMessages((prev) => {
+                const projectMessages = prev.get(selectedProjectId) || [];
+                const newMap = new Map(prev);
+                newMap.set(selectedProjectId, [...projectMessages, aiChannelMessage]);
+                return newMap;
+              });
+
+              // Save AI response to Firestore
+              messagesService.create({
+                chatId: selectedMember,
+                role: 'assistant',
+                content: aiResponse,
+                projectId: selectedProjectId,
+                memberName: "lean",
+                memberAvatar: "AI",
+              }).then((savedAIMessage) => {
+                const savedAIChannelMessage: ChannelMessage = {
+                  id: savedAIMessage.id,
+                  memberName: savedAIMessage.memberName || "lean",
+                  memberAvatar: savedAIMessage.memberAvatar || "AI",
+                  content: savedAIMessage.content,
+                  timestamp: savedAIMessage.timestamp instanceof Date ? savedAIMessage.timestamp : new Date(savedAIMessage.timestamp),
+                  projectId: selectedProjectId,
+                  userId: savedAIMessage.userId || "ai-assistant",
+                };
+
+                // Update AI message in state with saved data
+                setChannelMessages((prev) => {
+                  const projectMessages = prev.get(selectedProjectId) || [];
+                  const newMap = new Map(prev);
+                  const updatedMessages = projectMessages.map(msg => 
+                    msg.id === aiChannelMessage.id ? savedAIChannelMessage : msg
+                  );
+                  newMap.set(selectedProjectId, updatedMessages);
+                  return newMap;
+                });
+              }).catch((error) => {
+                console.error('Failed to save AI channel message:', error);
+                // Remove optimistic AI message if save failed
+                setChannelMessages((prev) => {
+                  const projectMessages = prev.get(selectedProjectId) || [];
+                  const newMap = new Map(prev);
+                  newMap.set(selectedProjectId, projectMessages.filter(msg => msg.id !== aiChannelMessage.id));
+                  return newMap;
+                });
+              });
+            }).catch((error) => {
+              console.error('Failed to generate AI response for channel:', error);
+            });
+          }
+        }
       } catch (error) {
         console.error('Failed to save channel message:', error);
         // Remove the optimistic message if save failed
@@ -2285,6 +2526,85 @@ export function Chatbot() {
           return newMap;
         });
         setIsSendingMessage(false);
+
+        // Check if lean is mentioned and generate AI response
+        if (isLeanMentioned(messageContent)) {
+          const query = extractQueryFromMessage(messageContent);
+          if (query) {
+            // Generate AI response asynchronously (don't block UI)
+            generateChannelAIResponse(
+              query,
+              selectedMember,
+              selectedTeam ? {
+                type: 'team',
+                id: selectedTeam.id,
+                name: selectedTeam.name,
+                description: selectedTeam.description,
+              } : undefined
+            ).then((aiResponse) => {
+              // Create AI assistant message for the channel
+              const aiChannelMessage: ChannelMessage = {
+                id: `temp-ai-${Date.now()}`,
+                memberName: "lean",
+                memberAvatar: "AI",
+                content: aiResponse,
+                timestamp: new Date(),
+                teamId: selectedTeamId,
+                userId: "ai-assistant",
+              };
+
+              // Add AI message to state
+              setChannelMessages((prev) => {
+                const teamMessages = prev.get(selectedTeamId) || [];
+                const newMap = new Map(prev);
+                newMap.set(selectedTeamId, [...teamMessages, aiChannelMessage]);
+                return newMap;
+              });
+
+              // Save AI response to Firestore
+              messagesService.create({
+                chatId: selectedMember,
+                role: 'assistant',
+                content: aiResponse,
+                teamId: selectedTeamId,
+                memberName: "lean",
+                memberAvatar: "AI",
+              }).then((savedAIMessage) => {
+                const savedAIChannelMessage: ChannelMessage = {
+                  id: savedAIMessage.id,
+                  memberName: savedAIMessage.memberName || "lean",
+                  memberAvatar: savedAIMessage.memberAvatar || "AI",
+                  content: savedAIMessage.content,
+                  timestamp: savedAIMessage.timestamp instanceof Date ? savedAIMessage.timestamp : new Date(savedAIMessage.timestamp),
+                  teamId: selectedTeamId,
+                  userId: savedAIMessage.userId || "ai-assistant",
+                };
+
+                // Update AI message in state with saved data
+                setChannelMessages((prev) => {
+                  const teamMessages = prev.get(selectedTeamId) || [];
+                  const newMap = new Map(prev);
+                  const updatedMessages = teamMessages.map(msg => 
+                    msg.id === aiChannelMessage.id ? savedAIChannelMessage : msg
+                  );
+                  newMap.set(selectedTeamId, updatedMessages);
+                  return newMap;
+                });
+              }).catch((error) => {
+                console.error('Failed to save AI channel message:', error);
+                // Remove optimistic AI message if save failed
+                setChannelMessages((prev) => {
+                  const teamMessages = prev.get(selectedTeamId) || [];
+                  const newMap = new Map(prev);
+                  newMap.set(selectedTeamId, teamMessages.filter(msg => msg.id !== aiChannelMessage.id));
+                  return newMap;
+                });
+              });
+            }).catch((error) => {
+              console.error('Failed to generate AI response for channel:', error);
+            });
+          }
+        }
       } catch (error) {
         console.error('Failed to save team channel message:', error);
         // Remove the optimistic message if save failed
@@ -2321,6 +2641,13 @@ export function Chatbot() {
       }
     }
 
+    // Capture cited context before clearing (for display purposes)
+    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
+      projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
+      tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
+      teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
+    } : undefined;
+
     // Create message object and add to state immediately (optimistic update)
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
@@ -2328,6 +2655,7 @@ export function Chatbot() {
       content: messageContent,
       timestamp: new Date(),
       userId: user.email?.toLowerCase(),
+      citedContext,
     };
 
     // Add message to state immediately for instant feedback
@@ -2381,8 +2709,18 @@ export function Chatbot() {
     if (selectedMember === "ai-assistant") {
     setIsLoading(true);
 
+      // Capture selection state before API call to ensure we clear the correct selections
+      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0;
+
       try {
-        const response = await generateResponse(userMessage.content);
+        const response = await generateResponse(userMessage.content, chatId);
+        
+        // Clear cited context immediately after sending message with cited context
+        if (hadSelections) {
+          clearSelectedProjects();
+          clearSelectedTasks();
+          clearSelectedTeams();
+        }
         
         // Create assistant message and add to state immediately (optimistic update)
         const assistantMessage: Message = {
@@ -2437,6 +2775,29 @@ export function Chatbot() {
         }
       } catch (error) {
         console.error('Failed to generate response:', error);
+        
+        // Show error message to user
+        const errorMessage: Message = {
+          id: `error-${Date.now()}`,
+          role: "assistant",
+          content: error instanceof Error 
+            ? `I apologize, but I encountered an error: ${error.message}. Please try again or contact support if the issue persists.`
+            : 'I apologize, but I encountered an error while processing your request. Please try again.',
+          timestamp: new Date(),
+        };
+        
+        setMessages((prev) => [...prev, errorMessage]);
+        
+        // Save error message to Firestore for record keeping
+        try {
+          await messagesService.create({
+            chatId: chatId,
+            role: 'assistant',
+            content: errorMessage.content,
+          });
+        } catch (saveError) {
+          console.error('Failed to save error message:', saveError);
+        }
       } finally {
         setIsLoading(false);
         setIsSendingMessage(false);
@@ -2466,7 +2827,7 @@ export function Chatbot() {
             }
           }}
           className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto",
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto bg-black/70 text-white hover:bg-black/80",
             isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
           )}
           size="icon"
@@ -2552,7 +2913,12 @@ export function Chatbot() {
                           : "hover:bg-muted"
                       )}
                     >
-                      <Bot className="h-4 w-4 flex-shrink-0" />
+                      <Avatar className="h-4 w-4 flex-shrink-0">
+                        <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                        <AvatarFallback className="bg-primary text-primary-foreground text-[8px]">
+                          L
+                        </AvatarFallback>
+                      </Avatar>
                       <span className={cn(
                         (unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
                       )}>lean</span>
@@ -2703,20 +3069,27 @@ export function Chatbot() {
             <div className="flex items-center justify-between p-4 border-b bg-primary/5">
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 <Avatar className="h-8 w-8 flex-shrink-0">
-                  <AvatarFallback className={cn(
-                    "text-primary-foreground",
-                    selectedMember === "ai-assistant" ? "bg-primary" : (isProjectChannel || isTeamChannel) ? "bg-primary/10" : "bg-muted"
-                  )}>
-                    {selectedMember === "ai-assistant" ? (
-                      <Bot className="h-4 w-4" />
-                    ) : isProjectChannel ? (
-                      <Hash className="h-4 w-4 text-primary" />
-                    ) : isTeamChannel ? (
-                      <Users className="h-4 w-4 text-primary" />
-                    ) : (
-                      <span className="text-xs">{currentMember.avatar}</span>
-                    )}
-                  </AvatarFallback>
+                  {selectedMember === "ai-assistant" ? (
+                    <>
+                      <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                      <AvatarFallback className="bg-primary text-primary-foreground">
+                        L
+                      </AvatarFallback>
+                    </>
+                  ) : (
+                    <AvatarFallback className={cn(
+                      "text-primary-foreground",
+                      (isProjectChannel || isTeamChannel) ? "bg-primary/10" : "bg-muted"
+                    )}>
+                      {isProjectChannel ? (
+                        <Hash className="h-4 w-4 text-primary" />
+                      ) : isTeamChannel ? (
+                        <Users className="h-4 w-4 text-primary" />
+                      ) : (
+                        <span className="text-xs">{currentMember.avatar}</span>
+                      )}
+                    </AvatarFallback>
+                  )}
                 </Avatar>
                 <div className="flex flex-col min-w-0">
                   <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
@@ -2841,8 +3214,10 @@ export function Chatbot() {
                 return (
                   <div className="space-y-4">
                     {teamMessages.map((message) => {
-                      // Determine if message is from current user
-                      const isSent = message.userId?.toLowerCase() === user?.email?.toLowerCase();
+                      // Check if message is from lean
+                      const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
+                      // Determine if message is from current user (lean messages are always left-aligned)
+                      const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
                       
                       return (
                         <div
@@ -2855,9 +3230,18 @@ export function Chatbot() {
                           {/* Avatar for received messages (other users) */}
                           {!isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                {message.memberAvatar}
-                              </AvatarFallback>
+                              {isLean ? (
+                                <>
+                                  <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                                  <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                    L
+                                  </AvatarFallback>
+                                </>
+                              ) : (
+                                <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                  {message.memberAvatar}
+                                </AvatarFallback>
+                              )}
                             </Avatar>
                           )}
                           
@@ -2923,8 +3307,10 @@ export function Chatbot() {
                 return (
                   <div className="space-y-4">
                     {projectMessages.map((message) => {
-                      // Determine if message is from current user
-                      const isSent = message.userId?.toLowerCase() === user?.email?.toLowerCase();
+                      // Check if message is from lean
+                      const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
+                      // Determine if message is from current user (lean messages are always left-aligned)
+                      const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
                       
                       return (
                         <div
@@ -2937,9 +3323,18 @@ export function Chatbot() {
                           {/* Avatar for received messages (other users) */}
                           {!isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                {message.memberAvatar}
-                              </AvatarFallback>
+                              {isLean ? (
+                                <>
+                                  <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                                  <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                    L
+                                  </AvatarFallback>
+                                </>
+                              ) : (
+                                <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+                                  {message.memberAvatar}
+                                </AvatarFallback>
+                              )}
                             </Avatar>
                           )}
                           
@@ -2988,10 +3383,11 @@ export function Chatbot() {
 
           {/* Regular Messages (AI Assistant or Team Members) */}
           {!isLoadingMessages && !isProjectChannel && !isTeamChannel && messages.map((message) => {
+            // Check if message is from lean (assistant role)
+            const isLean = message.role === "assistant";
             // Determine if message is from current user (sent) or other user (received)
-            const isSent = message.role === "assistant" 
-              ? false // Assistant messages are always received
-              : message.userId?.toLowerCase() === user?.email?.toLowerCase();
+            // Lean messages are always left-aligned (received)
+            const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
             
             // For team member chats, if it's not from current user, it's received
             const isTeamMemberChat = selectedMember !== "ai-assistant" && !isProjectChannel;
@@ -3008,17 +3404,18 @@ export function Chatbot() {
                 {/* Avatar for received messages (assistant or other team member) */}
                 {!isSent && (
                   <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className={cn(
-                      message.role === "assistant" 
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted-foreground/20 text-foreground"
-                    )}>
-                      {message.role === "assistant" ? (
-                        <Bot className="h-4 w-4" />
-                      ) : (
+                    {isLean ? (
+                      <>
+                        <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                        <AvatarFallback className="bg-primary text-primary-foreground">
+                          L
+                        </AvatarFallback>
+                      </>
+                    ) : (
+                      <AvatarFallback className="bg-muted-foreground/20 text-foreground">
                         <User className="h-4 w-4" />
-                      )}
-                    </AvatarFallback>
+                      </AvatarFallback>
+                    )}
                   </Avatar>
                 )}
                 
@@ -3028,6 +3425,44 @@ export function Chatbot() {
                     "rounded-lg px-4 py-2 max-w-[80%] bg-muted border border-border"
                   )}
                 >
+                  {/* Display cited context for user messages */}
+                  {message.role === "user" && message.citedContext && (
+                    <div className="mb-2 pb-2 border-b border-border/50">
+                      {message.citedContext.projects && message.citedContext.projects.length > 0 && (
+                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                          <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
+                          <span className="text-xs font-medium text-primary">Cited Projects:</span>
+                          {message.citedContext.projects.map((project) => (
+                            <Badge key={project.id} variant="secondary" className="text-xs">
+                              {project.name}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                      {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
+                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                          <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
+                          <span className="text-xs font-medium text-primary">Cited Tasks:</span>
+                          {message.citedContext.tasks.map((task) => (
+                            <Badge key={task.id} variant="secondary" className="text-xs">
+                              {task.title}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                      {message.citedContext.teams && message.citedContext.teams.length > 0 && (
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Users className="h-3 w-3 text-primary flex-shrink-0" />
+                          <span className="text-xs font-medium text-primary">Cited Teams:</span>
+                          {message.citedContext.teams.map((team) => (
+                            <Badge key={team.id} variant="secondary" className="text-xs">
+                              {team.name}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
                     {renderMessageContent(message.content)}
                   </p>
@@ -3053,8 +3488,9 @@ export function Chatbot() {
           {!isLoadingMessages && isLoading && !isProjectChannel && !isTeamChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
+                <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
                 <AvatarFallback className="bg-primary text-primary-foreground">
-                  <Bot className="h-4 w-4" />
+                  L
                 </AvatarFallback>
               </Avatar>
               <div className="bg-muted rounded-lg px-4 py-2">

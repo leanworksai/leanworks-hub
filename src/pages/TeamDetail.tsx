@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ArrowLeft, UserPlus, Mail, MoreVertical, Trash2, LogOut, Search } from "lucide-react";
+import { getAvatarColor } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -301,7 +302,7 @@ export default function TeamDetail() {
               >
                 <div className="flex items-center gap-3">
                   <Avatar>
-                    <AvatarFallback className="bg-primary text-primary-foreground">
+                    <AvatarFallback className={getAvatarColor(member.email || member.name)}>
                       {member.avatar}
                     </AvatarFallback>
                   </Avatar>

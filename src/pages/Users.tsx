@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Search, Mail, Briefcase } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useUsers } from "@/hooks/useUsers";
+import { getAvatarColor } from "@/lib/utils";
 
 export default function Users() {
   const { data: users = [], isLoading: isLoadingUsers } = useUsers();
@@ -84,8 +85,8 @@ export default function Users() {
               className="bg-gradient-card border-border shadow-card transition-all hover:shadow-lg hover:scale-105"
             >
               <CardHeader className="flex flex-row items-center gap-3 pb-2">
-                <Avatar className="h-12 w-12 bg-primary">
-                  <AvatarFallback className="bg-primary text-primary-foreground">
+                <Avatar className="h-12 w-12">
+                  <AvatarFallback className={getAvatarColor(user.email || `${user.firstName}${user.lastName}`)}>
                     {getUserInitials(user)}
                   </AvatarFallback>
                 </Avatar>

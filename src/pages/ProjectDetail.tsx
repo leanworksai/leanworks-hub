@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
+import { getAvatarColor } from "@/lib/utils";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -321,8 +322,7 @@ export default function ProjectDetail() {
             size="sm"
             onClick={() => setShowDeleteDialog(true)}
           >
-            <Trash2 className="mr-2 h-4 w-4" />
-            Delete Project
+            <Trash2 className="h-4 w-4" />
           </Button>
         </div>
         <p className="text-foreground text-lg mb-4">{project.description}</p>
@@ -360,7 +360,7 @@ export default function ProjectDetail() {
                 {project.members.map((member) => (
                   <div key={member.id} className="flex items-center gap-3 p-3 rounded-lg bg-background/50 border border-border">
                     <Avatar>
-                      <AvatarFallback className="bg-primary text-primary-foreground">
+                      <AvatarFallback className={getAvatarColor(member.email || member.name || member.id)}>
                         {member.avatar}
                       </AvatarFallback>
                     </Avatar>
@@ -487,7 +487,7 @@ export default function ProjectDetail() {
                                 <p className="font-medium text-sm">{activity.memberName}</p>
                                 {activity.type === "comment" && (
                                   <Badge 
-                                    className="bg-blue-500/10 text-blue-700 dark:text-blue-400 border-blue-500/20 text-xs flex items-center gap-1"
+                                    className="bg-blue-500/10 text-blue-700  border-blue-500/20 text-xs flex items-center gap-1"
                                     variant="outline"
                                   >
                                     <MessageSquare className="h-3 w-3" />
@@ -496,7 +496,7 @@ export default function ProjectDetail() {
                                 )}
                                 {activity.type === "update" && (
                                   <Badge 
-                                    className="bg-green-500/10 text-green-700 dark:text-green-400 border-green-500/20 text-xs flex items-center gap-1"
+                                    className="bg-green-500/10 text-green-700  border-green-500/20 text-xs flex items-center gap-1"
                                     variant="outline"
                                   >
                                     <Activity className="h-3 w-3" />
