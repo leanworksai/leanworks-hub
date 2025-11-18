@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign } from "lucide-react";
-import { cn, getUserById, getUserDisplayName, getUserInitials } from "@/lib/utils";
+import { cn, getUserById, getUserDisplayName, getUserInitials, getAvatarColor } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
@@ -559,6 +559,19 @@ export function Chatbot() {
       })
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [allDomainUsers, user?.email]);
+
+  // Helper function to get user display info from userId
+  const getUserInfo = useCallback((userId?: string) => {
+    if (!userId) return { name: "Unknown", initials: "U" };
+    const foundUser = allDomainUsers.find(u => u.email?.toLowerCase() === userId.toLowerCase());
+    if (foundUser) {
+      return {
+        name: getUserDisplayName(foundUser),
+        initials: getUserInitials(foundUser),
+      };
+    }
+    return { name: "Unknown", initials: "U" };
+  }, [allDomainUsers]);
   
   // Check if selected member is a project channel
   const isProjectChannel = selectedMember.startsWith("project-");
@@ -2295,11 +2308,16 @@ export function Chatbot() {
 
     // Handle project channel messages
     if (isProjectChannel && selectedProjectId) {
+      // Get user display info
+      const currentUserInfo = getUserInfo(user.email?.toLowerCase());
+      const userDisplayName = getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You";
+      const userInitials = getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined);
+      
       // Create message and add to state immediately (optimistic update)
       const tempChannelMessage: ChannelMessage = {
         id: `temp-channel-${Date.now()}`,
-        memberName: "You",
-        memberAvatar: "U",
+        memberName: userDisplayName,
+        memberAvatar: userInitials,
         content: messageContent,
         timestamp: new Date(),
         projectId: selectedProjectId,
@@ -2325,8 +2343,8 @@ export function Chatbot() {
 
         const savedChannelMessage: ChannelMessage = {
           id: savedMessage.id,
-          memberName: savedMessage.memberName || "You",
-          memberAvatar: savedMessage.memberAvatar || "U",
+          memberName: savedMessage.memberName || userDisplayName,
+          memberAvatar: savedMessage.memberAvatar || userInitials,
           content: savedMessage.content,
           timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
           projectId: selectedProjectId,
@@ -2457,11 +2475,15 @@ export function Chatbot() {
 
     // Handle team channel messages
     if (isTeamChannel && selectedTeamId) {
+      // Get user display info
+      const userDisplayName = getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You";
+      const userInitials = getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined);
+      
       // Create message and add to state immediately (optimistic update)
       const tempChannelMessage: ChannelMessage = {
         id: `temp-channel-${Date.now()}`,
-        memberName: "You",
-        memberAvatar: "U",
+        memberName: userDisplayName,
+        memberAvatar: userInitials,
         content: messageContent,
         timestamp: new Date(),
         teamId: selectedTeamId,
@@ -2487,8 +2509,8 @@ export function Chatbot() {
 
         const savedChannelMessage: ChannelMessage = {
           id: savedMessage.id,
-          memberName: savedMessage.memberName || "You",
-          memberAvatar: savedMessage.memberAvatar || "U",
+          memberName: savedMessage.memberName || userDisplayName,
+          memberAvatar: savedMessage.memberAvatar || userInitials,
           content: savedMessage.content,
           timestamp: savedMessage.timestamp 
             ? (savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp))
@@ -3041,7 +3063,7 @@ export function Chatbot() {
                             )}
                           >
                             <Avatar className="h-6 w-6 flex-shrink-0">
-                              <AvatarFallback className="text-xs">
+                              <AvatarFallback className={`text-xs ${getAvatarColor(member.email || member.id || member.name)}`}>
                                 {member.avatar}
                               </AvatarFallback>
                             </Avatar>
@@ -3182,7 +3204,7 @@ export function Chatbot() {
                       <p className="text-sm text-muted-foreground line-clamp-2">{result.content}</p>
                       <div className="flex items-center gap-2 mt-2">
                         <Avatar className="h-5 w-5">
-                          <AvatarFallback className="text-xs bg-primary/10 text-primary">
+                          <AvatarFallback className={`text-xs ${getAvatarColor(result.memberName)}`}>
                             {result.memberAvatar}
                           </AvatarFallback>
                         </Avatar>
@@ -3219,6 +3241,11 @@ export function Chatbot() {
                       // Determine if message is from current user (lean messages are always left-aligned)
                       const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
                       
+                      // Get actual user info for display
+                      const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
+                      const displayName = isSent ? getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You" : (isLean ? "lean" : userInfo.name);
+                      const displayInitials = isSent ? getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) : (isLean ? "L" : userInfo.initials);
+                      
                       return (
                         <div
                           key={message.id}
@@ -3238,8 +3265,8 @@ export function Chatbot() {
                                   </AvatarFallback>
                                 </>
                               ) : (
-                                <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                  {message.memberAvatar}
+                                <AvatarFallback className={getAvatarColor(message.userId || message.memberName)}>
+                                  {displayInitials}
                                 </AvatarFallback>
                               )}
                             </Avatar>
@@ -3249,7 +3276,7 @@ export function Chatbot() {
                           <div className="flex flex-col min-w-0 max-w-[80%]">
                             {!isSent && (
                               <div className="flex items-center gap-2 mb-1 px-1">
-                                <p className="font-medium text-sm">{message.memberName}</p>
+                                <p className="font-medium text-sm">{displayName}</p>
                                 <span className="text-xs text-muted-foreground">
                                   {message.timestamp.toLocaleTimeString([], {
                                     hour: "2-digit",
@@ -3274,8 +3301,8 @@ export function Chatbot() {
                           {/* Avatar for sent messages (current user) */}
                           {isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                {message.memberAvatar}
+                              <AvatarFallback className={getAvatarColor(message.userId || user?.email)}>
+                                {displayInitials}
                               </AvatarFallback>
                             </Avatar>
                           )}
@@ -3312,6 +3339,11 @@ export function Chatbot() {
                       // Determine if message is from current user (lean messages are always left-aligned)
                       const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
                       
+                      // Get actual user info for display
+                      const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
+                      const displayName = isSent ? getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You" : (isLean ? "lean" : userInfo.name);
+                      const displayInitials = isSent ? getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) : (isLean ? "L" : userInfo.initials);
+                      
                       return (
                         <div
                           key={message.id}
@@ -3331,8 +3363,8 @@ export function Chatbot() {
                                   </AvatarFallback>
                                 </>
                               ) : (
-                                <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                  {message.memberAvatar}
+                                <AvatarFallback className={getAvatarColor(message.userId || message.memberName)}>
+                                  {displayInitials}
                                 </AvatarFallback>
                               )}
                             </Avatar>
@@ -3342,7 +3374,7 @@ export function Chatbot() {
                           <div className="flex flex-col min-w-0 max-w-[80%]">
                             {!isSent && (
                               <div className="flex items-center gap-2 mb-1 px-1">
-                                <p className="font-medium text-sm">{message.memberName}</p>
+                                <p className="font-medium text-sm">{displayName}</p>
                                 <span className="text-xs text-muted-foreground">
                                   {message.timestamp.toLocaleTimeString([], {
                                     hour: "2-digit",
@@ -3367,8 +3399,8 @@ export function Chatbot() {
                           {/* Avatar for sent messages (current user) */}
                           {isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                {message.memberAvatar}
+                              <AvatarFallback className={getAvatarColor(message.userId || user?.email)}>
+                                {displayInitials}
                               </AvatarFallback>
                             </Avatar>
                           )}
@@ -3393,6 +3425,10 @@ export function Chatbot() {
             const isTeamMemberChat = selectedMember !== "ai-assistant" && !isProjectChannel;
             const isReceived = isTeamMemberChat && !isSent && message.role === "user";
             
+            // Get actual user info for display
+            const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
+            const displayInitials = isSent ? getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) : (isLean ? "L" : userInfo.initials);
+            
             return (
               <div
                 key={message.id}
@@ -3412,8 +3448,8 @@ export function Chatbot() {
                         </AvatarFallback>
                       </>
                     ) : (
-                      <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                        <User className="h-4 w-4" />
+                      <AvatarFallback className={getAvatarColor(message.userId || message.memberName)}>
+                        {displayInitials || <User className="h-4 w-4" />}
                       </AvatarFallback>
                     )}
                   </Avatar>
@@ -3477,8 +3513,8 @@ export function Chatbot() {
                 {/* Avatar for sent messages */}
                 {isSent && (
                   <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                      <User className="h-4 w-4" />
+                    <AvatarFallback className={getAvatarColor(message.userId || user?.email)}>
+                      {displayInitials}
                     </AvatarFallback>
                   </Avatar>
                 )}
