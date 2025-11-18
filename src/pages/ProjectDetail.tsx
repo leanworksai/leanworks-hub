@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
+import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserTeams } from "@/hooks/useTeams";
@@ -63,6 +63,7 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [taskPageIndex, setTaskPageIndex] = useState(0);
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
   
@@ -140,6 +141,11 @@ export default function ProjectDetail() {
       navigate("/projects");
     }
   }, [isLoading, isLoadingTeamDetails, project, hasAccess, allTeamDetailsLoaded, navigate]);
+
+  // Reset task page index when project changes
+  useEffect(() => {
+    setTaskPageIndex(0);
+  }, [projectId]);
 
   const handleDelete = async () => {
     if (!project) return;
@@ -401,27 +407,64 @@ export default function ProjectDetail() {
           </CardHeader>
           <CollapsibleContent>
             <CardContent>
-              <div className="space-y-3">
-                {project.tasks.map((task) => (
-                  <div key={task.id} className="relative flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
-                    <div className="absolute top-2 left-2 z-10">
-                      <TaskTooltip taskId={task.id} taskReason={task.reason} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-sm">{task.title}</p>
+              {project.tasks.length === 0 ? (
+                <div className="text-center py-8 text-sm text-muted-foreground">
+                  No tasks yet
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-3">
+                    {project.tasks.slice(taskPageIndex * 5, (taskPageIndex + 1) * 5).map((task) => (
+                      <div key={task.id} className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
+                        {task.reason && (
+                          <div className="flex-shrink-0 pt-0.5">
+                            <TaskTooltip taskId={task.id} taskReason={task.reason} />
+                          </div>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="font-medium text-sm">{task.title}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                            <span>Assignee: {task.assignee || "Unassigned"}</span>
+                            <span>Due: {formatDate(task.dueDate)}</span>
+                          </div>
+                        </div>
+                        <Badge variant="outline" className="text-xs capitalize flex-shrink-0">
+                          {task.status.replace("-", " ")}
+                        </Badge>
                       </div>
-                      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                        <span>Assignee: {task.assignee || "Unassigned"}</span>
-                        <span>Due: {formatDate(task.dueDate)}</span>
-                      </div>
-                    </div>
-                    <Badge variant="outline" className="text-xs capitalize">
-                      {task.status.replace("-", " ")}
-                    </Badge>
+                    ))}
                   </div>
-                ))}
-              </div>
+                  {project.tasks.length > 5 && (
+                    <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
+                      <div className="text-sm text-muted-foreground">
+                        Showing {taskPageIndex * 5 + 1}-{Math.min((taskPageIndex + 1) * 5, project.tasks.length)} of {project.tasks.length} tasks
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={() => setTaskPageIndex(prev => Math.max(0, prev - 1))}
+                          disabled={taskPageIndex === 0}
+                          className="h-8 w-8"
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={() => setTaskPageIndex(prev => prev + 1)}
+                          disabled={(taskPageIndex + 1) * 5 >= project.tasks.length}
+                          className="h-8 w-8"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
             </CardContent>
           </CollapsibleContent>
         </Collapsible>
