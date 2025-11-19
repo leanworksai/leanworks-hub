@@ -347,6 +347,16 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   const onSubmit = async (data: FormData) => {
     setIsSubmitting(true);
     try {
+      // Validate required fields
+      if (!data.name || data.name.trim().length === 0) {
+        form.setError("name", {
+          type: "required",
+          message: "Project name is required"
+        });
+        setIsSubmitting(false);
+        return;
+      }
+
       const now = new Date();
       // Convert YYYY-MM-DD to the format used in Project interface
       let formattedDueDate = "";
@@ -415,10 +425,13 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
             <FormField
               control={form.control}
               name="name"
-              rules={{ required: "Project name is required" }}
+              rules={{ 
+                required: "Project name is required",
+                validate: (value) => value.trim().length > 0 || "Project name cannot be empty"
+              }}
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Project Name</FormLabel>
+                  <FormLabel>Project Name *</FormLabel>
                   <FormControl>
                     <Input placeholder="Enter project name" {...field} />
                   </FormControl>
@@ -430,10 +443,13 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
             <FormField
               control={form.control}
               name="description"
-              rules={{ required: "Description is required" }}
+              rules={{ 
+                required: "Description is required",
+                validate: (value) => value.trim().length > 0 || "Description cannot be empty"
+              }}
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Description</FormLabel>
+                  <FormLabel>Description *</FormLabel>
                   <FormControl>
                     <Textarea 
                       placeholder="Provide details about the project"
@@ -562,7 +578,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
                     />
                   </FormControl>
                   <FormDescription>
-                    Optional: Set a target completion date for the project.
+                    Set a target completion date for the project
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

@@ -219,11 +219,6 @@ export default function Teams() {
       return;
     }
 
-    if (!formData.description.trim()) {
-      toast.error("Team description is required");
-      return;
-    }
-
     if (!user?.email) {
       toast.error("You must be logged in to create a team");
       return;
@@ -292,11 +287,6 @@ export default function Teams() {
     
     if (!formData.name.trim()) {
       toast.error("Team name is required");
-      return;
-    }
-
-    if (!formData.description.trim()) {
-      toast.error("Team description is required");
       return;
     }
 
@@ -690,7 +680,7 @@ export default function Teams() {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="description">Description *</Label>
+              <Label htmlFor="description">Description</Label>
               <Input
                 id="description"
                 placeholder="Brief description of the team"
@@ -699,7 +689,7 @@ export default function Teams() {
               />
             </div>
             <div className="grid gap-2">
-              <Label>Team Members (Optional)</Label>
+              <Label>Team Members</Label>
               <Popover open={membersOpen} onOpenChange={setMembersOpen}>
                 <PopoverTrigger asChild>
                   <Button
@@ -850,7 +840,7 @@ export default function Teams() {
               />
             </div>
             <div className="grid gap-2">
-              <Label>Team Members (Optional)</Label>
+              <Label>Team Members</Label>
               <Popover open={membersOpen} onOpenChange={setMembersOpen}>
                 <PopoverTrigger asChild>
                   <Button

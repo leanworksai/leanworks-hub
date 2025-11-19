@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -23,11 +23,12 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useCreateTask } from "@/hooks/useTasks";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
+import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Task } from "@/data/tasksData";
 import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
-import { Check, ChevronsUpDown } from "lucide-react";
+import { Check, ChevronsUpDown, Sparkles } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 
 interface NewTaskDialogProps {
@@ -74,12 +75,15 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
+  const { data: users = [] } = useUsers();
   const { user } = useAuth();
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
   const [selectedAssigneeId, setSelectedAssigneeId] = useState<string | null>(null);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
+  const isSettingAIAssignee = useRef(false);
 
   type FormData = {
     title: string;
@@ -141,9 +145,9 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
     }
   }, [selectedProjectId, projectsMemo]);
 
-  // Reset assignee when project changes
+  // Reset assignee when project changes (but not during AI generation)
   useEffect(() => {
-    if (selectedProjectId) {
+    if (selectedProjectId && !isSettingAIAssignee.current) {
       setSelectedAssignee(null);
       setSelectedAssigneeId(null);
       form.setValue("assignee", "");
@@ -164,9 +168,281 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const generateAITaskDetails = async () => {
+    const currentTitle = form.getValues("title");
+    if (!currentTitle || currentTitle.trim().length === 0) {
+      toast({
+        title: "Title required",
+        description: "Please enter a task title first to generate AI details.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsGeneratingAI(true);
+    try {
+      const isLocalDev = import.meta.env.DEV;
+      const API_BASE = isLocalDev ? 'http://0.0.0.0:8081' : '';
+      const apiUrl = `${API_BASE}/api/generate-task`;
+
+      // Prepare headers
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+
+      // Get custom token
+      const customToken = (window as any).__customToken;
+      if (!isLocalDev && !customToken) {
+        throw new Error('Authentication token not found. Please sign in again.');
+      }
+
+      if (isLocalDev) {
+        try {
+          const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
+          const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${customToken || ''}`,
+            },
+          });
+
+          if (!apiKeyResponse.ok) {
+            throw new Error('Failed to fetch API key from backend');
+          }
+
+          const apiKeyData = await apiKeyResponse.json();
+          headers['X-API-Key'] = apiKeyData.apiKey;
+        } catch (error) {
+          console.error('Failed to fetch API key from backend, using fallback:', error);
+          const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+          headers['X-API-Key'] = fallbackKey;
+        }
+      } else {
+        headers['Authorization'] = `Bearer ${customToken}`;
+      }
+
+      // Get current form values to pass as context
+      const currentFormData = form.getValues();
+      const currentProject = currentFormData.projectId ? projects.find((p) => {
+        const slug = p.name.toLowerCase().replace(/\s+/g, '-');
+        return slug === currentFormData.projectId || p.id === currentFormData.projectId || p.name === currentFormData.projectId;
+      }) : null;
+
+      // Prepare request body
+      const requestBody: any = {
+        task_name: currentTitle,
+        user_id: user?.email?.toLowerCase() || '',
+        session_id: `generate-task-${Date.now()}`,
+      };
+
+      // Add optional fields if they exist
+      if (currentFormData.description) {
+        requestBody.description = currentFormData.description;
+      }
+      if (currentFormData.status) {
+        requestBody.status = currentFormData.status;
+      }
+      if (currentFormData.priority) {
+        requestBody.priority = currentFormData.priority;
+      }
+      if (currentFormData.estimatedHours) {
+        requestBody.estimated_hours = parseInt(currentFormData.estimatedHours, 10);
+      }
+      if (currentFormData.dueDate) {
+        requestBody.due_date = currentFormData.dueDate;
+      }
+      if (currentFormData.tags) {
+        const tags = currentFormData.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0);
+        if (tags.length > 0) {
+          requestBody.tags = tags;
+        }
+      }
+      if (currentProject) {
+        requestBody.project_id = currentProject.id;
+        requestBody.project_name = currentProject.name;
+      }
+      if (selectedAssigneeId) {
+        requestBody.assignee_id = selectedAssigneeId;
+        requestBody.assignee_name = selectedAssignee;
+      }
+      if (user?.email) {
+        requestBody.created_by = user.email;
+      }
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status} ${response.statusText}` }));
+        throw new Error(errorData.error || `API request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Extract task data from response
+      const generatedTask = data.task;
+      if (!generatedTask) {
+        throw new Error('No task data returned from API');
+      }
+
+      // Fill form with generated data
+      if (generatedTask.title) {
+        form.setValue("title", generatedTask.title);
+      }
+      if (generatedTask.description) {
+        form.setValue("description", generatedTask.description);
+      }
+      if (generatedTask.status) {
+        form.setValue("status", generatedTask.status as Task["status"]);
+      }
+      if (generatedTask.priority) {
+        form.setValue("priority", generatedTask.priority as Task["priority"]);
+      }
+      if (generatedTask.estimated_hours !== undefined && generatedTask.estimated_hours !== null) {
+        form.setValue("estimatedHours", generatedTask.estimated_hours.toString());
+      }
+      if (generatedTask.due_date) {
+        // Convert YYYY-MM-DD to date input format
+        form.setValue("dueDate", generatedTask.due_date);
+      }
+      if (generatedTask.tags && Array.isArray(generatedTask.tags) && generatedTask.tags.length > 0) {
+        form.setValue("tags", generatedTask.tags.join(", "));
+      }
+
+      // Set flag to prevent clearing assignee when project changes (if assignee will be set)
+      if (generatedTask.assignee_id || generatedTask.assignee_name) {
+        isSettingAIAssignee.current = true;
+      }
+
+      // Handle AI-suggested project
+      // API only returns project_id, not project_name, so we need to look it up
+      let loadedProjectMembers: ProjectMember[] = [];
+      if (generatedTask.project_id) {
+        const suggestedProject = projects.find((p) => {
+          return p.id === generatedTask.project_id;
+        });
+
+        if (suggestedProject) {
+          const slug = suggestedProject.name.toLowerCase().replace(/\s+/g, '-');
+          form.setValue("projectId", slug);
+          setSelectedProjectId(slug);
+          
+          // Load project members for assignee selection
+          if (suggestedProject.members) {
+            loadedProjectMembers = suggestedProject.members;
+            setProjectMembers(suggestedProject.members);
+          }
+        } else {
+          // Project ID was suggested but not found in user's projects
+          console.warn(`AI suggested project_id "${generatedTask.project_id}" but it was not found in user's projects`);
+        }
+      }
+
+      // Handle AI-suggested assignee
+      // API might only return assignee_id (email), so we need to look up the name
+      if (generatedTask.assignee_id || generatedTask.assignee_name) {
+        
+        let assigneeName: string | null = null;
+        let assigneeId: string | null = null;
+        let assigneeAvatar: string | undefined = undefined;
+
+        // First, try to find in project members (if project is selected)
+        const membersToSearch = loadedProjectMembers.length > 0 ? loadedProjectMembers : projectMembers;
+        if (membersToSearch.length > 0) {
+          const suggestedAssignee = membersToSearch.find((m) => {
+            if (generatedTask.assignee_id && (m.id === generatedTask.assignee_id || m.id?.toLowerCase() === generatedTask.assignee_id.toLowerCase())) {
+              return true;
+            }
+            if (generatedTask.assignee_name && m.name === generatedTask.assignee_name) {
+              return true;
+            }
+            return false;
+          });
+
+          if (suggestedAssignee) {
+            assigneeName = suggestedAssignee.name;
+            assigneeId = suggestedAssignee.id || generatedTask.assignee_id;
+            assigneeAvatar = suggestedAssignee.avatar;
+          }
+        }
+
+        // If not found in project members, look up by email in users list
+        if (!assigneeName && generatedTask.assignee_id) {
+          const assigneeEmail = generatedTask.assignee_id.toLowerCase();
+          const foundUser = users.find((u) => u.email.toLowerCase() === assigneeEmail);
+          
+          if (foundUser) {
+            assigneeName = `${foundUser.firstName} ${foundUser.lastName}`.trim();
+            assigneeId = foundUser.email;
+            assigneeAvatar = `${foundUser.firstName.charAt(0)}${foundUser.lastName.charAt(0)}`.toUpperCase();
+          }
+        }
+
+        // If we still have a name from API, use it (fallback)
+        if (!assigneeName && generatedTask.assignee_name) {
+          assigneeName = generatedTask.assignee_name;
+          assigneeId = generatedTask.assignee_id || null;
+        }
+
+        // If we have assignee_id but no name found, use email as fallback name
+        // The backend will look up the full name when creating the task
+        if (!assigneeName && generatedTask.assignee_id) {
+          assigneeName = generatedTask.assignee_id;
+          assigneeId = generatedTask.assignee_id;
+          assigneeAvatar = generatedTask.assignee_id.charAt(0).toUpperCase();
+        }
+
+        // Set assignee if we have either a name or an ID
+        // Use setTimeout to ensure this runs after the project change effect
+        if (assigneeId) {
+          setTimeout(() => {
+            setSelectedAssignee(assigneeName || assigneeId);
+            setSelectedAssigneeId(assigneeId);
+            form.setValue("assignee", assigneeName || assigneeId);
+            // Reset flag after setting assignee
+            isSettingAIAssignee.current = false;
+          }, 0);
+        } else {
+          isSettingAIAssignee.current = false;
+        }
+      }
+
+      toast({
+        title: "AI details generated",
+        description: "Task form has been filled with AI-generated details. You can edit them as needed.",
+      });
+    } catch (error) {
+      console.error('Error generating AI task details:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate AI task details. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingAI(false);
+    }
+  };
+
   const onSubmit = async (data: FormData) => {
     setIsSubmitting(true);
     try {
+      // Validate title is required
+      if (!data.title || data.title.trim().length === 0) {
+        form.setError("title", {
+          type: "required",
+          message: "Task title is required"
+        });
+        setIsSubmitting(false);
+        return;
+      }
+
       const now = new Date();
       
       // Find the selected project (if provided)
@@ -259,10 +535,26 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
             <FormField
               control={form.control}
               name="title"
-              rules={{ required: "Task title is required" }}
+              rules={{ 
+                required: "Task title is required",
+                validate: (value) => value.trim().length > 0 || "Task title cannot be empty"
+              }}
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Task Title</FormLabel>
+                  <div className="flex items-center justify-between">
+                    <FormLabel>Task Title *</FormLabel>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={generateAITaskDetails}
+                      disabled={isGeneratingAI || !field.value || field.value.trim().length === 0}
+                      className="h-8"
+                    >
+                      <Sparkles className="h-3 w-3 mr-1.5" />
+                      {isGeneratingAI ? "Generating..." : "Draft with AI"}
+                    </Button>
+                  </div>
                   <FormControl>
                     <Input placeholder="Enter task title" {...field} />
                   </FormControl>
@@ -274,7 +566,6 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
             <FormField
               control={form.control}
               name="description"
-              rules={{ required: "Description is required" }}
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Description</FormLabel>
@@ -295,7 +586,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
               name="projectId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Project (Optional)</FormLabel>
+                  <FormLabel>Project</FormLabel>
                   <FormDescription>
                     Leave empty to create a team-wide task visible to all your team members
                   </FormDescription>
@@ -313,7 +604,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                   >
                     <FormControl>
                       <SelectTrigger>
-                        <SelectValue placeholder="Select a project (optional)" />
+                        <SelectValue placeholder="Select a project" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
@@ -338,11 +629,11 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
               name="assignee"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Assignee (Optional)</FormLabel>
+                  <FormLabel>Assignee</FormLabel>
                   <FormDescription>
                     {selectedProjectId 
                       ? "Select a project member to assign this task to"
-                      : "Select a team member to assign this task to (optional)"}
+                      : "Select a team member to assign this task to"}
                   </FormDescription>
                   <Popover open={assigneeOpen} onOpenChange={setAssigneeOpen}>
                     <PopoverTrigger asChild>
@@ -363,7 +654,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                               <span>{selectedAssignee}</span>
                             </div>
                           ) : (
-                            "Select assignee (optional)..."
+                            "Select assignee..."
                           )}
                           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                         </Button>
@@ -489,7 +780,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                       />
                     </FormControl>
                     <FormDescription>
-                      Optional: Set a target completion date
+                      Set a target completion date
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -511,7 +802,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                       />
                     </FormControl>
                     <FormDescription>
-                      Optional: Estimated time to complete
+                      Estimated time to complete
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -532,7 +823,7 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
                     />
                   </FormControl>
                   <FormDescription>
-                    Optional: Comma-separated tags for categorization
+                    Comma-separated tags for categorization
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

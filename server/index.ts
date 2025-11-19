@@ -1472,10 +1472,15 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
         t.status,
         t.priority,
         t.assignee_id,
-        t.assignee_name,
-        t.assignee_avatar,
+        COALESCE(t.assignee_name, u.first_name || ' ' || u.last_name) as assignee_name,
+        COALESCE(t.assignee_avatar, 
+          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+            ELSE NULL
+          END
+        ) as assignee_avatar,
         t.project_id,
-        t.project_name,
+        COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
         CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
         CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
@@ -1486,14 +1491,13 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
         t.reason,
         t.updated_at,
         p.team_id,
-        p.name as project_name,
         (SELECT COALESCE(json_agg(update_data), '[]'::json) FROM (
           SELECT json_build_object(
             'id', upd.update_id,
-            'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
+            'memberName', COALESCE(u2.first_name || ' ' || u2.last_name, upd.user_id),
             'memberAvatar', COALESCE(
-              CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-                THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+              CASE WHEN u2.first_name IS NOT NULL AND u2.last_name IS NOT NULL 
+                THEN UPPER(SUBSTRING(u2.first_name, 1, 1) || SUBSTRING(u2.last_name, 1, 1))
                 ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
               END,
               'U'
@@ -1503,13 +1507,14 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
             'type', 'progress'
           ) as update_data
           FROM task_progress_updates upd
-          LEFT JOIN users u ON upd.user_id = u.email
+          LEFT JOIN users u2 ON upd.user_id = u2.email
           WHERE upd.associated_tasks @> jsonb_build_array(t.id)
           ORDER BY upd.timestamp DESC
           LIMIT 1
         ) latest_update) as progressUpdates
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
+      LEFT JOIN users u ON t.assignee_id = u.email
       ORDER BY t.created_at DESC
     `);
     
@@ -1520,6 +1525,12 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
       task.assigneeId = task.assigneeId || null;
       task.assignee = task.assigneeName || null;
       task.assigneeAvatar = task.assigneeAvatar || null;
+      
+      // If assigneeId exists but assignee is still null, use email as fallback
+      if (task.assigneeId && !task.assignee) {
+        task.assignee = task.assigneeId;
+        task.assigneeAvatar = task.assigneeId.charAt(0).toUpperCase();
+      }
       
       // Format dueDate (DATE field)
       if (task.dueDate) {
@@ -1625,10 +1636,15 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
         t.status,
         t.priority,
         t.assignee_id,
-        t.assignee_name,
-        t.assignee_avatar,
+        COALESCE(t.assignee_name, u.first_name || ' ' || u.last_name) as assignee_name,
+        COALESCE(t.assignee_avatar, 
+          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+            ELSE NULL
+          END
+        ) as assignee_avatar,
         t.project_id,
-        t.project_name,
+        COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
         CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
         CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
@@ -1638,10 +1654,10 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
         t.tags,
         t.reason,
         t.updated_at,
-        p.team_id,
-        p.name as project_name
+        p.team_id
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
+      LEFT JOIN users u ON t.assignee_id = u.email
       WHERE t.project_id = $1
       ORDER BY t.created_at DESC
     `, [projectId]);
@@ -1652,6 +1668,12 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
       task.assigneeId = task.assigneeId || null;
       task.assignee = task.assigneeName || null;
       task.assigneeAvatar = task.assigneeAvatar || null;
+      
+      // If assigneeId exists but assignee is still null, use email as fallback
+      if (task.assigneeId && !task.assignee) {
+        task.assignee = task.assigneeId;
+        task.assigneeAvatar = task.assigneeId.charAt(0).toUpperCase();
+      }
       
       // Format dueDate (DATE field)
       if (task.dueDate) {
@@ -1712,10 +1734,15 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
         t.status,
         t.priority,
         t.assignee_id,
-        t.assignee_name,
-        t.assignee_avatar,
+        COALESCE(t.assignee_name, u.first_name || ' ' || u.last_name) as assignee_name,
+        COALESCE(t.assignee_avatar, 
+          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
+            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+            ELSE NULL
+          END
+        ) as assignee_avatar,
         t.project_id,
-        t.project_name,
+        COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
         CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
         CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
@@ -1726,7 +1753,6 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
         t.reason,
         t.updated_at,
         p.team_id,
-        p.name as project_name,
         (SELECT json_agg(json_build_object(
           'id', tc.id,
           'memberName', tc.member_name,
@@ -1736,10 +1762,10 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
         ) ORDER BY tc.created_at DESC) FROM task_comments tc WHERE tc.task_id = t.id) as comments,
         COALESCE((SELECT json_agg(json_build_object(
           'id', upd.update_id,
-          'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
+          'memberName', COALESCE(u2.first_name || ' ' || u2.last_name, upd.user_id),
           'memberAvatar', COALESCE(
-            CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-              THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
+            CASE WHEN u2.first_name IS NOT NULL AND u2.last_name IS NOT NULL 
+              THEN UPPER(SUBSTRING(u2.first_name, 1, 1) || SUBSTRING(u2.last_name, 1, 1))
               ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
             END,
             'U'
@@ -1748,10 +1774,11 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
           'update', upd.update_text,
           'type', 'progress'
         ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd
-        LEFT JOIN users u ON upd.user_id = u.email
+        LEFT JOIN users u2 ON upd.user_id = u2.email
         WHERE upd.associated_tasks @> $2::jsonb), '[]'::json) as progressUpdates
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
+      LEFT JOIN users u ON t.assignee_id = u.email
       WHERE t.id = $1
     `, [taskId, JSON.stringify([taskId])]);
     
@@ -1788,6 +1815,12 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
     task.assigneeId = task.assigneeId || null;
     task.assignee = task.assigneeName || null;
     task.assigneeAvatar = task.assigneeAvatar || null;
+    
+    // If assigneeId exists but assignee is still null, use email as fallback
+    if (task.assigneeId && !task.assignee) {
+      task.assignee = task.assigneeId;
+      task.assigneeAvatar = task.assigneeId.charAt(0).toUpperCase();
+    }
     
     // Format dueDate (DATE field)
     if (task.dueDate) {
@@ -1862,28 +1895,85 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
 app.post('/api/tasks', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const { title, description, projectId, assigneeId, status, priority, dueDate } = req.body;
+    const { title, description, projectId, projectName, assigneeId, assignee, assigneeAvatar, status, priority, dueDate, tags, reason, estimatedHours } = req.body;
     const pool = await getTenantPool(userEmail);
+    
+    // If assigneeId is provided but assignee/assigneeAvatar are not, look up the user
+    let finalAssignee = assignee;
+    let finalAssigneeAvatar = assigneeAvatar;
+    
+    if (assigneeId && !finalAssignee) {
+      try {
+        const assigneeUser = await pool.query(
+          'SELECT first_name, last_name FROM users WHERE email = $1',
+          [assigneeId.toLowerCase()]
+        );
+        
+        if (assigneeUser.rows.length > 0) {
+          const user = assigneeUser.rows[0];
+          const firstName = user.first_name || '';
+          const lastName = user.last_name || '';
+          finalAssignee = `${firstName} ${lastName}`.trim() || assigneeId;
+          finalAssigneeAvatar = (firstName && lastName) 
+            ? `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase()
+            : assigneeId.charAt(0).toUpperCase();
+        } else {
+          // User not found, use email as fallback
+          finalAssignee = assigneeId;
+          finalAssigneeAvatar = assigneeId.charAt(0).toUpperCase();
+        }
+      } catch (error) {
+        console.error('Error looking up assignee user:', error);
+        // Fallback to email if lookup fails
+        finalAssignee = assigneeId;
+        finalAssigneeAvatar = assigneeId.charAt(0).toUpperCase();
+      }
+    }
+    
+    // If projectId is provided but projectName is not, look up the project
+    let finalProjectName = projectName;
+    
+    if (projectId && !finalProjectName) {
+      try {
+        const projectResult = await pool.query(
+          'SELECT name FROM projects WHERE id = $1',
+          [projectId]
+        );
+        
+        if (projectResult.rows.length > 0) {
+          finalProjectName = projectResult.rows[0].name;
+        }
+      } catch (error) {
+        console.error('Error looking up project:', error);
+        // If lookup fails, projectName will remain null
+      }
+    }
     
     const taskId = crypto.randomBytes(16).toString('hex');
     
     await pool.query(`
       INSERT INTO tasks (
-        id, title, description, project_id, assignee_id, status, 
-        priority, due_date, created_by, created_at
+        id, title, description, project_id, project_name, assignee_id, assignee_name, assignee_avatar, status, 
+        priority, due_date, created_by, created_at, tags, reason, estimated_hours
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     `, [
       taskId, 
       title, 
       description, 
-      projectId, 
-      assigneeId, 
+      projectId || null,
+      finalProjectName || null,
+      assigneeId || null,
+      finalAssignee || null,
+      finalAssigneeAvatar || null,
       status || 'todo',
       priority || 'medium',
-      dueDate,
+      dueDate || null,
       userEmail,
-      Date.now()
+      Date.now(),
+      tags ? JSON.stringify(tags) : null,
+      reason || null,
+      estimatedHours || null
     ]);
     
     res.status(201).json({ id: taskId, title, description, projectId, assigneeId, status, priority });
