@@ -53,6 +53,11 @@ interface ChannelMessage {
   projectId?: string;
   teamId?: string;
   userId?: string;
+  citedContext?: {
+    projects?: Project[];
+    tasks?: Task[];
+    teams?: Team[];
+  };
 }
 
 interface SearchResult {
@@ -293,67 +298,70 @@ export function Chatbot() {
       const incomingId = incomingMsg.id;
       const existingMsg = existingMap.get(incomingId);
       
-      // If message exists by ID, update it (prefer real ID over temp ID)
-      if (existingMsg) {
-        const isOptimistic = existingMsg.id.startsWith('temp-');
-        if (!isOptimistic || !preserveOptimistic) {
-          // Update with incoming message (it's from Firestore, so it's authoritative)
-          existingMap.set(incomingId, {
-            id: incomingId,
-            role: incomingMsg.role as "user" | "assistant",
-            content: incomingMsg.content,
-            timestamp: incomingMsg.timestamp instanceof Date 
-              ? incomingMsg.timestamp 
-              : new Date(incomingMsg.timestamp),
-            userId: incomingMsg.userId,
-          });
-        }
-      } else {
-        // Message doesn't exist by ID - check if it matches an optimistic message
-        const incomingTime = incomingMsg.timestamp instanceof Date 
-          ? incomingMsg.timestamp.getTime() 
-          : new Date(incomingMsg.timestamp).getTime();
-        const incomingContent = incomingMsg.content;
-        
-        // Try to find matching optimistic message (same content, timestamp within 10 seconds)
-        let matchedOptimistic: Message | null = null;
-        for (const [key, optimisticMsg] of optimisticMap.entries()) {
-          const [content, timeStr] = key.split('|');
-          const optimisticTime = parseInt(timeStr);
+        // If message exists by ID, update it (prefer real ID over temp ID)
+        if (existingMsg) {
+          const isOptimistic = existingMsg.id.startsWith('temp-');
+          if (!isOptimistic || !preserveOptimistic) {
+            // Update with incoming message (it's from Firestore, so it's authoritative)
+            existingMap.set(incomingId, {
+              id: incomingId,
+              role: incomingMsg.role as "user" | "assistant",
+              content: incomingMsg.content,
+              timestamp: incomingMsg.timestamp instanceof Date 
+                ? incomingMsg.timestamp 
+                : new Date(incomingMsg.timestamp),
+              userId: incomingMsg.userId,
+              citedContext: incomingMsg.citedContext || existingMsg.citedContext,
+            });
+          }
+        } else {
+          // Message doesn't exist by ID - check if it matches an optimistic message
+          const incomingTime = incomingMsg.timestamp instanceof Date 
+            ? incomingMsg.timestamp.getTime() 
+            : new Date(incomingMsg.timestamp).getTime();
+          const incomingContent = incomingMsg.content;
           
-          // Match if content is same and timestamp is within 10 seconds
-          if (content === incomingContent && 
-              Math.abs(incomingTime - optimisticTime) < 10000) {
-            matchedOptimistic = optimisticMsg;
-            break;
+          // Try to find matching optimistic message (same content, timestamp within 10 seconds)
+          let matchedOptimistic: Message | null = null;
+          for (const [key, optimisticMsg] of optimisticMap.entries()) {
+            const [content, timeStr] = key.split('|');
+            const optimisticTime = parseInt(timeStr);
+            
+            // Match if content is same and timestamp is within 10 seconds
+            if (content === incomingContent && 
+                Math.abs(incomingTime - optimisticTime) < 10000) {
+              matchedOptimistic = optimisticMsg;
+              break;
+            }
+          }
+          
+          if (matchedOptimistic) {
+            // Replace optimistic message with real one, preserve citedContext from optimistic if not in incoming
+            existingMap.delete(matchedOptimistic.id);
+            existingMap.set(incomingId, {
+              id: incomingId,
+              role: incomingMsg.role as "user" | "assistant",
+              content: incomingMsg.content,
+              timestamp: incomingMsg.timestamp instanceof Date 
+                ? incomingMsg.timestamp 
+                : new Date(incomingMsg.timestamp),
+              userId: incomingMsg.userId,
+              citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
+            });
+          } else {
+            // New message, add it
+            existingMap.set(incomingId, {
+              id: incomingId,
+              role: incomingMsg.role as "user" | "assistant",
+              content: incomingMsg.content,
+              timestamp: incomingMsg.timestamp instanceof Date 
+                ? incomingMsg.timestamp 
+                : new Date(incomingMsg.timestamp),
+              userId: incomingMsg.userId,
+              citedContext: incomingMsg.citedContext,
+            });
           }
         }
-        
-        if (matchedOptimistic) {
-          // Replace optimistic message with real one
-          existingMap.delete(matchedOptimistic.id);
-          existingMap.set(incomingId, {
-            id: incomingId,
-            role: incomingMsg.role as "user" | "assistant",
-            content: incomingMsg.content,
-            timestamp: incomingMsg.timestamp instanceof Date 
-              ? incomingMsg.timestamp 
-              : new Date(incomingMsg.timestamp),
-            userId: incomingMsg.userId,
-          });
-        } else {
-          // New message, add it
-          existingMap.set(incomingId, {
-            id: incomingId,
-            role: incomingMsg.role as "user" | "assistant",
-            content: incomingMsg.content,
-            timestamp: incomingMsg.timestamp instanceof Date 
-              ? incomingMsg.timestamp 
-              : new Date(incomingMsg.timestamp),
-            userId: incomingMsg.userId,
-          });
-        }
-      }
     });
 
     // Convert back to array and sort by timestamp
@@ -419,6 +427,7 @@ export function Chatbot() {
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
+            citedContext: incomingMsg.citedContext || existingMsg.citedContext,
           });
         }
       } else {
@@ -443,7 +452,7 @@ export function Chatbot() {
         }
         
         if (matchedOptimistic) {
-          // Replace optimistic message with real one
+          // Replace optimistic message with real one, preserve citedContext
           existingMap.delete(matchedOptimistic.id);
           existingMap.set(incomingId, {
             id: incomingId,
@@ -455,6 +464,7 @@ export function Chatbot() {
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
+            citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
           });
         } else {
           // New message, add it
@@ -468,6 +478,7 @@ export function Chatbot() {
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
+            citedContext: incomingMsg.citedContext,
           });
         }
       }
@@ -1411,6 +1422,7 @@ export function Chatbot() {
           content: msg.content,
           timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
           userId: msg.userId,
+          citedContext: msg.citedContext,
         }));
         
         if (cachedRegularMsgs.length > 0) {
@@ -1497,6 +1509,7 @@ export function Chatbot() {
               timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
               projectId: msg.projectId || selectedProjectId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+              citedContext: msg.citedContext,
             }));
           
           // Only update state if it's initial load (state is empty)
@@ -1561,6 +1574,7 @@ export function Chatbot() {
               timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
               teamId: msg.teamId || selectedTeamId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+              citedContext: msg.citedContext,
             }));
         
         // Only update state if it's initial load (state is empty)
@@ -1627,6 +1641,7 @@ export function Chatbot() {
             content: msg.content,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             userId: msg.userId,
+            citedContext: msg.citedContext,
           }));
           
           // Only update state if it's initial load (state is empty)
@@ -2313,6 +2328,13 @@ export function Chatbot() {
       const userDisplayName = getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You";
       const userInitials = getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined);
       
+      // Capture cited context before clearing (for display purposes)
+      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
+        projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
+        tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
+        teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
+      } : undefined;
+      
       // Create message and add to state immediately (optimistic update)
       const tempChannelMessage: ChannelMessage = {
         id: `temp-channel-${Date.now()}`,
@@ -2322,6 +2344,7 @@ export function Chatbot() {
         timestamp: new Date(),
         projectId: selectedProjectId,
         userId: user.email?.toLowerCase(),
+        citedContext,
       };
 
       // Add message to state immediately for instant feedback
@@ -2339,6 +2362,7 @@ export function Chatbot() {
           role: 'user',
           content: messageContent,
           projectId: selectedProjectId,
+          citedContext: citedContext,
         });
 
         const savedChannelMessage: ChannelMessage = {
@@ -2349,6 +2373,7 @@ export function Chatbot() {
           timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
           projectId: selectedProjectId,
           userId: savedMessage.userId || user.email?.toLowerCase(),
+          citedContext: savedMessage.citedContext || citedContext,
         };
 
         // Update the message in state with saved data
@@ -2373,12 +2398,21 @@ export function Chatbot() {
               userId: msg.userId,
               memberName: msg.memberName,
               memberAvatar: msg.memberAvatar,
+              citedContext: msg.citedContext,
             }));
             saveCachedMessages(chatId, allMessages);
           }, 0);
           
           return newMap;
         });
+        
+        // Clear cited context immediately after sending message with cited context
+        if (citedContext) {
+          clearSelectedProjects();
+          clearSelectedTasks();
+          clearSelectedTeams();
+        }
+        
         setIsSendingMessage(false);
 
         // Check if lean is mentioned and generate AI response
@@ -2479,6 +2513,13 @@ export function Chatbot() {
       const userDisplayName = getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You";
       const userInitials = getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined);
       
+      // Capture cited context before clearing (for display purposes)
+      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
+        projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
+        tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
+        teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
+      } : undefined;
+      
       // Create message and add to state immediately (optimistic update)
       const tempChannelMessage: ChannelMessage = {
         id: `temp-channel-${Date.now()}`,
@@ -2488,6 +2529,7 @@ export function Chatbot() {
         timestamp: new Date(),
         teamId: selectedTeamId,
         userId: user.email?.toLowerCase(),
+        citedContext,
       };
 
       // Add message to state immediately for instant feedback
@@ -2505,6 +2547,7 @@ export function Chatbot() {
           role: 'user',
           content: messageContent,
           teamId: selectedTeamId,
+          citedContext: citedContext,
         });
 
         const savedChannelMessage: ChannelMessage = {
@@ -2517,6 +2560,7 @@ export function Chatbot() {
             : new Date(),
           teamId: selectedTeamId,
           userId: savedMessage.userId || user.email?.toLowerCase(),
+          citedContext: savedMessage.citedContext || citedContext,
         };
 
         // Update the message in state with saved data
@@ -2547,6 +2591,14 @@ export function Chatbot() {
           
           return newMap;
         });
+        
+        // Clear cited context immediately after sending message with cited context
+        if (citedContext) {
+          clearSelectedProjects();
+          clearSelectedTasks();
+          clearSelectedTeams();
+        }
+        
         setIsSendingMessage(false);
 
         // Check if lean is mentioned and generate AI response
@@ -2689,6 +2741,7 @@ export function Chatbot() {
         chatId: chatId,
         role: 'user',
         content: messageContent,
+        citedContext: citedContext,
       });
       
       // Update the message in state with saved data
@@ -2700,6 +2753,7 @@ export function Chatbot() {
                 id: savedUserMessage.id,
                 timestamp: savedUserMessage.timestamp instanceof Date ? savedUserMessage.timestamp : new Date(savedUserMessage.timestamp),
                 userId: savedUserMessage.userId || user.email?.toLowerCase(),
+                citedContext: savedUserMessage.citedContext || citedContext,
               }
             : msg
         );
@@ -2713,6 +2767,7 @@ export function Chatbot() {
             content: msg.content,
             timestamp: msg.timestamp,
             userId: msg.userId,
+            citedContext: msg.citedContext,
           }));
           saveCachedMessages(chatId, allMessages);
         }, 0);
@@ -2784,6 +2839,7 @@ export function Chatbot() {
                 content: msg.content,
                 timestamp: msg.timestamp,
                 userId: msg.userId,
+                citedContext: msg.citedContext,
               }));
               saveCachedMessages(chatId, allMessages);
             }, 0);
@@ -3286,6 +3342,44 @@ export function Chatbot() {
                               </div>
                             )}
                             <div className="rounded-lg px-4 py-2 bg-muted border border-border">
+                              {/* Display cited context for channel messages */}
+                              {message.citedContext && (
+                                <div className="mb-2 pb-2 border-b border-border/50">
+                                  {message.citedContext.projects && message.citedContext.projects.length > 0 && (
+                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                      <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
+                                      <span className="text-xs font-medium text-primary">Cited Projects:</span>
+                                      {message.citedContext.projects.map((project) => (
+                                        <Badge key={project.id} variant="secondary" className="text-xs">
+                                          {project.name}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
+                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                      <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
+                                      <span className="text-xs font-medium text-primary">Cited Tasks:</span>
+                                      {message.citedContext.tasks.map((task) => (
+                                        <Badge key={task.id} variant="secondary" className="text-xs">
+                                          {task.title}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {message.citedContext.teams && message.citedContext.teams.length > 0 && (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <Users className="h-3 w-3 text-primary flex-shrink-0" />
+                                      <span className="text-xs font-medium text-primary">Cited Teams:</span>
+                                      {message.citedContext.teams.map((team) => (
+                                        <Badge key={team.id} variant="secondary" className="text-xs">
+                                          {team.name}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
                                 {renderMessageContent(message.content)}
                               </p>
@@ -3384,6 +3478,44 @@ export function Chatbot() {
                               </div>
                             )}
                             <div className="rounded-lg px-4 py-2 bg-muted border border-border">
+                              {/* Display cited context for channel messages */}
+                              {message.citedContext && (
+                                <div className="mb-2 pb-2 border-b border-border/50">
+                                  {message.citedContext.projects && message.citedContext.projects.length > 0 && (
+                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                      <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
+                                      <span className="text-xs font-medium text-primary">Cited Projects:</span>
+                                      {message.citedContext.projects.map((project) => (
+                                        <Badge key={project.id} variant="secondary" className="text-xs">
+                                          {project.name}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
+                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                      <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
+                                      <span className="text-xs font-medium text-primary">Cited Tasks:</span>
+                                      {message.citedContext.tasks.map((task) => (
+                                        <Badge key={task.id} variant="secondary" className="text-xs">
+                                          {task.title}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {message.citedContext.teams && message.citedContext.teams.length > 0 && (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <Users className="h-3 w-3 text-primary flex-shrink-0" />
+                                      <span className="text-xs font-medium text-primary">Cited Teams:</span>
+                                      {message.citedContext.teams.map((team) => (
+                                        <Badge key={team.id} variant="secondary" className="text-xs">
+                                          {team.name}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                               <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
                                 {renderMessageContent(message.content)}
                               </p>

@@ -404,6 +404,11 @@ export interface ChatMessage {
   teamId?: string;
   memberName?: string;
   memberAvatar?: string;
+  citedContext?: {
+    projects?: any[];
+    tasks?: any[];
+    teams?: any[];
+  };
 }
 
 export type MessageListener = (messages: ChatMessage[]) => void;
@@ -433,6 +438,11 @@ export const messagesService = {
     teamId?: string;
     memberName?: string;
     memberAvatar?: string;
+    citedContext?: {
+      projects?: any[];
+      tasks?: any[];
+      teams?: any[];
+    };
   }): Promise<ChatMessage> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/messages` : `${API_BASE}/messages`;
     const response = await authenticatedFetch(url, {

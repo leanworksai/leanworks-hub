@@ -82,7 +82,7 @@ export function setupMessageEndpoints(
     try {
       const domain = (req as any).userDomain;
       const userEmail = (req as any).user.email;
-      const { chatId, role, content, memberName, memberAvatar, projectId, teamId } = req.body;
+      const { chatId, role, content, memberName, memberAvatar, projectId, teamId, citedContext } = req.body;
 
       if (!chatId || !content) {
         return res.status(400).json({ error: 'chatId and content are required' });
@@ -103,7 +103,7 @@ export function setupMessageEndpoints(
         }
       }
 
-      const messageData = {
+      const messageData: any = {
         chatId,
         role: role || 'user',
         content,
@@ -114,6 +114,11 @@ export function setupMessageEndpoints(
         memberName: finalMemberName,
         memberAvatar: finalMemberAvatar,
       };
+
+      // Add citedContext if provided
+      if (citedContext) {
+        messageData.citedContext = citedContext;
+      }
 
       // Write to Firestore only - single source of truth for messages
       const messagesPath = `domains/${domain}/messages`;
