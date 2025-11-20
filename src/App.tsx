@@ -13,6 +13,7 @@ import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Chatbot } from "./components/Chatbot";
+import { GlobalCallListener } from "./components/GlobalCallListener";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Home from "./pages/Home";
@@ -153,6 +154,7 @@ const AppRoutesContent = () => {
         <Route path="*" element={<NotFound />} />
       </Routes>
       {user && !isHomePage && <Chatbot />}
+      {user && <GlobalCallListener />}
     </>
   );
 };

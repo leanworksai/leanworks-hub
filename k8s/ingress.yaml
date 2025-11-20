@@ -26,6 +26,13 @@ spec:
             name: ask-api
             port:
               number: 80
+      - path: /api/generate-task
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
       - path: /api/verify
         pathType: Exact
         backend:

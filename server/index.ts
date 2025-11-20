@@ -11,6 +11,7 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import crypto from 'crypto';
 import { getTenantPool, getDomainFromEmail } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
+import { setupCallEndpoints } from './endpoints/calls.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -1056,7 +1057,16 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
           'reason', t.reason,
           'projectId', t.project_id,
           'project', p2.name
-        )) FROM tasks t
+        ) ORDER BY 
+          CASE t.status
+            WHEN 'todo' THEN 1
+            WHEN 'in-progress' THEN 2
+            WHEN 'review' THEN 3
+            WHEN 'blocked' THEN 4
+            WHEN 'completed' THEN 5
+            ELSE 6
+          END,
+          t.created_at DESC) FROM tasks t
         LEFT JOIN projects p2 ON t.project_id = p2.id
         WHERE t.project_id = p.id), '[]'::json) as tasks
       FROM projects p
@@ -1175,7 +1185,16 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
           'reason', t.reason,
           'projectId', t.project_id,
           'project', p2.name
-        )) FROM tasks t
+        ) ORDER BY 
+          CASE t.status
+            WHEN 'todo' THEN 1
+            WHEN 'in-progress' THEN 2
+            WHEN 'review' THEN 3
+            WHEN 'blocked' THEN 4
+            WHEN 'completed' THEN 5
+            ELSE 6
+          END,
+          t.created_at DESC) FROM tasks t
         LEFT JOIN projects p2 ON t.project_id = p2.id
         WHERE t.project_id = p.id), '[]'::json) as tasks
       FROM projects p
@@ -1515,7 +1534,16 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
       LEFT JOIN users u ON t.assignee_id = u.email
-      ORDER BY t.created_at DESC
+      ORDER BY 
+        CASE t.status
+          WHEN 'todo' THEN 1
+          WHEN 'in-progress' THEN 2
+          WHEN 'review' THEN 3
+          WHEN 'blocked' THEN 4
+          WHEN 'completed' THEN 5
+          ELSE 6
+        END,
+        t.created_at DESC
     `);
     
     // Transform to camelCase
@@ -1659,7 +1687,16 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
       LEFT JOIN projects p ON t.project_id = p.id
       LEFT JOIN users u ON t.assignee_id = u.email
       WHERE t.project_id = $1
-      ORDER BY t.created_at DESC
+      ORDER BY 
+        CASE t.status
+          WHEN 'todo' THEN 1
+          WHEN 'in-progress' THEN 2
+          WHEN 'review' THEN 3
+          WHEN 'blocked' THEN 4
+          WHEN 'completed' THEN 5
+          ELSE 6
+        END,
+        t.created_at DESC
     `, [projectId]);
     
     // Transform to camelCase
@@ -2354,10 +2391,84 @@ app.get('/api/ask-api-key', authenticateUser, async (req, res) => {
 });
 
 // ============================================================================
+// AI TASK GENERATION ENDPOINT (Proxies to external AI service)
+// ============================================================================
+
+app.post('/api/generate-task', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const requestBody = req.body;
+    
+    // Determine the external AI service URL
+    // In production, this should be the ask-api service URL
+    // In local dev, it's http://0.0.0.0:8081
+    const isLocalDev = process.env.NODE_ENV !== 'production';
+    const aiServiceBase = isLocalDev 
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
+      : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+    
+    const aiServiceUrl = `${aiServiceBase}/api/generate-task`;
+    
+    // Prepare headers for the AI service request
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    
+    // Get API key for authentication
+    try {
+      const apiKey = await getApiKeyFromSecretManager();
+      headers['X-API-Key'] = apiKey;
+    } catch (error) {
+      console.error('Failed to get API key, request may fail:', error);
+      // Continue anyway - the AI service might handle auth differently
+    }
+    
+    // Ensure user_id is set
+    if (!requestBody.user_id) {
+      requestBody.user_id = userEmail.toLowerCase();
+    }
+    
+    // Proxy the request to the AI service
+    const aiResponse = await fetch(aiServiceUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { error: `AI service error: ${aiResponse.status} ${aiResponse.statusText}` };
+      }
+      return res.status(aiResponse.status).json(errorData);
+    }
+    
+    const aiData = await aiResponse.json();
+    
+    // Return the response from the AI service
+    res.json(aiData);
+  } catch (error) {
+    console.error('Error generating AI task details:', error);
+    res.status(500).json({ 
+      error: error instanceof Error ? error.message : 'Failed to generate AI task details' 
+    });
+  }
+});
+
+// ============================================================================
 // INTEGRATIONS ENDPOINTS (PostgreSQL + Secret Manager)
 // ============================================================================
 
 setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAccount, db);
+
+// ============================================================================
+// CALL ENDPOINTS (Firestore - Optional, can also use Firestore directly)
+// ============================================================================
+
+setupCallEndpoints(app, authenticateUser, db);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)

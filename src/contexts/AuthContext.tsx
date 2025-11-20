@@ -189,7 +189,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (firebaseError: any) {
           // If Firebase Auth fails (e.g., invalid API key), we'll still proceed
           // The custom token will be used directly for API requests
-          console.warn('Firebase Auth sign-in failed, but will use custom token for API:', firebaseError.message);
+          // Only log if it's not the expected API key error
+          if (!firebaseError.message?.includes('api-key-not-valid')) {
+            console.warn('Firebase Auth sign-in failed, but will use custom token for API:', firebaseError.message);
+          }
           // Create a mock user object for state management
           setUser(userData as User);
         }
