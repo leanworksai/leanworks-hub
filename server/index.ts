@@ -47,7 +47,10 @@ try {
   throw error;
 }
 
+// Use named database 'leanworks-prod' - this is the database configured in Firebase
+// Note: Client SDK will need to be configured to use the same database
 const db = getFirestore(firebaseApp, 'leanworks-prod');
+console.log('✅ Firestore database initialized:', db.databaseId);
 const auth = getAuth(firebaseApp);
 console.log('✅ Firestore and Auth initialized');
 
@@ -61,6 +64,14 @@ const app = express();
 const PORT = 3001;
 
 app.use(cors());
+
+// ============================================================================
+// REQUEST LOGGING MIDDLEWARE (for debugging - must be before routes)
+// ============================================================================
+
+app.use((req, res, next) => {
+  next();
+});
 
 // JSON parsing middleware (except for GitHub webhook)
 app.use((req, res, next) => {
@@ -80,6 +91,10 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.error('❌ [Backend] authenticateUser: No token provided', {
+        hasAuthHeader: !!authHeader,
+        authHeader: authHeader?.substring(0, 50),
+      });
       return res.status(401).json({ error: 'No token provided' });
     }
 
@@ -124,7 +139,11 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
           }
         } catch (customTokenError: any) {
           // If custom token handling fails, log and throw original error
-          console.error('Custom token handling failed:', customTokenError.message);
+          console.error('❌ [Backend] authenticateUser: Custom token handling failed', {
+            error: customTokenError.message,
+            code: customTokenError.code,
+            stack: customTokenError.stack,
+          });
           throw idTokenError;
         }
       }
@@ -132,8 +151,14 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
       // If we get here, both methods failed or it's not a custom token error
       throw idTokenError;
     }
-  } catch (error) {
-    console.error('Auth error:', error);
+  } catch (error: any) {
+    console.error('❌ [Backend] authenticateUser: Authentication failed', {
+      error: error.message,
+      code: error.code,
+      method: req.method,
+      path: req.path,
+      url: req.url,
+    });
     res.status(401).json({ error: 'Invalid token' });
   }
 }
@@ -290,6 +315,15 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Create custom token
     const customToken = await auth.createCustomToken(userRecord.uid);
+    
+    // Log token creation for debugging (without exposing the full token)
+    console.log('✅ Custom token created:', {
+      uid: userRecord.uid,
+      email: userRecord.email,
+      tokenLength: customToken.length,
+      tokenPrefix: customToken.substring(0, 20),
+      projectId: serviceAccount.project_id,
+    });
 
     res.json({ 
       success: true,
@@ -2350,6 +2384,11 @@ let cachedApiKey: string | null = null;
 let apiKeyCacheTime: number = 0;
 const API_KEY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+// Cache for Firebase config to avoid repeated Secret Manager calls
+let cachedFirebaseConfig: any = null;
+let firebaseConfigCacheTime: number = 0;
+const FIREBASE_CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 async function getApiKeyFromSecretManager(): Promise<string> {
   // Return cached key if still valid
   if (cachedApiKey && Date.now() - apiKeyCacheTime < API_KEY_CACHE_TTL) {
@@ -2387,6 +2426,89 @@ app.get('/api/ask-api-key', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('Error fetching API key:', error);
     res.status(500).json({ error: 'Failed to fetch API key' });
+  }
+});
+
+// ============================================================================
+// FIREBASE CONFIG ENDPOINT (Secret Manager)
+// ============================================================================
+
+async function getFirebaseConfigFromSecretManager(): Promise<any> {
+  // Return cached config if still valid
+  if (cachedFirebaseConfig && Date.now() - firebaseConfigCacheTime < FIREBASE_CONFIG_CACHE_TTL) {
+    return cachedFirebaseConfig;
+  }
+
+  try {
+    const projectId = serviceAccount.project_id;
+    const secretName = `projects/${projectId}/secrets/firebase-config/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
+    
+    // Get the raw data - it might be a Buffer or Uint8Array
+    let configString: string;
+    if (version.payload?.data) {
+      if (Buffer.isBuffer(version.payload.data)) {
+        configString = version.payload.data.toString('utf8');
+      } else if (version.payload.data instanceof Uint8Array) {
+        configString = Buffer.from(version.payload.data).toString('utf8');
+      } else {
+        configString = String(version.payload.data);
+      }
+    } else {
+      throw new Error('Firebase config secret has no data');
+    }
+    
+    if (!configString || configString.trim().length === 0) {
+      throw new Error('Firebase config is empty');
+    }
+
+    // Trim whitespace and remove any BOM or leading/trailing characters
+    configString = configString.trim();
+    
+    // Log first 100 chars for debugging (without exposing full API key)
+    console.log('📥 Raw config from Secret Manager (first 100 chars):', configString.substring(0, 100));
+    
+    // Try to parse the JSON
+    let config: any;
+    try {
+      config = JSON.parse(configString);
+    } catch (parseError: any) {
+      console.error('❌ JSON parse error:', parseError.message);
+      console.error('Raw config string length:', configString.length);
+      console.error('First 200 chars:', configString.substring(0, 200));
+      console.error('Last 200 chars:', configString.substring(Math.max(0, configString.length - 200)));
+      throw new Error(`Failed to parse Firebase config JSON: ${parseError.message}`);
+    }
+    
+    // Validate required fields
+    if (!config.apiKey) {
+      throw new Error('Firebase config missing apiKey');
+    }
+    if (!config.projectId) {
+      throw new Error('Firebase config missing projectId');
+    }
+    
+    cachedFirebaseConfig = config;
+    firebaseConfigCacheTime = Date.now();
+    return config;
+  } catch (error) {
+    console.error('❌ Failed to fetch Firebase config from Secret Manager:', error);
+    throw error;
+  }
+}
+
+// Endpoint to get Firebase config (public endpoint, no auth required for client-side use)
+app.get('/api/firebase-config', async (req, res) => {
+  try {
+    const config = await getFirebaseConfigFromSecretManager();
+    res.json(config);
+  } catch (error: any) {
+    console.error('Error fetching Firebase config:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch Firebase config',
+      message: error.message || 'Unknown error',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -2587,6 +2709,23 @@ app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
     console.error('Get updates by task error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
+});
+
+// ============================================================================
+// CATCH-ALL ROUTE (for debugging)
+// ============================================================================
+
+app.use((req, res, next) => {
+  console.log('🔍 [Backend] Unhandled request', {
+    method: req.method,
+    path: req.path,
+    url: req.url,
+    headers: {
+      authorization: req.headers.authorization ? 'present' : 'missing',
+      'content-type': req.headers['content-type'],
+    },
+  });
+  res.status(404).json({ error: 'Route not found', path: req.path });
 });
 
 // ============================================================================

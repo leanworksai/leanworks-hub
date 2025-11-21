@@ -6,8 +6,8 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/firestore";
-import { callSignalingApiService } from "@/services/call-signaling-api";
-import { useWebRTC, CallStatus } from "@/hooks/useWebRTC";
+import { CallStatus } from "@/hooks/useWebRTC";
+import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import { cn, getUserById, getUserDisplayName, getUserInitials, getAvatarColor } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
@@ -169,7 +169,6 @@ export function Chatbot() {
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const [incomingCallSignal, setIncomingCallSignal] = useState<CallSignal | null>(null);
-  const [currentCallId, setCurrentCallId] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [callStatusFromSignal, setCallStatusFromSignal] = useState<CallStatus>('idle');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -177,13 +176,15 @@ export function Chatbot() {
   const memberSearchRef = useRef<HTMLInputElement>(null);
   const previousChatIdRef = useRef<string | null>(null); // Track previous chatId to detect chat switches
   
-  // WebRTC hook for call management
+  // WebRTC hook for call management - use shared context
   const {
     callStatus,
     isMuted: localIsMuted,
     toggleMute: localToggleMute,
     endCall: endWebRTCCall,
-  } = useWebRTC();
+    currentCallId,
+    setCurrentCallId,
+  } = useWebRTCContext();
   
   // Mute state from active call (shared from VoiceCallButton)
   const [activeCallMuted, setActiveCallMuted] = useState(false);
@@ -205,14 +206,9 @@ export function Chatbot() {
   const handleEndCall = useCallback(async () => {
     try {
       // Update signaling service to notify the other user
-      if (currentCallId && currentChatId) {
+      if (currentCallId) {
         try {
-          const useApi = !db || !auth?.currentUser?.email;
-          if (useApi) {
-            await callSignalingApiService.endCall(currentCallId, currentChatId);
-          } else {
-            await callSignalingService.endCall(currentCallId);
-          }
+          await callSignalingService.endCall(currentCallId);
         } catch (err) {
           console.error('Error ending call:', err);
           // Continue with cleanup even if update fails
@@ -225,7 +221,6 @@ export function Chatbot() {
       setIncomingCallSignal(null);
       setCallStatusFromSignal('idle'); // Reset call status to idle
       
-      console.log('Call ended successfully');
     } catch (err) {
       console.error('Error ending call:', err);
       // Still clean up local resources even if there's an error
@@ -234,7 +229,7 @@ export function Chatbot() {
       setIncomingCallSignal(null);
       setCallStatusFromSignal('idle'); // Reset call status to idle
     }
-  }, [currentCallId, currentChatId, endWebRTCCall, db, auth]);
+  }, [currentCallId, endWebRTCCall]);
 
   // Helper functions for message caching
   const getCacheKey = (chatId: string) => {
@@ -1864,87 +1859,95 @@ export function Chatbot() {
         return;
       }
 
-      // Use API-based signaling by default (more reliable, doesn't require Firebase Auth)
-      // Only use Firestore if Firebase Auth is available
-      const useApi = !db || !auth?.currentUser?.email;
-      
+      // Use Firestore real-time listeners for call signaling
       setCurrentChatId(chatId);
       
-      const unsubscribe = useApi
-        ? callSignalingApiService.subscribeToCallSignals(chatId, (signal) => {
+      const unsubscribe = callSignalingService.subscribeToCallSignals(chatId, (signal) => {
+            
             if (!signal) {
-              // No active call
-              setIncomingCallSignal(null);
-              setCurrentCallId(null);
-              setCallStatusFromSignal('idle');
+              // No signal from Firestore - but don't immediately end the call
+              // Check if WebRTC connection is still active first
+              if (callStatus === 'idle' || callStatus === 'ended') {
+                // WebRTC connection is already ended, safe to clear
+                // BUT DON'T call endWebRTCCall() - it's already been called
+                setIncomingCallSignal(null);
+                setCurrentCallId(null);
+                setCallStatusFromSignal('idle');
+              } else if (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing') {
+                // Call is still active according to WebRTC - don't clear
+                // This might be a temporary Firestore issue or the signal hasn't arrived yet
+                // Received null signal but call is still active, ignoring
+                // Keep the call state as is - DON'T call endWebRTCCall()
+              } else {
+                // For other states, only clear if we don't have an active call ID
+                if (!currentCallId) {
+                  setIncomingCallSignal(null);
+                  setCurrentCallId(null);
+                  setCallStatusFromSignal('idle');
+                  // DON'T call endWebRTCCall() - no active call to end
+                }
+              }
               return;
             }
 
-            // Always track the callId and status for synchronization
-            setCurrentCallId(signal.callId);
-            
             // Handle status updates for both caller and receiver
+            // Only set currentCallId when we're actually starting/joining a call, not from 'ended' signals
             if (signal.status === 'ringing') {
-              if (signal.calleeEmail.toLowerCase() === user.email?.toLowerCase()) {
+              const isCallee = signal.calleeEmail.toLowerCase() === user.email?.toLowerCase();
+              const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+              
+              // Set currentCallId only when we're actually in a call (ringing or active)
+              if (isCallee || isCaller) {
+                setCurrentCallId(signal.callId);
+              }
+              
+              if (isCallee) {
                 // Incoming call for this user
                 setIncomingCallSignal(signal);
                 setCallStatusFromSignal('ringing');
-              } else if (signal.callerEmail.toLowerCase() === user.email?.toLowerCase()) {
+              } else if (isCaller) {
                 // Outgoing call (we're the caller)
                 setCallStatusFromSignal('ringing');
               } else {
+                console.warn('⚠️ Call signal mismatch:', {
+                  signalCallee: signal.calleeEmail,
+                  signalCaller: signal.callerEmail,
+                  currentUser: user.email,
+                });
                 setCallStatusFromSignal('ringing');
               }
             } else if (signal.status === 'active') {
               // Call is active - both users should see this
-              setIncomingCallSignal(null); // Clear incoming call signal if it was set
-              setCallStatusFromSignal('active');
-            } else if (signal.status === 'ended') {
-              // Call ended - both users should see this
-              setIncomingCallSignal(null);
-              setCurrentCallId(null);
-              setCallStatusFromSignal('idle');
-              endWebRTCCall();
-            } else {
-              setIncomingCallSignal(null);
-              setCallStatusFromSignal('idle');
-            }
-          })
-        : callSignalingService.subscribeToCallSignals(chatId, (signal) => {
-            if (!signal) {
-              // No active call
-              setIncomingCallSignal(null);
-              setCurrentCallId(null);
-              setCallStatusFromSignal('idle');
-              return;
-            }
-
-            // Always track the callId and status for synchronization
-            setCurrentCallId(signal.callId);
-            
-            // Handle status updates for both caller and receiver
-            if (signal.status === 'ringing') {
-              if (signal.calleeEmail.toLowerCase() === user.email?.toLowerCase()) {
-                // Incoming call for this user
-                setIncomingCallSignal(signal);
-                setCallStatusFromSignal('ringing');
-              } else if (signal.callerEmail.toLowerCase() === user.email?.toLowerCase()) {
-                // Outgoing call (we're the caller)
-                setCallStatusFromSignal('ringing');
-              } else {
-                setCallStatusFromSignal('ringing');
+              // Set currentCallId if we're part of this call
+              const isCallee = signal.calleeEmail.toLowerCase() === user.email?.toLowerCase();
+              const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+              if (isCallee || isCaller) {
+                setCurrentCallId(signal.callId);
               }
-            } else if (signal.status === 'active') {
-              // Call is active - both users should see this
               setIncomingCallSignal(null); // Clear incoming call signal if it was set
               setCallStatusFromSignal('active');
             } else if (signal.status === 'ended') {
-              // Call ended - both users should see this
-              setIncomingCallSignal(null);
-              setCurrentCallId(null);
-              setCallStatusFromSignal('idle');
-              endWebRTCCall();
+              // Call ended - only clean up if we were actually in this call
+              // Check the context's currentCallId (which is only set when we're in a call)
+              // Don't set currentCallId from 'ended' signals - only check if it matches
+              if (currentCallId === signal.callId && (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing')) {
+                // We were in this call, so clean up
+                setIncomingCallSignal(null);
+                setCurrentCallId(null);
+                setCallStatusFromSignal('idle');
+                endWebRTCCall();
+              } else {
+                // This is a stale 'ended' signal for a call we're not in - just clear local state
+                if (currentCallId === signal.callId) {
+                  // It's our call ID but we're not in an active call - just clear refs
+                  setCurrentCallId(null);
+                  setIncomingCallSignal(null);
+                  setCallStatusFromSignal('idle');
+                }
+                // Don't call endWebRTCCall() if we're not actually in a call
+              }
             } else {
+              // Unknown status - don't call endWebRTCCall(), just clear local state
               setIncomingCallSignal(null);
               setCallStatusFromSignal('idle');
             }
@@ -1953,7 +1956,7 @@ export function Chatbot() {
       return () => {
         unsubscribe();
       };
-    }, [user?.email, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, allTeamMembers, endWebRTCCall, db, auth]);
+    }, [user?.email, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, allTeamMembers, endWebRTCCall, currentCallId, setCurrentCallId, callStatus, db, auth]);
 
     // Set up real-time listener in a separate effect to avoid conflicts
     useEffect(() => {
@@ -4182,14 +4185,10 @@ export function Chatbot() {
           }
         }
         
-        // Determine which signaling service to use
-        const useApi = !db || !auth?.currentUser?.email;
-        
         return (
           <IncomingCallDialog
             callSignal={incomingCallSignal}
             chatId={dialogChatId || incomingCallSignal.chatId}
-            useApiSignaling={useApi}
             callerName={(() => {
               const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
               if (caller) {

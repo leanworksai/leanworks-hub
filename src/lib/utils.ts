@@ -77,3 +77,17 @@ export function getAvatarColor(identifier?: string | null): string {
 
   return colors[colorIndex];
 }
+
+/**
+ * Sanitize domain from email for Firestore paths (remove dots and special characters)
+ * Matches the backend getDomainFromEmail function behavior
+ */
+export function sanitizeDomainForFirestore(email: string): string {
+  const domain = email.split('@')[1];
+  if (!domain) {
+    throw new Error(`Invalid email format: ${email}`);
+  }
+  // Remove all special characters (dots, hyphens, etc.) to match backend
+  const sanitized = domain.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return sanitized;
+}

@@ -118,7 +118,30 @@ export function setupCallEndpoints(
         createdAt: new Date(),
       };
 
-      await db.collection(callsPath).doc(callId).set(callData);
+      try {
+        const docRef = db.collection(callsPath).doc(callId);
+        await docRef.set(callData);
+        
+        // Verify the document was written
+        const verifyDoc = await docRef.get();
+        
+        if (!verifyDoc.exists) {
+          console.error('❌ [Backend] Call document not found after write!', {
+            documentPath: docRef.path,
+          });
+        }
+      } catch (writeError: any) {
+        console.error('❌ [Backend] Failed to write call document', {
+          error: writeError,
+          message: writeError?.message,
+          code: writeError?.code,
+          stack: writeError?.stack,
+          callsPath,
+          callId,
+          databaseId: db.databaseId,
+        });
+        throw writeError;
+      }
 
       res.json({
         success: true,

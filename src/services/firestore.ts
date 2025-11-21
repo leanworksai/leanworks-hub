@@ -17,10 +17,12 @@ async function getAuthToken(): Promise<string | null> {
   // First try to get token from Firebase Auth
   if (auth && auth.currentUser) {
     try {
-      return await auth.currentUser.getIdToken();
+      const idToken = await auth.currentUser.getIdToken();
+      return idToken;
     } catch (error) {
-      console.warn('Failed to get token from Firebase Auth:', error);
+      console.warn('⚠️ Failed to get token from Firebase Auth:', error);
     }
+  } else {
   }
   
   // Fallback: try to get stored custom token from window (set by auth context)
@@ -45,6 +47,7 @@ async function getAuthToken(): Promise<string | null> {
     // Ignore localStorage errors
   }
   
+  console.warn('⚠️ No auth token available for API request');
   return null;
 }
 
@@ -593,7 +596,7 @@ export const callSignalingService = {
     let isActive = true;
 
     // Use dynamic import to avoid issues if firebase/firestore is not available
-    import('firebase/firestore').then((firestore) => {
+    import('firebase/firestore').then(async (firestore) => {
       if (!isActive) return;
 
       const { collection, onSnapshot, query, where, orderBy, limit } = firestore;
@@ -604,46 +607,62 @@ export const callSignalingService = {
         return;
       }
 
-      const domain = userEmail.split('@')[1]?.toLowerCase() || '';
+      const { sanitizeDomainForFirestore } = await import('@/lib/utils');
+      const domain = sanitizeDomainForFirestore(userEmail);
       const callsRef = collection(db, `domains/${domain}/calls`);
 
       // Query for active calls for this chat
-      let q;
-      try {
-        q = query(
-          callsRef,
-          where('chatId', '==', chatId),
-          orderBy('createdAt', 'desc'),
-          limit(1)
-        );
-      } catch (error: any) {
-        // If index error, query without orderBy
-        if (error.code === 9 || error.message?.includes('index')) {
-          q = query(
-            callsRef,
-            where('chatId', '==', chatId),
-            limit(1)
-          );
-        } else {
-          throw error;
-        }
-      }
+      // Using query without orderBy to avoid index requirement
+      const q = query(
+        callsRef,
+        where('chatId', '==', chatId),
+        limit(10) // Get up to 10 calls, we'll take the most recent one
+      );
 
       unsubscribeFn = onSnapshot(
         q,
+        {
+          // Include metadata changes to detect when data comes from cache vs server
+          includeMetadataChanges: true,
+        },
         (snapshot) => {
           if (!isActive) return;
 
-          if (snapshot.empty) {
-            callback(null);
+          // In Safari, sometimes we get cache-only snapshots first
+          // Only process if we have data or if this is a server snapshot
+          if (snapshot.metadata.fromCache && snapshot.empty) {
+            // This is a cached empty result, wait for server result
             return;
           }
 
-          const callDoc = snapshot.docs[0];
+          if (snapshot.empty) {
+            // Only clear if this is a server snapshot (not just cache)
+            if (!snapshot.metadata.fromCache) {
+              callback(null);
+            }
+            return;
+          }
+
+          // Sort documents by createdAt (most recent first) since we can't use orderBy
+          const sortedDocs = [...snapshot.docs].sort((a, b) => {
+            const aCreated = a.data().createdAt?.toMillis?.() || a.data().createdAt?.seconds * 1000 || 0;
+            const bCreated = b.data().createdAt?.toMillis?.() || b.data().createdAt?.seconds * 1000 || 0;
+            return bCreated - aCreated; // Descending order (newest first)
+          });
+          
+          if (sortedDocs.length === 0) {
+            callback(null);
+            return;
+          }
+          
+          const callDoc = sortedDocs[0];
           const data = callDoc.data();
           
+          // Use the document ID as callId (should match the callId in the data)
+          const callId = callDoc.id || data.callId;
+          
           const signal: CallSignal = {
-            callId: callDoc.id,
+            callId: callId,
             chatId: data.chatId || chatId,
             callerEmail: data.callerEmail || '',
             calleeEmail: data.calleeEmail || '',
@@ -660,7 +679,8 @@ export const callSignalingService = {
         (error) => {
           if (!isActive) return;
           console.error('Error listening to call signals:', error);
-          callback(null);
+          // Don't call callback(null) on error - keep existing state
+          // This prevents clearing the call signal on temporary errors
         }
       );
     }).catch((error) => {
@@ -678,6 +698,8 @@ export const callSignalingService = {
 
   /**
    * Create a call offer
+   * Uses backend API route to write to Firestore (bypasses security rules)
+   * The GlobalCallListener will still receive updates via WebSocket (onSnapshot)
    */
   async createCallOffer(
     chatId: string,
@@ -685,41 +707,140 @@ export const callSignalingService = {
     calleeEmail: string,
     offer: RTCSessionDescriptionInit
   ): Promise<string> {
-    if (!db) {
-      console.error('Firestore not initialized. Please ensure Firebase is properly configured.');
-      throw new Error('Firestore not initialized. Please ensure Firebase is properly configured.');
+    // Verify auth is available
+    if (!auth?.currentUser) {
+      console.error('❌ createCallOffer: User not authenticated - auth.currentUser is null');
+      throw new Error('User not authenticated. Please refresh the page and log in again.');
     }
 
-    if (!auth?.currentUser?.email) {
-      // Try to wait a bit for auth to initialize (in case it's still loading)
-      await new Promise(resolve => setTimeout(resolve, 500));
-      if (!auth?.currentUser?.email) {
-        // Only log error if auth is actually missing (not just loading)
-        // This is called when user actively tries to make a call, so it's a real error
-        console.error('User not authenticated. Firebase Auth currentUser is not available. User may need to log in again.');
-        throw new Error('User not authenticated. Please refresh the page and log in again.');
-      }
+    // Get auth token for API request
+    let idToken: string | null = null;
+    try {
+      idToken = await auth.currentUser.getIdToken();
+      console.log('✅ createCallOffer: Got ID token', {
+        tokenLength: idToken?.length,
+        tokenPrefix: idToken?.substring(0, 20),
+      });
+    } catch (tokenError: any) {
+      console.error('❌ createCallOffer: Failed to get ID token', {
+        error: tokenError.message,
+        code: tokenError.code,
+      });
+      throw new Error('Failed to get authentication token. Please refresh the page and log in again.');
     }
 
-    const { collection, addDoc, serverTimestamp } = await import('firebase/firestore');
-    const userEmail = auth.currentUser?.email?.toLowerCase();
-    const domain = userEmail.split('@')[1]?.toLowerCase() || '';
-    const callsRef = collection(db, `domains/${domain}/calls`);
-
-    const callId = `${chatId}-${Date.now()}`;
-    const callData = {
-      callId,
+    // Use backend API route to create call (bypasses Firestore security rules)
+    const apiUrl = import.meta.env.DEV 
+      ? `${API_BASE}/api/calls/${encodeURIComponent(chatId)}/offer`
+      : `${API_BASE}/calls/${encodeURIComponent(chatId)}/offer`;
+    console.log('📞 createCallOffer: Creating call via API', {
+      apiUrl,
       chatId,
-      callerEmail: callerEmail.toLowerCase(),
-      calleeEmail: calleeEmail.toLowerCase(),
-      status: 'ringing',
-      offer: JSON.stringify(offer),
-      iceCandidates: [],
-      createdAt: serverTimestamp(),
-    };
+      callerEmail,
+      calleeEmail,
+    });
 
-    await addDoc(callsRef, callData);
-    return callId;
+    try {
+      console.log('📡 createCallOffer: Sending API request', {
+        apiUrl,
+        method: 'POST',
+        hasToken: !!idToken,
+        tokenLength: idToken?.length,
+      });
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          offer,
+          calleeEmail: calleeEmail.toLowerCase(),
+        }),
+      });
+
+      console.log('📡 createCallOffer: API response received', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries()),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: errorText || 'Unknown error' };
+        }
+        console.error('❌ createCallOffer: API request failed', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorData.error,
+          errorText,
+        });
+        throw new Error(errorData.error || `Failed to create call: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      const callId = result.callId;
+      
+      console.log('✅ createCallOffer: Call created successfully via API', {
+        callId,
+        chatId,
+        callerEmail,
+        calleeEmail,
+        result,
+      });
+
+      // Wait a moment for Firestore to propagate, then verify document exists
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Verify the document was written by querying Firestore directly
+      try {
+        const { getDoc, doc: docFn, collection: collectionFn } = await import('firebase/firestore');
+        const userEmail = auth.currentUser?.email?.toLowerCase() || '';
+        const { sanitizeDomainForFirestore } = await import('@/lib/utils');
+        const domain = sanitizeDomainForFirestore(userEmail);
+        const collectionPath = `domains/${domain}/calls`;
+        const callDocRef = docFn(db, collectionPath, callId);
+        const verifyDoc = await getDoc(callDocRef);
+        
+        if (verifyDoc.exists()) {
+          console.log('✅ createCallOffer: Document verified in Firestore', {
+            callId,
+            documentPath: callDocRef.path,
+            data: verifyDoc.data(),
+          });
+        } else {
+          console.warn('⚠️ createCallOffer: Document not found in Firestore yet', {
+            callId,
+            documentPath: callDocRef.path,
+            note: 'This might be a timing issue - document may appear shortly',
+          });
+        }
+      } catch (verifyError: any) {
+        console.warn('⚠️ createCallOffer: Could not verify document', {
+          error: verifyError.message,
+          code: verifyError.code,
+        });
+      }
+
+      // The GlobalCallListener will automatically receive the new call document
+      // via WebSocket (onSnapshot) - no need to verify here
+      return callId;
+    } catch (error: any) {
+      console.error('❌ createCallOffer: Failed to create call via API', {
+        error: error.message,
+        stack: error.stack,
+        chatId,
+        callerEmail,
+        calleeEmail,
+      });
+      throw error;
+    }
   },
 
   /**
@@ -735,8 +856,9 @@ export const callSignalingService = {
     }
 
     const { doc, updateDoc } = await import('firebase/firestore');
-    const userEmail = auth.currentUser?.email?.toLowerCase();
-    const domain = userEmail.split('@')[1]?.toLowerCase() || '';
+    const userEmail = auth.currentUser.email.toLowerCase();
+    const { sanitizeDomainForFirestore } = await import('@/lib/utils');
+    const domain = sanitizeDomainForFirestore(userEmail);
     const callRef = doc(db, `domains/${domain}/calls`, callId);
 
     await updateDoc(callRef, {
@@ -758,8 +880,9 @@ export const callSignalingService = {
     }
 
     const { doc, getDoc, updateDoc, arrayUnion } = await import('firebase/firestore');
-    const userEmail = auth.currentUser?.email?.toLowerCase();
-    const domain = userEmail.split('@')[1]?.toLowerCase() || '';
+    const userEmail = auth.currentUser.email.toLowerCase();
+    const { sanitizeDomainForFirestore } = await import('@/lib/utils');
+    const domain = sanitizeDomainForFirestore(userEmail);
     const callRef = doc(db, `domains/${domain}/calls`, callId);
 
     // Get current candidates and add new one
@@ -786,15 +909,28 @@ export const callSignalingService = {
       throw new Error('User not authenticated');
     }
 
-    const { doc, updateDoc, serverTimestamp } = await import('firebase/firestore');
+    const { doc, updateDoc, serverTimestamp, getDoc } = await import('firebase/firestore');
     const userEmail = auth.currentUser?.email?.toLowerCase();
-    const domain = userEmail.split('@')[1]?.toLowerCase() || '';
+    const { sanitizeDomainForFirestore } = await import('@/lib/utils');
+    const domain = sanitizeDomainForFirestore(userEmail);
     const callRef = doc(db, `domains/${domain}/calls`, callId);
 
-    await updateDoc(callRef, {
-      status: 'ended',
-      endedAt: serverTimestamp(),
-    });
+    try {
+      // First verify the document exists
+      const callDoc = await getDoc(callRef);
+      if (!callDoc.exists()) {
+        throw new Error(`Call document not found: ${callId}`);
+      }
+
+      // Update the call document
+      await updateDoc(callRef, {
+        status: 'ended',
+        endedAt: serverTimestamp(),
+      });
+    } catch (error: any) {
+      console.error('Failed to end call:', error);
+      throw error;
+    }
   },
 };
 

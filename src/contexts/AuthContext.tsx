@@ -5,7 +5,7 @@ import {
   signOut,
   onAuthStateChanged,
 } from 'firebase/auth';
-import { auth } from '@/lib/firebase-client';
+import { auth, initializeFirebase, checkAndWarnInvalidApiKey, isFirebaseConfigured } from '@/lib/firebase-client';
 import { useToast } from '@/hooks/use-toast';
 
 // API base URL
@@ -81,8 +81,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Restore authentication state from localStorage on mount
   useEffect(() => {
-    const restoreAuthState = async () => {
+    const restoreAuthState = async (retryCount = 0) => {
       try {
+        // Check for invalid API key in existing Firebase app (from cache or previous load)
+        // This is especially important for Safari which aggressively caches
+        checkAndWarnInvalidApiKey();
+        
+        // Ensure Firebase is initialized first
+        // Force refresh on retry (useful for Safari cache issues)
+        const forceRefresh = retryCount > 0;
+        try {
+          await initializeFirebase(forceRefresh);
+          // Double-check after initialization to ensure we didn't get an invalid key
+          checkAndWarnInvalidApiKey();
+          
+          // Final validation: if auth exists but has invalid key, we can't use it
+          // The checkAndWarnInvalidApiKey function should have already handled this
+          // But we do a final check here to be safe
+          if (auth) {
+            const apiKey = auth.app.options?.apiKey;
+            if (apiKey && (!apiKey.startsWith('AIza') || apiKey.length <= 20 || 
+                apiKey === 'AIzaSyBypassKeyForServiceAccount' || 
+                apiKey === 'your-api-key')) {
+              console.error('❌ Firebase Auth has invalid API key after initialization');
+              console.error('❌ Firebase Auth will be disabled, but custom tokens will still work for API calls');
+              // Note: We can't set auth to null here as it's imported, but checkAndWarnInvalidApiKey handles it
+            }
+          }
+        } catch (initError: any) {
+          // If initialization fails with API key error, try once more with force refresh
+          if ((initError.message?.includes('No valid Firebase API key') || 
+               initError.message?.includes('Invalid Firebase API key') ||
+               initError.message?.includes('Existing Firebase app has invalid API key')) && 
+              retryCount === 0) {
+            console.warn('⚠️ Firebase initialization failed, retrying with force refresh...');
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s before retry
+            return restoreAuthState(1);
+          }
+          // If retry also fails or it's a different error, log and continue
+          console.error('❌ Firebase initialization failed:', initError.message);
+          // Check again after error
+          checkAndWarnInvalidApiKey();
+        }
+
         // Restore custom token
         const savedToken = storage.get(STORAGE_KEYS.CUSTOM_TOKEN);
         if (savedToken) {
@@ -108,7 +149,75 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         // If Firebase Auth is available, try to restore session
-        if (auth) {
+        // But only if Firebase is properly configured (has a valid API key)
+        if (auth && isFirebaseConfigured()) {
+          // If we have a saved token, try to restore the session
+          if (savedToken) {
+            // Double-check API key is valid before attempting sign-in
+            const apiKey = auth.app.options?.apiKey;
+            const hasValidApiKey = apiKey && 
+                                   apiKey.startsWith('AIza') && 
+                                   apiKey.length > 20 &&
+                                   apiKey !== 'AIzaSyBypassKeyForServiceAccount' &&
+                                   apiKey !== 'your-api-key';
+            
+            if (hasValidApiKey) {
+              try {
+                await signInWithCustomToken(auth, savedToken);
+                
+                // Wait for auth.currentUser to be available
+                let authReady = false;
+                const maxWaitTime = 3000; // 3 seconds max wait
+                const checkInterval = 50; // Check every 50ms
+                const startTime = Date.now();
+
+                while (!authReady && (Date.now() - startTime) < maxWaitTime) {
+                  if (auth.currentUser?.email) {
+                    authReady = true;
+                    break;
+                  }
+                  await new Promise(resolve => setTimeout(resolve, checkInterval));
+                }
+
+                if (!auth.currentUser?.email) {
+                  console.warn('Firebase Auth currentUser not available after restoring token');
+                }
+              } catch (error: any) {
+                // If we get an API key error, try to force refresh Firebase config
+                if (error.message?.includes('api-key-not-valid') && retryCount === 0) {
+                  console.warn('⚠️ API key error during token restore, retrying with force refresh...');
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  // Force refresh Firebase config and retry
+                  try {
+                    await initializeFirebase(true);
+                    if (auth) {
+                      await signInWithCustomToken(auth, savedToken);
+                    }
+                  } catch (retryError) {
+                    console.error('❌ Retry also failed:', retryError);
+                    storage.remove(STORAGE_KEYS.CUSTOM_TOKEN);
+                  }
+                  return;
+                }
+                
+                // If restoring fails (token expired, invalid, etc.), silently continue
+                // The onAuthStateChanged listener will handle the state
+                // Only log if it's not the expected API key error
+                if (!error.message?.includes('api-key-not-valid') && 
+                    !error.message?.includes('INVALID_CUSTOM_TOKEN') &&
+                    !error.message?.includes('CREDENTIAL_TOO_OLD_LOGIN_AGAIN')) {
+                  console.debug('Failed to restore Firebase Auth session (token may be expired):', error.message);
+                }
+                // Clear invalid token
+                storage.remove(STORAGE_KEYS.CUSTOM_TOKEN);
+              }
+            } else {
+              // Firebase not properly configured, skip token restoration
+              console.warn('⚠️ Skipping token restoration - Firebase API key is invalid');
+              console.warn('⚠️ Custom tokens will still work for API authentication');
+            }
+          }
+
           const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
             if (firebaseUser) {
               setUser(firebaseUser);
@@ -182,23 +291,144 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       storage.set(STORAGE_KEYS.USER_DATA, JSON.stringify(userData));
       
       // Try to sign in with custom token (may fail if Firebase not initialized properly)
-      if (auth) {
+      // Only attempt if Firebase is properly configured
+      if (auth && isFirebaseConfigured()) {
         try {
+          console.log('Attempting to sign in with custom token...');
+          
           await signInWithCustomToken(auth, data.customToken);
+          console.log('signInWithCustomToken completed successfully');
+          
+          // Wait for auth.currentUser to be available using onAuthStateChanged
+          // This is more reliable than polling
+          const authReady = await new Promise<boolean>((resolve) => {
+            let resolved = false;
+            const timeout = setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                console.warn('Timeout waiting for auth.currentUser after signInWithCustomToken');
+                resolve(false);
+              }
+            }, 5000); // 5 second timeout
+
+            const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+              if (!resolved) {
+                if (firebaseUser?.email) {
+                  console.log('✅ Firebase Auth currentUser is ready after sign-in:', firebaseUser.email);
+                  resolved = true;
+                  clearTimeout(timeout);
+                  unsubscribe();
+                  resolve(true);
+                } else if (firebaseUser === null && resolved === false) {
+                  // User is null, but we haven't resolved yet - wait a bit more
+                  // This might happen during the transition
+                }
+              }
+            });
+
+            // Also check immediately in case it's already set
+            if (auth.currentUser?.email) {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                unsubscribe();
+                resolve(true);
+              }
+            }
+          });
+
+          if (!authReady) {
+            console.error('❌ Firebase Auth currentUser not available after sign-in');
+            console.error('Auth state:', {
+              hasAuth: !!auth,
+              currentUser: auth.currentUser,
+              currentUserEmail: auth.currentUser?.email,
+            });
+          }
+          
           // onAuthStateChanged will update the user state
         } catch (firebaseError: any) {
-          // If Firebase Auth fails (e.g., invalid API key), we'll still proceed
+          // If we get an API key error, try to refresh and retry once
+          if (firebaseError.message?.includes('api-key-not-valid') || 
+              firebaseError.code?.includes('auth/api-key-not-valid')) {
+            console.warn('⚠️ API key error detected, attempting to refresh Firebase config and retry...');
+            try {
+              await initializeFirebase(true); // Force refresh
+              // Wait a bit for refresh to complete
+              await new Promise(resolve => setTimeout(resolve, 500));
+              // Retry sign-in
+              if (auth) {
+                await signInWithCustomToken(auth, data.customToken);
+                console.log('✅ Sign-in successful after config refresh');
+                return; // Success, exit early
+              }
+            } catch (retryError: any) {
+              console.error('❌ Retry after config refresh also failed:', retryError);
+              // Fall through to error handling below
+            }
+          }
+          
+          // Log the full error for debugging
+          console.error('❌ Firebase Auth sign-in failed:', {
+            message: firebaseError.message,
+            code: firebaseError.code,
+            stack: firebaseError.stack,
+            customTokenLength: data.customToken?.length,
+            customTokenPrefix: data.customToken?.substring(0, 20),
+          });
+          
+          // Check for specific error types
+          if (firebaseError.code === 'auth/invalid-custom-token' || 
+              firebaseError.message?.includes('INVALID_CUSTOM_TOKEN')) {
+            console.error('❌ Custom token is invalid. This might mean:');
+            console.error('   - The token has expired');
+            console.error('   - The token was created for a different Firebase project');
+            console.error('   - The token format is incorrect');
+          } else if (firebaseError.code === 'auth/custom-token-mismatch') {
+            console.error('❌ Custom token project mismatch');
+          } else if (firebaseError.code === 'auth/credential-too-old-login-again') {
+            console.error('❌ Custom token is too old, user needs to log in again');
+          }
+          
+          // If Firebase Auth fails, we'll still proceed with the custom token for API requests
           // The custom token will be used directly for API requests
           // Only log if it's not the expected API key error
-          if (!firebaseError.message?.includes('api-key-not-valid')) {
-            console.warn('Firebase Auth sign-in failed, but will use custom token for API:', firebaseError.message);
+          if (!firebaseError.message?.includes('api-key-not-valid') && 
+              !firebaseError.code?.includes('auth/api-key-not-valid')) {
+            console.warn('⚠️ Firebase Auth sign-in failed, but will use custom token for API requests');
+            console.warn('⚠️ Note: Firestore operations may fail without auth.currentUser');
           }
           // Create a mock user object for state management
           setUser(userData as User);
         }
       } else {
-        // If auth is null, create mock user
-        setUser(userData as User);
+        // Firebase Auth is not available or not properly configured
+        if (!auth) {
+          console.warn('⚠️ Firebase Auth is not initialized (auth is null)');
+          // Try to initialize if auth is null
+          try {
+            await initializeFirebase(true);
+            if (auth && isFirebaseConfigured() && data.customToken) {
+              try {
+                await signInWithCustomToken(auth, data.customToken);
+                console.log('✅ Sign-in successful after initialization');
+              } catch (initSignInError) {
+                console.warn('⚠️ Sign-in failed after initialization, using mock user');
+                setUser(userData as User);
+              }
+            } else {
+              setUser(userData as User);
+            }
+          } catch (initError) {
+            console.error('❌ Failed to initialize Firebase:', initError);
+            setUser(userData as User);
+          }
+        } else {
+          // Auth exists but is not properly configured (invalid API key)
+          console.warn('⚠️ Firebase Auth is not properly configured (invalid API key)');
+          console.warn('⚠️ Using custom token for API authentication only');
+          setUser(userData as User);
+        }
       }
 
       toast({

@@ -4,9 +4,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogOverlay } from 
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, X } from 'lucide-react';
-import { useWebRTC, CallStatus } from '@/hooks/useWebRTC';
+import { CallStatus } from '@/hooks/useWebRTC';
+import { useWebRTCContext } from '@/contexts/WebRTCContext';
 import { callSignalingService, type CallSignal } from '@/services/firestore';
-import { callSignalingApiService } from '@/services/call-signaling-api';
 import { useAuth } from '@/contexts/AuthContext';
 import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
@@ -43,9 +43,9 @@ export function VoiceCallButton({
   const [callSignal, setCallSignal] = useState<CallSignal | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const callIdRef = useRef<string | null>(null);
-  const [useApiSignaling, setUseApiSignaling] = useState(true); // Default to API-based signaling
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const processedAnswerRef = useRef<string | null>(null); // Track processed answers to prevent duplicates
+  const isCreatingCallRef = useRef<boolean>(false); // Track if we're in the process of creating a call
 
   const {
     callStatus,
@@ -60,39 +60,45 @@ export function VoiceCallButton({
     error,
     isMuted,
     toggleMute,
-  } = useWebRTC(
-    (status) => {
-      // Only handle status changes if we're actually in a call
-      // Don't call endCall here as it might interfere with call setup
-      if ((status === 'ended' || status === 'error') && callIdRef.current) {
-        setIsCalling(false);
-        setCallSignal(null); // Clear call signal state
-        if (callIdRef.current) {
-          // Use the correct signaling service based on current setting
-          const callIdToEnd = callIdRef.current;
-          if (useApiSignaling) {
-            callSignalingApiService.endCall(callIdToEnd, chatId).catch(console.error);
-          } else {
-            callSignalingService.endCall(callIdToEnd).catch(console.error);
-          }
-          callIdRef.current = null;
-        }
-      }
-    }
-  );
+    currentCallId,
+    setCurrentCallId,
+  } = useWebRTCContext();
 
-  // Listen for ICE candidates and send them via signaling service
+  // Sync local callIdRef with context
+  useEffect(() => {
+    if (currentCallId !== callIdRef.current) {
+      callIdRef.current = currentCallId;
+    }
+  }, [currentCallId]);
+
+  // Handle status changes
+  useEffect(() => {
+    // Only handle status changes if we're actually in a call
+    if ((callStatus === 'ended' || callStatus === 'error') && callIdRef.current) {
+      setIsCalling(false);
+      setCallSignal(null); // Clear call signal state
+      if (callIdRef.current) {
+        const callIdToEnd = callIdRef.current;
+        callSignalingService.endCall(callIdToEnd).catch(console.error);
+        callIdRef.current = null;
+        setCurrentCallId(null);
+      }
+    } else if (callStatus === 'idle' && isCreatingCallRef.current) {
+      // Don't reset isCalling if we're in the middle of creating a call
+    } else if (callStatus === 'idle' && callIdRef.current) {
+      // Status went to idle but we have a call ID - might be a temporary reset
+      // Don't clear isCalling if we have a call ID
+    }
+  }, [callStatus, setCurrentCallId]);
+
+  // Listen for ICE candidates and send them via Firestore
   useEffect(() => {
     if (!peerConnection || !callIdRef.current) return;
 
     const handleICECandidate = async (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate && callIdRef.current) {
         try {
-          if (useApiSignaling) {
-            await callSignalingApiService.sendICECandidate(callIdRef.current, chatId, event.candidate.toJSON());
-          } else {
-            await callSignalingService.sendICECandidate(callIdRef.current, event.candidate.toJSON());
-          }
+          await callSignalingService.sendICECandidate(callIdRef.current, event.candidate.toJSON());
         } catch (err) {
           console.error('Error sending ICE candidate:', err);
         }
@@ -104,7 +110,7 @@ export function VoiceCallButton({
     return () => {
       peerConnection.removeEventListener('icecandidate', handleICECandidate);
     };
-  }, [peerConnection, useApiSignaling, chatId]);
+  }, [peerConnection, chatId]);
 
   // Set up BroadcastChannel for multi-tab detection
   useEffect(() => {
@@ -158,98 +164,8 @@ export function VoiceCallButton({
       return;
     }
 
-    // Determine which signaling service to use
-    // Default to API-based signaling, only use Firestore if Firebase Auth is confirmed working
-    const shouldUseApi = useApiSignaling || !db || !auth?.currentUser?.email;
-    
+    // Use Firestore real-time listeners for call signaling
     try {
-      if (shouldUseApi) {
-        // Use API-based signaling (polling)
-        unsubscribeRef.current = callSignalingApiService.subscribeToCallSignals(chatId, (signal) => {
-      setCallSignal(signal);
-      
-      if (signal) {
-        // Handle incoming call
-        if (signal.status === 'ringing' && signal.calleeEmail.toLowerCase() === user.email?.toLowerCase()) {
-          // This user is being called
-          setIsCalling(true);
-          callIdRef.current = signal.callId;
-        } else if (signal.status === 'active') {
-          setIsCalling(true);
-          callIdRef.current = signal.callId;
-        } else if (signal.status === 'ringing' && signal.callerEmail.toLowerCase() === user.email?.toLowerCase()) {
-          // Outgoing call (we're the caller)
-          setIsCalling(true);
-          callIdRef.current = signal.callId;
-        } else if (signal.status === 'ended') {
-          // Other user ended the call - stop processing and clean up
-          setIsCalling(false);
-          const endedCallId = callIdRef.current;
-          callIdRef.current = null;
-          processedAnswerRef.current = null; // Reset processed answer tracking
-          setCallSignal(null); // Clear call signal state
-          endCall();
-          // Optionally notify the signaling service that we've acknowledged the end
-          if (endedCallId && useApiSignaling) {
-            // The API will handle this automatically, but we can ensure cleanup
-            callSignalingApiService.endCall(endedCallId, chatId).catch(() => {
-              // Ignore errors - call is already ended
-            });
-          }
-          // Don't process offer/answer/ICE candidates if call is ended
-          return;
-        }
-
-        // Only process offer/answer/ICE candidates if call is still active
-        // Handle offer
-        if (signal.offer && signal.callerEmail.toLowerCase() !== user.email?.toLowerCase()) {
-          // Received offer, but we'll handle it in IncomingCallDialog
-        }
-
-        // Handle answer - only if call is still active and we have a peer connection
-        if (signal.answer && signal.callerEmail.toLowerCase() === user.email?.toLowerCase() && 
-            peerConnection && callIdRef.current) {
-          // Call was answered - only process if we haven't processed this answer yet
-          const answerKey = `${signal.callId}-${JSON.stringify(signal.answer).substring(0, 50)}`;
-          if (processedAnswerRef.current !== answerKey) {
-            processedAnswerRef.current = answerKey;
-            setAnswer(signal.answer).catch((err) => {
-              // If setting answer fails (e.g., already set or peer connection closed), reset the processed flag
-              if (err.message?.includes('stable') || err.message?.includes('already') || 
-                  err.message?.includes('not initialized') || err.message?.includes('closed')) {
-                // Answer was already set or connection closed, this is fine
-                console.log('Answer already processed or connection closed, ignoring');
-              } else {
-                console.error('Error setting answer:', err);
-                processedAnswerRef.current = null; // Reset on error to allow retry
-              }
-            });
-          }
-        }
-
-          // Handle ICE candidates
-          // Only process if we have a peer connection (it will queue if not ready)
-          if (signal.iceCandidates && signal.iceCandidates.length > 0 && peerConnection) {
-            signal.iceCandidates.forEach((candidateStr) => {
-              try {
-                const candidate = typeof candidateStr === 'string' ? JSON.parse(candidateStr) : candidateStr;
-                // addICECandidate will queue candidates if peer connection isn't ready
-                addICECandidate(candidate).catch((err) => {
-                  console.warn('Error adding ICE candidate from signal:', err);
-                });
-              } catch (err) {
-                console.error('Error parsing ICE candidate:', err);
-              }
-            });
-          }
-        } else {
-          // No signal means no active call
-          setIsCalling(false);
-          setCallSignal(null); // Clear call signal state
-        }
-      });
-    } else {
-      // Use Firestore-based signaling (real-time)
       unsubscribeRef.current = callSignalingService.subscribeToCallSignals(chatId, (signal) => {
         setCallSignal(signal);
         
@@ -266,20 +182,34 @@ export function VoiceCallButton({
             setIsCalling(true);
             callIdRef.current = signal.callId;
           } else if (signal.status === 'ended') {
-            // Other user ended the call - stop processing and clean up
-            setIsCalling(false);
-            const endedCallId = callIdRef.current;
-            callIdRef.current = null;
-            processedAnswerRef.current = null; // Reset processed answer tracking
-            setCallSignal(null); // Clear call signal state
-            endCall();
-            // Optionally notify the signaling service that we've acknowledged the end
-            if (endedCallId && !useApiSignaling) {
+            // Other user ended the call - only clean up if we were actually in a call
+            // Don't call endCall() if we're not in an active call (prevents clearing ref unnecessarily)
+            if (callIdRef.current === signal.callId && (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing')) {
+              // We were in this call, so clean up
+              setIsCalling(false);
+              const endedCallId = callIdRef.current;
+              callIdRef.current = null;
+              setCurrentCallId(null); // Update shared context
+              processedAnswerRef.current = null; // Reset processed answer tracking
+              setCallSignal(null); // Clear call signal state
+              endCall();
               // For Firestore, the status change should propagate automatically
               // But we can ensure cleanup
-              callSignalingService.endCall(endedCallId).catch(() => {
-                // Ignore errors - call is already ended
-              });
+              if (endedCallId) {
+                callSignalingService.endCall(endedCallId).catch(() => {
+                  // Ignore errors - call is already ended
+                });
+              }
+            } else {
+              // This is a stale 'ended' signal for a call we're not in - just clear local state
+              if (callIdRef.current === signal.callId) {
+                // It's our call ID but we're not in an active call - just clear refs
+                callIdRef.current = null;
+                setCurrentCallId(null);
+                setIsCalling(false);
+                setCallSignal(null);
+              }
+              // Don't call endCall() if we're not actually in a call
             }
             // Don't process offer/answer/ICE candidates if call is ended
             return;
@@ -328,12 +258,33 @@ export function VoiceCallButton({
             });
           }
         } else {
-          // No signal means no active call
-          setIsCalling(false);
-          setCallSignal(null); // Clear call signal state
+          // No signal from Firestore - but don't immediately end the call
+          // Check if we're actually in an active call first
+          // Only clear if WebRTC connection is also idle/ended AND we don't have a call ID AND we're not creating a call
+          if ((callStatus === 'idle' || callStatus === 'ended') && !callIdRef.current && !isCreatingCallRef.current) {
+            // WebRTC connection is already ended, no call ID, and not creating a call - safe to clear
+            // BUT DON'T call endCall() here - it's already been called if the call was active
+            setIsCalling(false);
+            setCallSignal(null);
+          } else if (isCreatingCallRef.current) {
+            // We're in the process of creating a call - don't clear state
+            // Keep the call state as is - don't clear isCalling
+          } else if (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing') {
+            // Call is still active according to WebRTC - don't clear
+            // This might be a temporary Firestore issue or the signal hasn't arrived yet
+            // Keep the call state as is - don't clear isCalling
+          } else if (callIdRef.current) {
+            // We have a call ID but no signal - might be a timing issue
+            // Don't clear isCalling if we have a call ID
+            // Keep isCalling true if we have a call ID
+          } else {
+            // No call ID and idle status - safe to clear
+            // BUT DON'T call endCall() - it's already been called
+            setIsCalling(false);
+            setCallSignal(null);
+          }
         }
       });
-    }
     } catch (error) {
       // Silently handle subscription errors (might happen during initialization)
       console.debug('Error setting up call signaling subscription:', error);
@@ -344,7 +295,7 @@ export function VoiceCallButton({
         unsubscribeRef.current();
       }
     };
-  }, [chatId, user?.email, authLoading, useApiSignaling, setAnswer, addICECandidate, endCall]);
+  }, [chatId, user?.email, authLoading, setAnswer, addICECandidate, endCall, callStatus]);
 
   // Check if Firestore is available and user is authenticated before allowing calls
   // But don't disable if we're already in a call (allow ending the call)
@@ -367,7 +318,12 @@ export function VoiceCallButton({
   }, [isCalling, callStatus, db, user?.email]);
 
   const handleCallClick = async () => {
-    if (!user?.email) return;
+    console.log('Call button clicked');
+    if (!user?.email) {
+      console.log('No user email, returning');
+      return;
+    }
+    console.log('User email check passed');
 
     // Check for multiple tabs using BroadcastChannel
     if (typeof BroadcastChannel !== 'undefined') {
@@ -377,7 +333,7 @@ export function VoiceCallButton({
         
         const timeout = setTimeout(() => {
           checkChannel.close();
-        }, 300);
+        }, 100); // Reduced from 300ms to match reduced wait time
         
         const handleMessage = (event: MessageEvent) => {
           if (event.data === 'call-active') {
@@ -388,8 +344,8 @@ export function VoiceCallButton({
         checkChannel.addEventListener('message', handleMessage);
         checkChannel.postMessage('check-call');
         
-        // Wait for responses from other tabs
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Wait for responses from other tabs (reduced from 200ms to 50ms for faster startup)
+        await new Promise(resolve => setTimeout(resolve, 50));
         
         clearTimeout(timeout);
         checkChannel.removeEventListener('message', handleMessage);
@@ -407,9 +363,11 @@ export function VoiceCallButton({
 
     // Wait for auth to finish loading
     if (authLoading) {
+      console.log('Auth loading, returning');
       alert('Please wait for authentication to complete.');
       return;
     }
+    console.log('Auth loading check passed');
 
     // Check if Firestore is available - warn here when actually trying to use the feature
     if (!db) {
@@ -417,86 +375,172 @@ export function VoiceCallButton({
       alert('Voice calls are not available. Please ensure Firebase is properly configured.');
       return;
     }
+    console.log('Firestore check passed');
 
-    // Default to API-based signaling (more reliable, doesn't require Firebase Auth)
-    // Only use Firestore if Firebase Auth is explicitly available and working
-    let shouldUseApiSignaling = true; // Default to API
-    
-    // Only try Firestore if Firebase Auth is confirmed working
-    if (auth?.currentUser?.email && db && !useApiSignaling) {
-      // Firebase Auth is working and user wants Firestore - use it
-      shouldUseApiSignaling = false;
-      console.log('Using Firestore-based call signaling (Firebase Auth available)');
-    } else {
-      // Default: use API-based signaling
-      console.log('Using API-based call signaling (default)');
-    }
-    
-    // Check if user is logged in (required for API calls)
+    // Check if user is logged in and Firestore is available
     if (!user?.email) {
+      console.log('User email check failed (second check)');
       alert('You must be logged in to make voice calls. Please refresh the page and log in again.');
       return;
     }
+    console.log('User email check passed (second check)');
+
+    // Ensure Firebase Auth currentUser is ready (required for Firestore security rules)
+    // Auth should be ready after login, but we'll do a quick check just in case
+    if (!auth?.currentUser?.email) {
+      console.log('Waiting for Firebase Auth currentUser to be ready...');
+      let authReady = false;
+      const maxWaitTime = 1000; // 1 second max wait (should be ready from login)
+      const checkInterval = 50; // Check every 50ms
+      const startTime = Date.now();
+
+      while (!authReady && (Date.now() - startTime) < maxWaitTime) {
+        if (auth?.currentUser?.email) {
+          authReady = true;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      }
+
+      if (!auth?.currentUser?.email) {
+        console.error('Firebase Auth currentUser is not available. User may need to refresh the page.');
+        alert('Authentication is not ready. Please refresh the page and try again.');
+        return;
+      }
+    }
 
     if (!canMakeCalls()) {
+      console.log('canMakeCalls returned false');
       alert('Voice calls are not available. Please ensure Firebase is properly configured.');
       return;
     }
+    console.log('canMakeCalls check passed, starting call...');
 
     try {
+      isCreatingCallRef.current = true; // Mark that we're creating a call
       setIsCalling(true);
+      console.log('Calling startCall()...');
       
       // First, start the call (this gets media and initializes peer connection)
       await startCall();
+      console.log('startCall() completed');
+      
+      // Immediately check the ref right after startCall returns
+      if (getPeerConnection) {
+        const immediateCheck = getPeerConnection();
+        console.error('🔍 Immediate check after startCall()', {
+          hasPc: !!immediateCheck,
+          connectionState: immediateCheck?.connectionState,
+        });
+      }
+      
+      // Give the peer connection a moment to fully initialize
+      // This helps ensure all internal state is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
       
       // Verify peer connection is available before proceeding (use getter for current value)
-      const pc = getPeerConnection?.() || peerConnection;
+      // Always use getPeerConnection() to get the current ref value, not the stale snapshot
+      if (!getPeerConnection) {
+        console.error('getPeerConnection function is not available');
+        throw new Error('WebRTC hook is not properly initialized. Please refresh the page.');
+      }
+      
+      let pc = getPeerConnection();
+      console.log('Checking peer connection...', { 
+        hasPc: !!pc, 
+        hasGetter: !!getPeerConnection,
+        connectionState: pc?.connectionState,
+        signalingState: pc?.signalingState,
+      });
+      
       if (!pc) {
-        console.error('Peer connection is null after startCall');
-        throw new Error('Peer connection not initialized. Please try again.');
+        console.warn('Peer connection is null after startCall, retrying...');
+        // Try waiting a bit more in case there's a timing issue
+        await new Promise(resolve => setTimeout(resolve, 200));
+        pc = getPeerConnection();
+        if (!pc) {
+          console.error('Peer connection is still null after retry');
+          throw new Error('Peer connection not initialized. Please try again.');
+        }
+        console.log('Peer connection found after retry');
       }
       
-      // Wait a bit longer for peer connection to be fully initialized and tracks added
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      // Double-check peer connection is still available
-      const pcAfterWait = getPeerConnection?.() || peerConnection;
-      if (!pcAfterWait) {
-        console.error('Peer connection became null while waiting');
-        throw new Error('Peer connection was lost. Please try again.');
+      // Verify peer connection is in a valid state
+      if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
+        console.error('Peer connection is in invalid state', {
+          connectionState: pc.connectionState,
+          signalingState: pc.signalingState,
+        });
+        throw new Error('Peer connection is not ready. Please try again.');
       }
       
-      console.log('Creating offer, peer connection state:', pcAfterWait.connectionState, 'senders:', pcAfterWait.getSenders().length);
+      console.log('Peer connection verified');
       
-      // Now create the offer
-      const offer = await createOffer();
+      // Verify tracks are added
+      const senders = pc.getSenders();
+      console.log('Checking senders...', {
+        sendersCount: senders.length,
+        sendersWithTracks: senders.filter(s => s.track !== null).length,
+      });
+      
+      if (senders.length === 0) {
+        console.warn('No senders found after startCall - waiting a bit more...');
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const retrySenders = pc.getSenders();
+        if (retrySenders.length === 0) {
+          throw new Error('No audio tracks found. Please check your microphone permissions and try again.');
+        }
+      }
+      
+      // Create the offer - tracks should be ready now
+      console.log('Creating offer...', {
+        peerConnectionState: pc.connectionState,
+        signalingState: pc.signalingState,
+        iceConnectionState: pc.iceConnectionState,
+        sendersCount: senders.length,
+      });
+      
+      let offer: RTCSessionDescriptionInit | null;
+      try {
+        offer = await createOffer();
+        console.log('Offer created', { hasOffer: !!offer, offerType: offer?.type });
+      } catch (offerError) {
+        console.error('Error creating offer:', offerError);
+        throw offerError;
+      }
       if (!offer) {
-        // Check if there was an error
+        console.error('Offer is null');
         throw new Error('Failed to create offer. The peer connection may not be ready. Please try again.');
       }
       
-      console.log('Offer created successfully:', offer.type);
-
-      // Create call offer (use API if Firebase Auth unavailable)
-      // Use local variable instead of state to avoid async state update issues
-      const callId = shouldUseApiSignaling
-        ? await callSignalingApiService.createCallOffer(
-            chatId,
-            user.email,
-            otherUserEmail,
-            offer
-          )
-        : await callSignalingService.createCallOffer(
-            chatId,
-            user.email,
-            otherUserEmail,
-            offer
-          );
+      // Create call offer using Firestore
+      console.log('Creating call offer in Firestore...', { chatId, callerEmail: user.email, calleeEmail: otherUserEmail });
+      let callId: string;
+      try {
+        callId = await callSignalingService.createCallOffer(
+          chatId,
+          user.email,
+          otherUserEmail,
+          offer
+        );
+        console.log('Call offer created successfully', { callId });
+      } catch (createError) {
+        console.error('Failed to create call offer', createError);
+        throw createError;
+      }
       callIdRef.current = callId;
+      setCurrentCallId(callId); // Update shared context
+      isCreatingCallRef.current = false; // Call creation is complete
+      
+      // Ensure isCalling stays true after creating the call
+      // The signal subscription will update it when the signal arrives
+      setIsCalling(true);
+      console.log('Call setup complete', { callId, isCalling: true });
 
       // ICE candidates will be sent automatically via the useEffect hook
     } catch (err) {
-      console.error('Error starting call:', err);
+      console.error('❌ VoiceCall: Error starting call:', err);
+      isCreatingCallRef.current = false; // Call creation failed
       setIsCalling(false);
       
       // Clean up resources
@@ -546,17 +590,14 @@ export function VoiceCallButton({
       // Update signaling service to notify the other user
       if (callIdToUse) {
         try {
-          if (useApiSignaling) {
-            await callSignalingApiService.endCall(callIdToUse, chatId);
-          } else {
-            await callSignalingService.endCall(callIdToUse);
-          }
+          await callSignalingService.endCall(callIdToUse);
         } catch (err) {
           console.error('Error ending call:', err);
           // Continue with cleanup even if update fails
         }
         if (!externalCallId) {
           callIdRef.current = null;
+          setCurrentCallId(null); // Update shared context
         }
       }
       
@@ -605,6 +646,7 @@ export function VoiceCallButton({
     }
   };
 
+
   // Show end call button during any active call state
   if (isInCall) {
     return (
@@ -641,7 +683,11 @@ export function VoiceCallButton({
     <Button
       variant="outline"
       size="sm"
-      onClick={handleCallClick}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleCallClick();
+      }}
       disabled={isCalling}
       className={className}
     >
@@ -655,8 +701,7 @@ interface IncomingCallDialogProps {
   callSignal: CallSignal;
   callerName?: string;
   callerAvatar?: string;
-  chatId: string; // Chat ID needed for API-based signaling
-  useApiSignaling?: boolean; // Whether to use API-based signaling
+  chatId: string;
   onAccept: () => void;
   onReject: () => void;
   onMuteStateChange?: (isMuted: boolean, toggleMute: () => void) => void; // Callback to share mute state and function
@@ -670,7 +715,6 @@ export function IncomingCallDialog({
   callerName,
   callerAvatar,
   chatId,
-  useApiSignaling = true,
   onAccept,
   onReject,
   onMuteStateChange,
@@ -686,7 +730,7 @@ export function IncomingCallDialog({
     isMuted,
     toggleMute,
     callStatus,
-  } = useWebRTC();
+  } = useWebRTCContext();
 
   useEffect(() => {
     // Handle ICE candidates from the signal
@@ -706,18 +750,14 @@ export function IncomingCallDialog({
     }
   }, [callSignal.iceCandidates, addICECandidate, peerConnection]);
 
-  // Listen for ICE candidates and send them via the appropriate signaling service
+  // Listen for ICE candidates and send them via Firestore
   useEffect(() => {
     if (!peerConnection || !callIdRef.current) return;
 
     const handleICECandidate = async (event: RTCPeerConnectionIceEvent) => {
       if (event.candidate && callIdRef.current) {
         try {
-          if (useApiSignaling) {
-            await callSignalingApiService.sendICECandidate(callIdRef.current, chatId, event.candidate.toJSON());
-          } else {
-            await callSignalingService.sendICECandidate(callIdRef.current, event.candidate.toJSON());
-          }
+          await callSignalingService.sendICECandidate(callIdRef.current, event.candidate.toJSON());
         } catch (err) {
           console.error('Error sending ICE candidate:', err);
         }
@@ -729,7 +769,7 @@ export function IncomingCallDialog({
     return () => {
       peerConnection.removeEventListener('icecandidate', handleICECandidate);
     };
-  }, [peerConnection, useApiSignaling, chatId]);
+  }, [peerConnection, chatId]);
 
   // Share mute state and toggle function with parent when call is active
   useEffect(() => {
@@ -749,6 +789,30 @@ export function IncomingCallDialog({
       return;
     }
 
+    // Ensure Firebase Auth currentUser is ready (required for Firestore security rules)
+    // Auth should be ready after login, but we'll do a quick check just in case
+    if (!auth?.currentUser?.email) {
+      console.log('Waiting for Firebase Auth currentUser to be ready...');
+      let authReady = false;
+      const maxWaitTime = 1000; // 1 second max wait (should be ready from login)
+      const checkInterval = 50; // Check every 50ms
+      const startTime = Date.now();
+
+      while (!authReady && (Date.now() - startTime) < maxWaitTime) {
+        if (auth?.currentUser?.email) {
+          authReady = true;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, checkInterval));
+      }
+
+      if (!auth?.currentUser?.email) {
+        console.error('Firebase Auth currentUser is not available. User may need to refresh the page.');
+        alert('Authentication is not ready. Please refresh the page and try again.');
+        return;
+      }
+    }
+
     try {
       setIsAnswering(true);
       
@@ -756,14 +820,10 @@ export function IncomingCallDialog({
       // answerCall now returns the answer it creates
       const answer = await answerCall(callSignal.offer);
       
-      // Send the answer via the appropriate signaling service
+      // Send the answer via Firestore
       if (answer && callIdRef.current) {
         try {
-          if (useApiSignaling) {
-            await callSignalingApiService.sendCallAnswer(callIdRef.current, chatId, answer);
-          } else {
-            await callSignalingService.sendCallAnswer(callIdRef.current, answer);
-          }
+          await callSignalingService.sendCallAnswer(callIdRef.current, answer);
         } catch (signalingError) {
           console.error('Error sending call answer:', signalingError);
           // Don't reject the call if signaling fails - the WebRTC connection might still work
@@ -805,16 +865,20 @@ export function IncomingCallDialog({
   const handleReject = async () => {
     if (callIdRef.current) {
       try {
-        if (useApiSignaling) {
-          await callSignalingApiService.endCall(callIdRef.current, chatId);
-        } else {
-          await callSignalingService.endCall(callIdRef.current);
-        }
+        await callSignalingService.endCall(callIdRef.current);
       } catch (err) {
         console.error('Error ending call on reject:', err);
         // Continue with cleanup even if signaling fails
       }
+    } else if (callSignal?.callId) {
+      // Fallback: use callId from signal if ref is not set
+      try {
+        await callSignalingService.endCall(callSignal.callId);
+      } catch (err) {
+        console.error('Error ending call on reject:', err);
+      }
     }
+    
     endCall();
     onReject();
   };

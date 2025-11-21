@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { useEffect } from "react";
 import { initFirestore } from "@/services/firestore";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
@@ -181,17 +182,19 @@ const App = () => {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <AuthProvider>
-          <SelectionModeProvider>
-            <SelectedProjectsProvider>
-              <SelectedTasksProvider>
-                <SelectedTeamsProvider>
-                  <Toaster />
-                  <Sonner />
-                  <AppRoutes />
-                </SelectedTeamsProvider>
-              </SelectedTasksProvider>
-            </SelectedProjectsProvider>
-          </SelectionModeProvider>
+          <WebRTCProvider>
+            <SelectionModeProvider>
+              <SelectedProjectsProvider>
+                <SelectedTasksProvider>
+                  <SelectedTeamsProvider>
+                    <Toaster />
+                    <Sonner />
+                    <AppRoutes />
+                  </SelectedTeamsProvider>
+                </SelectedTasksProvider>
+              </SelectedProjectsProvider>
+            </SelectionModeProvider>
+          </WebRTCProvider>
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
