@@ -917,7 +917,123 @@ export function Chatbot() {
   }, []);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (messagesEndRef.current) {
+      // Find the scroll container
+      let scrollContainer: HTMLElement | null = messagesEndRef.current.parentElement;
+      while (scrollContainer) {
+        const style = window.getComputedStyle(scrollContainer);
+        if (scrollContainer.scrollHeight > scrollContainer.clientHeight && 
+            (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflow === 'auto' || style.overflow === 'scroll')) {
+          break;
+        }
+        scrollContainer = scrollContainer.parentElement;
+      }
+      
+      if (scrollContainer) {
+        // Set scroll position directly to bottom (no animation)
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      } else {
+        // Fallback to scrollIntoView
+        messagesEndRef.current.scrollIntoView({ behavior: "auto" });
+      }
+    }
+  };
+
+  const scrollToEarliestUnreadOrLatest = () => {
+    // Determine current chat ID
+    let chatId: string | null = null;
+    if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
+      chatId = selectedMember;
+    } else if (selectedMember === "ai-assistant") {
+      chatId = user?.email ? getAIAssistantChatId(user.email) : null;
+    } else {
+      if (selectedMember.includes('@')) {
+        chatId = user?.email ? getDirectMessageChatId(user.email, selectedMember) : null;
+      } else {
+        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+        if (selectedMemberData?.email && user?.email) {
+          chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+        } else {
+          chatId = selectedMember;
+        }
+      }
+    }
+
+    if (!chatId) {
+      scrollToBottom();
+      return;
+    }
+
+    const lastRead = lastReadTimestamps.get(chatId) || 0;
+    let earliestUnreadElement: HTMLElement | null = null;
+    let earliestUnreadTime: number | null = null;
+    let latestMessageElement: HTMLElement | null = null;
+    let latestMessageTime: number | null = null;
+
+    // Find all message elements
+    const messageElements = document.querySelectorAll('[data-message-id]');
+    
+    messageElements.forEach((element) => {
+      const messageTimestamp = element.getAttribute('data-message-timestamp');
+      const messageUserId = element.getAttribute('data-message-user-id');
+      const messageRole = element.getAttribute('data-message-role');
+      
+      if (!messageTimestamp) return;
+      
+      const msgTime = parseInt(messageTimestamp, 10);
+      const isAfterLastRead = msgTime > lastRead;
+      
+      // Determine if message is unread
+      // For AI assistant, count assistant messages as unread; for others, count messages not from current user
+      const isUnread = isAfterLastRead && (
+        chatId === (user?.email ? getAIAssistantChatId(user.email) : null)
+          ? messageRole === 'assistant' || (messageRole === 'user' && messageUserId?.toLowerCase() !== user?.email?.toLowerCase())
+          : messageUserId?.toLowerCase() !== user?.email?.toLowerCase()
+      );
+
+      // Track latest message (by timestamp)
+      if (latestMessageTime === null || msgTime > latestMessageTime) {
+        latestMessageTime = msgTime;
+        latestMessageElement = element as HTMLElement;
+      }
+
+      // Track earliest unread message (by timestamp)
+      if (isUnread && (earliestUnreadTime === null || msgTime < earliestUnreadTime)) {
+        earliestUnreadTime = msgTime;
+        earliestUnreadElement = element as HTMLElement;
+      }
+    });
+
+    // Scroll to earliest unread message, or latest message if no unread
+    const targetElement = earliestUnreadElement || latestMessageElement;
+    if (targetElement) {
+      // Find the scroll container by traversing up the DOM tree
+      let scrollContainer: HTMLElement | null = targetElement.parentElement;
+      while (scrollContainer) {
+        const style = window.getComputedStyle(scrollContainer);
+        if (scrollContainer.scrollHeight > scrollContainer.clientHeight && 
+            (style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflow === 'auto' || style.overflow === 'scroll')) {
+          break;
+        }
+        scrollContainer = scrollContainer.parentElement;
+      }
+      
+      if (scrollContainer) {
+        // Calculate the position relative to the scroll container
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const elementRect = targetElement.getBoundingClientRect();
+        const scrollTop = scrollContainer.scrollTop + (elementRect.top - containerRect.top);
+        
+        // Set scroll position directly (no animation, instant jump)
+        scrollContainer.scrollTop = scrollTop;
+      } else {
+        // Fallback to scrollIntoView if we can't find the container
+        targetElement.scrollIntoView({ behavior: "auto", block: "start" });
+      }
+    } else {
+      // Fallback to bottom if no messages found
+      scrollToBottom();
+    }
   };
 
   // Perform search through project activities when in project channel mode
@@ -1039,7 +1155,7 @@ export function Chatbot() {
     if (isOpen) {
       // Small delay to ensure DOM is updated
       setTimeout(() => {
-        scrollToBottom();
+        scrollToEarliestUnreadOrLatest();
         if ((isProjectChannel || isTeamChannel) && isSearching) {
           memberSearchRef.current?.focus();
         } else {
@@ -1047,7 +1163,7 @@ export function Chatbot() {
         }
       }, 100);
     }
-  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isTeamChannel, isSearching]);
+  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isTeamChannel, isSearching, selectedMember, user?.email, allTeamMembers, lastReadTimestamps, selectedProjectId, selectedTeamId]);
 
   // Calculate unread counts for all chats when chatbot opens or when user/projects/teams change
   useEffect(() => {
@@ -3244,6 +3360,9 @@ export function Chatbot() {
                       <span className={cn(
                         (unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0 && selectedMember !== "ai-assistant" && "font-semibold"
                       )}>lean</span>
+                      {(unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0 && selectedMember !== "ai-assistant" && (
+                        <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full border border-background" />
+                      )}
                     </button>
                   </div>
                 )}
@@ -3287,6 +3406,9 @@ export function Chatbot() {
                                 "flex-1 text-left truncate",
                                 projectUnreadCount > 0 && !isSelected && "font-semibold"
                               )}>{project.name}</span>
+                              {projectUnreadCount > 0 && !isSelected && (
+                                <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full border border-background" />
+                              )}
                             </button>
                           );
                         })}
@@ -3316,6 +3438,9 @@ export function Chatbot() {
                                 "flex-1 text-left truncate",
                                 teamUnreadCount > 0 && !isSelected && "font-semibold"
                               )}>{team.name}</span>
+                              {teamUnreadCount > 0 && !isSelected && (
+                                <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full border border-background" />
+                              )}
                             </button>
                           );
                         })}
@@ -3354,7 +3479,7 @@ export function Chatbot() {
                               setMemberSearchQuery("");
                             }}
                             className={cn(
-                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors",
+                              "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors relative",
                               isSelected
                                 ? "bg-primary text-primary-foreground"
                                 : memberUnreadCount > 0
@@ -3371,6 +3496,9 @@ export function Chatbot() {
                               "flex-1 text-left truncate",
                               memberUnreadCount > 0 && !isSelected && "font-semibold"
                             )}>{member.name}</span>
+                            {memberUnreadCount > 0 && !isSelected && (
+                              <span className="absolute top-1 right-1 h-2 w-2 bg-red-500 rounded-full border border-background" />
+                            )}
                           </button>
                         );
                       })
@@ -3626,6 +3754,10 @@ export function Chatbot() {
                       return (
                         <div
                           key={message.id}
+                          data-message-id={message.id}
+                          data-message-timestamp={message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}
+                          data-message-user-id={message.userId || ''}
+                          data-message-role={isLean ? 'assistant' : 'user'}
                           className={cn(
                             "flex gap-3",
                             isSent ? "justify-end" : "justify-start"
@@ -3767,6 +3899,10 @@ export function Chatbot() {
                       return (
                         <div
                           key={message.id}
+                          data-message-id={message.id}
+                          data-message-timestamp={message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}
+                          data-message-user-id={message.userId || ''}
+                          data-message-role={isLean ? 'assistant' : 'user'}
                           className={cn(
                             "flex gap-3",
                             isSent ? "justify-end" : "justify-start"
@@ -3912,6 +4048,10 @@ export function Chatbot() {
             return (
               <div
                 key={message.id}
+                data-message-id={message.id}
+                data-message-timestamp={message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}
+                data-message-user-id={message.userId || ''}
+                data-message-role={message.role}
                 className={cn(
                   "flex gap-3",
                   isSent ? "justify-end" : "justify-start"
