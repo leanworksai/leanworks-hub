@@ -2465,9 +2465,6 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
     // Trim whitespace and remove any BOM or leading/trailing characters
     configString = configString.trim();
     
-    // Log first 100 chars for debugging (without exposing full API key)
-    console.log('📥 Raw config from Secret Manager (first 100 chars):', configString.substring(0, 100));
-    
     // Try to parse the JSON
     let config: any;
     try {
