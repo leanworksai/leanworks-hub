@@ -159,7 +159,23 @@ export default function Tasks() {
       return true;
     })
     .sort((a, b) => {
-      // Sort by creation time (newest first)
+      // Sort by status first, then by creation time
+      const statusOrder: Record<string, number> = {
+        'todo': 1,
+        'in-progress': 2,
+        'review': 3,
+        'blocked': 4,
+        'completed': 5
+      };
+      
+      const statusA = statusOrder[a.status || ''] || 6;
+      const statusB = statusOrder[b.status || ''] || 6;
+      
+      if (statusA !== statusB) {
+        return statusA - statusB;
+      }
+      
+      // If status is the same, sort by creation time (newest first)
       // If createdAt is not available, fall back to createdDate parsing
       const timeA = a.createdAt || (a.createdDate ? new Date(a.createdDate).getTime() : 0);
       const timeB = b.createdAt || (b.createdDate ? new Date(b.createdDate).getTime() : 0);

@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { useEffect } from "react";
 import { initFirestore } from "@/services/firestore";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
@@ -13,6 +14,7 @@ import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { Chatbot } from "./components/Chatbot";
+import { GlobalCallListener } from "./components/GlobalCallListener";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Home from "./pages/Home";
@@ -153,6 +155,7 @@ const AppRoutesContent = () => {
         <Route path="*" element={<NotFound />} />
       </Routes>
       {user && !isHomePage && <Chatbot />}
+      {user && <GlobalCallListener />}
     </>
   );
 };
@@ -179,17 +182,19 @@ const App = () => {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <AuthProvider>
-          <SelectionModeProvider>
-            <SelectedProjectsProvider>
-              <SelectedTasksProvider>
-                <SelectedTeamsProvider>
-                  <Toaster />
-                  <Sonner />
-                  <AppRoutes />
-                </SelectedTeamsProvider>
-              </SelectedTasksProvider>
-            </SelectedProjectsProvider>
-          </SelectionModeProvider>
+          <WebRTCProvider>
+            <SelectionModeProvider>
+              <SelectedProjectsProvider>
+                <SelectedTasksProvider>
+                  <SelectedTeamsProvider>
+                    <Toaster />
+                    <Sonner />
+                    <AppRoutes />
+                  </SelectedTeamsProvider>
+                </SelectedTasksProvider>
+              </SelectedProjectsProvider>
+            </SelectionModeProvider>
+          </WebRTCProvider>
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>

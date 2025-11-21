@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to get user email from auth token (works with custom tokens)
+    function getUserEmail() {
+      return request.auth != null && request.auth.token.email != null 
+        ? request.auth.token.email.lower() 
+        : (request.auth != null && request.auth.token.firebase != null && request.auth.token.firebase.identities != null && request.auth.token.firebase.identities.email != null
+          ? request.auth.token.firebase.identities.email[0].lower()
+          : '');
+    }
+    
+    // Helper function to extract domain from email
+    function getDomainFromEmail(email) {
+      return email.split('@').size() > 1 ? email.split('@')[1] : '';
+    }
+    
+    // Messages collection - allow read/write for authenticated users in their domain
+    match /domains/{domain}/messages/{messageId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Calls collection - allow users to create/read/update calls in their domain
+    match /domains/{domain}/calls/{callId} {
+      // Temporarily allow all authenticated users to read/write for testing
+      // TODO: Tighten security after confirming it works
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

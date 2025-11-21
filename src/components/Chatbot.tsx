@@ -3,7 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign } from "lucide-react";
+import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff } from "lucide-react";
+import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
+import { callSignalingService, type CallSignal } from "@/services/firestore";
+import { CallStatus } from "@/hooks/useWebRTC";
+import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import { cn, getUserById, getUserDisplayName, getUserInitials, getAvatarColor } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
@@ -20,6 +24,7 @@ import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { messagesService, type ChatMessage } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
+import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -97,6 +102,29 @@ export function Chatbot() {
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
   const { user } = useAuth();
+  
+  // Calculate current user's full profile data once (has firstName/lastName)
+  // AuthContext user only has email, not firstName/lastName
+  const currentUserProfile = useMemo(() => {
+    if (!user?.email) return null;
+    return allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase()) || null;
+  }, [allDomainUsers, user?.email]);
+  
+  // Calculate current user's display info once for reuse
+  const currentUserDisplayInfo = useMemo(() => {
+    if (!currentUserProfile) {
+      return {
+        name: user?.email || "You",
+        initials: user?.email?.charAt(0).toUpperCase() || "U",
+        displayName: user?.email || "You",
+      };
+    }
+    return {
+      name: getUserDisplayName(currentUserProfile),
+      initials: getUserInitials(currentUserProfile),
+      displayName: getUserDisplayName(currentUserProfile),
+    };
+  }, [currentUserProfile, user?.email]);
   const [isOpen, setIsOpen] = useState(false);
   
   // Load last selected member from localStorage
@@ -140,10 +168,68 @@ export function Chatbot() {
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
+  const [incomingCallSignal, setIncomingCallSignal] = useState<CallSignal | null>(null);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [callStatusFromSignal, setCallStatusFromSignal] = useState<CallStatus>('idle');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
   const previousChatIdRef = useRef<string | null>(null); // Track previous chatId to detect chat switches
+  
+  // WebRTC hook for call management - use shared context
+  const {
+    callStatus,
+    isMuted: localIsMuted,
+    toggleMute: localToggleMute,
+    endCall: endWebRTCCall,
+    currentCallId,
+    setCurrentCallId,
+  } = useWebRTCContext();
+  
+  // Mute state from active call (shared from VoiceCallButton)
+  const [activeCallMuted, setActiveCallMuted] = useState(false);
+  const [activeCallToggleMute, setActiveCallToggleMute] = useState<(() => void) | null>(null);
+  
+  // Use active call's mute state if available, otherwise use local
+  const isMuted = activeCallToggleMute ? activeCallMuted : localIsMuted;
+  const toggleMute = activeCallToggleMute || localToggleMute;
+  
+  // Use callStatus from WebRTC hook if active, otherwise use status from signaling service
+  // If both are idle/ended, show idle
+  const displayCallStatus: CallStatus = (callStatus !== 'idle' && callStatus !== 'ended') 
+    ? callStatus 
+    : (callStatusFromSignal !== 'idle' && callStatusFromSignal !== 'ended')
+    ? callStatusFromSignal
+    : 'idle';
+
+  // Proper end call handler that updates signaling service
+  const handleEndCall = useCallback(async () => {
+    try {
+      // Update signaling service to notify the other user
+      if (currentCallId) {
+        try {
+          await callSignalingService.endCall(currentCallId);
+        } catch (err) {
+          console.error('Error ending call:', err);
+          // Continue with cleanup even if update fails
+        }
+      }
+      
+      // Clean up WebRTC resources
+      endWebRTCCall();
+      setCurrentCallId(null);
+      setIncomingCallSignal(null);
+      setCallStatusFromSignal('idle'); // Reset call status to idle
+      
+    } catch (err) {
+      console.error('Error ending call:', err);
+      // Still clean up local resources even if there's an error
+      endWebRTCCall();
+      setCurrentCallId(null);
+      setIncomingCallSignal(null);
+      setCallStatusFromSignal('idle'); // Reset call status to idle
+    }
+  }, [currentCallId, endWebRTCCall]);
 
   // Helper functions for message caching
   const getCacheKey = (chatId: string) => {
@@ -990,52 +1076,67 @@ export function Chatbot() {
 
       // Calculate unread count for each chat
       // Use cache first to avoid unnecessary API calls for empty chats
-      await Promise.all(
-        allChatIds.map(async (chatId) => {
-          try {
-            // Check cache first - if chat is empty in cache and cache is recent, skip API call
-            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
-            const cacheIsRecent = cached && !isCacheStale(cached.lastSync);
-            const cacheIsEmpty = cached && cached.messages.length === 0;
-            
-            // If cache shows empty and is recent, skip API call and set count to 0
-            if (cacheIsRecent && cacheIsEmpty) {
-              newUnreadCounts.set(chatId, 0);
-              return;
-            }
-            
-            // Only make API call if cache is stale or doesn't exist
-            const firestoreMessages = await messagesService.getByChatId(chatId);
-            const lastRead = lastReadTimestamps.get(chatId) || 0;
+      // Process requests in batches to avoid overwhelming the browser
+      const BATCH_SIZE = 3; // Process 3 requests at a time
+      const chatIdsToProcess = allChatIds.filter((chatId) => {
+        // Pre-filter chats that can skip API calls based on cache
+        const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
+        const cacheIsRecent = cached && !isCacheStale(cached.lastSync);
+        const cacheIsEmpty = cached && cached.messages.length === 0;
+        
+        // If cache shows empty and is recent, skip API call
+        if (cacheIsRecent && cacheIsEmpty) {
+          newUnreadCounts.set(chatId, 0);
+          return false; // Skip this chat
+        }
+        return true; // Need to process this chat
+      });
 
-            const unreadCount = firestoreMessages.filter((msg) => {
-              const msgTime =
-                msg.timestamp instanceof Date
-                  ? msg.timestamp.getTime()
-                  : new Date(msg.timestamp).getTime();
-              const isAfterLastRead = msgTime > lastRead;
-              // For AI assistant, count assistant messages as unread; for others, count messages not from current user
-              const isUnread =
-                isAIAssistantChatId(chatId)
-                  ? msg.role === "assistant" ||
-                    (msg.role === "user" &&
-                      msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
-                  : msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
-              return isAfterLastRead && isUnread;
-            }).length;
+      // Process chats in batches
+      for (let i = 0; i < chatIdsToProcess.length; i += BATCH_SIZE) {
+        const batch = chatIdsToProcess.slice(i, i + BATCH_SIZE);
+        
+        await Promise.all(
+          batch.map(async (chatId) => {
+            try {
+              // Only make API call if cache is stale or doesn't exist
+              const firestoreMessages = await messagesService.getByChatId(chatId);
+              const lastRead = lastReadTimestamps.get(chatId) || 0;
 
-            // Store unread count (0 or positive)
-            newUnreadCounts.set(chatId, unreadCount);
-          } catch (error) {
-            // Silently fail - don't spam console with errors
-            // Use cache as fallback if available
-            const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
-            if (cached && cached.messages.length === 0) {
-              newUnreadCounts.set(chatId, 0);
+              const unreadCount = firestoreMessages.filter((msg) => {
+                const msgTime =
+                  msg.timestamp instanceof Date
+                    ? msg.timestamp.getTime()
+                    : new Date(msg.timestamp).getTime();
+                const isAfterLastRead = msgTime > lastRead;
+                // For AI assistant, count assistant messages as unread; for others, count messages not from current user
+                const isUnread =
+                  isAIAssistantChatId(chatId)
+                    ? msg.role === "assistant" ||
+                      (msg.role === "user" &&
+                        msg.userId?.toLowerCase() !== user?.email?.toLowerCase())
+                    : msg.userId?.toLowerCase() !== user?.email?.toLowerCase();
+                return isAfterLastRead && isUnread;
+              }).length;
+
+              // Store unread count (0 or positive)
+              newUnreadCounts.set(chatId, unreadCount);
+            } catch (error) {
+              // Silently fail - don't spam console with errors
+              // Use cache as fallback if available
+              const cached = allChatCaches.get(chatId) || loadCachedMessages(chatId);
+              if (cached && cached.messages.length === 0) {
+                newUnreadCounts.set(chatId, 0);
+              }
             }
-          }
-        })
-      );
+          })
+        );
+        
+        // Small delay between batches to prevent overwhelming the browser
+        if (i + BATCH_SIZE < chatIdsToProcess.length) {
+          await new Promise(resolve => setTimeout(resolve, 50)); // 50ms delay between batches
+        }
+      }
 
       // Update unread counts, but don't overwrite if current chat is open (it should be 0)
       setUnreadCounts((prev) => {
@@ -1078,7 +1179,14 @@ export function Chatbot() {
       });
     };
 
-    calculateUnreadCounts();
+    // Debounce the calculation to prevent rapid re-calculations
+    const timeoutId = setTimeout(() => {
+      calculateUnreadCounts();
+    }, 300); // 300ms debounce delay
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.email, projects, userTeams, allTeamMembers, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, lastReadTimestamps]);
 
@@ -1720,6 +1828,136 @@ export function Chatbot() {
     }
   }, [selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, user?.email, isOpen]);
 
+    // Listen for incoming calls - works even when chat window is closed
+    useEffect(() => {
+      if (!user || !user.email) return;
+
+      let chatId: string;
+      
+      // Determine chatId (same logic as above)
+      if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
+        chatId = selectedMember;
+      } else if (selectedMember === "ai-assistant") {
+        chatId = getAIAssistantChatId(user.email);
+      } else {
+        if (selectedMember.includes('@')) {
+          chatId = getDirectMessageChatId(user.email, selectedMember);
+        } else {
+          const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+          if (selectedMemberData?.email) {
+            chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+          } else {
+            chatId = selectedMember;
+          }
+        }
+      }
+
+      // Only listen for calls in DM chats (not AI assistant, project, or team channels)
+      const isDM = chatId.startsWith('dm-');
+      if (!isDM) {
+        setIncomingCallSignal(null);
+        return;
+      }
+
+      // Use Firestore real-time listeners for call signaling
+      setCurrentChatId(chatId);
+      
+      const unsubscribe = callSignalingService.subscribeToCallSignals(chatId, (signal) => {
+            
+            if (!signal) {
+              // No signal from Firestore - but don't immediately end the call
+              // Check if WebRTC connection is still active first
+              if (callStatus === 'idle' || callStatus === 'ended') {
+                // WebRTC connection is already ended, safe to clear
+                // BUT DON'T call endWebRTCCall() - it's already been called
+                setIncomingCallSignal(null);
+                setCurrentCallId(null);
+                setCallStatusFromSignal('idle');
+              } else if (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing') {
+                // Call is still active according to WebRTC - don't clear
+                // This might be a temporary Firestore issue or the signal hasn't arrived yet
+                // Received null signal but call is still active, ignoring
+                // Keep the call state as is - DON'T call endWebRTCCall()
+              } else {
+                // For other states, only clear if we don't have an active call ID
+                if (!currentCallId) {
+                  setIncomingCallSignal(null);
+                  setCurrentCallId(null);
+                  setCallStatusFromSignal('idle');
+                  // DON'T call endWebRTCCall() - no active call to end
+                }
+              }
+              return;
+            }
+
+            // Handle status updates for both caller and receiver
+            // Only set currentCallId when we're actually starting/joining a call, not from 'ended' signals
+            if (signal.status === 'ringing') {
+              const isCallee = signal.calleeEmail.toLowerCase() === user.email?.toLowerCase();
+              const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+              
+              // Set currentCallId only when we're actually in a call (ringing or active)
+              if (isCallee || isCaller) {
+                setCurrentCallId(signal.callId);
+              }
+              
+              if (isCallee) {
+                // Incoming call for this user
+                setIncomingCallSignal(signal);
+                setCallStatusFromSignal('ringing');
+              } else if (isCaller) {
+                // Outgoing call (we're the caller)
+                setCallStatusFromSignal('ringing');
+              } else {
+                console.warn('⚠️ Call signal mismatch:', {
+                  signalCallee: signal.calleeEmail,
+                  signalCaller: signal.callerEmail,
+                  currentUser: user.email,
+                });
+                setCallStatusFromSignal('ringing');
+              }
+            } else if (signal.status === 'active') {
+              // Call is active - both users should see this
+              // Set currentCallId if we're part of this call
+              const isCallee = signal.calleeEmail.toLowerCase() === user.email?.toLowerCase();
+              const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+              if (isCallee || isCaller) {
+                setCurrentCallId(signal.callId);
+              }
+              setIncomingCallSignal(null); // Clear incoming call signal if it was set
+              setCallStatusFromSignal('active');
+            } else if (signal.status === 'ended') {
+              // Call ended - only clean up if we were actually in this call
+              // Check the context's currentCallId (which is only set when we're in a call)
+              // Don't set currentCallId from 'ended' signals - only check if it matches
+              if (currentCallId === signal.callId && (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing')) {
+                // We were in this call, so clean up
+                setIncomingCallSignal(null);
+                setCurrentCallId(null);
+                setCallStatusFromSignal('idle');
+                endWebRTCCall();
+              } else {
+                // This is a stale 'ended' signal for a call we're not in - just clear local state
+                if (currentCallId === signal.callId) {
+                  // It's our call ID but we're not in an active call - just clear refs
+                  setCurrentCallId(null);
+                  setIncomingCallSignal(null);
+                  setCallStatusFromSignal('idle');
+                }
+                // Don't call endWebRTCCall() if we're not actually in a call
+              }
+            } else {
+              // Unknown status - don't call endWebRTCCall(), just clear local state
+              setIncomingCallSignal(null);
+              setCallStatusFromSignal('idle');
+            }
+          });
+
+      return () => {
+        unsubscribe();
+      };
+    }, [user?.email, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, allTeamMembers, endWebRTCCall, currentCallId, setCurrentCallId, callStatus, db, auth]);
+
     // Set up real-time listener in a separate effect to avoid conflicts
     useEffect(() => {
       if (!user || !isOpen || !user.email || isLoadingMessages || isSendingMessage) return;
@@ -1745,16 +1983,24 @@ export function Chatbot() {
     }
 
     let unsubscribe: (() => void) | null = null;
-    let isInitialLoad = true;
+    // Track if we've received the first update from the listener
+    let isFirstListenerUpdate = true;
     
-    // Set up listener after a delay to ensure initial load is complete
-    const timer = setTimeout(() => {
-      unsubscribe = messagesService.subscribeToMessages(chatId, (firestoreMessages) => {
-        // Skip first update since we just loaded messages
-        if (isInitialLoad) {
-          isInitialLoad = false;
-          return;
-        }
+    // Set up listener immediately (no delay - this was causing messages to be missed)
+    unsubscribe = messagesService.subscribeToMessages(chatId, (firestoreMessages) => {
+      // Skip the very first update if we just loaded messages (to avoid duplicate processing)
+      // But only skip if we're still loading initial messages
+      if (isFirstListenerUpdate && isLoadingMessages) {
+        isFirstListenerUpdate = false;
+        // Wait a bit for initial load to complete, then process updates
+        setTimeout(() => {
+          isFirstListenerUpdate = false;
+        }, 500);
+        return;
+      }
+      
+      // After initial load completes, process all updates normally
+      isFirstListenerUpdate = false;
         
         // Don't process updates while sending a message (prevents race conditions)
         if (isSendingMessage) {
@@ -1998,11 +2244,9 @@ export function Chatbot() {
           console.error('Error processing real-time message update:', error);
         }
       });
-    }, 2000);
 
     // Cleanup
     return () => {
-      clearTimeout(timer);
       if (unsubscribe) {
         unsubscribe();
       }
@@ -2323,10 +2567,10 @@ export function Chatbot() {
 
     // Handle project channel messages
     if (isProjectChannel && selectedProjectId) {
-      // Get user display info
+      // Use pre-calculated current user display info
       const currentUserInfo = getUserInfo(user.email?.toLowerCase());
-      const userDisplayName = getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You";
-      const userInitials = getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined);
+      const userDisplayName = currentUserDisplayInfo.displayName;
+      const userInitials = currentUserDisplayInfo.initials;
       
       // Capture cited context before clearing (for display purposes)
       const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
@@ -2509,9 +2753,9 @@ export function Chatbot() {
 
     // Handle team channel messages
     if (isTeamChannel && selectedTeamId) {
-      // Get user display info
-      const userDisplayName = getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You";
-      const userInitials = getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined);
+      // Use pre-calculated current user display info
+      const userDisplayName = currentUserDisplayInfo.displayName;
+      const userInitials = currentUserDisplayInfo.initials;
       
       // Capture cited context before clearing (for display purposes)
       const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
@@ -3119,7 +3363,7 @@ export function Chatbot() {
                             )}
                           >
                             <Avatar className="h-6 w-6 flex-shrink-0">
-                              <AvatarFallback className={`text-xs ${getAvatarColor(member.email || member.id || member.name)}`}>
+                              <AvatarFallback className={`text-xs ${getAvatarColor((member.email || member.id)?.toLowerCase())}`}>
                                 {member.avatar}
                               </AvatarFallback>
                             </Avatar>
@@ -3157,7 +3401,9 @@ export function Chatbot() {
                   ) : (
                     <AvatarFallback className={cn(
                       "text-primary-foreground",
-                      (isProjectChannel || isTeamChannel) ? "bg-primary/10" : "bg-muted"
+                      (isProjectChannel || isTeamChannel) 
+                        ? "bg-primary/10" 
+                        : getAvatarColor(currentMember.id?.toLowerCase()) // Use id (which is email for team members)
                     )}>
                       {isProjectChannel ? (
                         <Hash className="h-4 w-4 text-primary" />
@@ -3175,6 +3421,76 @@ export function Chatbot() {
                     {selectedMember === "ai-assistant" ? "AI Project Manager" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
                   </p>
                 </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Show call button only for DM chats */}
+                {!isProjectChannel && !isTeamChannel && selectedMember !== "ai-assistant" && currentMember.id !== "ai-assistant" && (
+                  <>
+                    {(() => {
+                      // Get the other user's email for DM chats
+                      let otherUserEmail = '';
+                      let otherUserName = currentMember.name;
+                      let otherUserAvatar = currentMember.avatar;
+
+                      if (selectedMember.includes('@')) {
+                        otherUserEmail = selectedMember;
+                        const otherUser = allDomainUsers.find(u => u.email === selectedMember);
+                        if (otherUser) {
+                          otherUserName = `${otherUser.firstName || ''} ${otherUser.lastName || ''}`.trim() || otherUser.email;
+                          otherUserAvatar = `${otherUser.firstName?.charAt(0) || ''}${otherUser.lastName?.charAt(0) || ''}`.toUpperCase() || otherUser.email.charAt(0).toUpperCase();
+                        }
+                      } else {
+                        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+                        if (selectedMemberData?.email) {
+                          otherUserEmail = selectedMemberData.email;
+                          otherUserName = selectedMemberData.name;
+                          otherUserAvatar = selectedMemberData.avatar;
+                        }
+                      }
+
+                      if (!otherUserEmail || !user?.email) return null;
+
+                      const chatId = getDirectMessageChatId(user.email, otherUserEmail);
+                      
+                      return (
+                        <VoiceCallButton
+                          chatId={chatId}
+                          otherUserEmail={otherUserEmail}
+                          otherUserName={otherUserName}
+                          otherUserAvatar={otherUserAvatar}
+                          externalCallStatus={displayCallStatus}
+                          externalCallId={currentCallId}
+                          onEndCall={handleEndCall}
+                          onMuteStateChange={(muted, toggle) => {
+                            setActiveCallMuted(muted);
+                            setActiveCallToggleMute(() => toggle);
+                          }}
+                        />
+                      );
+                    })()}
+                    {/* Show mute button during active call (end call is handled by VoiceCallButton) */}
+                    {(displayCallStatus === 'active' || displayCallStatus === 'connecting') && (
+                      <Button
+                        variant={isMuted ? "destructive" : "outline"}
+                        size="sm"
+                        onClick={toggleMute}
+                        title={isMuted ? "Unmute microphone" : "Mute microphone"}
+                      >
+                        {isMuted ? (
+                          <>
+                            <MicOff className="h-4 w-4 mr-2" />
+                            Unmute
+                          </>
+                        ) : (
+                          <>
+                            <Mic className="h-4 w-4 mr-2" />
+                            Mute
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 
@@ -3299,8 +3615,13 @@ export function Chatbot() {
                       
                       // Get actual user info for display
                       const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
-                      const displayName = isSent ? getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You" : (isLean ? "lean" : userInfo.name);
-                      const displayInitials = isSent ? getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) : (isLean ? "L" : userInfo.initials);
+                      // For sent messages, use pre-calculated current user display info
+                      const displayName = isSent 
+                        ? currentUserDisplayInfo.displayName
+                        : (isLean ? "lean" : userInfo.name);
+                      const displayInitials = isSent 
+                        ? currentUserDisplayInfo.initials
+                        : (isLean ? "L" : userInfo.initials);
                       
                       return (
                         <div
@@ -3321,7 +3642,7 @@ export function Chatbot() {
                                   </AvatarFallback>
                                 </>
                               ) : (
-                                <AvatarFallback className={getAvatarColor(message.userId || message.memberName)}>
+                                <AvatarFallback className={getAvatarColor(message.userId?.toLowerCase())}>
                                   {displayInitials}
                                 </AvatarFallback>
                               )}
@@ -3395,7 +3716,7 @@ export function Chatbot() {
                           {/* Avatar for sent messages (current user) */}
                           {isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className={getAvatarColor(message.userId || user?.email)}>
+                              <AvatarFallback className={getAvatarColor(isSent ? user?.email?.toLowerCase() : message.userId?.toLowerCase())}>
                                 {displayInitials}
                               </AvatarFallback>
                             </Avatar>
@@ -3435,8 +3756,13 @@ export function Chatbot() {
                       
                       // Get actual user info for display
                       const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
-                      const displayName = isSent ? getUserDisplayName(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) || "You" : (isLean ? "lean" : userInfo.name);
-                      const displayInitials = isSent ? getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) : (isLean ? "L" : userInfo.initials);
+                      // For sent messages, use pre-calculated current user display info
+                      const displayName = isSent 
+                        ? currentUserDisplayInfo.displayName
+                        : (isLean ? "lean" : userInfo.name);
+                      const displayInitials = isSent 
+                        ? currentUserDisplayInfo.initials
+                        : (isLean ? "L" : userInfo.initials);
                       
                       return (
                         <div
@@ -3457,7 +3783,7 @@ export function Chatbot() {
                                   </AvatarFallback>
                                 </>
                               ) : (
-                                <AvatarFallback className={getAvatarColor(message.userId || message.memberName)}>
+                                <AvatarFallback className={getAvatarColor(message.userId?.toLowerCase())}>
                                   {displayInitials}
                                 </AvatarFallback>
                               )}
@@ -3531,7 +3857,7 @@ export function Chatbot() {
                           {/* Avatar for sent messages (current user) */}
                           {isSent && (
                             <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className={getAvatarColor(message.userId || user?.email)}>
+                              <AvatarFallback className={getAvatarColor(isSent ? user?.email?.toLowerCase() : message.userId?.toLowerCase())}>
                                 {displayInitials}
                               </AvatarFallback>
                             </Avatar>
@@ -3557,9 +3883,31 @@ export function Chatbot() {
             const isTeamMemberChat = selectedMember !== "ai-assistant" && !isProjectChannel;
             const isReceived = isTeamMemberChat && !isSent && message.role === "user";
             
-            // Get actual user info for display
-            const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
-            const displayInitials = isSent ? getUserInitials(user ? { firstName: user.firstName, lastName: user.lastName, email: user.email } : undefined) : (isLean ? "L" : userInfo.initials);
+            // Get actual user info for display - always use current user data for sent messages
+            // For received messages, try to get from current user list, fallback to message data
+            let displayInitials: string;
+            if (isSent) {
+              // Use pre-calculated current user display info
+              displayInitials = currentUserDisplayInfo.initials;
+            } else if (isLean) {
+              displayInitials = "L";
+            } else {
+              // For received messages, always use current user data from allDomainUsers
+              // This ensures avatar matches the user's current profile
+              const userInfo = message.userId ? getUserInfo(message.userId) : null;
+              if (userInfo && userInfo.initials) {
+                displayInitials = userInfo.initials;
+              } else {
+                // Fallback: try to get from allTeamMembers (which uses current user data)
+                const teamMember = allTeamMembers.find(m => m.email?.toLowerCase() === message.userId?.toLowerCase());
+                if (teamMember) {
+                  displayInitials = teamMember.avatar;
+                } else {
+                  // Last resort: use message data (might be stale)
+                  displayInitials = message.memberAvatar || "U";
+                }
+              }
+            }
             
             return (
               <div
@@ -3580,10 +3928,19 @@ export function Chatbot() {
                         </AvatarFallback>
                       </>
                     ) : (
-                      <AvatarFallback className={getAvatarColor(message.userId || message.memberName)}>
+                      <AvatarFallback className={getAvatarColor(message.userId)}>
                         {displayInitials || <User className="h-4 w-4" />}
                       </AvatarFallback>
                     )}
+                  </Avatar>
+                )}
+                
+                {/* Avatar for sent messages - always use current user's profile data */}
+                {isSent && (
+                  <Avatar className="h-8 w-8 flex-shrink-0">
+                    <AvatarFallback className={getAvatarColor(user?.email?.toLowerCase())}>
+                      {displayInitials || <User className="h-4 w-4" />}
+                    </AvatarFallback>
                   </Avatar>
                 )}
                 
@@ -3806,6 +4163,62 @@ export function Chatbot() {
           </div>
         </div>
       </div>
+
+      {/* Incoming Call Dialog */}
+      {incomingCallSignal && incomingCallSignal.status === 'ringing' && (() => {
+        // Determine chatId for the incoming call
+        let dialogChatId = '';
+        if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
+          dialogChatId = selectedMember;
+        } else if (selectedMember === "ai-assistant") {
+          dialogChatId = user?.email ? getAIAssistantChatId(user.email) : '';
+        } else {
+          if (selectedMember.includes('@')) {
+            dialogChatId = user?.email ? getDirectMessageChatId(user.email, selectedMember) : '';
+          } else {
+            const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+            if (selectedMemberData?.email && user?.email) {
+              dialogChatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+            } else {
+              dialogChatId = selectedMember;
+            }
+          }
+        }
+        
+        return (
+          <IncomingCallDialog
+            callSignal={incomingCallSignal}
+            chatId={dialogChatId || incomingCallSignal.chatId}
+            callerName={(() => {
+              const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
+              if (caller) {
+                return `${caller.firstName || ''} ${caller.lastName || ''}`.trim() || caller.email;
+              }
+              return incomingCallSignal.callerEmail;
+            })()}
+            callerAvatar={(() => {
+              const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
+              if (caller) {
+                return `${caller.firstName?.charAt(0) || ''}${caller.lastName?.charAt(0) || ''}`.toUpperCase() || incomingCallSignal.callerEmail.charAt(0).toUpperCase();
+              }
+              return incomingCallSignal.callerEmail.charAt(0).toUpperCase();
+            })()}
+            onMuteStateChange={(muted, toggle) => {
+              setActiveCallMuted(muted);
+              setActiveCallToggleMute(() => toggle);
+            }}
+            onAccept={() => {
+              setIncomingCallSignal(null);
+            }}
+            onReject={async () => {
+              // Clean up incoming call signal
+              setIncomingCallSignal(null);
+              // End the call (this will also update signaling service)
+              await handleEndCall();
+            }}
+          />
+        );
+      })()}
     </>
   );
 }

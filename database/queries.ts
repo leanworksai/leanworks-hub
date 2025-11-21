@@ -441,7 +441,16 @@ export const taskQueries = {
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
       WHERE t.domain = $1
-      ORDER BY t.created_at DESC
+      ORDER BY 
+        CASE t.status
+          WHEN 'todo' THEN 1
+          WHEN 'in-progress' THEN 2
+          WHEN 'review' THEN 3
+          WHEN 'blocked' THEN 4
+          WHEN 'completed' THEN 5
+          ELSE 6
+        END,
+        t.created_at DESC
     `, [domain]);
   },
 
@@ -471,7 +480,16 @@ export const taskQueries = {
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
       WHERE t.project_id = $1 AND t.domain = $2
-      ORDER BY t.created_at DESC
+      ORDER BY 
+        CASE t.status
+          WHEN 'todo' THEN 1
+          WHEN 'in-progress' THEN 2
+          WHEN 'review' THEN 3
+          WHEN 'blocked' THEN 4
+          WHEN 'completed' THEN 5
+          ELSE 6
+        END,
+        t.created_at DESC
     `, [projectId, domain]);
   },
 
