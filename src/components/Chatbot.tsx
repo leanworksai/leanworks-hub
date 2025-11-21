@@ -250,6 +250,7 @@ export function Chatbot() {
             messages: parsed.messages.map((msg: any) => ({
               ...msg,
               timestamp: new Date(msg.timestamp),
+              citedContext: msg.citedContext || null, // Explicitly preserve citedContext
             })),
             lastSync: parsed.lastSync || 0,
           };
@@ -276,6 +277,7 @@ export function Chatbot() {
       messages: messages.map(msg => ({
         ...msg,
         timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
+        citedContext: msg.citedContext || null, // Explicitly preserve citedContext
       })),
       lastSync,
     };
@@ -285,6 +287,7 @@ export function Chatbot() {
         messages: messages.map(msg => ({
           ...msg,
           timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
+          citedContext: msg.citedContext || null, // Explicitly preserve citedContext
         })),
         lastSync,
       };
@@ -306,6 +309,7 @@ export function Chatbot() {
           messages: limitedMessages.map(msg => ({
             ...msg,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
+            citedContext: msg.citedContext || null, // Explicitly preserve citedContext
           })),
           lastSync,
         };
@@ -1610,6 +1614,7 @@ export function Chatbot() {
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             projectId: msg.projectId || selectedProjectId,
             userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+            citedContext: msg.citedContext,
           }));
         
         setChannelMessages((prev) => {
@@ -1628,6 +1633,7 @@ export function Chatbot() {
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             teamId: msg.teamId || selectedTeamId,
             userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+            citedContext: msg.citedContext,
           }));
         
         setChannelMessages((prev) => {
@@ -2945,6 +2951,7 @@ export function Chatbot() {
               userId: msg.userId,
               memberName: msg.memberName,
               memberAvatar: msg.memberAvatar,
+              citedContext: msg.citedContext,
             }));
             saveCachedMessages(chatId, allMessages);
           }, 0);
@@ -3622,41 +3629,9 @@ export function Chatbot() {
               </div>
             </div>
 
-            {/* Search Bar for Project Channels */}
-            {isProjectChannel && (
-              <div className="border-b bg-background p-3">
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      ref={memberSearchRef}
-                      placeholder="Search activities, tasks, comments..."
-                      value={memberSearchQuery}
-                      onChange={(e) => {
-                        setMemberSearchQuery(e.target.value);
-                      }}
-                      className="pl-9"
-                    />
-                  </div>
-                  <Select value={filterType} onValueChange={(value: any) => setFilterType(value)}>
-                    <SelectTrigger className="w-[140px]">
-                      <Filter className="h-4 w-4 mr-2" />
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="activities">Activities</SelectItem>
-                      <SelectItem value="tasks">Tasks</SelectItem>
-                      <SelectItem value="comments">Comments</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            )}
-
             {/* Messages Area */}
-            <ScrollArea className="flex-1">
-              <div className="p-4 space-y-4">
+            <ScrollArea className="flex-1 min-w-0">
+              <div className="p-4 space-y-4 overflow-x-hidden w-full min-w-0">
           {/* Loading indicator */}
           {isLoadingMessages && (
             <div className="flex items-center justify-center py-8">
@@ -3782,7 +3757,10 @@ export function Chatbot() {
                           )}
                           
                           {/* Message bubble */}
-                          <div className="flex flex-col min-w-0 max-w-[80%]">
+                          <div className={cn(
+                            "flex flex-col min-w-0 max-w-[75%]",
+                            isSent && "ml-auto"
+                          )}>
                             {!isSent && (
                               <div className="flex items-center gap-2 mb-1 px-1">
                                 <p className="font-medium text-sm">{displayName}</p>
@@ -3794,7 +3772,7 @@ export function Chatbot() {
                                 </span>
                               </div>
                             )}
-                            <div className="rounded-lg px-4 py-2 bg-muted border border-border">
+                            <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words">
                               {/* Display cited context for channel messages */}
                               {message.citedContext && (
                                 <div className="mb-2 pb-2 border-b border-border/50">
@@ -3833,7 +3811,7 @@ export function Chatbot() {
                                   )}
                                 </div>
                               )}
-                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
+                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words">
                                 {renderMessageContent(message.content)}
                               </p>
                               <p className="text-xs mt-1 opacity-60">
@@ -3879,7 +3857,7 @@ export function Chatbot() {
                   );
                 }
                 return (
-                  <div className="space-y-4">
+                  <div className="space-y-4 w-full min-w-0 max-w-full">
                     {projectMessages.map((message) => {
                       // Check if message is from lean
                       const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
@@ -3904,7 +3882,7 @@ export function Chatbot() {
                           data-message-user-id={message.userId || ''}
                           data-message-role={isLean ? 'assistant' : 'user'}
                           className={cn(
-                            "flex gap-3",
+                            "flex gap-3 w-full min-w-0 max-w-full",
                             isSent ? "justify-end" : "justify-start"
                           )}
                         >
@@ -3927,7 +3905,10 @@ export function Chatbot() {
                           )}
                           
                           {/* Message bubble */}
-                          <div className="flex flex-col min-w-0 max-w-[80%]">
+                          <div className={cn(
+                            "flex flex-col min-w-0 shrink",
+                            isSent ? "max-w-[75%] ml-auto" : "max-w-[75%]"
+                          )}>
                             {!isSent && (
                               <div className="flex items-center gap-2 mb-1 px-1">
                                 <p className="font-medium text-sm">{displayName}</p>
@@ -3939,14 +3920,14 @@ export function Chatbot() {
                                 </span>
                               </div>
                             )}
-                            <div className="rounded-lg px-4 py-2 bg-muted border border-border">
+                            <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words min-w-0 w-full overflow-x-hidden" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                               {/* Display cited context for channel messages */}
                               {message.citedContext && (
-                                <div className="mb-2 pb-2 border-b border-border/50">
+                                <div className="mb-2 pb-2 border-b border-border/50 w-full min-w-0">
                                   {message.citedContext.projects && message.citedContext.projects.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                    <div className="flex items-center gap-2 flex-wrap mb-1.5 min-w-0 w-full">
                                       <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary">Cited Projects:</span>
+                                      <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">Cited Projects:</span>
                                       {message.citedContext.projects.map((project) => (
                                         <Badge key={project.id} variant="secondary" className="text-xs">
                                           {project.name}
@@ -3955,9 +3936,9 @@ export function Chatbot() {
                                     </div>
                                   )}
                                   {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                    <div className="flex items-center gap-2 flex-wrap mb-1.5 min-w-0 w-full">
                                       <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary">Cited Tasks:</span>
+                                      <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">Cited Tasks:</span>
                                       {message.citedContext.tasks.map((task) => (
                                         <Badge key={task.id} variant="secondary" className="text-xs">
                                           {task.title}
@@ -3966,9 +3947,9 @@ export function Chatbot() {
                                     </div>
                                   )}
                                   {message.citedContext.teams && message.citedContext.teams.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap">
+                                    <div className="flex items-center gap-2 flex-wrap min-w-0 w-full">
                                       <Users className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary">Cited Teams:</span>
+                                      <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">Cited Teams:</span>
                                       {message.citedContext.teams.map((team) => (
                                         <Badge key={team.id} variant="secondary" className="text-xs">
                                           {team.name}
@@ -3978,7 +3959,7 @@ export function Chatbot() {
                                   )}
                                 </div>
                               )}
-                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
+                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                                 {renderMessageContent(message.content)}
                               </p>
                               <p className="text-xs mt-1 opacity-60">
@@ -4053,7 +4034,7 @@ export function Chatbot() {
                 data-message-user-id={message.userId || ''}
                 data-message-role={message.role}
                 className={cn(
-                  "flex gap-3",
+                  "flex gap-3 w-full",
                   isSent ? "justify-end" : "justify-start"
                 )}
               >
@@ -4084,12 +4065,17 @@ export function Chatbot() {
                   </Avatar>
                 )}
                 
-                {/* Message bubble */}
-                <div
-                  className={cn(
-                    "rounded-lg px-4 py-2 max-w-[80%] bg-muted border border-border"
-                  )}
-                >
+                {/* Message bubble wrapper */}
+                <div className={cn(
+                  "flex flex-col min-w-0 max-w-[75%]",
+                  isSent && "ml-auto"
+                )}>
+                  {/* Message bubble */}
+                  <div
+                    className={cn(
+                      "rounded-lg px-4 py-2 bg-muted border border-border break-words"
+                    )}
+                  >
                   {/* Display cited context for user messages */}
                   {message.role === "user" && message.citedContext && (
                     <div className="mb-2 pb-2 border-b border-border/50">
@@ -4128,22 +4114,23 @@ export function Chatbot() {
                       )}
                     </div>
                   )}
-                  <p className="text-sm whitespace-pre-wrap font-medium text-foreground">
-                    {renderMessageContent(message.content)}
-                  </p>
-                  <p className="text-xs mt-1 opacity-60">
-                    {message.timestamp.toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </p>
+                    <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words">
+                      {renderMessageContent(message.content)}
+                    </p>
+                    <p className="text-xs mt-1 opacity-60">
+                      {message.timestamp.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </p>
+                  </div>
                 </div>
                 
                 {/* Avatar for sent messages */}
                 {isSent && (
                   <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className={getAvatarColor(message.userId || user?.email)}>
-                      {displayInitials}
+                    <AvatarFallback className={getAvatarColor(user?.email?.toLowerCase())}>
+                      {displayInitials || <User className="h-4 w-4" />}
                     </AvatarFallback>
                   </Avatar>
                 )}

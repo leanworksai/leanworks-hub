@@ -2309,7 +2309,8 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
         projectId: data.projectId || null,
         teamId: data.teamId || null,
         memberName: data.memberName || null,
-        memberAvatar: data.memberAvatar || null
+        memberAvatar: data.memberAvatar || null,
+        citedContext: data.citedContext || null
       };
     });
     
@@ -2332,7 +2333,8 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
       projectId, 
       teamId, 
       memberName, 
-      memberAvatar 
+      memberAvatar,
+      citedContext
     } = req.body;
     const collectionPath = getCollectionPath('messages', domain);
     
@@ -2349,6 +2351,7 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
     if (teamId) messageData.teamId = teamId;
     if (memberName) messageData.memberName = memberName;
     if (memberAvatar) messageData.memberAvatar = memberAvatar;
+    if (citedContext) messageData.citedContext = citedContext;
     
     const docRef = await db.collection(collectionPath).add(messageData);
     
@@ -2366,7 +2369,8 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
         projectId: messageData.projectId || null,
         teamId: messageData.teamId || null,
         memberName: messageData.memberName || null,
-        memberAvatar: messageData.memberAvatar || null
+        memberAvatar: messageData.memberAvatar || null,
+        citedContext: messageData.citedContext || null
       }
     });
   } catch (error) {
