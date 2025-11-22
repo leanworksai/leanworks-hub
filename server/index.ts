@@ -3,6 +3,7 @@ import cors from 'cors';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { getStorage } from 'firebase-admin/storage';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -12,6 +13,7 @@ import crypto from 'crypto';
 import { getTenantPool, getDomainFromEmail } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
+import { setupImageEndpoints } from './endpoints/images.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -33,11 +35,15 @@ try {
 let firebaseApp;
 try {
   if (getApps().length === 0) {
+    // Construct storage bucket name (default is {project-id}.appspot.com)
+    const storageBucket = serviceAccount.storage_bucket || `${serviceAccount.project_id}.appspot.com`;
     firebaseApp = initializeApp({
       credential: cert(serviceAccount),
       projectId: serviceAccount.project_id,
+      storageBucket: storageBucket,
     });
     console.log('✅ Firebase Admin SDK initialized');
+    console.log('✅ Storage bucket:', storageBucket);
   } else {
     firebaseApp = getApps()[0];
     console.log('✅ Using existing Firebase Admin SDK instance');
@@ -52,7 +58,8 @@ try {
 const db = getFirestore(firebaseApp, 'leanworks-prod');
 console.log('✅ Firestore database initialized:', db.databaseId);
 const auth = getAuth(firebaseApp);
-console.log('✅ Firestore and Auth initialized');
+const storage = getStorage(firebaseApp);
+console.log('✅ Firestore, Auth, and Storage initialized');
 
 // Initialize Secret Manager client
 const secretManagerClient = new SecretManagerServiceClient({
@@ -73,9 +80,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// JSON parsing middleware (except for GitHub webhook)
+// JSON parsing middleware (except for GitHub webhook and image uploads)
 app.use((req, res, next) => {
-  if (req.path === '/api/integrations/github/webhooks') {
+  if (req.path === '/api/integrations/github/webhooks' || req.path.startsWith('/api/images/')) {
     next();
   } else {
     express.json()(req, res, next);
@@ -2310,7 +2317,8 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
         teamId: data.teamId || null,
         memberName: data.memberName || null,
         memberAvatar: data.memberAvatar || null,
-        citedContext: data.citedContext || null
+        citedContext: data.citedContext || null,
+        imageUrls: data.imageUrls || null
       };
     });
     
@@ -2334,7 +2342,8 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
       teamId, 
       memberName, 
       memberAvatar,
-      citedContext
+      citedContext,
+      imageUrls
     } = req.body;
     const collectionPath = getCollectionPath('messages', domain);
     
@@ -2352,6 +2361,9 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
     if (memberName) messageData.memberName = memberName;
     if (memberAvatar) messageData.memberAvatar = memberAvatar;
     if (citedContext) messageData.citedContext = citedContext;
+    if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+      messageData.imageUrls = imageUrls;
+    }
     
     const docRef = await db.collection(collectionPath).add(messageData);
     
@@ -2370,7 +2382,8 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
         teamId: messageData.teamId || null,
         memberName: messageData.memberName || null,
         memberAvatar: messageData.memberAvatar || null,
-        citedContext: messageData.citedContext || null
+        citedContext: messageData.citedContext || null,
+        imageUrls: messageData.imageUrls || null
       }
     });
   } catch (error) {
@@ -2592,6 +2605,7 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 // ============================================================================
 
 setupCallEndpoints(app, authenticateUser, db);
+setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
