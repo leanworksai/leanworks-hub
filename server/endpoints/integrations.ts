@@ -329,12 +329,12 @@ export function setupIntegrationEndpoints(
       );
 
       // Redirect to frontend
-      const redirectUrl = process.env.FRONTEND_URL || 'https://hub.leanworks.ai';
+      const redirectUrl = process.env.FRONTEND_URL || 'https://leanworks.ai';
       const redirectPath = `${redirectUrl}/integrations?github=connected&installation_id=${installationId}`;
       res.redirect(redirectPath);
     } catch (error: any) {
       console.error('[GitHub Callback] Error:', error);
-      const redirectUrl = process.env.FRONTEND_URL || 'https://hub.leanworks.ai';
+      const redirectUrl = process.env.FRONTEND_URL || 'https://leanworks.ai';
       res.redirect(`${redirectUrl}/integrations?github=error`);
     }
   });

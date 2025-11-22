@@ -5,7 +5,7 @@ metadata:
   annotations:
     # Static IP name - update if your existing reservation uses a different name
     kubernetes.io/ingress.global-static-ip-name: "leanworks-hub-ip"
-    networking.gke.io/managed-certificates: "leanworks-hub-ssl-cert"
+    networking.gke.io/managed-certificates: "leanworks-ai-ssl-cert,hub-leanworks-ai-ssl-cert"
     # HTTPS only - disable HTTP
     kubernetes.io/ingress.allow-http: "false"
     # Backend config annotation (matches working pattern)
@@ -15,6 +15,56 @@ metadata:
 spec:
   ingressClassName: gce
   rules:
+  # New primary domain
+  - host: leanworks.ai
+    http:
+      paths:
+      # Leanworks-app API endpoints (must come before catch-all)
+      - path: /api/ask
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      - path: /api/generate-task
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      - path: /api/verify
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      - path: /api/cache/clear
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      # Legacy /ask path for backward compatibility
+      - path: /ask
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      # All other paths (including leanworks-hub /api/* routes) go to frontend
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: leanworks-hub-service
+            port:
+              number: 80
+  # Legacy domain (for backward compatibility during migration)
   - host: hub.leanworks.ai
     http:
       paths:
@@ -68,7 +118,16 @@ spec:
 apiVersion: networking.gke.io/v1
 kind: ManagedCertificate
 metadata:
-  name: leanworks-hub-ssl-cert
+  name: leanworks-ai-ssl-cert
+spec:
+  domains:
+    - leanworks.ai
+
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: hub-leanworks-ai-ssl-cert
 spec:
   domains:
     - hub.leanworks.ai

@@ -118,7 +118,7 @@ export default function Integrations() {
       }
       // GitHub App installation URL with state parameter containing domain
       // The callback URL should be configured in GitHub App settings as:
-      // https://hub.leanworks.ai/api/integrations/github/callback
+      // https://leanworks.ai/api/integrations/github/callback
       const githubAppUrl = `https://github.com/apps/leanworksai/installations/new?state=${encodeURIComponent(domain)}`;
       window.open(githubAppUrl, "_blank");
     }
