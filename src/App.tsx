@@ -35,18 +35,14 @@ const queryClient = new QueryClient();
 const AppRoutesContent = () => {
   const { user } = useAuth();
   const location = useLocation();
-  const isHomePage = location.pathname === '/home';
+  const isHomePage = location.pathname === '/';
 
   return (
     <>
       <Routes>
-        <Route path="/home" element={<Home />} />
+        <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
-        <Route
-          path="/"
-          element={<Navigate to="/home" replace />}
-        />
         <Route
           path="/teams"
           element={

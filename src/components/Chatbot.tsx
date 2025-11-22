@@ -859,34 +859,97 @@ export function Chatbot() {
     }
   }, [showMentionSuggestions, filteredMentionUsers, selectedMentionIndex, insertMention]);
 
-  // Render message content with highlighted mentions
+  // Render message content with highlighted mentions and clickable links
   const renderMessageContent = useCallback((content: string) => {
     // Match @mentions - matches @username (single word) or @"Full Name" (with spaces in quotes)
     // Simple pattern: @word where word can contain letters, numbers, and underscores
     const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?)(?=\s|$|[.,!?;:])/g;
-    const parts: (string | JSX.Element)[] = [];
-    let lastIndex = 0;
-    let match;
     
+    // Match URLs - supports http, https, www, and common TLDs
+    const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s]*)/gi;
+    
+    const parts: (string | JSX.Element)[] = [];
+    const matches: Array<{ type: 'mention' | 'url'; index: number; length: number; content: string; url?: string }> = [];
+    
+    // Find all mentions
+    let match;
     while ((match = mentionRegex.exec(content)) !== null) {
-      // Add text before mention
-      if (match.index > lastIndex) {
-        parts.push(content.substring(lastIndex, match.index));
-      }
-      
-      // Add highlighted mention
-      const mentionName = match[1];
-      parts.push(
-        <span
-          key={match.index}
-          className="text-primary font-semibold"
-        >
-          @{mentionName}
-        </span>
+      matches.push({
+        type: 'mention',
+        index: match.index,
+        length: match[0].length,
+        content: match[0],
+      });
+    }
+    
+    // Find all URLs
+    while ((match = urlRegex.exec(content)) !== null) {
+      // Check if this URL overlaps with any mention
+      const overlapsWithMention = matches.some(m => 
+        m.type === 'mention' && 
+        match.index < m.index + m.length && 
+        match.index + match[0].length > m.index
       );
       
-      lastIndex = match.index + match[0].length;
+      if (!overlapsWithMention) {
+        let url = match[0];
+        // Add protocol if missing
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+          url = 'https://' + url;
+        }
+        matches.push({
+          type: 'url',
+          index: match.index,
+          length: match[0].length,
+          content: match[0],
+          url: url,
+        });
+      }
     }
+    
+    // Sort matches by index
+    matches.sort((a, b) => a.index - b.index);
+    
+    // Build parts array
+    let lastIndex = 0;
+    let keyCounter = 0;
+    
+    matches.forEach((match) => {
+      // Add text before match
+      if (match.index > lastIndex) {
+        const textBefore = content.substring(lastIndex, match.index);
+        if (textBefore) {
+          parts.push(textBefore);
+        }
+      }
+      
+      // Add match (mention or URL)
+      if (match.type === 'mention') {
+        const mentionName = match.content.substring(1); // Remove @
+        parts.push(
+          <span
+            key={`mention-${keyCounter++}`}
+            className="text-primary font-semibold"
+          >
+            @{mentionName}
+          </span>
+        );
+      } else if (match.type === 'url') {
+        parts.push(
+          <a
+            key={`url-${keyCounter++}`}
+            href={match.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 underline hover:text-blue-700 break-all"
+          >
+            {match.content}
+          </a>
+        );
+      }
+      
+      lastIndex = match.index + match.length;
+    });
     
     // Add remaining text
     if (lastIndex < content.length) {
@@ -4053,15 +4116,6 @@ export function Chatbot() {
                         {displayInitials || <User className="h-4 w-4" />}
                       </AvatarFallback>
                     )}
-                  </Avatar>
-                )}
-                
-                {/* Avatar for sent messages - always use current user's profile data */}
-                {isSent && (
-                  <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className={getAvatarColor(user?.email?.toLowerCase())}>
-                      {displayInitials || <User className="h-4 w-4" />}
-                    </AvatarFallback>
                   </Avatar>
                 )}
                 
