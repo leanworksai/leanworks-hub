@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff } from "lucide-react";
+import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/firestore";
 import { CallStatus } from "@/hooks/useWebRTC";
@@ -22,7 +22,7 @@ import { Team } from "@/data/teamsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
-import { messagesService, type ChatMessage } from "@/services/firestore";
+import { messagesService, imageUploadService, type ChatMessage } from "@/services/firestore";
 import { useAuth } from "@/contexts/AuthContext";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
@@ -34,6 +34,7 @@ interface Message {
   content: string;
   timestamp: Date;
   userId?: string;
+  imageUrls?: string[];
   citedContext?: {
     projects?: Project[];
     tasks?: Task[];
@@ -58,6 +59,7 @@ interface ChannelMessage {
   projectId?: string;
   teamId?: string;
   userId?: string;
+  imageUrls?: string[];
   citedContext?: {
     projects?: Project[];
     tasks?: Task[];
@@ -156,6 +158,10 @@ export function Chatbot() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [selectedImages, setSelectedImages] = useState<File[]>([]);
+  const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -401,6 +407,7 @@ export function Chatbot() {
                 ? incomingMsg.timestamp 
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
+              imageUrls: incomingMsg.imageUrls || existingMsg.imageUrls,
               citedContext: incomingMsg.citedContext || existingMsg.citedContext,
             });
           }
@@ -436,6 +443,7 @@ export function Chatbot() {
                 ? incomingMsg.timestamp 
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
+              imageUrls: incomingMsg.imageUrls || matchedOptimistic.imageUrls,
               citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
             });
           } else {
@@ -448,6 +456,7 @@ export function Chatbot() {
                 ? incomingMsg.timestamp 
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
+              imageUrls: incomingMsg.imageUrls,
               citedContext: incomingMsg.citedContext,
             });
           }
@@ -517,6 +526,7 @@ export function Chatbot() {
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
+            imageUrls: incomingMsg.imageUrls || existingMsg.imageUrls,
             citedContext: incomingMsg.citedContext || existingMsg.citedContext,
           });
         }
@@ -554,6 +564,7 @@ export function Chatbot() {
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
+            imageUrls: incomingMsg.imageUrls || matchedOptimistic.imageUrls,
             citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
           });
         } else {
@@ -1802,6 +1813,7 @@ export function Chatbot() {
               timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
               projectId: msg.projectId || selectedProjectId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+              imageUrls: msg.imageUrls,
               citedContext: msg.citedContext,
             }));
           
@@ -1867,6 +1879,7 @@ export function Chatbot() {
               timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
               teamId: msg.teamId || selectedTeamId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+              imageUrls: msg.imageUrls,
               citedContext: msg.citedContext,
             }));
         
@@ -1934,6 +1947,7 @@ export function Chatbot() {
             content: msg.content,
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             userId: msg.userId,
+            imageUrls: msg.imageUrls,
             citedContext: msg.citedContext,
           }));
           
@@ -2743,12 +2757,109 @@ export function Chatbot() {
     }
   };
 
+  // Handle image selection
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    const validFiles = files.filter(file => {
+      // Validate file type
+      const validTypes = ['image/jpeg', 'image/jpg'];
+      const validExtensions = ['.jpg', '.jpeg'];
+      const fileName = file.name.toLowerCase();
+      const isValidType = validTypes.includes(file.type) || 
+                          validExtensions.some(ext => fileName.endsWith(ext));
+      
+      if (!isValidType) {
+        alert('Only JPG images are allowed');
+        return false;
+      }
+      
+      // Validate file size (10MB max)
+      if (file.size > 10 * 1024 * 1024) {
+        alert('Image size exceeds 10MB limit');
+        return false;
+      }
+      
+      return true;
+    });
+
+    if (validFiles.length > 0) {
+      setSelectedImages(prev => [...prev, ...validFiles]);
+      // Create preview URLs
+      const newPreviewUrls = validFiles.map(file => URL.createObjectURL(file));
+      setImagePreviewUrls(prev => [...prev, ...newPreviewUrls]);
+    }
+
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Remove image from selection
+  const removeImage = (index: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+    // Revoke object URL to free memory
+    URL.revokeObjectURL(imagePreviewUrls[index]);
+    setImagePreviewUrls(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Cleanup preview URLs on unmount
+  useEffect(() => {
+    return () => {
+      imagePreviewUrls.forEach(url => URL.revokeObjectURL(url));
+    };
+  }, []);
+
   const handleSend = async () => {
-    if (!input.trim() || isLoading || !user || isSendingMessage) return;
+    // Allow sending if there's text OR images
+    if ((!input.trim() && selectedImages.length === 0) || isLoading || !user || isSendingMessage) return;
 
     const messageContent = input.trim();
     setInput("");
     setIsSendingMessage(true);
+    setUploadingImages(true);
+
+    // Determine chatId first (needed for image upload)
+    let chatId: string;
+    if (isProjectChannel && selectedProjectId) {
+      chatId = selectedMember;
+    } else if (selectedMember === "ai-assistant") {
+      chatId = getAIAssistantChatId(user.email!);
+    } else {
+      if (selectedMember.includes('@') && user.email) {
+        chatId = getDirectMessageChatId(user.email, selectedMember);
+      } else {
+        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+        if (selectedMemberData?.email && user.email) {
+          chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+        } else {
+          chatId = selectedMember;
+        }
+      }
+    }
+
+    // Upload images first if any
+    let imageUrls: string[] = [];
+    if (selectedImages.length > 0) {
+      try {
+        const uploadPromises = selectedImages.map(file => 
+          imageUploadService.uploadImage(chatId, file)
+        );
+        imageUrls = await Promise.all(uploadPromises);
+      } catch (error: any) {
+        console.error('Failed to upload images:', error);
+        alert(error.message || 'Failed to upload images. Please try again.');
+        setUploadingImages(false);
+        setIsSendingMessage(false);
+        return;
+      }
+    }
+    setUploadingImages(false);
+    
+    // Clear selected images and previews
+    imagePreviewUrls.forEach(url => URL.revokeObjectURL(url));
+    setSelectedImages([]);
+    setImagePreviewUrls([]);
 
     // Handle project channel messages
     if (isProjectChannel && selectedProjectId) {
@@ -2773,6 +2884,7 @@ export function Chatbot() {
         timestamp: new Date(),
         projectId: selectedProjectId,
         userId: user.email?.toLowerCase(),
+        imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
         citedContext,
       };
 
@@ -2792,6 +2904,7 @@ export function Chatbot() {
           content: messageContent,
           projectId: selectedProjectId,
           citedContext: citedContext,
+          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
         });
 
         const savedChannelMessage: ChannelMessage = {
@@ -2802,6 +2915,7 @@ export function Chatbot() {
           timestamp: savedMessage.timestamp instanceof Date ? savedMessage.timestamp : new Date(savedMessage.timestamp),
           projectId: selectedProjectId,
           userId: savedMessage.userId || user.email?.toLowerCase(),
+          imageUrls: savedMessage.imageUrls || imageUrls.length > 0 ? imageUrls : undefined,
           citedContext: savedMessage.citedContext || citedContext,
         };
 
@@ -2827,6 +2941,7 @@ export function Chatbot() {
               userId: msg.userId,
               memberName: msg.memberName,
               memberAvatar: msg.memberAvatar,
+              imageUrls: msg.imageUrls,
               citedContext: msg.citedContext,
             }));
             saveCachedMessages(chatId, allMessages);
@@ -2958,6 +3073,7 @@ export function Chatbot() {
         timestamp: new Date(),
         teamId: selectedTeamId,
         userId: user.email?.toLowerCase(),
+        imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
         citedContext,
       };
 
@@ -2977,6 +3093,7 @@ export function Chatbot() {
           content: messageContent,
           teamId: selectedTeamId,
           citedContext: citedContext,
+          imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
         });
 
         const savedChannelMessage: ChannelMessage = {
@@ -2989,6 +3106,7 @@ export function Chatbot() {
             : new Date(),
           teamId: selectedTeamId,
           userId: savedMessage.userId || user.email?.toLowerCase(),
+          imageUrls: savedMessage.imageUrls || imageUrls.length > 0 ? imageUrls : undefined,
           citedContext: savedMessage.citedContext || citedContext,
         };
 
@@ -3014,6 +3132,7 @@ export function Chatbot() {
               userId: msg.userId,
               memberName: msg.memberName,
               memberAvatar: msg.memberAvatar,
+              imageUrls: msg.imageUrls,
               citedContext: msg.citedContext,
             }));
             saveCachedMessages(chatId, allMessages);
@@ -3123,27 +3242,6 @@ export function Chatbot() {
       return;
     }
 
-    // Handle AI Assistant or team member messages
-    // Determine the correct chatId
-    let chatId: string;
-    if (selectedMember === "ai-assistant") {
-      chatId = getAIAssistantChatId(user.email);
-    } else {
-      // For team member chats, generate consistent chatId from both users' emails
-      // selectedMember is now the email (since we changed ID to email)
-      // Check if it looks like an email, otherwise fallback
-      if (selectedMember.includes('@') && user.email) {
-        chatId = getDirectMessageChatId(user.email, selectedMember);
-      } else {
-        // Fallback: try to find member by ID
-        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
-        if (selectedMemberData?.email && user.email) {
-          chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
-        } else {
-          chatId = selectedMember; // Final fallback
-        }
-      }
-    }
 
     // Capture cited context before clearing (for display purposes)
     const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
@@ -3159,6 +3257,7 @@ export function Chatbot() {
       content: messageContent,
       timestamp: new Date(),
       userId: user.email?.toLowerCase(),
+      imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
       citedContext,
     };
 
@@ -3172,6 +3271,7 @@ export function Chatbot() {
         role: 'user',
         content: messageContent,
         citedContext: citedContext,
+        imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
       });
       
       // Update the message in state with saved data
@@ -3183,6 +3283,7 @@ export function Chatbot() {
                 id: savedUserMessage.id,
                 timestamp: savedUserMessage.timestamp instanceof Date ? savedUserMessage.timestamp : new Date(savedUserMessage.timestamp),
                 userId: savedUserMessage.userId || user.email?.toLowerCase(),
+                imageUrls: savedUserMessage.imageUrls || imageUrls.length > 0 ? imageUrls : undefined,
                 citedContext: savedUserMessage.citedContext || citedContext,
               }
             : msg
@@ -3197,6 +3298,7 @@ export function Chatbot() {
             content: msg.content,
             timestamp: msg.timestamp,
             userId: msg.userId,
+            imageUrls: msg.imageUrls,
             citedContext: msg.citedContext,
           }));
           saveCachedMessages(chatId, allMessages);
@@ -3877,6 +3979,26 @@ export function Chatbot() {
                               <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words">
                                 {renderMessageContent(message.content)}
                               </p>
+                              {/* Display images if any */}
+                              {message.imageUrls && message.imageUrls.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {message.imageUrls.map((imageUrl, idx) => (
+                                    <a
+                                      key={idx}
+                                      href={imageUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="block"
+                                    >
+                                      <img
+                                        src={imageUrl}
+                                        alt={`Image ${idx + 1}`}
+                                        className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                                      />
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
                               <p className="text-xs mt-1 opacity-60">
                                 {message.timestamp.toLocaleTimeString([], {
                                   hour: "2-digit",
@@ -4025,6 +4147,26 @@ export function Chatbot() {
                               <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                                 {renderMessageContent(message.content)}
                               </p>
+                              {/* Display images if any */}
+                              {message.imageUrls && message.imageUrls.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {message.imageUrls.map((imageUrl, idx) => (
+                                    <a
+                                      key={idx}
+                                      href={imageUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="block"
+                                    >
+                                      <img
+                                        src={imageUrl}
+                                        alt={`Image ${idx + 1}`}
+                                        className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                                      />
+                                    </a>
+                                  ))}
+                                </div>
+                              )}
                               <p className="text-xs mt-1 opacity-60">
                                 {message.timestamp.toLocaleTimeString([], {
                                   hour: "2-digit",
@@ -4171,6 +4313,26 @@ export function Chatbot() {
                     <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words">
                       {renderMessageContent(message.content)}
                     </p>
+                    {/* Display images if any */}
+                    {message.imageUrls && message.imageUrls.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {message.imageUrls.map((imageUrl, idx) => (
+                          <a
+                            key={idx}
+                            href={imageUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block"
+                          >
+                            <img
+                              src={imageUrl}
+                              alt={`Image ${idx + 1}`}
+                              className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                            />
+                          </a>
+                        ))}
+                      </div>
+                    )}
                     <p className="text-xs mt-1 opacity-60">
                       {message.timestamp.toLocaleTimeString([], {
                         hour: "2-digit",
@@ -4257,6 +4419,34 @@ export function Chatbot() {
                 </div>
               )}
               <div className="p-4 relative">
+                {/* Image Preview Section */}
+                {imagePreviewUrls.length > 0 && (
+                  <div className="mb-3 flex gap-2 flex-wrap">
+                    {imagePreviewUrls.map((url, index) => (
+                      <div key={index} className="relative group">
+                        <img
+                          src={url}
+                          alt={`Preview ${index + 1}`}
+                          className="h-20 w-20 object-cover rounded-md border"
+                        />
+                        <button
+                          onClick={() => removeImage(index)}
+                          className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Upload Progress Indicator */}
+                {uploadingImages && (
+                  <div className="mb-3 text-sm text-muted-foreground">
+                    Uploading images...
+                  </div>
+                )}
+
                 {/* Mention Suggestions Dropdown */}
                 {showMentionSuggestions && filteredMentionUsers.length > 0 && (isProjectChannel || isTeamChannel) && (
                   <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border rounded-md shadow-lg z-50 max-h-60 overflow-auto">
@@ -4297,6 +4487,23 @@ export function Chatbot() {
                 )}
                 
                 <div className="flex gap-2">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleImageSelect}
+                    accept="image/jpeg,image/jpg,.jpg,.jpeg"
+                    multiple
+                    className="hidden"
+                  />
+                  <Button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    variant="outline"
+                    size="icon"
+                    disabled={isLoading || uploadingImages}
+                  >
+                    <ImageIcon className="h-4 w-4" />
+                  </Button>
                   <Input
                     ref={inputRef}
                     value={input}
@@ -4328,7 +4535,7 @@ export function Chatbot() {
                   />
                   <Button
                     onClick={handleSend}
-                    disabled={!input.trim() || isLoading}
+                    disabled={(!input.trim() && selectedImages.length === 0) || isLoading || uploadingImages}
                     size="icon"
                   >
                     <Send className="h-4 w-4" />

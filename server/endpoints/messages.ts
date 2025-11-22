@@ -67,6 +67,7 @@ export function setupMessageEndpoints(
           id: doc.id,
           ...data,
           timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
+          imageUrls: data.imageUrls || null,
         };
       });
       
@@ -82,7 +83,7 @@ export function setupMessageEndpoints(
     try {
       const domain = (req as any).userDomain;
       const userEmail = (req as any).user.email;
-      const { chatId, role, content, memberName, memberAvatar, projectId, teamId, citedContext } = req.body;
+      const { chatId, role, content, memberName, memberAvatar, projectId, teamId, citedContext, imageUrls } = req.body;
 
       if (!chatId || !content) {
         return res.status(400).json({ error: 'chatId and content are required' });
@@ -120,6 +121,11 @@ export function setupMessageEndpoints(
         messageData.citedContext = citedContext;
       }
 
+      // Add imageUrls if provided
+      if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+        messageData.imageUrls = imageUrls;
+      }
+
       // Write to Firestore only - single source of truth for messages
       const messagesPath = `domains/${domain}/messages`;
       const docRef = await db.collection(messagesPath).add(messageData);
@@ -131,6 +137,7 @@ export function setupMessageEndpoints(
           id: docRef.id,
           ...messageData,
           timestamp: messageData.timestamp.toISOString(),
+          imageUrls: messageData.imageUrls || null,
         },
       });
     } catch (error) {

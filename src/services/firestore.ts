@@ -407,6 +407,7 @@ export interface ChatMessage {
   teamId?: string;
   memberName?: string;
   memberAvatar?: string;
+  imageUrls?: string[];
   citedContext?: {
     projects?: any[];
     tasks?: any[];
@@ -441,6 +442,7 @@ export const messagesService = {
     teamId?: string;
     memberName?: string;
     memberAvatar?: string;
+    imageUrls?: string[];
     citedContext?: {
       projects?: any[];
       tasks?: any[];
@@ -528,6 +530,59 @@ export const messagesService = {
         clearTimeout(pollTimeout);
       }
     };
+  },
+};
+
+// Image Upload Service
+export const imageUploadService = {
+  async uploadImage(chatId: string, file: File): Promise<string> {
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('Authentication required');
+    }
+
+    // Validate file size (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      throw new Error('Image size exceeds 10MB limit');
+    }
+
+    // Validate file type (JPG only)
+    const validTypes = ['image/jpeg', 'image/jpg'];
+    const validExtensions = ['.jpg', '.jpeg'];
+    const fileName = file.name.toLowerCase();
+    const isValidType = validTypes.includes(file.type) || 
+                        validExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!isValidType) {
+      throw new Error('Only JPG images are allowed');
+    }
+
+    // Create FormData
+    const formData = new FormData();
+    formData.append('image', file);
+    formData.append('chatId', chatId);
+
+    // Upload to backend API
+    const url = import.meta.env.DEV ? `${API_BASE}/api/images/upload` : `${API_BASE}/images/upload`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to upload image' }));
+      throw new Error(error.error || 'Failed to upload image');
+    }
+
+    const data = await response.json();
+    if (!data.imageUrl) {
+      throw new Error('Invalid response: imageUrl is missing');
+    }
+
+    return data.imageUrl;
   },
 };
 
