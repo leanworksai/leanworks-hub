@@ -12,7 +12,7 @@ spec:
     type: HTTP
     requestPath: /
     port: 80
-  timeoutSec: 30
+  timeoutSec: 120  # Increased for image uploads (10MB can take time)
   connectionDraining:
     drainingTimeoutSec: 60
 

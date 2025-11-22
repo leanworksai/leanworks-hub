@@ -72,6 +72,17 @@ const PORT = 3001;
 
 app.use(cors());
 
+// Increase timeout for long-running requests (image uploads)
+// Must be after cors() but before routes
+app.use((req, res, next) => {
+  // Set timeout to 2 minutes for image upload endpoints
+  if (req.path.startsWith('/api/images/')) {
+    req.setTimeout(120000); // 2 minutes
+    res.setTimeout(120000);
+  }
+  next();
+});
+
 // ============================================================================
 // REQUEST LOGGING MIDDLEWARE (for debugging - must be before routes)
 // ============================================================================
@@ -2306,20 +2317,42 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
     
     const messages = docs.map(doc => {
       const data = doc.data();
-      return {
+      // Handle Firestore Timestamp objects properly
+      let timestamp: string;
+      if (data.timestamp) {
+        if (data.timestamp.toDate && typeof data.timestamp.toDate === 'function') {
+          // Firestore Timestamp object
+          timestamp = data.timestamp.toDate().toISOString();
+        } else if (typeof data.timestamp === 'number') {
+          // Unix timestamp (milliseconds)
+          timestamp = new Date(data.timestamp).toISOString();
+        } else if (data.timestamp instanceof Date) {
+          // Date object
+          timestamp = data.timestamp.toISOString();
+        } else {
+          // Already a string or other format
+          timestamp = typeof data.timestamp === 'string' ? data.timestamp : new Date().toISOString();
+        }
+      } else {
+        timestamp = new Date().toISOString();
+      }
+      
+      const message = {
         id: doc.id,
         chatId: data.chatId || chatId,
         role: data.role || 'user',
         content: data.content || '',
-        timestamp: data.timestamp ? (typeof data.timestamp === 'number' ? new Date(data.timestamp).toISOString() : data.timestamp) : new Date().toISOString(),
+        timestamp: timestamp,
         userId: data.userId || null,
         projectId: data.projectId || null,
         teamId: data.teamId || null,
         memberName: data.memberName || null,
         memberAvatar: data.memberAvatar || null,
         citedContext: data.citedContext || null,
-        imageUrls: data.imageUrls || null
+        imageUrls: data.imageUrls || null, // Explicitly include imageUrls
       };
+      
+      return message;
     });
     
     res.json(messages);

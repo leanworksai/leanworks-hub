@@ -535,6 +535,35 @@ export const messagesService = {
 
 // Image Upload Service
 export const imageUploadService = {
+  async refreshImageUrls(chatId: string, imageUrls: string[]): Promise<string[]> {
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('Authentication required');
+    }
+
+    const url = import.meta.env.DEV ? `${API_BASE}/api/images/refresh` : `${API_BASE}/images/refresh`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ imageUrls, chatId }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to refresh image URLs' }));
+      throw new Error(error.error || 'Failed to refresh image URLs');
+    }
+
+    const data = await response.json();
+    if (!data.imageUrls || !Array.isArray(data.imageUrls)) {
+      throw new Error('Invalid response: imageUrls array is missing');
+    }
+
+    return data.imageUrls;
+  },
+
   async uploadImage(chatId: string, file: File): Promise<string> {
     const token = await getAuthToken();
     if (!token) {
@@ -546,15 +575,15 @@ export const imageUploadService = {
       throw new Error('Image size exceeds 10MB limit');
     }
 
-    // Validate file type (JPG only)
-    const validTypes = ['image/jpeg', 'image/jpg'];
-    const validExtensions = ['.jpg', '.jpeg'];
+    // Validate file type (allow common image formats - will be converted to JPG on backend)
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+    const validExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
     const fileName = file.name.toLowerCase();
     const isValidType = validTypes.includes(file.type) || 
                         validExtensions.some(ext => fileName.endsWith(ext));
     
     if (!isValidType) {
-      throw new Error('Only JPG images are allowed');
+      throw new Error('Only image files are allowed (JPG, PNG, WebP, GIF)');
     }
 
     // Create FormData

@@ -2,11 +2,17 @@
  * Image Upload Endpoints
  * Handles image uploads to Firebase Storage via Admin SDK
  * Images are stored at: domains/{domain}/chat-images/{chatId}/{imageId}.jpg
+ * All images are converted to JPG format for consistent storage
  */
 
 import express from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
+import sharp from 'sharp';
+
+// Image URL expiration time (default: 1 year)
+// Can be configured via environment variable IMAGE_URL_EXPIRATION_DAYS
+const IMAGE_URL_EXPIRATION_DAYS = parseInt(process.env.IMAGE_URL_EXPIRATION_DAYS || '365', 10);
 
 // Configure multer for memory storage (we'll upload directly to Firebase Storage)
 const upload = multer({
@@ -15,15 +21,23 @@ const upload = multer({
     fileSize: 10 * 1024 * 1024, // 10MB max
   },
   fileFilter: (req, file, cb) => {
-    // Only allow JPG images
-    if (file.mimetype === 'image/jpeg' || file.mimetype === 'image/jpg') {
-      cb(null, true);
-    } else if (file.originalname.toLowerCase().endsWith('.jpg') || 
-               file.originalname.toLowerCase().endsWith('.jpeg')) {
-      // Also check file extension as fallback
+    // Allow common image formats - they will be converted to JPG
+    const allowedMimeTypes = [
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+    ];
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    
+    const fileName = file.originalname.toLowerCase();
+    const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (allowedMimeTypes.includes(file.mimetype) || hasValidExtension) {
       cb(null, true);
     } else {
-      cb(new Error('Only JPG images are allowed'));
+      cb(new Error('Only image files are allowed (JPG, PNG, WebP, GIF)'));
     }
   },
 });
@@ -51,7 +65,7 @@ export function setupImageEndpoints(
       upload.single('image')(req, res, (err: any) => {
         if (err) {
           console.error('Multer error:', err);
-          if (err.message === 'Only JPG images are allowed') {
+          if (err.message?.includes('Only image files are allowed') || err.message?.includes('Only JPG images are allowed')) {
             return res.status(400).json({ error: err.message });
           }
           if (err.code === 'LIMIT_FILE_SIZE') {
@@ -84,12 +98,60 @@ export function setupImageEndpoints(
           return res.status(400).json({ error: 'Image size exceeds 10MB limit' });
         }
 
-        // Validate file type
-        if (req.file.mimetype !== 'image/jpeg' && 
-            req.file.mimetype !== 'image/jpg' &&
-            !req.file.originalname.toLowerCase().endsWith('.jpg') &&
-            !req.file.originalname.toLowerCase().endsWith('.jpeg')) {
-          return res.status(400).json({ error: 'Only JPG images are allowed' });
+        // Validate file type - allow common image formats
+        const allowedMimeTypes = [
+          'image/jpeg',
+          'image/jpg',
+          'image/png',
+          'image/webp',
+          'image/gif',
+        ];
+        const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+        const fileName = req.file.originalname.toLowerCase();
+        const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+        
+        if (!allowedMimeTypes.includes(req.file.mimetype) && !hasValidExtension) {
+          return res.status(400).json({ error: 'Only image files are allowed (JPG, PNG, WebP, GIF)' });
+        }
+
+        console.log(`📸 Converting image from ${req.file.mimetype} to JPG...`);
+        const conversionStartTime = Date.now();
+        
+        // Convert image to JPG using sharp
+        // For GIFs, extract first frame; for PNG/WebP with transparency, use white background
+        let convertedBuffer: Buffer;
+        try {
+          const sharpInstance = sharp(req.file.buffer);
+          const metadata = await sharpInstance.metadata();
+          
+          // Handle animated GIFs - extract first frame
+          if (req.file.mimetype === 'image/gif' && metadata.pages && metadata.pages > 1) {
+            console.log('📸 Detected animated GIF, extracting first frame');
+            convertedBuffer = await sharpInstance
+              .gif({ page: 0 }) // Extract first frame
+              .jpeg({ quality: 85, mozjpeg: true })
+              .toBuffer();
+          } else {
+            // Convert to JPG with quality optimization
+            // For images with transparency (PNG, WebP), use white background
+            convertedBuffer = await sharpInstance
+              .jpeg({ 
+                quality: 85, 
+                mozjpeg: true,
+                ...(metadata.hasAlpha ? { background: { r: 255, g: 255, b: 255 } } : {})
+              })
+              .toBuffer();
+          }
+          
+          const conversionDuration = Date.now() - conversionStartTime;
+          const originalSize = (req.file.size / 1024 / 1024).toFixed(2);
+          const convertedSize = (convertedBuffer.length / 1024 / 1024).toFixed(2);
+          console.log(`✅ Image converted in ${conversionDuration}ms (${originalSize}MB → ${convertedSize}MB)`);
+        } catch (conversionError: any) {
+          console.error('❌ Image conversion error:', conversionError);
+          return res.status(400).json({ 
+            error: 'Failed to process image. Please ensure the file is a valid image format.' 
+          });
         }
 
         // Generate unique image ID
@@ -138,39 +200,170 @@ export function setupImageEndpoints(
         // Create file reference
         const file = bucket.file(storagePath);
 
-        // Upload file to Firebase Storage
-        await file.save(req.file.buffer, {
-          metadata: {
-            contentType: 'image/jpeg',
+        console.log(`📤 Starting upload to Firebase Storage: ${storagePath} (${(convertedBuffer.length / 1024 / 1024).toFixed(2)}MB)`);
+        const uploadStartTime = Date.now();
+
+        // Upload converted JPG file to Firebase Storage with timeout (private, not public)
+        await Promise.race([
+          file.save(convertedBuffer, {
             metadata: {
-              uploadedBy: userEmail,
-              chatId: chatId,
-              uploadedAt: new Date().toISOString(),
+              contentType: 'image/jpeg',
+              metadata: {
+                uploadedBy: userEmail,
+                chatId: chatId,
+                uploadedAt: new Date().toISOString(),
+                originalFormat: req.file.mimetype,
+              },
             },
-          },
-          public: true, // Make file publicly accessible
+            // Removed public: true - files are now private and accessed via signed URLs
+          }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Upload timeout: Firebase Storage upload took too long')), 90000)
+          )
+        ]);
+
+        const uploadDuration = Date.now() - uploadStartTime;
+        console.log(`✅ Upload completed in ${uploadDuration}ms`);
+
+        // Generate signed URL with configurable expiration (default: 1 year)
+        const expiresIn = IMAGE_URL_EXPIRATION_DAYS * 24 * 60 * 60 * 1000; // Convert days to milliseconds
+        const expiresAt = new Date(Date.now() + expiresIn);
+        
+        console.log(`🔐 Generating signed URL (expires in ${IMAGE_URL_EXPIRATION_DAYS} days)...`);
+        const [signedUrl] = await file.getSignedUrl({
+          action: 'read',
+          expires: expiresAt,
         });
 
-        // Get public URL
-        const publicUrl = `https://storage.googleapis.com/${bucket.name}/${storagePath}`;
+        console.log(`✅ Signed URL generated, expires at: ${expiresAt.toISOString()}`);
 
         res.json({
           success: true,
-          imageUrl: publicUrl,
+          imageUrl: signedUrl, // Use signed URL instead of public URL
           imageId: imageId,
         });
       } catch (error: any) {
         console.error('Image upload error:', error);
+        console.error('Error details:', {
+          message: error.message,
+          code: error.code,
+          stack: error.stack?.substring(0, 500),
+        });
         
         // Handle specific error types
-        if (error.message === 'Only JPG images are allowed') {
+        if (error.message?.includes('Only image files are allowed') || error.message?.includes('Only JPG images are allowed')) {
           return res.status(400).json({ error: error.message });
         }
         if (error.code === 'LIMIT_FILE_SIZE') {
           return res.status(400).json({ error: 'Image size exceeds 10MB limit' });
         }
+        if (error.message?.includes('timeout') || error.message?.includes('Timeout')) {
+          return res.status(504).json({ error: 'Upload timeout: The image upload took too long. Please try again with a smaller image.' });
+        }
+        if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+          return res.status(504).json({ error: 'Network timeout: Connection to storage service timed out. Please try again.' });
+        }
         
-        res.status(500).json({ error: (error as Error).message || 'Failed to upload image' });
+        res.status(500).json({ 
+          error: error.message || 'Failed to upload image',
+          code: error.code || 'UNKNOWN_ERROR'
+        });
+      }
+    }
+  );
+
+  // Helper function to generate signed URL for an image
+  const generateSignedUrl = async (storagePath: string): Promise<string> => {
+    const bucketName = 'leanworks-prod';
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file(storagePath);
+    
+    const expiresIn = IMAGE_URL_EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
+    const expiresAt = new Date(Date.now() + expiresIn);
+    
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: expiresAt,
+    });
+    
+    return signedUrl;
+  };
+
+  // Helper function to extract storage path from signed URL or imageId
+  const extractStoragePath = (imageUrlOrId: string, chatId: string, domain: string): string | null => {
+    // If it's already a storage path, return it
+    if (imageUrlOrId.startsWith('domains/')) {
+      return imageUrlOrId;
+    }
+    
+    // If it's an imageId (UUID.jpg), construct the path
+    if (imageUrlOrId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/i)) {
+      return `domains/${domain}/chat-images/${chatId}/${imageUrlOrId}`;
+    }
+    
+    // Try to extract from signed URL
+    try {
+      const url = new URL(imageUrlOrId);
+      // Extract path from Google Cloud Storage signed URL
+      // Format: https://storage.googleapis.com/bucket/path?signature=...
+      const pathMatch = url.pathname.match(/\/[^\/]+\/(.+)$/);
+      if (pathMatch) {
+        return decodeURIComponent(pathMatch[1]);
+      }
+    } catch (e) {
+      // Not a valid URL, try to construct from chatId
+      return `domains/${domain}/chat-images/${chatId}/${imageUrlOrId}`;
+    }
+    
+    return null;
+  };
+
+  // POST /api/images/refresh - Refresh signed URLs for images in messages
+  app.post(
+    '/api/images/refresh',
+    authenticateUser,
+    async (req, res) => {
+      try {
+        const domain = (req as any).userDomain;
+        const { imageUrls, chatId } = req.body;
+        
+        if (!imageUrls || !Array.isArray(imageUrls)) {
+          return res.status(400).json({ error: 'imageUrls array is required' });
+        }
+        
+        if (!chatId) {
+          return res.status(400).json({ error: 'chatId is required' });
+        }
+
+        const refreshedUrls: string[] = [];
+        
+        for (const imageUrl of imageUrls) {
+          try {
+            const storagePath = extractStoragePath(imageUrl, chatId, domain);
+            if (storagePath) {
+              const newSignedUrl = await generateSignedUrl(storagePath);
+              refreshedUrls.push(newSignedUrl);
+            } else {
+              // If we can't extract the path, keep the original URL
+              refreshedUrls.push(imageUrl);
+            }
+          } catch (error: any) {
+            console.error(`Failed to refresh URL for ${imageUrl}:`, error);
+            // Keep original URL if refresh fails
+            refreshedUrls.push(imageUrl);
+          }
+        }
+        
+        res.json({
+          success: true,
+          imageUrls: refreshedUrls,
+        });
+      } catch (error: any) {
+        console.error('Image refresh error:', error);
+        res.status(500).json({ 
+          error: error.message || 'Failed to refresh image URLs',
+          code: error.code || 'UNKNOWN_ERROR'
+        });
       }
     }
   );

@@ -10,7 +10,8 @@ import { userQueries } from '../../database/queries.js';
 export function setupMessageEndpoints(
   app: express.Application,
   authenticateUser: express.RequestHandler,
-  db: FirebaseFirestore.Firestore
+  db: FirebaseFirestore.Firestore,
+  storage?: any // Firebase Admin Storage instance (optional, for refreshing image URLs)
 ) {
   
   // GET messages by chat ID - Read from Firestore

@@ -157,6 +157,9 @@ export function Chatbot() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [visibleMessageCount, setVisibleMessageCount] = useState<number>(50); // Initial visible messages
+  const INITIAL_MESSAGE_LIMIT = 50; // Show last 50 messages initially
+  const MESSAGE_LOAD_INCREMENT = 50; // Load 50 more messages at a time
   const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [selectedImages, setSelectedImages] = useState<File[]>([]);
   const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
@@ -1618,6 +1621,11 @@ export function Chatbot() {
   }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, lastReadTimestamps]);
 
   // Load messages from Firestore when chat changes
+  // Reset visible message count when chat changes
+  useEffect(() => {
+    setVisibleMessageCount(INITIAL_MESSAGE_LIMIT);
+  }, [selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId]);
+
   useEffect(() => {
     if (!user || !isOpen || !user.email) return;
 
@@ -2761,15 +2769,15 @@ export function Chatbot() {
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const validFiles = files.filter(file => {
-      // Validate file type
-      const validTypes = ['image/jpeg', 'image/jpg'];
-      const validExtensions = ['.jpg', '.jpeg'];
+      // Validate file type (allow common image formats - will be converted to JPG on backend)
+      const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+      const validExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
       const fileName = file.name.toLowerCase();
       const isValidType = validTypes.includes(file.type) || 
                           validExtensions.some(ext => fileName.endsWith(ext));
       
       if (!isValidType) {
-        alert('Only JPG images are allowed');
+        alert('Only image files are allowed (JPG, PNG, WebP, GIF)');
         return false;
       }
       
@@ -2809,6 +2817,63 @@ export function Chatbot() {
       imagePreviewUrls.forEach(url => URL.revokeObjectURL(url));
     };
   }, []);
+
+  // Helper function to handle image load errors and refresh the URL
+  const handleImageError = useCallback(async (e: React.SyntheticEvent<HTMLImageElement, Event>, messageImageUrls: string[], imageIndex: number) => {
+    const target = e.target as HTMLImageElement;
+    const originalUrl = messageImageUrls[imageIndex];
+    
+    // Don't retry if we've already tried refreshing
+    if (target.dataset.refreshAttempted === 'true') {
+      target.style.display = 'none';
+      return;
+    }
+
+    // Mark as attempted to prevent infinite loops
+    target.dataset.refreshAttempted = 'true';
+
+    try {
+      // Get current chatId
+      let chatId: string;
+      if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {
+        chatId = selectedMember;
+      } else if (selectedMember === "ai-assistant") {
+        chatId = user?.email ? getAIAssistantChatId(user.email) : '';
+      } else {
+        if (selectedMember.includes('@') && user?.email) {
+          chatId = getDirectMessageChatId(user.email, selectedMember);
+        } else {
+          const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+          if (selectedMemberData?.email && user?.email) {
+            chatId = getDirectMessageChatId(user.email, selectedMemberData.email);
+          } else {
+            chatId = selectedMember;
+          }
+        }
+      }
+
+      if (!chatId) {
+        target.style.display = 'none';
+        return;
+      }
+
+      // Refresh the image URLs
+      const refreshedUrls = await imageUploadService.refreshImageUrls(chatId, messageImageUrls);
+      const newUrl = refreshedUrls[imageIndex];
+      
+      if (newUrl && newUrl !== originalUrl) {
+        // Update the image source with the refreshed URL
+        target.src = newUrl;
+        // Also update the message in state if possible
+        // For now, just update the image src directly
+      } else {
+        target.style.display = 'none';
+      }
+    } catch (error) {
+      console.error('Failed to refresh image URL:', error);
+      target.style.display = 'none';
+    }
+  }, [user?.email, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, allTeamMembers]);
 
   const handleSend = async () => {
     // Allow sending if there's text OR images
@@ -3873,9 +3938,24 @@ export function Chatbot() {
                     </div>
                   );
                 }
+                // Pagination for team channel messages
+                const totalTeamMessages = teamMessages.length;
+                const visibleTeamMessages = teamMessages.slice(-visibleMessageCount);
+                const hasMoreTeamMessages = totalTeamMessages > visibleMessageCount;
+                
                 return (
                   <div className="space-y-4">
-                    {teamMessages.map((message) => {
+                    {hasMoreTeamMessages && (
+                      <div className="flex justify-center py-2">
+                        <button
+                          onClick={() => setVisibleMessageCount(prev => Math.min(prev + MESSAGE_LOAD_INCREMENT, totalTeamMessages))}
+                          className="text-sm text-muted-foreground hover:text-foreground px-4 py-2 rounded-md hover:bg-muted transition-colors"
+                        >
+                          Load {Math.min(MESSAGE_LOAD_INCREMENT, totalTeamMessages - visibleMessageCount)} older messages
+                        </button>
+                      </div>
+                    )}
+                    {visibleTeamMessages.map((message) => {
                       // Check if message is from lean
                       const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
                       // Determine if message is from current user (lean messages are always left-aligned)
@@ -3993,7 +4073,9 @@ export function Chatbot() {
                                       <img
                                         src={imageUrl}
                                         alt={`Image ${idx + 1}`}
+                                        loading="lazy"
                                         className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                                        onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
                                       />
                                     </a>
                                   ))}
@@ -4041,9 +4123,24 @@ export function Chatbot() {
                     </div>
                   );
                 }
+                // Pagination for project channel messages
+                const totalProjectMessages = projectMessages.length;
+                const visibleProjectMessages = projectMessages.slice(-visibleMessageCount);
+                const hasMoreProjectMessages = totalProjectMessages > visibleMessageCount;
+                
                 return (
                   <div className="space-y-4 w-full min-w-0 max-w-full">
-                    {projectMessages.map((message) => {
+                    {hasMoreProjectMessages && (
+                      <div className="flex justify-center py-2">
+                        <button
+                          onClick={() => setVisibleMessageCount(prev => Math.min(prev + MESSAGE_LOAD_INCREMENT, totalProjectMessages))}
+                          className="text-sm text-muted-foreground hover:text-foreground px-4 py-2 rounded-md hover:bg-muted transition-colors"
+                        >
+                          Load {Math.min(MESSAGE_LOAD_INCREMENT, totalProjectMessages - visibleMessageCount)} older messages
+                        </button>
+                      </div>
+                    )}
+                    {visibleProjectMessages.map((message) => {
                       // Check if message is from lean
                       const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
                       // Determine if message is from current user (lean messages are always left-aligned)
@@ -4161,7 +4258,9 @@ export function Chatbot() {
                                       <img
                                         src={imageUrl}
                                         alt={`Image ${idx + 1}`}
+                                        loading="lazy"
                                         className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                                        onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
                                       />
                                     </a>
                                   ))}
@@ -4194,7 +4293,25 @@ export function Chatbot() {
           )}
 
           {/* Regular Messages (AI Assistant or Team Members) */}
-          {!isLoadingMessages && !isProjectChannel && !isTeamChannel && messages.map((message) => {
+          {!isLoadingMessages && !isProjectChannel && !isTeamChannel && (() => {
+            // Show only the most recent messages (pagination)
+            const totalMessages = messages.length;
+            const visibleMessages = messages.slice(-visibleMessageCount);
+            const hasMoreMessages = totalMessages > visibleMessageCount;
+            
+            return (
+              <>
+                {hasMoreMessages && (
+                  <div className="flex justify-center py-2">
+                    <button
+                      onClick={() => setVisibleMessageCount(prev => Math.min(prev + MESSAGE_LOAD_INCREMENT, totalMessages))}
+                      className="text-sm text-muted-foreground hover:text-foreground px-4 py-2 rounded-md hover:bg-muted transition-colors"
+                    >
+                      Load {Math.min(MESSAGE_LOAD_INCREMENT, totalMessages - visibleMessageCount)} older messages
+                    </button>
+                  </div>
+                )}
+                {visibleMessages.map((message) => {
             // Check if message is from lean (assistant role)
             const isLean = message.role === "assistant";
             // Determine if message is from current user (sent) or other user (received)
@@ -4327,7 +4444,12 @@ export function Chatbot() {
                             <img
                               src={imageUrl}
                               alt={`Image ${idx + 1}`}
+                              loading="lazy"
                               className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.style.display = 'none';
+                              }}
                             />
                           </a>
                         ))}
@@ -4353,6 +4475,9 @@ export function Chatbot() {
               </div>
             );
           })}
+            </>
+            );
+          })()}
           {!isLoadingMessages && isLoading && !isProjectChannel && !isTeamChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
@@ -4491,7 +4616,7 @@ export function Chatbot() {
                     type="file"
                     ref={fileInputRef}
                     onChange={handleImageSelect}
-                    accept="image/jpeg,image/jpg,.jpg,.jpeg"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
                     multiple
                     className="hidden"
                   />
