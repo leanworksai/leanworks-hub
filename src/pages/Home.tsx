@@ -18,7 +18,8 @@ import {
   MessageSquare, 
   BarChart3,
   ArrowRight,
-  Brain
+  Brain,
+  Phone
 } from 'lucide-react';
 
 export default function Home() {
@@ -106,7 +107,7 @@ export default function Home() {
             </span>
           </h1>
           <p className="text-xl sm:text-2xl text-muted-foreground mb-10 max-w-2xl mx-auto">
-            AI-powered project management, progress tracking, and messaging—all in one place.
+            AI-powered project management, messaging and meeting—all in one place.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link to="/login">
@@ -136,12 +137,12 @@ export default function Home() {
               <span>Powered by AI</span>
             </div>
             <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-              Our AI seamlessly connects project management, progress tracking, and messaging 
+              Our AI seamlessly connects project management, messaging, and meeting 
               to give you intelligent insights and automate workflows across your entire team.
             </p>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
             <Card className="border-2 hover:border-primary/50 transition-colors">
               <CardHeader>
                 <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
@@ -183,6 +184,21 @@ export default function Home() {
                   to any project, task, or team. Ask Lean questions about your projects, get instant updates 
                   on progress, or collaborate with your team members all in one unified messaging interface. 
                   Everything is connected and accessible through conversation.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
+            <Card className="border-2 hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <div className="h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center mb-4">
+                  <Phone className="h-6 w-6 text-primary" />
+                </div>
+                <CardTitle>Voice Meetings & Calls</CardTitle>
+                <CardDescription className="text-base">
+                  Start instant voice meetings directly from any conversation. Connect with your teammates 
+                  face-to-face with crystal-clear audio quality. No need to 
+                  switch apps or schedule separate calls—just click to start a meeting and collaborate in 
+                  real-time. Perfect for quick syncs, brainstorming sessions, or urgent discussions.
                 </CardDescription>
               </CardHeader>
             </Card>

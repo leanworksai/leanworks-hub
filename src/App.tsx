@@ -45,11 +45,7 @@ const AppRoutesContent = () => {
         <Route path="/signup" element={<Signup />} />
         <Route
           path="/"
-          element={
-            <ProtectedRoute>
-              <Navigate to="/projects" replace />
-            </ProtectedRoute>
-          }
+          element={<Navigate to="/home" replace />}
         />
         <Route
           path="/teams"
