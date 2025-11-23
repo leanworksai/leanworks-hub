@@ -479,18 +479,6 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       )}
 
       <div>
-        {/* Delete button positioned absolutely when in dialog mode - same vertical level as exit button */}
-        {isDialog && (
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => setShowDeleteDialog(true)}
-            className="absolute right-16 z-10"
-            style={{ top: '0.25rem' }}
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        )}
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-start gap-3 flex-1">
             <div className="flex-1">
