@@ -240,7 +240,12 @@ app.get('/api/health', async (req, res) => {
 
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { email, password, firstName, lastName, jobTitle } = req.body;
+    const { email, password, firstName, lastName, jobTitle, timezone } = req.body;
+    
+    // Validate required fields
+    if (!timezone) {
+      return res.status(400).json({ error: 'Timezone is required' });
+    }
     
     // Create user in Firebase Auth
     const userRecord = await auth.createUser({
@@ -257,9 +262,9 @@ app.post('/api/auth/signup', async (req, res) => {
     
     // Store in PostgreSQL
     await pool.query(`
-      INSERT INTO users (email, password_hash, first_name, last_name, job_title, created_at)
-      VALUES ($1, $2, $3, $4, $5, NOW())
-    `, [email.toLowerCase(), passwordHash, firstName, lastName, jobTitle]);
+      INSERT INTO users (email, password_hash, first_name, last_name, job_title, timezone, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `, [email.toLowerCase(), passwordHash, firstName, lastName, jobTitle, timezone]);
 
     res.status(201).json({ 
       success: true, 
@@ -393,7 +398,7 @@ app.get('/api/users/profile', authenticateUser, async (req, res) => {
     const pool = await getTenantPool(userEmail);
     
     const result = await pool.query(`
-      SELECT email, first_name, last_name, job_title, responsibilities, created_at, last_login
+      SELECT email, first_name, last_name, job_title, timezone, responsibilities, created_at, last_login
       FROM users
       WHERE email = $1
     `, [userEmail]);
@@ -403,17 +408,62 @@ app.get('/api/users/profile', authenticateUser, async (req, res) => {
     }
     
     const user = transformRow(result.rows[0]);
+    const domain = getDomainFromEmail(userEmail);
     res.json({
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
       jobTitle: user.jobTitle,
+      timezone: user.timezone,
       responsibilities: user.responsibilities,
+      domain: domain,
       createdAt: user.createdAt ? new Date(user.createdAt).toISOString() : null,
       lastLogin: user.lastLogin ? new Date(user.lastLogin).toISOString() : null
     });
   } catch (error) {
     console.error('Get user profile error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.put('/api/users/profile', authenticateUser, async (req, res) => {
+  try {
+    console.log('📝 [Backend] PUT /api/users/profile - Updating user profile');
+    const userEmail = (req as any).userEmail;
+    const { jobTitle, timezone, responsibilities } = req.body;
+    
+    console.log('📝 [Backend] Profile update data:', { 
+      userEmail, 
+      jobTitle, 
+      timezone, 
+      hasResponsibilities: !!responsibilities 
+    });
+    
+    // Validate required fields
+    if (!jobTitle || !jobTitle.trim()) {
+      return res.status(400).json({ error: 'Job title is required' });
+    }
+    
+    if (!timezone) {
+      return res.status(400).json({ error: 'Timezone is required' });
+    }
+    
+    const pool = await getTenantPool(userEmail);
+    
+    // Update user profile
+    await pool.query(`
+      UPDATE users
+      SET job_title = $1, timezone = $2, responsibilities = $3, updated_at = NOW()
+      WHERE email = $4
+    `, [jobTitle.trim(), timezone, responsibilities || null, userEmail]);
+    
+    console.log('✅ [Backend] Profile updated successfully for:', userEmail);
+    res.json({
+      success: true,
+      message: 'Profile updated successfully'
+    });
+  } catch (error) {
+    console.error('❌ [Backend] Update user profile error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });

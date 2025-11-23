@@ -198,6 +198,20 @@ export const usersService = {
     return response.json();
   },
 
+  async updateProfile(data: { jobTitle: string; timezone: string; responsibilities?: string }): Promise<any> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/users/profile` : `${API_BASE}/users/profile`;
+    const response = await authenticatedFetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to update profile' }));
+      throw new Error(error.error || 'Failed to update profile');
+    }
+    return response.json();
+  },
+
   async getAll(): Promise<any[]> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/users` : `${API_BASE}/users`;
     const response = await authenticatedFetch(url);

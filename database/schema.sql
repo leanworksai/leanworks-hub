@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
   first_name VARCHAR(100) NOT NULL,
   last_name VARCHAR(100) NOT NULL,
   job_title VARCHAR(100) NOT NULL,
+  timezone VARCHAR(100) NOT NULL,
   responsibilities TEXT,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   last_login TIMESTAMP,

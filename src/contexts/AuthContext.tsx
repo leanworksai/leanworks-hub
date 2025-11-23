@@ -446,14 +446,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const signUp = async (email: string, password: string, firstName: string, lastName: string, jobTitle: string, responsibilities?: string) => {
+  const signUp = async (email: string, password: string, firstName: string, lastName: string, jobTitle: string, timezone: string, responsibilities?: string) => {
     try {
       // Create user via server API (uses service account)
       const url = import.meta.env.DEV ? `${API_BASE}/api/auth/signup` : `${API_BASE}/auth/signup`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, firstName, lastName, jobTitle, responsibilities }),
+        body: JSON.stringify({ email, password, firstName, lastName, jobTitle, timezone, responsibilities }),
       });
 
       if (!response.ok) {
