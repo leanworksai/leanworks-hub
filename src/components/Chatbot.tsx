@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
-import { callSignalingService, type CallSignal } from "@/services/firestore";
+import { callSignalingService, type CallSignal } from "@/services/api";
 import { CallStatus } from "@/hooks/useWebRTC";
 import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import { cn, getUserById, getUserDisplayName, getUserInitials, getAvatarColor } from "@/lib/utils";
@@ -22,7 +22,7 @@ import { Team } from "@/data/teamsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
-import { messagesService, imageUploadService, type ChatMessage } from "@/services/firestore";
+import { messagesService, imageUploadService, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
@@ -1811,7 +1811,10 @@ export function Chatbot() {
             return aTime - bTime;
           });
           
-          const channelMsgs: ChannelMessage[] = allMessages
+          // Proactively refresh image URLs before displaying
+          const messagesWithRefreshedUrls = await refreshMessageImageUrls(allMessages, chatId);
+          
+          const channelMsgs: ChannelMessage[] = messagesWithRefreshedUrls
             .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
             .map(msg => ({
               id: msg.id,
@@ -1877,7 +1880,10 @@ export function Chatbot() {
           return aTime - bTime;
         });
         
-          const channelMsgs: ChannelMessage[] = allMessages
+          // Proactively refresh image URLs before displaying
+          const messagesWithRefreshedUrls = await refreshMessageImageUrls(allMessages, chatId);
+          
+          const channelMsgs: ChannelMessage[] = messagesWithRefreshedUrls
             .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
             .map(msg => ({
               id: msg.id,
@@ -1943,11 +1949,14 @@ export function Chatbot() {
             return aTime - bTime;
           });
           
+          // Proactively refresh image URLs before displaying
+          const messagesWithRefreshedUrls = await refreshMessageImageUrls(allMessages, chatId);
+          
           // For team member chats, only show user messages (no assistant messages)
           // For AI Assistant, show both user and assistant messages
           const filteredMessages = isAIAssistantChatId(chatId) 
-            ? allMessages 
-            : allMessages.filter(msg => msg.role === 'user');
+            ? messagesWithRefreshedUrls 
+            : messagesWithRefreshedUrls.filter(msg => msg.role === 'user');
           
           const regularMsgs: Message[] = filteredMessages.map(msg => ({
             id: msg.id,
@@ -2292,6 +2301,33 @@ export function Chatbot() {
           }
           
           if (isProjectChannel && selectedProjectId) {
+            // Proactively refresh image URLs for messages that might have expired URLs
+            // Only refresh for messages older than 6 months (likely to have expired URLs)
+            const sixMonthsAgo = Date.now() - (6 * 30 * 24 * 60 * 60 * 1000);
+            const messagesNeedingRefresh = firestoreMessages.filter(msg => {
+              if (!msg.imageUrls || !Array.isArray(msg.imageUrls) || msg.imageUrls.length === 0) return false;
+              const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+              return msgTime < sixMonthsAgo;
+            });
+            
+            // Refresh URLs in background (non-blocking)
+            if (messagesNeedingRefresh.length > 0) {
+              refreshMessageImageUrls(messagesNeedingRefresh, chatId).then(refreshed => {
+                // Update messages with refreshed URLs
+                const refreshedMap = new Map(refreshed.map(m => [m.id, m]));
+                setChannelMessages((prev) => {
+                  const newMap = new Map(prev);
+                  const existing = newMap.get(selectedProjectId) || [];
+                  const updated = existing.map(msg => {
+                    const refreshed = refreshedMap.get(msg.id);
+                    return refreshed ? { ...msg, imageUrls: refreshed.imageUrls } : msg;
+                  });
+                  newMap.set(selectedProjectId, updated);
+                  return newMap;
+                });
+              }).catch(err => console.error('Failed to refresh image URLs in background:', err));
+            }
+            
             // Merge project channel messages instead of replacing
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
@@ -2334,6 +2370,31 @@ export function Chatbot() {
               return prev;
             });
           } else if (isTeamChannel && selectedTeamId) {
+            // Proactively refresh image URLs for messages that might have expired URLs
+            const sixMonthsAgo = Date.now() - (6 * 30 * 24 * 60 * 60 * 1000);
+            const messagesNeedingRefresh = firestoreMessages.filter(msg => {
+              if (!msg.imageUrls || !Array.isArray(msg.imageUrls) || msg.imageUrls.length === 0) return false;
+              const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+              return msgTime < sixMonthsAgo;
+            });
+            
+            // Refresh URLs in background (non-blocking)
+            if (messagesNeedingRefresh.length > 0) {
+              refreshMessageImageUrls(messagesNeedingRefresh, chatId).then(refreshed => {
+                const refreshedMap = new Map(refreshed.map(m => [m.id, m]));
+                setChannelMessages((prev) => {
+                  const newMap = new Map(prev);
+                  const existing = newMap.get(selectedTeamId) || [];
+                  const updated = existing.map(msg => {
+                    const refreshed = refreshedMap.get(msg.id);
+                    return refreshed ? { ...msg, imageUrls: refreshed.imageUrls } : msg;
+                  });
+                  newMap.set(selectedTeamId, updated);
+                  return newMap;
+                });
+              }).catch(err => console.error('Failed to refresh image URLs in background:', err));
+            }
+            
             // Merge team channel messages instead of replacing
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
@@ -2376,6 +2437,28 @@ export function Chatbot() {
               return prev;
             });
           } else {
+            // Proactively refresh image URLs for messages that might have expired URLs
+            const sixMonthsAgo = Date.now() - (6 * 30 * 24 * 60 * 60 * 1000);
+            const messagesNeedingRefresh = firestoreMessages.filter(msg => {
+              if (!msg.imageUrls || !Array.isArray(msg.imageUrls) || msg.imageUrls.length === 0) return false;
+              const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+              return msgTime < sixMonthsAgo;
+            });
+            
+            // Refresh URLs in background (non-blocking)
+            if (messagesNeedingRefresh.length > 0) {
+              refreshMessageImageUrls(messagesNeedingRefresh, chatId).then(refreshed => {
+                const refreshedMap = new Map(refreshed.map(m => [m.id, m]));
+                setMessages((prev) => {
+                  const updated = prev.map(msg => {
+                    const refreshed = refreshedMap.get(msg.id);
+                    return refreshed ? { ...msg, imageUrls: refreshed.imageUrls } : msg;
+                  });
+                  return updated;
+                });
+              }).catch(err => console.error('Failed to refresh image URLs in background:', err));
+            }
+            
             // Merge regular messages instead of replacing, preserving optimistic updates
             setMessages((prev) => {
               // Don't update if we have optimistic messages that haven't been confirmed yet
@@ -2816,6 +2899,68 @@ export function Chatbot() {
     return () => {
       imagePreviewUrls.forEach(url => URL.revokeObjectURL(url));
     };
+  }, []);
+
+  // Helper function to proactively refresh image URLs for messages
+  // This prevents slow loading by refreshing expired signed URLs before displaying
+  const refreshMessageImageUrls = useCallback(async (messages: ChatMessage[], chatId: string): Promise<ChatMessage[]> => {
+    // Collect all unique image URLs that need refreshing
+    const imageUrlMap = new Map<string, { messageIndex: number; imageIndex: number }[]>();
+    
+    messages.forEach((msg, msgIdx) => {
+      if (msg.imageUrls && Array.isArray(msg.imageUrls) && msg.imageUrls.length > 0) {
+        msg.imageUrls.forEach((url, imgIdx) => {
+          // Skip URLs that are likely still valid (recently generated, less than 6 months old)
+          // Signed URLs expire after 1 year, so we refresh if message is older than 6 months
+          const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+          const sixMonthsAgo = Date.now() - (6 * 30 * 24 * 60 * 60 * 1000);
+          
+          // Only refresh URLs for older messages to avoid unnecessary API calls
+          if (msgTime < sixMonthsAgo) {
+            if (!imageUrlMap.has(url)) {
+              imageUrlMap.set(url, []);
+            }
+            imageUrlMap.get(url)!.push({ messageIndex: msgIdx, imageIndex: imgIdx });
+          }
+        });
+      }
+    });
+    
+    // If no images need refreshing, return messages as-is
+    if (imageUrlMap.size === 0) {
+      return messages;
+    }
+    
+    try {
+      // Refresh all unique URLs at once (in parallel on backend)
+      const allImageUrls = Array.from(imageUrlMap.keys());
+      const refreshedUrls = await imageUploadService.refreshImageUrls(chatId, allImageUrls);
+      
+      // Create a map of old URL -> new URL
+      const urlRefreshMap = new Map<string, string>();
+      allImageUrls.forEach((oldUrl, idx) => {
+        urlRefreshMap.set(oldUrl, refreshedUrls[idx]);
+      });
+      
+      // Update messages with refreshed URLs
+      const updatedMessages = messages.map((msg) => {
+        if (!msg.imageUrls || !Array.isArray(msg.imageUrls) || msg.imageUrls.length === 0) {
+          return msg;
+        }
+        
+        const refreshedImageUrls = msg.imageUrls.map((url) => urlRefreshMap.get(url) || url);
+        return {
+          ...msg,
+          imageUrls: refreshedImageUrls,
+        };
+      });
+      
+      return updatedMessages;
+    } catch (error) {
+      console.error('Failed to refresh image URLs proactively:', error);
+      // Return original messages if refresh fails
+      return messages;
+    }
   }, []);
 
   // Helper function to handle image load errors and refresh the URL
@@ -4074,6 +4219,7 @@ export function Chatbot() {
                                         src={imageUrl}
                                         alt={`Image ${idx + 1}`}
                                         loading="lazy"
+                                        decoding="async"
                                         className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
                                         onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
                                       />
@@ -4259,6 +4405,7 @@ export function Chatbot() {
                                         src={imageUrl}
                                         alt={`Image ${idx + 1}`}
                                         loading="lazy"
+                                        decoding="async"
                                         className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
                                         onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
                                       />
@@ -4445,6 +4592,7 @@ export function Chatbot() {
                               src={imageUrl}
                               alt={`Image ${idx + 1}`}
                               loading="lazy"
+                              decoding="async"
                               className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
                               onError={(e) => {
                                 const target = e.target as HTMLImageElement;

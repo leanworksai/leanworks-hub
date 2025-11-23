@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
-import { teamsService, teamJoinRequestsService, teamInvitationsService } from '@/services/firestore';
+import { teamsService, teamJoinRequestsService, teamInvitationsService } from '@/services/api';
 import type { Team, TeamDetailData, TeamJoinRequest, TeamInvitation } from '@/data/teamsData';
 import { useAuth } from '@/contexts/AuthContext';
 

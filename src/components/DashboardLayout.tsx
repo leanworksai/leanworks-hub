@@ -18,7 +18,7 @@ import {
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { usersService } from "@/services/firestore";
+import { usersService } from "@/services/api";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";

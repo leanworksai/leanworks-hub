@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { usersService } from '@/services/firestore';
+import { usersService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 
 export interface User {

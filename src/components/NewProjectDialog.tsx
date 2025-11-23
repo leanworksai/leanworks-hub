@@ -24,7 +24,7 @@ import { useCreateProject } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
-import { teamsService } from "@/services/firestore";
+import { teamsService } from "@/services/api";
 import type { Project, ProjectMember } from "@/data/projectsData";
 import type { TeamMember } from "@/data/teamsData";
 import { useToast } from "@/hooks/use-toast";

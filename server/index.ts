@@ -1526,6 +1526,146 @@ app.delete('/api/projects/:id', authenticateUser, async (req, res) => {
   }
 });
 
+// Add project member
+app.post('/api/projects/:id/members', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const projectId = req.params.id;
+    const { memberEmail, role, avatar } = req.body;
+    const pool = await getTenantPool(userEmail);
+    
+    // Verify user is the project owner
+    const projectResult = await pool.query(
+      'SELECT owner_email FROM projects WHERE id = $1',
+      [projectId]
+    );
+    
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    if (projectResult.rows[0].owner_email.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'Only project owner can add members' });
+    }
+    
+    if (!memberEmail) {
+      return res.status(400).json({ error: 'memberEmail is required' });
+    }
+    
+    const normalizedMemberEmail = memberEmail.toLowerCase();
+    
+    // Check if user exists
+    const userResult = await pool.query(
+      'SELECT email FROM users WHERE email = $1',
+      [normalizedMemberEmail]
+    );
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Get user's name for avatar generation
+    const user = userResult.rows[0];
+    const userNameResult = await pool.query(
+      'SELECT first_name, last_name FROM users WHERE email = $1',
+      [normalizedMemberEmail]
+    );
+    
+    let generatedAvatar = avatar;
+    if (!generatedAvatar && userNameResult.rows.length > 0) {
+      const firstName = userNameResult.rows[0].first_name || '';
+      const lastName = userNameResult.rows[0].last_name || '';
+      if (firstName && lastName) {
+        generatedAvatar = (firstName.charAt(0) + lastName.charAt(0)).toUpperCase();
+      } else {
+        generatedAvatar = normalizedMemberEmail.substring(0, 2).toUpperCase();
+      }
+    }
+    
+    // Add member to project
+    await pool.query(`
+      INSERT INTO project_members (project_id, user_email, role, avatar)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (project_id, user_email) DO UPDATE SET
+        role = EXCLUDED.role,
+        avatar = EXCLUDED.avatar
+    `, [projectId, normalizedMemberEmail, role || 'member', generatedAvatar || null]);
+    
+    // Get updated member info
+    const memberResult = await pool.query(`
+      SELECT 
+        pm.user_email as email,
+        pm.role,
+        pm.avatar,
+        u.first_name || ' ' || u.last_name as name
+      FROM project_members pm
+      LEFT JOIN users u ON pm.user_email = u.email
+      WHERE pm.project_id = $1 AND pm.user_email = $2
+    `, [projectId, normalizedMemberEmail]);
+    
+    const member = memberResult.rows[0];
+    
+    res.json({
+      success: true,
+      member: {
+        id: member.email,
+        email: member.email,
+        name: member.name || member.email,
+        role: member.role || 'member',
+        avatar: member.avatar || generatedAvatar || 'U'
+      }
+    });
+  } catch (error) {
+    console.error('Add project member error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Remove project member
+app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const projectId = req.params.id;
+    const memberEmail = req.params.memberEmail.toLowerCase();
+    const pool = await getTenantPool(userEmail);
+    
+    // Verify project exists
+    const projectResult = await pool.query(
+      'SELECT owner_email FROM projects WHERE id = $1',
+      [projectId]
+    );
+    
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    const ownerEmail = projectResult.rows[0].owner_email.toLowerCase();
+    const isOwner = ownerEmail === userEmail.toLowerCase();
+    const isRemovingSelf = memberEmail === userEmail.toLowerCase();
+    
+    // Only owner can remove members, or user can remove themselves
+    if (!isOwner && !isRemovingSelf) {
+      return res.status(403).json({ error: 'Only project owner can remove members, or you can remove yourself' });
+    }
+    
+    // Prevent removing the owner
+    if (memberEmail === ownerEmail) {
+      return res.status(400).json({ error: 'Cannot remove project owner' });
+    }
+    
+    // Remove member from project
+    await pool.query(
+      'DELETE FROM project_members WHERE project_id = $1 AND user_email = $2',
+      [projectId, memberEmail]
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove project member error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
 // ============================================================================
 // TASK ENDPOINTS (PostgreSQL)
 // ============================================================================

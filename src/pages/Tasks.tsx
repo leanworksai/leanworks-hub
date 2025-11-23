@@ -56,6 +56,7 @@ import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
+import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserProjects } from "@/hooks/useProjects";
@@ -149,6 +150,7 @@ export default function Tasks() {
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover
   const [openDropdowns, setOpenDropdowns] = useState<Record<string, { status?: boolean; priority?: boolean; assignee?: boolean; dueDate?: boolean }>>({});
 
@@ -183,9 +185,9 @@ export default function Tasks() {
     });
 
   const handleTaskClick = (taskId: string) => {
-    // Don't navigate if in selection mode
+    // Don't open dialog if in selection mode
     if (isSelectionMode) return;
-    navigate(`/tasks/${taskId}`);
+    setSelectedTaskId(taskId);
   };
 
   const handleProjectClick = (e: React.MouseEvent, projectId: string) => {
@@ -683,6 +685,17 @@ export default function Tasks() {
       <NewTaskDialog 
         open={isNewTaskDialogOpen} 
         onOpenChange={setIsNewTaskDialogOpen} 
+      />
+
+      {/* Task Detail Dialog */}
+      <TaskDetailDialog
+        taskId={selectedTaskId}
+        open={!!selectedTaskId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedTaskId(null);
+          }
+        }}
       />
 
       <AlertDialog open={!!taskToDelete} onOpenChange={(open) => !open && setTaskToDelete(null)}>

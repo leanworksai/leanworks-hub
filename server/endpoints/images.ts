@@ -335,24 +335,25 @@ export function setupImageEndpoints(
           return res.status(400).json({ error: 'chatId is required' });
         }
 
-        const refreshedUrls: string[] = [];
-        
-        for (const imageUrl of imageUrls) {
+        // Process all URLs in parallel for better performance
+        const refreshPromises = imageUrls.map(async (imageUrl) => {
           try {
             const storagePath = extractStoragePath(imageUrl, chatId, domain);
             if (storagePath) {
               const newSignedUrl = await generateSignedUrl(storagePath);
-              refreshedUrls.push(newSignedUrl);
+              return newSignedUrl;
             } else {
               // If we can't extract the path, keep the original URL
-              refreshedUrls.push(imageUrl);
+              return imageUrl;
             }
           } catch (error: any) {
             console.error(`Failed to refresh URL for ${imageUrl}:`, error);
             // Keep original URL if refresh fails
-            refreshedUrls.push(imageUrl);
+            return imageUrl;
           }
-        }
+        });
+        
+        const refreshedUrls = await Promise.all(refreshPromises);
         
         res.json({
           success: true,

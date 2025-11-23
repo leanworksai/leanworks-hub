@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { SlackConnectDialog } from "@/components/SlackConnectDialog";
 import { AtlassianConnectDialog } from "@/components/AtlassianConnectDialog";
 import { OutlookConnectDialog } from "@/components/OutlookConnectDialog";
-import { integrationsService } from "@/services/firestore";
+import { integrationsService } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 

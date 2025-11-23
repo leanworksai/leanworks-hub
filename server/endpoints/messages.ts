@@ -6,6 +6,24 @@
 
 import express from 'express';
 import { userQueries } from '../../database/queries.js';
+import { getTenantPool } from '../../database/multi-tenant-pool.js';
+
+/**
+ * Check if a user is a member of a project
+ */
+async function isProjectMember(userEmail: string, projectId: string): Promise<boolean> {
+  try {
+    const pool = await getTenantPool(userEmail);
+    const result = await pool.query(
+      'SELECT 1 FROM project_members WHERE project_id = $1 AND user_email = $2',
+      [projectId, userEmail.toLowerCase()]
+    );
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error('Error checking project membership:', error);
+    return false;
+  }
+}
 
 export function setupMessageEndpoints(
   app: express.Application,
@@ -24,6 +42,15 @@ export function setupMessageEndpoints(
         ? new Date(req.query.afterTimestamp as string) 
         : undefined;
       
+      // Check authorization for project channels
+      if (chatId.startsWith('project-')) {
+        const projectId = chatId.replace('project-', '');
+        const isMember = await isProjectMember(userEmail, projectId);
+        if (!isMember) {
+          return res.status(403).json({ error: 'Access denied: You must be a project member to view messages' });
+        }
+      }
+      
       const messagesPath = `domains/${domain}/messages`;
       let query = db.collection(messagesPath).where('chatId', '==', chatId);
       
@@ -36,6 +63,12 @@ export function setupMessageEndpoints(
         }
         // Also filter by userId for additional security
         query = query.where('userId', '==', userEmail);
+      }
+      
+      // For project channels, also filter by projectId to ensure we only get messages for this project
+      if (chatId.startsWith('project-')) {
+        const projectId = chatId.replace('project-', '');
+        query = query.where('projectId', '==', projectId);
       }
       
       if (afterTimestamp) {
@@ -83,11 +116,28 @@ export function setupMessageEndpoints(
   app.post('/api/messages', authenticateUser, async (req, res) => {
     try {
       const domain = (req as any).userDomain;
-      const userEmail = (req as any).user.email;
+      const userEmail = (req as any).user.email?.toLowerCase();
       const { chatId, role, content, memberName, memberAvatar, projectId, teamId, citedContext, imageUrls } = req.body;
 
       if (!chatId || !content) {
         return res.status(400).json({ error: 'chatId and content are required' });
+      }
+
+      // Check authorization for project channels
+      // Check both chatId (if it's a project channel) and projectId (if provided)
+      let actualProjectId: string | null = null;
+      
+      if (chatId.startsWith('project-')) {
+        actualProjectId = chatId.replace('project-', '');
+      } else if (projectId) {
+        actualProjectId = projectId;
+      }
+      
+      if (actualProjectId) {
+        const isMember = await isProjectMember(userEmail, actualProjectId);
+        if (!isMember) {
+          return res.status(403).json({ error: 'Access denied: You must be a project member to post messages' });
+        }
       }
 
       // Get user info if not provided
@@ -105,13 +155,16 @@ export function setupMessageEndpoints(
         }
       }
 
+      // Ensure projectId is set when posting to a project channel
+      const finalProjectId = projectId || (chatId.startsWith('project-') ? chatId.replace('project-', '') : null);
+
       const messageData: any = {
         chatId,
         role: role || 'user',
         content,
         timestamp: new Date(),
         userId: userEmail.toLowerCase(),
-        projectId: projectId || null,
+        projectId: finalProjectId,
         teamId: teamId || null,
         memberName: finalMemberName,
         memberAvatar: finalMemberAvatar,

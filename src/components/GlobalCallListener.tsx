@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db, auth } from '@/lib/firebase-client';
-import { callSignalingService, type CallSignal } from '@/services/firestore';
+import { callSignalingService, type CallSignal } from '@/services/api';
 import { IncomingCallDialog } from './VoiceCall';
 import { useUsers } from '@/hooks/useUsers';
 import { useWebRTCContext } from '@/contexts/WebRTCContext';

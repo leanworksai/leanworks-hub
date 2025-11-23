@@ -7,9 +7,9 @@ import { auth, db } from '@/lib/firebase-client';
 // In production, use relative path so nginx can proxy to the backend server
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 
-// Initialize Firestore - uses proxy API in development
+// Initialize API - legacy function name kept for compatibility
 export const initFirestore = () => {
-  // Firestore initialization
+  // API initialization (legacy name)
 };
 
 // Helper to get auth token for API requests
@@ -107,6 +107,34 @@ export const projectsService = {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete project');
+  },
+
+  async addMember(projectId: string, memberEmail: string, role?: string, avatar?: string): Promise<any> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/members`
+      : `${API_BASE}/projects/${encodeURIComponent(projectId)}/members`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ memberEmail, role, avatar }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to add member' }));
+      throw new Error(error.error || 'Failed to add member');
+    }
+    return response.json();
+  },
+
+  async removeMember(projectId: string, memberEmail: string): Promise<void> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberEmail)}`
+      : `${API_BASE}/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberEmail)}`;
+    const response = await authenticatedFetch(url, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to remove member' }));
+      throw new Error(error.error || 'Failed to remove member');
+    }
   },
 };
 

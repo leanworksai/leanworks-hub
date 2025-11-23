@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { updateSummariesService } from '@/services/firestore';
+import { updateSummariesService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 
 export const useUpdateSummaries = () => {

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { tasksService } from '@/services/firestore';
+import { tasksService } from '@/services/api';
 import type { Task } from '@/data/tasksData';
 import { useUserProjects } from './useProjects';
 import { useUserTeams } from './useTeams';

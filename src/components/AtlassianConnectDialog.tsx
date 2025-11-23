@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { integrationsService } from "@/services/firestore";
+import { integrationsService } from "@/services/api";
 import { useToast } from "@/hooks/use-toast";
 
 interface AtlassianConnectDialogProps {

@@ -189,9 +189,16 @@ const getAllTeamMembers = (projects: any[]) => {
   return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 };
 
-export default function TaskDetail() {
-  const { taskId } = useParams();
+interface TaskDetailProps {
+  taskId?: string;
+  onClose?: () => void;
+  isDialog?: boolean;
+}
+
+export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = false }: TaskDetailProps = {}) {
+  const { taskId: paramTaskId } = useParams();
   const navigate = useNavigate();
+  const taskId = propTaskId || paramTaskId;
   const [commentInput, setCommentInput] = useState("");
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedTask, setEditedTask] = useState<Task | null>(null);
@@ -240,11 +247,14 @@ export default function TaskDetail() {
   })() : false;
   
   // Redirect if user doesn't have access (only after both task and projects are loaded)
+  // Don't redirect if in dialog mode - let the dialog handle closing
   useEffect(() => {
-    if (!isLoading && task && !hasAccess) {
+    if (!isLoading && task && !hasAccess && !isDialog) {
       navigate("/tasks");
+    } else if (!isLoading && task && !hasAccess && isDialog && onClose) {
+      onClose();
     }
-  }, [isLoading, task, hasAccess, navigate, projects.length]);
+  }, [isLoading, task, hasAccess, navigate, projects.length, isDialog, onClose]);
   const updateTaskMutation = useUpdateTask();
   const deleteTask = useDeleteTask();
   const { toast } = useToast();
@@ -286,13 +296,23 @@ export default function TaskDetail() {
     }
   }, [task]);
 
+  const handleBack = () => {
+    if (onClose) {
+      onClose();
+    } else {
+      navigate("/tasks");
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/tasks")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Tasks
-        </Button>
+        {!isDialog && (
+          <Button variant="ghost" onClick={handleBack}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to Tasks
+          </Button>
+        )}
         <div className="text-center py-12">
           <p className="text-muted-foreground">Loading task...</p>
         </div>
@@ -303,10 +323,12 @@ export default function TaskDetail() {
   if (!task) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/tasks")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Tasks
-        </Button>
+        {!isDialog && (
+          <Button variant="ghost" onClick={handleBack}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to Tasks
+          </Button>
+        )}
         <div className="text-center py-12">
           <h1 className="text-2xl font-bold">Task not found</h1>
         </div>
@@ -318,10 +340,12 @@ export default function TaskDetail() {
   if (task && !hasAccess && !isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/tasks")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Tasks
-        </Button>
+        {!isDialog && (
+          <Button variant="ghost" onClick={handleBack}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to Tasks
+          </Button>
+        )}
         <div className="text-center py-12">
           <p className="text-muted-foreground">You don't have access to this task.</p>
         </div>
@@ -353,7 +377,11 @@ export default function TaskDetail() {
         title: "Task deleted",
         description: `"${task.title}" has been deleted successfully.`,
       });
-      navigate("/tasks");
+      if (onClose) {
+        onClose();
+      } else {
+        navigate("/tasks");
+      }
     } catch (error) {
       toast({
         title: "Error",
@@ -443,12 +471,26 @@ export default function TaskDetail() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <Button variant="ghost" onClick={() => navigate("/tasks")}>
-        <ArrowLeft className="mr-2 h-4 w-4" />
-        Back to Tasks
-      </Button>
+      {!isDialog && (
+        <Button variant="ghost" onClick={handleBack}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to Tasks
+        </Button>
+      )}
 
       <div>
+        {/* Delete button positioned absolutely when in dialog mode - same vertical level as exit button */}
+        {isDialog && (
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setShowDeleteDialog(true)}
+            className="absolute right-16 z-10"
+            style={{ top: '0.25rem' }}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        )}
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-start gap-3 flex-1">
             <div className="flex-1">
@@ -477,15 +519,18 @@ export default function TaskDetail() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
+          {/* Delete button on right when NOT in dialog mode */}
+          {!isDialog && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteDialog(true)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
         </div>
         {editingField === 'description' && editedTask ? (
           <Textarea

@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, X } from 'lucide-react';
 import { CallStatus } from '@/hooks/useWebRTC';
 import { useWebRTCContext } from '@/contexts/WebRTCContext';
-import { callSignalingService, type CallSignal } from '@/services/firestore';
+import { callSignalingService, type CallSignal } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';

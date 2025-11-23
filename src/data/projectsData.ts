@@ -1,5 +1,6 @@
 export interface ProjectMember {
   id: string; // Email address of the member
+  email?: string; // Email address (may be same as id)
   name: string;
   role: string;
   avatar: string;
@@ -42,6 +43,7 @@ export interface Project {
   dueDate: string;
   createdDate: string;
   statusColor: string;
+  ownerEmail?: string; // Email of the project owner/creator
   members: ProjectMember[];
   tasks: Task[];
   progressUpdates: ProgressUpdate[];

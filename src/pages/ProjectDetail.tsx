@@ -15,17 +15,40 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2 } from "lucide-react";
-import { useUserProjects, useDeleteProject, useProject } from "@/hooks/useProjects";
+import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check } from "lucide-react";
+import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserTeams } from "@/hooks/useTeams";
-import { teamsService } from "@/services/firestore";
+import { teamsService } from "@/services/api";
 import { useQueries } from "@tanstack/react-query";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { TaskTooltip } from "@/components/TaskTooltip";
+import { NewTaskDialog } from "@/components/NewTaskDialog";
+import { TaskDetailDialog } from "@/components/TaskDetailDialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Input } from "@/components/ui/input";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -64,7 +87,16 @@ export default function ProjectDetail() {
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [taskPageIndex, setTaskPageIndex] = useState(0);
+  const [showAddMemberDialog, setShowAddMemberDialog] = useState(false);
+  const [selectedMemberEmail, setSelectedMemberEmail] = useState<string>("");
+  const [memberSearchQuery, setMemberSearchQuery] = useState("");
+  const [memberPopoverOpen, setMemberPopoverOpen] = useState(false);
+  const [memberToRemove, setMemberToRemove] = useState<{ email: string; name: string } | null>(null);
+  const [showNewTaskDialog, setShowNewTaskDialog] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const deleteProject = useDeleteProject();
+  const addMember = useAddProjectMember();
+  const removeMember = useRemoveProjectMember();
   const { toast } = useToast();
   
   // Fetch project by ID
@@ -106,6 +138,27 @@ export default function ProjectDetail() {
   
   // Get user's email for access check
   const userEmail = user?.email?.toLowerCase();
+  
+  // Check if current user is the project owner
+  const isOwner = project && userEmail && project.ownerEmail?.toLowerCase() === userEmail;
+  
+  // Get available users to add (exclude existing members)
+  const existingMemberEmails = new Set(
+    project?.members.map(m => m.email?.toLowerCase() || m.id?.toLowerCase()) || []
+  );
+  const availableUsers = users.filter(u => {
+    const userEmailLower = u.email?.toLowerCase();
+    return userEmailLower && !existingMemberEmails.has(userEmailLower);
+  });
+  
+  // Filter users based on search query
+  const filteredUsers = availableUsers.filter(u => {
+    const query = memberSearchQuery.toLowerCase();
+    const fullName = `${u.firstName} ${u.lastName}`.toLowerCase();
+    const email = u.email?.toLowerCase() || '';
+    const jobTitle = u.jobTitle?.toLowerCase() || '';
+    return fullName.includes(query) || email.includes(query) || jobTitle.includes(query);
+  });
   
   // Check if user has access to the project:
   // 1. User is the owner, OR
@@ -268,6 +321,74 @@ export default function ProjectDetail() {
     setCommentInput("");
   };
 
+  const handleAddMember = async () => {
+    if (!project || !selectedMemberEmail) return;
+    
+    try {
+      const selectedUser = users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase());
+      if (!selectedUser) {
+        toast({
+          title: "Error",
+          description: "Selected user not found",
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      const firstName = selectedUser.firstName || '';
+      const lastName = selectedUser.lastName || '';
+      const avatar = firstName && lastName 
+        ? (firstName.charAt(0) + lastName.charAt(0)).toUpperCase()
+        : selectedUser.email?.substring(0, 2).toUpperCase() || 'U';
+      
+      await addMember.mutateAsync({
+        projectId: project.id,
+        memberEmail: selectedMemberEmail,
+        role: 'member',
+        avatar,
+      });
+      
+      toast({
+        title: "Member added",
+        description: `${firstName} ${lastName} has been added to the project.`,
+      });
+      
+      setShowAddMemberDialog(false);
+      setSelectedMemberEmail("");
+      setMemberSearchQuery("");
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to add member",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRemoveMember = async () => {
+    if (!project || !memberToRemove) return;
+    
+    try {
+      await removeMember.mutateAsync({
+        projectId: project.id,
+        memberEmail: memberToRemove.email,
+      });
+      
+      toast({
+        title: "Member removed",
+        description: `${memberToRemove.name} has been removed from the project.`,
+      });
+      
+      setMemberToRemove(null);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to remove member",
+        variant: "destructive",
+      });
+    }
+  };
+
   // Combine and sort activities (updates and comments) by date
   const getActivities = () => {
     if (!project) return [];
@@ -353,7 +474,7 @@ export default function ProjectDetail() {
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
-                    <span>{project.team} members</span>
+                    <span>{project.members.length} members</span>
                   </div>
                   <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 data-[state=open]:rotate-180" />
                 </div>
@@ -362,20 +483,56 @@ export default function ProjectDetail() {
           </CardHeader>
           <CollapsibleContent>
             <CardContent>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {project.members.map((member) => (
-                  <div key={member.id} className="flex items-center gap-3 p-3 rounded-lg bg-background/50 border border-border">
-                    <Avatar>
-                      <AvatarFallback className={getAvatarColor(member.email || member.name || member.id)}>
-                        {member.avatar}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">{member.name}</p>
-                      <p className="text-xs text-muted-foreground truncate">{member.role}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="space-y-4">
+                {isOwner && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowAddMemberDialog(true)}
+                    className="w-full sm:w-auto"
+                  >
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Member
+                  </Button>
+                )}
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  {project.members.map((member) => {
+                    const memberEmail = member.email?.toLowerCase() || member.id?.toLowerCase();
+                    const isMemberOwner = project.ownerEmail?.toLowerCase() === memberEmail;
+                    const canRemove = isOwner || (memberEmail === userEmail && !isMemberOwner);
+                    
+                    return (
+                      <div key={member.id} className="flex items-center gap-3 p-3 rounded-lg bg-background/50 border border-border relative group">
+                        <Avatar>
+                          <AvatarFallback className={getAvatarColor(member.email || member.name || member.id)}>
+                            {member.avatar}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-sm truncate">{member.name}</p>
+                            {isMemberOwner && (
+                              <Badge variant="secondary" className="text-xs">
+                                Owner
+                              </Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate">{member.role || 'member'}</p>
+                        </div>
+                        {canRemove && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => setMemberToRemove({ email: member.email || member.id, name: member.name })}
+                          >
+                            <X className="h-4 w-4 text-destructive" />
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </CardContent>
           </CollapsibleContent>
@@ -407,6 +564,17 @@ export default function ProjectDetail() {
           </CardHeader>
           <CollapsibleContent>
             <CardContent>
+              <div className="mb-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowNewTaskDialog(true)}
+                  className="w-full sm:w-auto"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create New Task
+                </Button>
+              </div>
               {project.tasks.length === 0 ? (
                 <div className="text-center py-8 text-sm text-muted-foreground">
                   No tasks yet
@@ -415,9 +583,13 @@ export default function ProjectDetail() {
                 <>
                   <div className="space-y-3">
                     {project.tasks.slice(taskPageIndex * 5, (taskPageIndex + 1) * 5).map((task) => (
-                      <div key={task.id} className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
+                      <div 
+                        key={task.id} 
+                        className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border cursor-pointer hover:bg-background/70 transition-colors"
+                        onClick={() => setSelectedTaskId(task.id)}
+                      >
                         {task.reason && (
-                          <div className="flex-shrink-0 pt-0.5">
+                          <div className="flex-shrink-0 pt-0.5" onClick={(e) => e.stopPropagation()}>
                             <TaskTooltip taskId={task.id} taskReason={task.reason} />
                           </div>
                         )}
@@ -585,6 +757,151 @@ export default function ProjectDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add Member Dialog */}
+      <Dialog open={showAddMemberDialog} onOpenChange={setShowAddMemberDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Add Project Member</DialogTitle>
+            <DialogDescription>
+              Select a user from your domain to add to this project.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Popover open={memberPopoverOpen} onOpenChange={setMemberPopoverOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={memberPopoverOpen}
+                  className="w-full justify-between"
+                >
+                  {selectedMemberEmail
+                    ? users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase()) 
+                      ? `${users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase())?.firstName} ${users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase())?.lastName}`
+                      : selectedMemberEmail
+                    : "Select a user..."}
+                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-full p-0" align="start">
+                <Command>
+                  <CommandInput 
+                    placeholder="Search users..." 
+                    value={memberSearchQuery}
+                    onValueChange={setMemberSearchQuery}
+                  />
+                  <CommandList>
+                    {filteredUsers.length === 0 ? (
+                      <CommandEmpty>No users found.</CommandEmpty>
+                    ) : (
+                      <CommandGroup>
+                        {filteredUsers.map((user) => {
+                          const isSelected = selectedMemberEmail === user.email?.toLowerCase();
+                          const firstName = user.firstName || '';
+                          const lastName = user.lastName || '';
+                          const fullName = `${firstName} ${lastName}`.trim() || user.email;
+                          const avatar = firstName && lastName 
+                            ? (firstName.charAt(0) + lastName.charAt(0)).toUpperCase()
+                            : user.email?.substring(0, 2).toUpperCase() || 'U';
+                          
+                          return (
+                            <CommandItem
+                              key={user.email}
+                              value={user.email}
+                              onSelect={() => {
+                                setSelectedMemberEmail(user.email?.toLowerCase() || '');
+                                setMemberPopoverOpen(false);
+                              }}
+                            >
+                              <Check
+                                className={`mr-2 h-4 w-4 shrink-0 ${
+                                  isSelected ? "opacity-100" : "opacity-0"
+                                }`}
+                              />
+                              <div className="flex items-center gap-2 flex-1 min-w-0">
+                                <Avatar className="h-6 w-6 shrink-0">
+                                  <AvatarFallback className={getAvatarColor(user.email || '')}>
+                                    {avatar}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <div className="flex flex-col min-w-0">
+                                  <span className="font-medium truncate">{fullName}</span>
+                                  <span className="text-xs text-muted-foreground truncate">
+                                    {user.email} {user.jobTitle ? `• ${user.jobTitle}` : ''}
+                                  </span>
+                                </div>
+                              </div>
+                            </CommandItem>
+                          );
+                        })}
+                      </CommandGroup>
+                    )}
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowAddMemberDialog(false);
+                  setSelectedMemberEmail("");
+                  setMemberSearchQuery("");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleAddMember}
+                disabled={!selectedMemberEmail || addMember.isPending}
+              >
+                {addMember.isPending ? "Adding..." : "Add Member"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remove Member Confirmation Dialog */}
+      <AlertDialog open={!!memberToRemove} onOpenChange={(open) => !open && setMemberToRemove(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Member</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove "{memberToRemove?.name}" from this project? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setMemberToRemove(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleRemoveMember}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={removeMember.isPending}
+            >
+              {removeMember.isPending ? "Removing..." : "Remove"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* New Task Dialog */}
+      <NewTaskDialog 
+        open={showNewTaskDialog} 
+        onOpenChange={setShowNewTaskDialog}
+        initialProjectId={project.id}
+      />
+
+      {/* Task Detail Dialog */}
+      <TaskDetailDialog
+        taskId={selectedTaskId}
+        open={!!selectedTaskId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedTaskId(null);
+          }
+        }}
+      />
     </div>
   );
 }

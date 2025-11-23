@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { updatesService } from '@/services/firestore';
+import { updatesService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 
 export const useUpdatesByTaskId = (taskId: string | null) => {

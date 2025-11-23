@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { teamsService } from "@/services/firestore";
+import { teamsService } from "@/services/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

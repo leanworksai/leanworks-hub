@@ -34,6 +34,7 @@ import { v4 as uuidv4 } from 'uuid';
 interface NewTaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialProjectId?: string; // Optional project ID to pre-select
 }
 
 const statusOptions = [
@@ -69,7 +70,7 @@ const getInitials = (name: string): string => {
 };
 
 
-export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
+export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskDialogProps) {
   const { toast } = useToast();
   const createTask = useCreateTask();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -159,14 +160,31 @@ export function NewTaskDialog({ open, onOpenChange }: NewTaskDialogProps) {
   useEffect(() => {
     if (open) {
       form.reset();
-      setSelectedProjectId("");
+      // If initialProjectId is provided, set it
+      if (initialProjectId && projects.length > 0) {
+        // Find the project by ID
+        const project = projects.find(p => p.id === initialProjectId);
+        if (project) {
+          const slug = project.name.toLowerCase().replace(/\s+/g, '-');
+          form.setValue("projectId", slug);
+          setSelectedProjectId(slug);
+          // Load project members
+          if (project.members) {
+            setProjectMembers(project.members);
+          }
+        }
+      } else {
+        setSelectedProjectId("");
+        if (!initialProjectId) {
+          setProjectMembers([]);
+        }
+      }
       setSelectedAssignee(null);
       setSelectedAssigneeId(null);
       setAssigneeOpen(false);
-      setProjectMembers([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, initialProjectId, projects.length]);
 
   const generateAITaskDetails = async () => {
     const currentTitle = form.getValues("title");

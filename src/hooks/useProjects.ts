@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
-import { projectsService } from '@/services/firestore';
+import { projectsService } from '@/services/api';
 import type { Project } from '@/data/projectsData';
 import { useUserTeams } from './useTeams';
 import { useAuth } from '@/contexts/AuthContext';
-import { teamsService } from '@/services/firestore';
+import { teamsService } from '@/services/api';
 
 export const useProjects = () => {
   const { user, loading } = useAuth();
@@ -134,6 +134,36 @@ export const useDeleteProject = () => {
     mutationFn: (projectId: string) => projectsService.delete(projectId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+};
+
+export const useAddProjectMember = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: ({ projectId, memberEmail, role, avatar }: { 
+      projectId: string; 
+      memberEmail: string; 
+      role?: string; 
+      avatar?: string;
+    }) => projectsService.addMember(projectId, memberEmail, role, avatar),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', variables.projectId] });
+    },
+  });
+};
+
+export const useRemoveProjectMember = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: ({ projectId, memberEmail }: { projectId: string; memberEmail: string }) =>
+      projectsService.removeMember(projectId, memberEmail),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', variables.projectId] });
     },
   });
 };
