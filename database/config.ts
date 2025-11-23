@@ -47,7 +47,7 @@ async function getPostgresPassword(): Promise<string> {
   try {
     const secretName = `projects/${projectId}/secrets/postgresdb-password/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
-    const password = version.payload?.data?.toString() || '';
+    const password = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');
     return password;
   } catch (error) {
@@ -67,7 +67,8 @@ async function ensureDatabaseExists(password: string, targetDb: string, dbHost: 
   // Try to connect to the target database
   const testClient = new Client({
     host: dbHost,
-    port: dbPort,
+    // Don't specify port for Unix socket connections
+    ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
     database: targetDb,
     user: 'postgres',
     password: password,
@@ -87,7 +88,8 @@ async function ensureDatabaseExists(password: string, targetDb: string, dbHost: 
       // Connect to default postgres database to create new database
       const adminClient = new Client({
         host: dbHost,
-        port: dbPort,
+        // Don't specify port for Unix socket connections
+        ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
         database: 'postgres',
         user: 'postgres',
         password: password,
@@ -132,7 +134,8 @@ async function initializePool(): Promise<Pool> {
     // For local development with Cloud SQL Proxy, use:
     // host: process.env.DB_HOST || '127.0.0.1',
     
-    port: dbPort,
+    // Don't specify port for Unix socket connections
+    ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
     
     database: targetDb,
     user: process.env.DB_USER || 'postgres',

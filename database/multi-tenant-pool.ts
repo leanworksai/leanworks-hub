@@ -57,7 +57,7 @@ async function getPostgresPassword(): Promise<string> {
   try {
     const secretName = `projects/${projectId}/secrets/postgresdb-password/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
-    cachedPassword = version.payload?.data?.toString() || '';
+    cachedPassword = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');
     return cachedPassword;
   } catch (error) {
@@ -96,7 +96,8 @@ async function ensureDatabaseExists(
   // Try to connect to the target database
   const testClient = new Client({
     host: dbHost,
-    port: dbPort,
+    // Don't specify port for Unix socket connections
+    ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
     database: dbName,
     user: 'postgres',
     password: password,
@@ -116,7 +117,8 @@ async function ensureDatabaseExists(
       // Connect to default postgres database to create new database
       const adminClient = new Client({
         host: dbHost,
-        port: dbPort,
+        // Don't specify port for Unix socket connections
+        ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
         database: 'postgres',
         user: 'postgres',
         password: password,
@@ -161,7 +163,8 @@ export async function getTenantPool(userEmail: string): Promise<Pool> {
   // Create new pool for this tenant
   const poolConfig: PoolConfig = {
     host: dbHost,
-    port: dbPort,
+    // Don't specify port for Unix socket connections
+    ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
     database: dbName,
     user: process.env.DB_USER || 'postgres',
     password: password,
