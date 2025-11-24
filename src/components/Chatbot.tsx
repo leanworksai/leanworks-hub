@@ -1739,6 +1739,8 @@ export function Chatbot() {
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             projectId: msg.projectId || selectedProjectId,
             userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+            imageUrls: msg.imageUrls,
+            likes: msg.likes,
             citedContext: msg.citedContext,
           }));
         
@@ -1758,6 +1760,8 @@ export function Chatbot() {
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             teamId: msg.teamId || selectedTeamId,
             userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
+            imageUrls: msg.imageUrls,
+            likes: msg.likes,
             citedContext: msg.citedContext,
           }));
         
@@ -1777,6 +1781,8 @@ export function Chatbot() {
           content: msg.content,
           timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
           userId: msg.userId,
+          imageUrls: msg.imageUrls,
+          likes: msg.likes,
           citedContext: msg.citedContext,
         }));
         
@@ -1868,6 +1874,7 @@ export function Chatbot() {
               projectId: msg.projectId || selectedProjectId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
               imageUrls: msg.imageUrls,
+              likes: msg.likes,
               citedContext: msg.citedContext,
             }));
           
@@ -1937,6 +1944,7 @@ export function Chatbot() {
               teamId: msg.teamId || selectedTeamId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
               imageUrls: msg.imageUrls,
+              likes: msg.likes,
               citedContext: msg.citedContext,
             }));
         
@@ -2008,6 +2016,7 @@ export function Chatbot() {
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             userId: msg.userId,
             imageUrls: msg.imageUrls,
+            likes: msg.likes,
             citedContext: msg.citedContext,
           }));
           
