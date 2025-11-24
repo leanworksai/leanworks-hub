@@ -535,7 +535,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
           />
         ) : (
           <p 
-            className="text-foreground text-lg mb-4 cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
+            className="text-foreground text-lg mb-4 cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors whitespace-pre-wrap"
             onClick={() => handleFieldClick('description')}
           >
             {task.description}
