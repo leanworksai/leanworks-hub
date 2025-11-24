@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, UserCircle } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, UserCircle, StickyNote } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -16,6 +16,7 @@ import {
 const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
+  { title: "Notes", url: "/notes", icon: StickyNote },
   { title: "Teams", url: "/teams", icon: Users },
   { title: "Users", url: "/users", icon: UserCircle },
   { title: "Integrations", url: "/integrations", icon: Puzzle },

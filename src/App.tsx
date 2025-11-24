@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import { useEffect } from "react";
 import { initFirestore } from "@/services/api";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { trackPageView } from "@/lib/analytics";
 import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
@@ -26,6 +27,8 @@ import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
+import Notes from "./pages/Notes";
+import NoteDetail from "./pages/NoteDetail";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
@@ -36,6 +39,32 @@ const AppRoutesContent = () => {
   const { user } = useAuth();
   const location = useLocation();
   const isHomePage = location.pathname === '/';
+
+  // Track page views
+  useEffect(() => {
+    const pageName = getPageName(location.pathname);
+    trackPageView(pageName, location.pathname);
+  }, [location.pathname]);
+
+  // Helper function to get page name from path
+  const getPageName = (pathname: string): string => {
+    if (pathname === '/') return 'Home';
+    if (pathname === '/login') return 'Login';
+    if (pathname === '/signup') return 'Signup';
+    if (pathname.startsWith('/projects/')) return 'Project Detail';
+    if (pathname === '/projects') return 'Projects';
+    if (pathname.startsWith('/tasks/')) return 'Task Detail';
+    if (pathname === '/tasks') return 'Tasks';
+    if (pathname.startsWith('/notes/')) return 'Note Detail';
+    if (pathname === '/notes') return 'Notes';
+    if (pathname.startsWith('/teams/')) return 'Team Detail';
+    if (pathname === '/teams') return 'Teams';
+    if (pathname === '/users') return 'Users';
+    if (pathname === '/integrations') return 'Integrations';
+    if (pathname === '/profile') return 'Profile';
+    if (pathname === '/settings') return 'Settings';
+    return 'Unknown Page';
+  };
 
   return (
     <>
@@ -119,6 +148,26 @@ const AppRoutesContent = () => {
             <ProtectedRoute>
               <DashboardLayout>
                 <TaskDetail />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/notes"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Notes />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/notes/:noteId"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <NoteDetail />
               </DashboardLayout>
             </ProtectedRoute>
           }

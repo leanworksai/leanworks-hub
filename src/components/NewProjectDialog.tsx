@@ -31,6 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { useQueries } from "@tanstack/react-query";
 import { v4 as uuidv4 } from 'uuid';
+import { trackCreate, trackFormSubmit } from "@/lib/analytics";
 
 interface NewProjectDialogProps {
   open: boolean;
@@ -394,6 +395,8 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       };
 
       await createProject.mutateAsync(project);
+      trackCreate('project', '/projects');
+      trackFormSubmit('new_project', true);
       
       toast({
         title: "Project created",
