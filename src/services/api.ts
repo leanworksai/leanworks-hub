@@ -450,6 +450,7 @@ export interface ChatMessage {
   memberName?: string;
   memberAvatar?: string;
   imageUrls?: string[];
+  likes?: string[]; // Array of user emails who liked the message
   citedContext?: {
     projects?: any[];
     tasks?: any[];
@@ -512,6 +513,20 @@ export const messagesService = {
     };
   },
 
+  async toggleLike(messageId: string): Promise<{ likes: string[]; liked: boolean }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/messages/${encodeURIComponent(messageId)}/like` 
+      : `${API_BASE}/messages/${encodeURIComponent(messageId)}/like`;
+    const response = await authenticatedFetch(url, {
+      method: 'PATCH',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to toggle like' }));
+      throw new Error(error.error || 'Failed to toggle like');
+    }
+    return response.json();
+  },
+
   // Subscribe to real-time message updates
   subscribeToMessages(chatId: string, callback: MessageListener): Unsubscribe {
     // Use polling by default (more reliable, works without Firebase Auth)
@@ -530,8 +545,19 @@ export const messagesService = {
   subscribeViaPolling(chatId: string, callback: MessageListener): Unsubscribe {
     let lastMessageIds: Set<string> = new Set();
     let lastMessageCount = 0;
+    let lastMessageHashes: Map<string, string> = new Map(); // Store hash of message content to detect changes
     let isActive = true;
     let pollTimeout: NodeJS.Timeout | null = null;
+    
+    // Create a simple hash of message content to detect changes
+    const getMessageHash = (msg: ChatMessage): string => {
+      return JSON.stringify({
+        id: msg.id,
+        content: msg.content,
+        likes: msg.likes || [],
+        imageUrls: msg.imageUrls || [],
+      });
+    };
     
     const poll = async () => {
       if (!isActive) return;
@@ -541,14 +567,34 @@ export const messagesService = {
         const currentIds = new Set(messages.map(m => m.id));
         const currentCount = messages.length;
         
-        // Check if messages changed (by ID or count)
+        // Create hash map of current messages
+        const currentHashes = new Map<string, string>();
+        messages.forEach(msg => {
+          currentHashes.set(msg.id, getMessageHash(msg));
+        });
+        
+        // Check if messages changed (by ID, count, or content)
         const idsChanged = lastMessageIds.size !== currentIds.size ||
           ![...lastMessageIds].every(id => currentIds.has(id)) ||
           currentCount !== lastMessageCount;
         
-        if (idsChanged) {
+        // Check if any message content changed (e.g., likes)
+        let contentChanged = false;
+        if (!idsChanged) {
+          // Only check content if IDs haven't changed
+          for (const [id, currentHash] of currentHashes.entries()) {
+            const lastHash = lastMessageHashes.get(id);
+            if (lastHash !== currentHash) {
+              contentChanged = true;
+              break;
+            }
+          }
+        }
+        
+        if (idsChanged || contentChanged) {
           lastMessageIds = currentIds;
           lastMessageCount = currentCount;
+          lastMessageHashes = currentHashes;
           callback(messages);
         }
       } catch (error) {

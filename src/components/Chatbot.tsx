@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon } from "lucide-react";
+import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/api";
 import { CallStatus } from "@/hooks/useWebRTC";
@@ -27,6 +27,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
 
 interface Message {
   id: string;
@@ -35,6 +37,7 @@ interface Message {
   timestamp: Date;
   userId?: string;
   imageUrls?: string[];
+  likes?: string[]; // Array of user emails who liked the message
   citedContext?: {
     projects?: Project[];
     tasks?: Task[];
@@ -60,6 +63,7 @@ interface ChannelMessage {
   teamId?: string;
   userId?: string;
   imageUrls?: string[];
+  likes?: string[]; // Array of user emails who liked the message
   citedContext?: {
     projects?: Project[];
     tasks?: Task[];
@@ -177,6 +181,7 @@ export function Chatbot() {
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
   const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [incomingCallSignal, setIncomingCallSignal] = useState<CallSignal | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [callStatusFromSignal, setCallStatusFromSignal] = useState<CallStatus>('idle');
@@ -411,6 +416,7 @@ export function Chatbot() {
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
               imageUrls: incomingMsg.imageUrls || existingMsg.imageUrls,
+              likes: incomingMsg.likes || existingMsg.likes,
               citedContext: incomingMsg.citedContext || existingMsg.citedContext,
             });
           }
@@ -447,6 +453,7 @@ export function Chatbot() {
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
               imageUrls: incomingMsg.imageUrls || matchedOptimistic.imageUrls,
+              likes: incomingMsg.likes || matchedOptimistic.likes,
               citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
             });
           } else {
@@ -460,6 +467,7 @@ export function Chatbot() {
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
               imageUrls: incomingMsg.imageUrls,
+              likes: incomingMsg.likes,
               citedContext: incomingMsg.citedContext,
             });
           }
@@ -530,6 +538,7 @@ export function Chatbot() {
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
             imageUrls: incomingMsg.imageUrls || existingMsg.imageUrls,
+            likes: incomingMsg.likes || existingMsg.likes,
             citedContext: incomingMsg.citedContext || existingMsg.citedContext,
           });
         }
@@ -568,6 +577,7 @@ export function Chatbot() {
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
             imageUrls: incomingMsg.imageUrls || matchedOptimistic.imageUrls,
+            likes: incomingMsg.likes || matchedOptimistic.likes,
             citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
           });
         } else {
@@ -582,6 +592,8 @@ export function Chatbot() {
               : new Date(incomingMsg.timestamp),
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
+            imageUrls: incomingMsg.imageUrls,
+            likes: incomingMsg.likes,
             citedContext: incomingMsg.citedContext,
           });
         }
@@ -687,6 +699,18 @@ export function Chatbot() {
     }
     return { name: "Unknown", initials: "U" };
   }, [allDomainUsers]);
+
+  // Helper function to get user names from like emails
+  const getLikedByUsers = useCallback((likes: string[] = []) => {
+    return likes.map(email => {
+      const userInfo = getUserInfo(email);
+      return {
+        email,
+        name: userInfo.name,
+        initials: userInfo.initials,
+      };
+    });
+  }, [getUserInfo]);
   
   // Check if selected member is a project channel
   const isProjectChannel = selectedMember.startsWith("project-");
@@ -845,6 +869,25 @@ export function Chatbot() {
       }
     }, 0);
   }, [input, mentionCursorPos]);
+
+  // Insert emoji at cursor position
+  const insertEmoji = useCallback((emojiData: EmojiClickData) => {
+    const cursorPos = inputRef.current?.selectionStart || input.length;
+    const beforeCursor = input.substring(0, cursorPos);
+    const afterCursor = input.substring(cursorPos);
+    const newInput = `${beforeCursor}${emojiData.emoji}${afterCursor}`;
+    setInput(newInput);
+    setShowEmojiPicker(false);
+    
+    // Focus input and move cursor after emoji
+    setTimeout(() => {
+      if (inputRef.current) {
+        const newCursorPos = cursorPos + emojiData.emoji.length;
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(newCursorPos, newCursorPos);
+      }
+    }, 0);
+  }, []);
 
   // Handle keyboard navigation for mentions
   const handleMentionKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -3626,6 +3669,91 @@ export function Chatbot() {
     // For team member chats, just save the message (no AI response)
   };
 
+  const handleToggleLike = useCallback(async (messageId: string, currentLikes: string[] = []) => {
+    if (!user?.email) return;
+    
+    const userEmailLower = user.email.toLowerCase();
+    const isLiked = currentLikes.includes(userEmailLower);
+    
+    // Optimistically update UI immediately
+    const optimisticLikes = isLiked
+      ? currentLikes.filter((email: string) => email !== userEmailLower)
+      : [...currentLikes, userEmailLower];
+    
+    // Update message in state optimistically
+    setMessages((prev) => 
+      prev.map((msg) => 
+        msg.id === messageId 
+          ? { ...msg, likes: optimisticLikes }
+          : msg
+      )
+    );
+    
+    // Also update channel messages if applicable
+    setChannelMessages((prev) => {
+      const updated = new Map(prev);
+      prev.forEach((messages, chatId) => {
+        const updatedMessages = messages.map((msg) =>
+          msg.id === messageId
+            ? { ...msg, likes: optimisticLikes }
+            : msg
+        );
+        updated.set(chatId, updatedMessages);
+      });
+      return updated;
+    });
+    
+    try {
+      const result = await messagesService.toggleLike(messageId);
+      
+      // Update with server response (in case of conflicts)
+      setMessages((prev) => 
+        prev.map((msg) => 
+          msg.id === messageId 
+            ? { ...msg, likes: result.likes }
+            : msg
+        )
+      );
+      
+      // Also update channel messages with server response
+      setChannelMessages((prev) => {
+        const updated = new Map(prev);
+        prev.forEach((messages, chatId) => {
+          const updatedMessages = messages.map((msg) =>
+            msg.id === messageId
+              ? { ...msg, likes: result.likes }
+              : msg
+          );
+          updated.set(chatId, updatedMessages);
+        });
+        return updated;
+      });
+    } catch (error) {
+      console.error('Failed to toggle like:', error);
+      // Revert optimistic update on error
+      setMessages((prev) => 
+        prev.map((msg) => 
+          msg.id === messageId 
+            ? { ...msg, likes: currentLikes }
+            : msg
+        )
+      );
+      
+      setChannelMessages((prev) => {
+        const updated = new Map(prev);
+        prev.forEach((messages, chatId) => {
+          const updatedMessages = messages.map((msg) =>
+            msg.id === messageId
+              ? { ...msg, likes: currentLikes }
+              : msg
+          );
+          updated.set(chatId, updatedMessages);
+        });
+        return updated;
+      });
+    }
+  }, [user?.email]);
+
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -4124,7 +4252,7 @@ export function Chatbot() {
                           data-message-user-id={message.userId || ''}
                           data-message-role={isLean ? 'assistant' : 'user'}
                           className={cn(
-                            "flex gap-3",
+                            "flex gap-3 group",
                             isSent ? "justify-end" : "justify-start"
                           )}
                         >
@@ -4148,7 +4276,7 @@ export function Chatbot() {
                           
                           {/* Message bubble */}
                           <div className={cn(
-                            "flex flex-col min-w-0 max-w-[75%]",
+                            "flex flex-col min-w-0 max-w-[75%] relative",
                             isSent && "ml-auto"
                           )}>
                             {!isSent && (
@@ -4160,6 +4288,66 @@ export function Chatbot() {
                                     minute: "2-digit",
                                   })}
                                 </span>
+                              </div>
+                            )}
+                            {/* Like button - floating container next to message */}
+                            {(message.likes && message.likes.length > 0) && (
+                              <div className={cn(
+                                "absolute top-0 flex items-start z-10",
+                                isSent ? "-left-8" : "-right-8"
+                              )}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      onClick={() => handleToggleLike(message.id, message.likes)}
+                                      className={cn(
+                                        "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap",
+                                        message.likes?.includes(user?.email?.toLowerCase() || '')
+                                          ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/20"
+                                          : "text-muted-foreground hover:bg-muted"
+                                      )}
+                                    >
+                                      <ThumbsUp className={cn(
+                                        "h-3 w-3",
+                                        message.likes?.includes(user?.email?.toLowerCase() || '') && "fill-current text-red-500"
+                                      )} />
+                                      <span>{message.likes.length}</span>
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side={isSent ? "left" : "right"} className="max-w-xs">
+                                    <div className="space-y-1">
+                                      <div className="text-xs font-semibold mb-1">
+                                        {message.likes.length === 1 ? "Liked by" : `Liked by ${message.likes.length} people`}
+                                      </div>
+                                      <div className="space-y-0.5">
+                                        {getLikedByUsers(message.likes).map((likedUser, idx) => (
+                                          <div key={idx} className="text-xs flex items-center gap-2">
+                                            <Avatar className="h-4 w-4">
+                                              <AvatarFallback className="text-[10px] bg-primary/10">
+                                                {likedUser.initials}
+                                              </AvatarFallback>
+                                            </Avatar>
+                                            <span>{likedUser.name}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </div>
+                            )}
+                            {/* Like button - show on hover if no likes yet */}
+                            {(!message.likes || message.likes.length === 0) && (
+                              <div className={cn(
+                                "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
+                                isSent ? "-left-8" : "-right-8"
+                              )}>
+                                <button
+                                  onClick={() => handleToggleLike(message.id, message.likes)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap text-muted-foreground hover:bg-muted"
+                                >
+                                  <ThumbsUp className="h-3 w-3" />
+                                </button>
                               </div>
                             )}
                             <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words">
@@ -4310,7 +4498,7 @@ export function Chatbot() {
                           data-message-user-id={message.userId || ''}
                           data-message-role={isLean ? 'assistant' : 'user'}
                           className={cn(
-                            "flex gap-3 w-full min-w-0 max-w-full",
+                            "flex gap-3 w-full min-w-0 max-w-full group",
                             isSent ? "justify-end" : "justify-start"
                           )}
                         >
@@ -4334,7 +4522,7 @@ export function Chatbot() {
                           
                           {/* Message bubble */}
                           <div className={cn(
-                            "flex flex-col min-w-0 shrink",
+                            "flex flex-col min-w-0 shrink relative",
                             isSent ? "max-w-[75%] ml-auto" : "max-w-[75%]"
                           )}>
                             {!isSent && (
@@ -4346,6 +4534,66 @@ export function Chatbot() {
                                     minute: "2-digit",
                                   })}
                                 </span>
+                              </div>
+                            )}
+                            {/* Like button - floating container next to message */}
+                            {(message.likes && message.likes.length > 0) && (
+                              <div className={cn(
+                                "absolute top-0 flex items-start z-10",
+                                isSent ? "-left-8" : "-right-8"
+                              )}>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <button
+                                      onClick={() => handleToggleLike(message.id, message.likes)}
+                                      className={cn(
+                                        "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap",
+                                        message.likes?.includes(user?.email?.toLowerCase() || '')
+                                          ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/20"
+                                          : "text-muted-foreground hover:bg-muted"
+                                      )}
+                                    >
+                                      <ThumbsUp className={cn(
+                                        "h-3 w-3",
+                                        message.likes?.includes(user?.email?.toLowerCase() || '') && "fill-current text-red-500"
+                                      )} />
+                                      <span>{message.likes.length}</span>
+                                    </button>
+                                  </TooltipTrigger>
+                                  <TooltipContent side={isSent ? "left" : "right"} className="max-w-xs">
+                                    <div className="space-y-1">
+                                      <div className="text-xs font-semibold mb-1">
+                                        {message.likes.length === 1 ? "Liked by" : `Liked by ${message.likes.length} people`}
+                                      </div>
+                                      <div className="space-y-0.5">
+                                        {getLikedByUsers(message.likes).map((likedUser, idx) => (
+                                          <div key={idx} className="text-xs flex items-center gap-2">
+                                            <Avatar className="h-4 w-4">
+                                              <AvatarFallback className="text-[10px] bg-primary/10">
+                                                {likedUser.initials}
+                                              </AvatarFallback>
+                                            </Avatar>
+                                            <span>{likedUser.name}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </div>
+                            )}
+                            {/* Like button - show on hover if no likes yet */}
+                            {(!message.likes || message.likes.length === 0) && (
+                              <div className={cn(
+                                "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
+                                isSent ? "-left-8" : "-right-8"
+                              )}>
+                                <button
+                                  onClick={() => handleToggleLike(message.id, message.likes)}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap text-muted-foreground hover:bg-muted"
+                                >
+                                  <ThumbsUp className="h-3 w-3" />
+                                </button>
                               </div>
                             )}
                             <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words min-w-0 w-full overflow-x-hidden" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
@@ -4503,7 +4751,7 @@ export function Chatbot() {
                 data-message-user-id={message.userId || ''}
                 data-message-role={message.role}
                 className={cn(
-                  "flex gap-3 w-full",
+                  "flex gap-3 w-full group",
                   isSent ? "justify-end" : "justify-start"
                 )}
               >
@@ -4527,9 +4775,69 @@ export function Chatbot() {
                 
                 {/* Message bubble wrapper */}
                 <div className={cn(
-                  "flex flex-col min-w-0 max-w-[75%]",
+                  "flex flex-col min-w-0 max-w-[75%] relative",
                   isSent && "ml-auto"
                 )}>
+                  {/* Like button - floating container next to message */}
+                  {(message.likes && message.likes.length > 0) && (
+                    <div className={cn(
+                      "absolute top-0 flex items-start z-10",
+                      isSent ? "-left-8" : "-right-8"
+                    )}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={() => handleToggleLike(message.id, message.likes)}
+                            className={cn(
+                              "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap",
+                              message.likes?.includes(user?.email?.toLowerCase() || '')
+                                ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/20"
+                                : "text-muted-foreground hover:bg-muted"
+                            )}
+                          >
+                            <ThumbsUp className={cn(
+                              "h-3 w-3",
+                              message.likes?.includes(user?.email?.toLowerCase() || '') && "fill-current text-red-500"
+                            )} />
+                            <span>{message.likes.length}</span>
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side={isSent ? "left" : "right"} className="max-w-xs">
+                          <div className="space-y-1">
+                            <div className="text-xs font-semibold mb-1">
+                              {message.likes.length === 1 ? "Liked by" : `Liked by ${message.likes.length} people`}
+                            </div>
+                            <div className="space-y-0.5">
+                              {getLikedByUsers(message.likes).map((likedUser, idx) => (
+                                <div key={idx} className="text-xs flex items-center gap-2">
+                                  <Avatar className="h-4 w-4">
+                                    <AvatarFallback className="text-[10px] bg-primary/10">
+                                      {likedUser.initials}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                  <span>{likedUser.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
+                  )}
+                  {/* Like button - show on hover if no likes yet */}
+                  {(!message.likes || message.likes.length === 0) && (
+                    <div className={cn(
+                      "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
+                      isSent ? "-left-8" : "-right-8"
+                    )}>
+                      <button
+                        onClick={() => handleToggleLike(message.id, message.likes)}
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap text-muted-foreground hover:bg-muted"
+                      >
+                        <ThumbsUp className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
                   {/* Message bubble */}
                   <div
                     className={cn(
@@ -4759,7 +5067,7 @@ export function Chatbot() {
                   </div>
                 )}
                 
-                <div className="flex gap-2">
+                <div className="flex gap-2 relative">
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -4768,6 +5076,27 @@ export function Chatbot() {
                     multiple
                     className="hidden"
                   />
+                  <Popover open={showEmojiPicker} onOpenChange={setShowEmojiPicker}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        disabled={isLoading || uploadingImages}
+                      >
+                        <Smile className="h-4 w-4" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0 border-0" align="start" side="top">
+                      <EmojiPicker
+                        onEmojiClick={insertEmoji}
+                        autoFocusSearch={false}
+                        theme="light"
+                        width={350}
+                        height={400}
+                      />
+                    </PopoverContent>
+                  </Popover>
                   <Button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}

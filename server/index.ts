@@ -2540,6 +2540,7 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
         memberAvatar: data.memberAvatar || null,
         citedContext: data.citedContext || null,
         imageUrls: data.imageUrls || null, // Explicitly include imageUrls
+        likes: data.likes || null, // Include likes field
       };
       
       return message;
@@ -2606,11 +2607,53 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
         memberName: messageData.memberName || null,
         memberAvatar: messageData.memberAvatar || null,
         citedContext: messageData.citedContext || null,
-        imageUrls: messageData.imageUrls || null
+        imageUrls: messageData.imageUrls || null,
+        likes: messageData.likes || null
       }
     });
   } catch (error) {
     console.error('Create message error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// PATCH toggle like on a message
+app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) => {
+  try {
+    const domain = (req as any).userDomain;
+    const userEmail = (req as any).user?.email?.toLowerCase() || (req as any).userEmail?.toLowerCase();
+    const messageId = req.params.messageId;
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User email not found' });
+    }
+    
+    const collectionPath = getCollectionPath('messages', domain);
+    const messageRef = db.collection(collectionPath).doc(messageId);
+    const messageDoc = await messageRef.get();
+    
+    if (!messageDoc.exists) {
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    
+    const messageData = messageDoc.data();
+    const likes = messageData?.likes || [];
+    const userEmailLower = userEmail.toLowerCase();
+    
+    // Toggle like: remove if exists, add if not
+    const updatedLikes = likes.includes(userEmailLower)
+      ? likes.filter((email: string) => email !== userEmailLower)
+      : [...likes, userEmailLower];
+    
+    await messageRef.update({ likes: updatedLikes });
+    
+    res.json({
+      success: true,
+      likes: updatedLikes,
+      liked: updatedLikes.includes(userEmailLower),
+    });
+  } catch (error) {
+    console.error('Toggle like error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });

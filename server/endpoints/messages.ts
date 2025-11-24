@@ -199,5 +199,42 @@ export function setupMessageEndpoints(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // PATCH toggle like on a message
+  app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) => {
+    try {
+      const domain = (req as any).userDomain;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const messageId = req.params.messageId;
+      
+      const messagesPath = `domains/${domain}/messages`;
+      const messageRef = db.collection(messagesPath).doc(messageId);
+      const messageDoc = await messageRef.get();
+      
+      if (!messageDoc.exists) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+      
+      const messageData = messageDoc.data();
+      const likes = messageData?.likes || [];
+      const userEmailLower = userEmail.toLowerCase();
+      
+      // Toggle like: remove if exists, add if not
+      const updatedLikes = likes.includes(userEmailLower)
+        ? likes.filter((email: string) => email !== userEmailLower)
+        : [...likes, userEmailLower];
+      
+      await messageRef.update({ likes: updatedLikes });
+      
+      res.json({
+        success: true,
+        likes: updatedLikes,
+        liked: updatedLikes.includes(userEmailLower),
+      });
+    } catch (error) {
+      console.error('Toggle like error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
 }
 
