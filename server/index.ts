@@ -2420,10 +2420,14 @@ app.get('/api/messages', authenticateUser, async (req, res) => {
       .limit(100)
       .get();
     
-    const messages = snapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    const messages = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        likes: Array.isArray(data.likes) ? data.likes : [], // Normalize likes to always be an array
+      };
+    });
     
     res.json(messages);
   } catch (error) {
@@ -2638,7 +2642,8 @@ app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) =>
     }
     
     const messageData = messageDoc.data();
-    const likes = messageData?.likes || [];
+    // Normalize likes to always be an array (handle null/undefined)
+    const likes = Array.isArray(messageData?.likes) ? messageData.likes : [];
     const userEmailLower = userEmail.toLowerCase();
     
     // Toggle like: remove if exists, add if not
