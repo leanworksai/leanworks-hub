@@ -177,6 +177,7 @@ export function Chatbot() {
   const [lastReadTimestamps, setLastReadTimestamps] = useState<Map<string, number>>(new Map()); // chatId -> last read timestamp
   const [allChatCaches, setAllChatCaches] = useState<Map<string, { messages: ChatMessage[], lastSync: number }>>(new Map()); // chatId -> cached messages
   const [cacheLoadedForSession, setCacheLoadedForSession] = useState(false); // Track if cache has been loaded for this session
+  const [pendingLikeOperations, setPendingLikeOperations] = useState<Set<string>>(new Set()); // Track message IDs with pending like operations
   const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
@@ -265,6 +266,7 @@ export function Chatbot() {
               ...msg,
               timestamp: new Date(msg.timestamp),
               citedContext: msg.citedContext || null, // Explicitly preserve citedContext
+              likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
             })),
             lastSync: parsed.lastSync || 0,
           };
@@ -378,7 +380,8 @@ export function Chatbot() {
   const mergeMessages = (
     existing: Message[], 
     incoming: ChatMessage[], 
-    preserveOptimistic: boolean = true
+    preserveOptimistic: boolean = true,
+    pendingLikeOps: Set<string> = new Set()
   ): Message[] => {
     // Create a map of existing messages by ID
     const existingMap = new Map<string, Message>();
@@ -406,6 +409,9 @@ export function Chatbot() {
         if (existingMsg) {
           const isOptimistic = existingMsg.id.startsWith('temp-');
           if (!isOptimistic || !preserveOptimistic) {
+            // If there's a pending like operation, preserve existing likes to prevent cache overwrite
+            const hasPendingLike = pendingLikeOps.has(incomingId);
+            
             // Update with incoming message (it's from Firestore, so it's authoritative)
             existingMap.set(incomingId, {
               id: incomingId,
@@ -416,7 +422,13 @@ export function Chatbot() {
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
               imageUrls: incomingMsg.imageUrls || existingMsg.imageUrls,
-              likes: incomingMsg.likes || existingMsg.likes,
+              // Prefer incoming likes if defined (even if empty array), but preserve existing if incoming is undefined/null
+              // IMPORTANT: If there's a pending like operation, preserve existing likes to prevent stale cache from overwriting optimistic update
+              likes: hasPendingLike 
+                ? existingMsg.likes 
+                : (incomingMsg.likes !== undefined && incomingMsg.likes !== null 
+                    ? incomingMsg.likes 
+                    : existingMsg.likes),
               citedContext: incomingMsg.citedContext || existingMsg.citedContext,
             });
           }
@@ -453,7 +465,10 @@ export function Chatbot() {
                 : new Date(incomingMsg.timestamp),
               userId: incomingMsg.userId,
               imageUrls: incomingMsg.imageUrls || matchedOptimistic.imageUrls,
-              likes: incomingMsg.likes || matchedOptimistic.likes,
+              // Prefer incoming likes if defined (even if empty array), but preserve existing if incoming is undefined/null
+              likes: incomingMsg.likes !== undefined && incomingMsg.likes !== null 
+                ? incomingMsg.likes 
+                : matchedOptimistic.likes,
               citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
             });
           } else {
@@ -490,7 +505,8 @@ export function Chatbot() {
     incoming: ChatMessage[],
     projectIdOrTeamId: string,
     preserveOptimistic: boolean = true,
-    isTeam: boolean = false
+    isTeam: boolean = false,
+    pendingLikeOps: Set<string> = new Set()
   ): ChannelMessage[] => {
     // Filter incoming messages for this project or team
     // Include both user messages and assistant messages (lean's responses)
@@ -526,6 +542,9 @@ export function Chatbot() {
       if (existingMsg) {
         const isOptimistic = existingMsg.id.startsWith('temp-');
         if (!isOptimistic || !preserveOptimistic) {
+          // If there's a pending like operation, preserve existing likes to prevent cache overwrite
+          const hasPendingLike = pendingLikeOps.has(incomingId);
+          
           // Update with incoming message
           existingMap.set(incomingId, {
             id: incomingId,
@@ -538,7 +557,12 @@ export function Chatbot() {
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
             imageUrls: incomingMsg.imageUrls || existingMsg.imageUrls,
-            likes: incomingMsg.likes || existingMsg.likes,
+            // IMPORTANT: If there's a pending like operation, preserve existing likes to prevent stale cache from overwriting optimistic update
+            likes: hasPendingLike 
+              ? existingMsg.likes 
+              : (incomingMsg.likes !== undefined && incomingMsg.likes !== null 
+                  ? incomingMsg.likes 
+                  : existingMsg.likes),
             citedContext: incomingMsg.citedContext || existingMsg.citedContext,
           });
         }
@@ -577,7 +601,10 @@ export function Chatbot() {
             ...(isTeam ? { teamId: projectIdOrTeamId } : { projectId: projectIdOrTeamId }),
             userId: incomingMsg.userId || (incomingMsg.role === 'assistant' ? 'ai-assistant' : undefined),
             imageUrls: incomingMsg.imageUrls || matchedOptimistic.imageUrls,
-            likes: incomingMsg.likes || matchedOptimistic.likes,
+            // Prefer incoming likes if defined (even if empty array), but preserve existing if incoming is undefined/null
+            likes: incomingMsg.likes !== undefined && incomingMsg.likes !== null 
+              ? incomingMsg.likes 
+              : matchedOptimistic.likes,
             citedContext: incomingMsg.citedContext || matchedOptimistic.citedContext,
           });
         } else {
@@ -1740,7 +1767,7 @@ export function Chatbot() {
             projectId: msg.projectId || selectedProjectId,
             userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
             imageUrls: msg.imageUrls,
-            likes: msg.likes,
+            likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
             citedContext: msg.citedContext,
           }));
         
@@ -1761,7 +1788,7 @@ export function Chatbot() {
             teamId: msg.teamId || selectedTeamId,
             userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
             imageUrls: msg.imageUrls,
-            likes: msg.likes,
+            likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
             citedContext: msg.citedContext,
           }));
         
@@ -1782,7 +1809,7 @@ export function Chatbot() {
           timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
           userId: msg.userId,
           imageUrls: msg.imageUrls,
-          likes: msg.likes,
+          likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
           citedContext: msg.citedContext,
         }));
         
@@ -1874,7 +1901,7 @@ export function Chatbot() {
               projectId: msg.projectId || selectedProjectId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
               imageUrls: msg.imageUrls,
-              likes: msg.likes,
+              likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
               citedContext: msg.citedContext,
             }));
           
@@ -1944,7 +1971,7 @@ export function Chatbot() {
               teamId: msg.teamId || selectedTeamId,
               userId: msg.userId || (msg.role === 'assistant' ? 'ai-assistant' : undefined),
               imageUrls: msg.imageUrls,
-              likes: msg.likes,
+              likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
               citedContext: msg.citedContext,
             }));
         
@@ -2016,7 +2043,7 @@ export function Chatbot() {
             timestamp: msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp),
             userId: msg.userId,
             imageUrls: msg.imageUrls,
-            likes: msg.likes,
+            likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
             citedContext: msg.citedContext,
           }));
           
@@ -2392,7 +2419,7 @@ export function Chatbot() {
               );
               
               // Merge with existing messages, preserving optimistic updates
-              const merged = mergeChannelMessages(existing, firestoreMessages, selectedProjectId, true);
+              const merged = mergeChannelMessages(existing, firestoreMessages, selectedProjectId, true, false, pendingLikeOperations);
               
               // Always update if we have optimistic messages (they need to be matched)
               // Otherwise only update if messages actually changed
@@ -2459,7 +2486,7 @@ export function Chatbot() {
               );
               
               // Merge with existing messages, preserving optimistic updates
-              const merged = mergeChannelMessages(existing, firestoreMessages, selectedTeamId, false, true);
+              const merged = mergeChannelMessages(existing, firestoreMessages, selectedTeamId, false, true, pendingLikeOperations);
               
               // Always update if we have optimistic messages (they need to be matched)
               // Otherwise only update if messages actually changed
@@ -2529,7 +2556,7 @@ export function Chatbot() {
                   : firestoreMessages.filter(msg => msg.role === 'user');
                 
                 // Merge with existing messages, preserving optimistic updates
-                const merged = mergeMessages(prev, filteredMessages, true);
+                const merged = mergeMessages(prev, filteredMessages, true, pendingLikeOperations);
                 
                 // Check if there are new messages from other users (not current user)
                 const existingIds = new Set(prev.map(m => m.id));
@@ -3678,16 +3705,22 @@ export function Chatbot() {
     // For team member chats, just save the message (no AI response)
   };
 
-  const handleToggleLike = useCallback(async (messageId: string, currentLikes: string[] = []) => {
+  const handleToggleLike = useCallback(async (messageId: string, currentLikes: string[] | null | undefined = []) => {
     if (!user?.email) return;
     
+    // Normalize currentLikes to always be an array
+    const likesArray = currentLikes || [];
+    
     const userEmailLower = user.email.toLowerCase();
-    const isLiked = currentLikes.includes(userEmailLower);
+    const isLiked = likesArray.includes(userEmailLower);
+    
+    // Mark this message as having a pending like operation
+    setPendingLikeOperations((prev) => new Set(prev).add(messageId));
     
     // Optimistically update UI immediately
     const optimisticLikes = isLiked
-      ? currentLikes.filter((email: string) => email !== userEmailLower)
-      : [...currentLikes, userEmailLower];
+      ? likesArray.filter((email: string) => email !== userEmailLower)
+      : [...likesArray, userEmailLower];
     
     // Update message in state optimistically
     setMessages((prev) => 
@@ -3715,6 +3748,13 @@ export function Chatbot() {
     try {
       const result = await messagesService.toggleLike(messageId);
       
+      // Remove from pending operations
+      setPendingLikeOperations((prev) => {
+        const updated = new Set(prev);
+        updated.delete(messageId);
+        return updated;
+      });
+      
       // Update with server response (in case of conflicts)
       setMessages((prev) => 
         prev.map((msg) => 
@@ -3739,11 +3779,19 @@ export function Chatbot() {
       });
     } catch (error) {
       console.error('Failed to toggle like:', error);
+      
+      // Remove from pending operations on error
+      setPendingLikeOperations((prev) => {
+        const updated = new Set(prev);
+        updated.delete(messageId);
+        return updated;
+      });
+      
       // Revert optimistic update on error
       setMessages((prev) => 
         prev.map((msg) => 
           msg.id === messageId 
-            ? { ...msg, likes: currentLikes }
+            ? { ...msg, likes: likesArray }
             : msg
         )
       );
@@ -3753,7 +3801,7 @@ export function Chatbot() {
         prev.forEach((messages, chatId) => {
           const updatedMessages = messages.map((msg) =>
             msg.id === messageId
-              ? { ...msg, likes: currentLikes }
+              ? { ...msg, likes: likesArray }
               : msg
           );
           updated.set(chatId, updatedMessages);

@@ -102,6 +102,7 @@ export function setupMessageEndpoints(
           ...data,
           timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
           imageUrls: data.imageUrls || null,
+          likes: Array.isArray(data.likes) ? data.likes : [],
         };
       });
       
@@ -168,6 +169,7 @@ export function setupMessageEndpoints(
         teamId: teamId || null,
         memberName: finalMemberName,
         memberAvatar: finalMemberAvatar,
+        likes: [], // Initialize likes as empty array for new messages
       };
 
       // Add citedContext if provided
@@ -192,6 +194,7 @@ export function setupMessageEndpoints(
           ...messageData,
           timestamp: messageData.timestamp.toISOString(),
           imageUrls: messageData.imageUrls || null,
+          likes: messageData.likes || [],
         },
       });
     } catch (error) {

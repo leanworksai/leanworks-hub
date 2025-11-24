@@ -2540,7 +2540,7 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
         memberAvatar: data.memberAvatar || null,
         citedContext: data.citedContext || null,
         imageUrls: data.imageUrls || null, // Explicitly include imageUrls
-        likes: data.likes || null, // Include likes field
+        likes: Array.isArray(data.likes) ? data.likes : [], // Normalize likes to always be an array
       };
       
       return message;
@@ -2577,7 +2577,8 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
       content: content || '',
       timestamp: Date.now(),
       createdAt: new Date().toISOString(),
-      userId: userEmail
+      userId: userEmail,
+      likes: [] // Initialize likes as empty array for new messages
     };
     
     if (projectId) messageData.projectId = projectId;
@@ -2608,7 +2609,7 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
         memberAvatar: messageData.memberAvatar || null,
         citedContext: messageData.citedContext || null,
         imageUrls: messageData.imageUrls || null,
-        likes: messageData.likes || null
+        likes: Array.isArray(messageData.likes) ? messageData.likes : []
       }
     });
   } catch (error) {

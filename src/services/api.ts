@@ -470,10 +470,11 @@ export const messagesService = {
     const response = await authenticatedFetch(url);
     if (!response.ok) throw new Error('Failed to fetch messages');
     const messages = await response.json();
-    // Convert timestamp strings to Date objects
+    // Convert timestamp strings to Date objects and normalize likes
     return messages.map((msg: ChatMessage) => ({
       ...msg,
       timestamp: typeof msg.timestamp === 'string' ? new Date(msg.timestamp) : msg.timestamp,
+      likes: Array.isArray(msg.likes) ? msg.likes : [], // Normalize likes to always be an array
     }));
   },
 
