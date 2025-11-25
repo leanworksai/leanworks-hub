@@ -22,7 +22,7 @@ import { Team } from "@/data/teamsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
-import { messagesService, imageUploadService, type ChatMessage } from "@/services/api";
+import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
@@ -2646,7 +2646,8 @@ export function Chatbot() {
     }
 
     const isLocalDev = import.meta.env.DEV;
-    const customToken = (window as any).__customToken;
+    // Get authentication token (with fallback to localStorage)
+    const customToken = await getAuthToken();
     if (!isLocalDev && !customToken) {
       throw new Error('Authentication token not found. Please sign in again.');
     }
@@ -2794,8 +2795,8 @@ export function Chatbot() {
 
     const isLocalDev = import.meta.env.DEV;
     
-    // Get authentication token (only required for production)
-    const customToken = (window as any).__customToken;
+    // Get authentication token (with fallback to localStorage)
+    const customToken = await getAuthToken();
     if (!isLocalDev && !customToken) {
       throw new Error('Authentication token not found. Please sign in again.');
     }

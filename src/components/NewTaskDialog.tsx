@@ -30,6 +30,7 @@ import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown, Sparkles } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
+import { getAuthToken } from "@/services/api";
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -208,8 +209,8 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         'Content-Type': 'application/json',
       };
 
-      // Get custom token
-      const customToken = (window as any).__customToken;
+      // Get authentication token (with fallback to localStorage)
+      const customToken = await getAuthToken();
       if (!isLocalDev && !customToken) {
         throw new Error('Authentication token not found. Please sign in again.');
       }

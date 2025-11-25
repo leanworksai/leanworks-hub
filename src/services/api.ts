@@ -13,7 +13,7 @@ export const initFirestore = () => {
 };
 
 // Helper to get auth token for API requests
-async function getAuthToken(): Promise<string | null> {
+export async function getAuthToken(): Promise<string | null> {
   // First try to get token from Firebase Auth
   if (auth && auth.currentUser) {
     try {
