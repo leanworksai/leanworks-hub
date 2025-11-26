@@ -214,6 +214,30 @@ function transformMembers(members: any[] | null): any[] {
 }
 
 // ============================================================================
+// AUTHORIZATION HELPERS
+// ============================================================================
+
+/**
+ * Check if a user has access to a project (either as a member or owner)
+ */
+async function hasProjectAccess(userEmail: string, projectId: string): Promise<boolean> {
+  try {
+    const pool = await getTenantPool(userEmail);
+    const result = await pool.query(`
+      SELECT 1 
+      FROM projects p
+      LEFT JOIN project_members pm ON p.id = pm.project_id AND pm.user_email = $2
+      WHERE p.id = $1 
+        AND (p.owner_email = $2 OR pm.user_email IS NOT NULL)
+    `, [projectId, userEmail.toLowerCase()]);
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error('Error checking project access:', error);
+    return false;
+  }
+}
+
+// ============================================================================
 // HEALTH CHECK
 // ============================================================================
 
@@ -1172,8 +1196,18 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
         LEFT JOIN projects p2 ON t.project_id = p2.id
         WHERE t.project_id = p.id), '[]'::json) as tasks
       FROM projects p
+      WHERE (
+        -- User is a member of the project
+        EXISTS (
+          SELECT 1 FROM project_members pm 
+          WHERE pm.project_id = p.id 
+            AND pm.user_email = $1
+        )
+        -- OR user is the owner of the project
+        OR p.owner_email = $1
+      )
       ORDER BY p.created_at DESC
-    `);
+    `, [userEmail.toLowerCase()]);
     
     // Transform to camelCase and fix members structure
     const transformed = result.rows.map(row => {
@@ -1225,6 +1259,12 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
     const userEmail = (req as any).userEmail;
     const projectId = req.params.id;
     const pool = await getTenantPool(userEmail);
+    
+    // Check if user has access to this project
+    const hasAccess = await hasProjectAccess(userEmail, projectId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view this project' });
+    }
     
     const result = await pool.query(`
       SELECT 
@@ -1776,6 +1816,22 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
       LEFT JOIN users u ON t.assignee_id = u.email
+      WHERE (
+        -- User is a member of the project
+        EXISTS (
+          SELECT 1 FROM project_members pm 
+          WHERE pm.project_id = t.project_id 
+            AND pm.user_email = $1
+        )
+        -- OR user is the owner of the project
+        OR EXISTS (
+          SELECT 1 FROM projects p2 
+          WHERE p2.id = t.project_id 
+            AND p2.owner_email = $1
+        )
+        -- OR task has no project (should still be visible to assignee or creator)
+        OR t.project_id IS NULL
+      )
       ORDER BY 
         CASE t.status
           WHEN 'todo' THEN 1
@@ -1786,7 +1842,7 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
           ELSE 6
         END,
         t.created_at DESC
-    `);
+    `, [userEmail.toLowerCase()]);
     
     // Transform to camelCase
     const transformed = result.rows.map(row => {
@@ -1898,6 +1954,12 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
     const projectId = req.params.projectId;
     const pool = await getTenantPool(userEmail);
     
+    // Check if user has access to this project
+    const hasAccess = await hasProjectAccess(userEmail, projectId);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view tasks' });
+    }
+    
     const result = await pool.query(`
       SELECT 
         t.id,
@@ -2004,6 +2066,34 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
     const userEmail = (req as any).userEmail;
     const taskId = req.params.id;
     const pool = await getTenantPool(userEmail);
+    
+    // First, get the task to check its project_id
+    const taskCheck = await pool.query(`
+      SELECT project_id, assignee_id, created_by
+      FROM tasks
+      WHERE id = $1
+    `, [taskId]);
+    
+    if (taskCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
+    const taskInfo = taskCheck.rows[0];
+    
+    // If task has a project, check if user has access to that project
+    if (taskInfo.project_id) {
+      const hasAccess = await hasProjectAccess(userEmail, taskInfo.project_id);
+      if (!hasAccess) {
+        return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view this task' });
+      }
+    } else {
+      // If task has no project, only allow access to assignee or creator
+      const userEmailLower = userEmail.toLowerCase();
+      if (taskInfo.assignee_id?.toLowerCase() !== userEmailLower && 
+          taskInfo.created_by?.toLowerCase() !== userEmailLower) {
+        return res.status(403).json({ error: 'Access denied: You must be the assignee or creator to view this task' });
+      }
+    }
     
     const result = await pool.query(`
       SELECT 

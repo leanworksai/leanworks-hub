@@ -28,17 +28,15 @@ spec:
           limits:
             memory: "512Mi"  # Increased for image uploads (10MB files in memory)
             cpu: "200m"
-        # Mount the Cloud SQL Unix socket and GCP credentials
+        # Mount GCP credentials for Secret Manager access
         volumeMounts:
-        - name: cloudsql
-          mountPath: /cloudsql
         - name: gcp-credentials
           mountPath: /app/gcp_credential.json
           subPath: gcp_credential.json
           readOnly: true
         env:
         - name: DB_HOST
-          value: /cloudsql/leanworks-474204:us-west1:leanworks-prod
+          value: cloud-sql-proxy-service  # Kubernetes service DNS name
         - name: DB_PORT
           value: "5432"
         - name: DB_USER
@@ -61,31 +59,7 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
-      # Cloud SQL Proxy sidecar container
-      - name: cloud-sql-proxy
-        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0
-        args:
-        - "--unix-socket=/cloudsql"
-        - "--credentials-file=/secrets/gcp_credential.json"
-        - "leanworks-474204:us-west1:leanworks-prod"
-        securityContext:
-          runAsNonRoot: true
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
-        volumeMounts:
-        - name: cloudsql
-          mountPath: /cloudsql
-        - name: gcp-credentials
-          mountPath: /secrets
-          readOnly: true
       volumes:
-      - name: cloudsql
-        emptyDir: {}
       - name: gcp-credentials
         secret:
           secretName: gcp-credentials

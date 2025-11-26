@@ -135,6 +135,7 @@ docker push "$IMAGE_NAME:latest"
 # Apply Kubernetes manifests (for initial deployment or config changes)
 echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/backend-config.yaml
+kubectl apply -f k8s/cloud-sql-proxy.yaml
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/ingress.yaml
 

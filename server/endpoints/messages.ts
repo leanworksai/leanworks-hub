@@ -9,18 +9,43 @@ import { userQueries } from '../../database/queries.js';
 import { getTenantPool } from '../../database/multi-tenant-pool.js';
 
 /**
- * Check if a user is a member of a project
+ * Check if a user has access to a project (either as a member or owner)
  */
 async function isProjectMember(userEmail: string, projectId: string): Promise<boolean> {
   try {
     const pool = await getTenantPool(userEmail);
     const result = await pool.query(
-      'SELECT 1 FROM project_members WHERE project_id = $1 AND user_email = $2',
+      `SELECT 1 
+       FROM projects p
+       LEFT JOIN project_members pm ON p.id = pm.project_id AND pm.user_email = $2
+       WHERE p.id = $1 
+         AND (p.owner_email = $2 OR pm.user_email IS NOT NULL)`,
       [projectId, userEmail.toLowerCase()]
     );
     return result.rows.length > 0;
   } catch (error) {
-    console.error('Error checking project membership:', error);
+    console.error('Error checking project access:', error);
+    return false;
+  }
+}
+
+/**
+ * Check if a user has access to a team (either as a member or owner)
+ */
+async function isTeamMember(userEmail: string, teamId: string): Promise<boolean> {
+  try {
+    const pool = await getTenantPool(userEmail);
+    const result = await pool.query(
+      `SELECT 1 
+       FROM teams t
+       LEFT JOIN team_members tm ON t.id = tm.team_id AND tm.user_email = $2
+       WHERE t.id = $1 
+         AND (t.owner_email = $2 OR tm.user_email IS NOT NULL)`,
+      [teamId, userEmail.toLowerCase()]
+    );
+    return result.rows.length > 0;
+  } catch (error) {
+    console.error('Error checking team access:', error);
     return false;
   }
 }
@@ -47,7 +72,16 @@ export function setupMessageEndpoints(
         const projectId = chatId.replace('project-', '');
         const isMember = await isProjectMember(userEmail, projectId);
         if (!isMember) {
-          return res.status(403).json({ error: 'Access denied: You must be a project member to view messages' });
+          return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view messages' });
+        }
+      }
+      
+      // Check authorization for team channels
+      if (chatId.startsWith('team-')) {
+        const teamId = chatId.replace('team-', '');
+        const isMember = await isTeamMember(userEmail, teamId);
+        if (!isMember) {
+          return res.status(403).json({ error: 'Access denied: You must be a team member or owner to view messages' });
         }
       }
       
@@ -69,6 +103,12 @@ export function setupMessageEndpoints(
       if (chatId.startsWith('project-')) {
         const projectId = chatId.replace('project-', '');
         query = query.where('projectId', '==', projectId);
+      }
+      
+      // For team channels, also filter by teamId to ensure we only get messages for this team
+      if (chatId.startsWith('team-')) {
+        const teamId = chatId.replace('team-', '');
+        query = query.where('teamId', '==', teamId);
       }
       
       if (afterTimestamp) {
@@ -137,7 +177,24 @@ export function setupMessageEndpoints(
       if (actualProjectId) {
         const isMember = await isProjectMember(userEmail, actualProjectId);
         if (!isMember) {
-          return res.status(403).json({ error: 'Access denied: You must be a project member to post messages' });
+          return res.status(403).json({ error: 'Access denied: You must be a project member or owner to post messages' });
+        }
+      }
+      
+      // Check authorization for team channels
+      // Check both chatId (if it's a team channel) and teamId (if provided)
+      let actualTeamId: string | null = null;
+      
+      if (chatId.startsWith('team-')) {
+        actualTeamId = chatId.replace('team-', '');
+      } else if (teamId) {
+        actualTeamId = teamId;
+      }
+      
+      if (actualTeamId) {
+        const isMember = await isTeamMember(userEmail, actualTeamId);
+        if (!isMember) {
+          return res.status(403).json({ error: 'Access denied: You must be a team member or owner to post messages' });
         }
       }
 
