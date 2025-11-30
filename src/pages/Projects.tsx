@@ -32,6 +32,7 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { useToast } from "@/hooks/use-toast";
+import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
@@ -53,6 +54,7 @@ export default function Projects() {
   const handleCardClick = (projectId: string) => {
     // Don't navigate if in selection mode
     if (isSelectionMode) return;
+    trackView('project', projectId);
     navigate(`/projects/${projectId}`);
   };
 
@@ -62,6 +64,7 @@ export default function Projects() {
 
   const handleDeleteClick = (e: React.MouseEvent, projectId: string, projectName: string) => {
     e.stopPropagation();
+    trackClick('delete_project', '/projects');
     setProjectToDelete(projectId);
   };
 
@@ -70,6 +73,7 @@ export default function Projects() {
 
     try {
       await deleteProject.mutateAsync(projectToDelete);
+      trackDelete('project', projectToDelete);
       const project = projects.find(p => p.id === projectToDelete);
       toast({
         title: "Project deleted",
@@ -110,7 +114,10 @@ export default function Projects() {
         </div>
         <Button 
           className="bg-primary hover:bg-primary/90"
-          onClick={() => setIsNewProjectDialogOpen(true)}
+          onClick={() => {
+            trackClick('create_project', '/projects');
+            setIsNewProjectDialogOpen(true);
+          }}
         >
           <Plus className="mr-2 h-4 w-4" />
           New Project

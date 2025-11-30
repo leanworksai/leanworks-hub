@@ -4,7 +4,7 @@ import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { getStorage } from 'firebase-admin/storage';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
@@ -82,6 +82,19 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// ============================================================================
+// STATIC FILE SERVING (for production build - serve built frontend)
+// ============================================================================
+const distPath = join(__dirname, '../dist');
+if (existsSync(distPath)) {
+  // Serve static files from dist directory
+  app.use(express.static(distPath));
+  console.log('✅ Serving static files from:', distPath);
+} else {
+  console.log('⚠️  dist directory not found - static file serving disabled');
+  console.log('   Run "npm run build" to create production build');
+}
 
 // ============================================================================
 // REQUEST LOGGING MIDDLEWARE (for debugging - must be before routes)
@@ -1757,6 +1770,225 @@ app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, async (re
 });
 
 // ============================================================================
+// NOTES ENDPOINTS (PostgreSQL)
+// ============================================================================
+
+app.get('/api/notes', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        id,
+        title,
+        content,
+        owner_email,
+        project_id,
+        team_id,
+        tags,
+        is_pinned,
+        created_at,
+        updated_at
+      FROM notes
+      WHERE owner_email = $1
+      ORDER BY is_pinned DESC, created_at DESC
+    `, [userEmail.toLowerCase()]);
+    
+    // Transform to camelCase
+    const transformed = result.rows.map(row => {
+      const note = transformRow(row);
+      note.tags = Array.isArray(note.tags) ? note.tags : (note.tags ? JSON.parse(note.tags) : []);
+      note.createdAt = note.createdAt ? new Date(note.createdAt).toISOString() : new Date().toISOString();
+      note.updatedAt = note.updatedAt ? new Date(note.updatedAt).toISOString() : new Date().toISOString();
+      return note;
+    });
+    
+    res.json(transformed);
+  } catch (error) {
+    console.error('Get notes error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/notes/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const noteId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    const result = await pool.query(`
+      SELECT 
+        id,
+        title,
+        content,
+        owner_email,
+        project_id,
+        team_id,
+        tags,
+        is_pinned,
+        created_at,
+        updated_at
+      FROM notes
+      WHERE id = $1 AND owner_email = $2
+    `, [noteId, userEmail.toLowerCase()]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    
+    const note = transformRow(result.rows[0]);
+    note.tags = Array.isArray(note.tags) ? note.tags : (note.tags ? JSON.parse(note.tags) : []);
+    note.createdAt = note.createdAt ? new Date(note.createdAt).toISOString() : new Date().toISOString();
+    note.updatedAt = note.updatedAt ? new Date(note.updatedAt).toISOString() : new Date().toISOString();
+    
+    res.json(note);
+  } catch (error) {
+    console.error('Get note error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post('/api/notes', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const pool = await getTenantPool(userEmail);
+    
+    const { title, content, projectId, teamId, tags, isPinned } = req.body;
+    
+    if (!title || !content) {
+      return res.status(400).json({ error: 'Title and content are required' });
+    }
+    
+    const normalizedEmail = userEmail.toLowerCase();
+    const noteId = crypto.randomBytes(16).toString('hex');
+    
+    await pool.query(`
+      INSERT INTO notes (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    `, [
+      noteId,
+      title,
+      content,
+      normalizedEmail,
+      projectId || null,
+      teamId || null,
+      tags ? JSON.stringify(tags) : '[]',
+      isPinned || false
+    ]);
+    
+    res.status(201).json({ 
+      id: noteId, 
+      title, 
+      content,
+      ownerEmail: normalizedEmail,
+      projectId: projectId || null,
+      teamId: teamId || null,
+      tags: tags || [],
+      isPinned: isPinned || false
+    });
+  } catch (error) {
+    console.error('Create note error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.patch('/api/notes/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const noteId = req.params.id;
+    const updates = req.body;
+    const pool = await getTenantPool(userEmail);
+    
+    // Verify note exists and user owns it
+    const checkResult = await pool.query(
+      'SELECT owner_email FROM notes WHERE id = $1',
+      [noteId]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    
+    if (checkResult.rows[0].owner_email?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'You do not have permission to update this note' });
+    }
+    
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    const fieldMap: { [key: string]: string } = {
+      title: 'title',
+      content: 'content',
+      projectId: 'project_id',
+      teamId: 'team_id',
+      isPinned: 'is_pinned'
+    };
+    
+    Object.entries(updates).forEach(([key, value]) => {
+      if (key !== 'id' && fieldMap[key]) {
+        const dbField = fieldMap[key];
+        setClauses.push(`${dbField} = $${paramIndex}`);
+        values.push(value);
+        paramIndex++;
+      } else if (key === 'tags' && Array.isArray(value)) {
+        setClauses.push(`tags = $${paramIndex}::jsonb`);
+        values.push(JSON.stringify(value));
+        paramIndex++;
+      }
+    });
+    
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+    
+    setClauses.push(`updated_at = NOW()`);
+    values.push(noteId);
+    
+    await pool.query(`
+      UPDATE notes 
+      SET ${setClauses.join(', ')}
+      WHERE id = $${paramIndex}
+    `, values);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update note error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.delete('/api/notes/:id', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const noteId = req.params.id;
+    const pool = await getTenantPool(userEmail);
+    
+    // Verify note exists and user owns it
+    const checkResult = await pool.query(
+      'SELECT owner_email FROM notes WHERE id = $1',
+      [noteId]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+    
+    if (checkResult.rows[0].owner_email?.toLowerCase() !== userEmail.toLowerCase()) {
+      return res.status(403).json({ error: 'You do not have permission to delete this note' });
+    }
+    
+    await pool.query('DELETE FROM notes WHERE id = $1', [noteId]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete note error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
 // TASK ENDPOINTS (PostgreSQL)
 // ============================================================================
 
@@ -2867,9 +3099,43 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
     cachedFirebaseConfig = config;
     firebaseConfigCacheTime = Date.now();
     return config;
-  } catch (error) {
+  } catch (error: any) {
     console.error('❌ Failed to fetch Firebase config from Secret Manager:', error);
-    throw error;
+    
+    // Fallback to environment variables or construct from service account
+    console.warn('⚠️ Attempting fallback: using service account project ID to construct Firebase config');
+    const projectId = serviceAccount.project_id;
+    
+    // Try to get from environment variables first
+    const envApiKey = process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY;
+    if (envApiKey && envApiKey.startsWith('AIza')) {
+      console.log('✅ Using Firebase config from environment variables');
+      const fallbackConfig = {
+        apiKey: envApiKey,
+        authDomain: process.env.FIREBASE_AUTH_DOMAIN || `${projectId}.firebaseapp.com`,
+        projectId: projectId,
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`,
+        messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || '123456789',
+        appId: process.env.FIREBASE_APP_ID || `1:123456789:web:${projectId}`,
+      };
+      cachedFirebaseConfig = fallbackConfig;
+      firebaseConfigCacheTime = Date.now();
+      return fallbackConfig;
+    }
+    
+    // Last resort: construct minimal config (may not work for all features)
+    console.warn('⚠️ Using minimal Firebase config - some features may not work');
+    const minimalConfig = {
+      apiKey: 'AIzaSyDummyKeyForDevelopmentOnly',
+      authDomain: `${projectId}.firebaseapp.com`,
+      projectId: projectId,
+      storageBucket: `${projectId}.appspot.com`,
+      messagingSenderId: '123456789',
+      appId: `1:123456789:web:${projectId}`,
+    };
+    cachedFirebaseConfig = minimalConfig;
+    firebaseConfigCacheTime = Date.now();
+    return minimalConfig;
   }
 }
 
@@ -3102,7 +3368,18 @@ app.use((req, res, next) => {
       'content-type': req.headers['content-type'],
     },
   });
-  res.status(404).json({ error: 'Route not found', path: req.path });
+  // If it's an API route, return JSON error
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'Route not found', path: req.path });
+  }
+  
+  // For non-API routes, serve index.html (SPA routing)
+  const indexPath = join(__dirname, '../dist/index.html');
+  if (existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).json({ error: 'Route not found', path: req.path });
+  }
 });
 
 // ============================================================================

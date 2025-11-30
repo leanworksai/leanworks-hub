@@ -130,6 +130,32 @@ async function ensureDatabaseExists(
         await adminClient.query(`CREATE DATABASE "${dbName}"`);
         await adminClient.end();
         console.log(`✅ Database "${dbName}" created successfully`);
+        
+        // Run schema on the newly created database
+        try {
+          console.log(`📋 Running schema on database "${dbName}"...`);
+          const schemaClient = new Client({
+            host: dbHost,
+            port: dbPort,
+            database: dbName,
+            user: 'postgres',
+            password: password,
+            ssl: false,
+          });
+          
+          await schemaClient.connect();
+          const { readFileSync } = await import('fs');
+          const { join, dirname } = await import('path');
+          const { fileURLToPath } = await import('url');
+          const schemaPath = join(dirname(fileURLToPath(import.meta.url)), 'schema.sql');
+          const schema = readFileSync(schemaPath, 'utf8');
+          await schemaClient.query(schema);
+          await schemaClient.end();
+          console.log(`✅ Schema initialized for database "${dbName}"`);
+        } catch (schemaError) {
+          console.error(`⚠️  Failed to run schema on "${dbName}":`, schemaError);
+          // Don't throw - database exists, schema can be run manually if needed
+        }
       } catch (createError) {
         console.error(`❌ Failed to create database "${dbName}":`, createError);
         throw createError;

@@ -7,6 +7,7 @@ import {
 } from 'firebase/auth';
 import { auth, initializeFirebase, checkAndWarnInvalidApiKey, isFirebaseConfigured } from '@/lib/firebase-client';
 import { useToast } from '@/hooks/use-toast';
+import { setAnalyticsUserId, setAnalyticsUserProperties, trackEvent } from '@/lib/analytics';
 
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
@@ -400,6 +401,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           // Create a mock user object for state management
           setUser(userData as User);
+          // Track login
+          trackEvent('login', { method: 'email' });
+          setAnalyticsUserId(userData.uid);
+          setAnalyticsUserProperties({ email: userData.email || null });
         }
       } else {
         // Firebase Auth is not available or not properly configured
@@ -498,6 +503,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       // Clear user state
       setUser(null);
+      
+      // Track logout
+      trackEvent('logout');
+      setAnalyticsUserId(null);
       
       toast({
         title: 'Success',
