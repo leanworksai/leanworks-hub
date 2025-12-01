@@ -1,0 +1,410 @@
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import { Underline } from '@tiptap/extension-underline';
+import { Link } from '@tiptap/extension-link';
+import { TextAlign } from '@tiptap/extension-text-align';
+import { Color } from '@tiptap/extension-color';
+import TextStyle from '@tiptap/extension-text-style';
+import Paragraph from '@tiptap/extension-paragraph';
+import { useEffect, useRef } from 'react';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import {
+  Bold,
+  Italic,
+  Underline as UnderlineIcon,
+  Strikethrough,
+  List,
+  ListOrdered,
+  Quote,
+  Undo,
+  Redo,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Link as LinkIcon,
+} from 'lucide-react';
+import { Separator } from '@/components/ui/separator';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+
+// Note: Trailing spaces preservation is handled via keyboard handler and CSS
+// Removed complex plugin to avoid potential runtime errors
+
+interface RichTextEditorProps {
+  content: string;
+  onChange: (content: string) => void;
+  placeholder?: string;
+}
+
+export function RichTextEditor({ content, onChange, placeholder = 'Start writing...' }: RichTextEditorProps) {
+  const initialContent = content || '<p></p>';
+  const contentRef = useRef<string>(initialContent);
+  const isUpdatingRef = useRef<boolean>(false);
+  const editorInitializedRef = useRef<boolean>(false);
+  const lastContentPropRef = useRef<string>(initialContent);
+
+  const baseToolbarClasses = 'text-muted-foreground';
+  const activeToolbarClasses = 'bg-primary text-primary-foreground hover:bg-primary/90';
+  const getButtonClasses = (isActive: boolean) =>
+    cn('transition-colors', baseToolbarClasses, isActive && activeToolbarClasses);
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: {
+          levels: [1, 2, 3],
+        },
+        // Disable paragraph from StarterKit so we can configure our own
+        paragraph: false,
+      }),
+      // Custom paragraph extension that preserves trailing spaces
+      Paragraph.extend({
+        parseHTML() {
+          return [{ tag: 'p' }];
+        },
+        renderHTML({ HTMLAttributes }) {
+          return ['p', { ...HTMLAttributes, style: 'white-space: pre-wrap;' }, 0];
+        },
+      }),
+      Underline,
+      Link.configure({
+        openOnClick: false,
+        HTMLAttributes: {
+          class: 'text-primary underline',
+        },
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+      }),
+      Color,
+      TextStyle,
+    ],
+    content: initialContent,
+    onUpdate: ({ editor }) => {
+      // Only call onChange if we're not in the middle of a programmatic update
+      if (!isUpdatingRef.current) {
+        const html = editor.getHTML();
+        contentRef.current = html;
+        onChange(html);
+      }
+    },
+    onCreate: ({ editor }) => {
+      editorInitializedRef.current = true;
+      const initialHtml = editor.getHTML();
+      contentRef.current = initialHtml;
+      lastContentPropRef.current = content || '';
+    },
+    editorProps: {
+      attributes: {
+        class: 'w-full focus:outline-none min-h-[300px]',
+        style: 'white-space: pre-wrap !important; margin: 0;',
+      },
+      handleDOMEvents: {
+        keydown: (view, event) => {
+          // Preserve trailing spaces when space is pressed at end of line
+          if (event.key === ' ' || event.keyCode === 32) {
+            const { state } = view;
+            const { selection } = state;
+            const { $from } = selection;
+            
+            // Check if cursor is at the end of the current block
+            const parent = $from.parent;
+            const isAtEnd = $from.parentOffset >= parent.content.size;
+            
+            if (isAtEnd) {
+              // Insert a non-breaking space instead of regular space at end
+              const tr = state.tr.insertText('\u00A0', $from.pos);
+              view.dispatch(tr);
+              event.preventDefault();
+              return true; // Prevent default space insertion
+            }
+          }
+          return false;
+        },
+      },
+    },
+  });
+
+  // Update editor content when the content prop changes
+  useEffect(() => {
+    if (!editor || !editorInitializedRef.current) {
+      return;
+    }
+
+    const normalizedContent = content || '<p></p>';
+    const currentEditorContent = editor.getHTML();
+
+    const contentPropChanged = normalizedContent !== lastContentPropRef.current;
+    const needsUpdate =
+      contentPropChanged || (normalizedContent !== currentEditorContent && normalizedContent !== '<p></p>');
+
+    if (!needsUpdate) {
+      return;
+    }
+
+    isUpdatingRef.current = true;
+    lastContentPropRef.current = normalizedContent;
+
+    try {
+      const timeoutId = setTimeout(() => {
+        if (editor && !editor.isDestroyed) {
+          editor.commands.setContent(normalizedContent, false);
+          contentRef.current = normalizedContent;
+        }
+        isUpdatingRef.current = false;
+      }, 50);
+
+      return () => clearTimeout(timeoutId);
+    } catch {
+      isUpdatingRef.current = false;
+    }
+  }, [content, editor]);
+
+  if (!editor) {
+    return null;
+  }
+
+  const setLink = () => {
+    const previousUrl = editor.getAttributes('link').href;
+    const url = window.prompt('URL', previousUrl);
+
+    if (url === null) {
+      return;
+    }
+
+    if (url === '') {
+      editor.chain().focus().extendMarkRange('link').unsetLink().run();
+      return;
+    }
+
+    editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+  };
+
+  return (
+    <div className="border rounded-lg">
+      {/* Toolbar */}
+      <div className="border-b p-2 flex flex-wrap items-center gap-1">
+        {/* Text Formatting */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleBold().run()}
+          disabled={!editor.can().chain().focus().toggleBold().run()}
+          className={getButtonClasses(editor.isActive('bold'))}
+        >
+          <Bold className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleItalic().run()}
+          disabled={!editor.can().chain().focus().toggleItalic().run()}
+          className={getButtonClasses(editor.isActive('italic'))}
+        >
+          <Italic className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleUnderline().run()}
+          className={getButtonClasses(editor.isActive('underline'))}
+        >
+          <UnderlineIcon className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleStrike().run()}
+          disabled={!editor.can().chain().focus().toggleStrike().run()}
+          className={getButtonClasses(editor.isActive('strike'))}
+        >
+          <Strikethrough className="h-4 w-4" />
+        </Button>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* Headings */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+          className={getButtonClasses(editor.isActive('heading', { level: 1 }))}
+        >
+          H1
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+          className={getButtonClasses(editor.isActive('heading', { level: 2 }))}
+        >
+          H2
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+          className={getButtonClasses(editor.isActive('heading', { level: 3 }))}
+        >
+          H3
+        </Button>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* Lists */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleBulletList().run()}
+          className={getButtonClasses(editor.isActive('bulletList'))}
+        >
+          <List className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          className={getButtonClasses(editor.isActive('orderedList'))}
+        >
+          <ListOrdered className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          className={getButtonClasses(editor.isActive('blockquote'))}
+        >
+          <Quote className="h-4 w-4" />
+        </Button>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* Alignment */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().setTextAlign('left').run()}
+          className={getButtonClasses(editor.isActive({ textAlign: 'left' }))}
+        >
+          <AlignLeft className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().setTextAlign('center').run()}
+          className={getButtonClasses(editor.isActive({ textAlign: 'center' }))}
+        >
+          <AlignCenter className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().setTextAlign('right').run()}
+          className={getButtonClasses(editor.isActive({ textAlign: 'right' }))}
+        >
+          <AlignRight className="h-4 w-4" />
+        </Button>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* Link */}
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={getButtonClasses(editor.isActive('link'))}
+            >
+              <LinkIcon className="h-4 w-4" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-80">
+            <div className="space-y-2">
+              <Label htmlFor="link-url">URL</Label>
+              <Input
+                id="link-url"
+                placeholder="https://example.com"
+                defaultValue={editor.getAttributes('link').href || ''}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const url = e.currentTarget.value;
+                    if (url) {
+                      editor.chain().focus().setLink({ href: url }).run();
+                    } else {
+                      editor.chain().focus().unsetLink().run();
+                    }
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  const input = document.getElementById('link-url') as HTMLInputElement;
+                  const url = input?.value;
+                  if (url) {
+                    editor.chain().focus().setLink({ href: url }).run();
+                  } else {
+                    editor.chain().focus().unsetLink().run();
+                  }
+                }}
+              >
+                Set Link
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* Undo/Redo */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().undo().run()}
+          disabled={!editor.can().chain().focus().undo().run()}
+        >
+          <Undo className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => editor.chain().focus().redo().run()}
+          disabled={!editor.can().chain().focus().redo().run()}
+        >
+          <Redo className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* Editor Content */}
+      <EditorContent 
+        editor={editor} 
+        className="min-h-[300px] max-h-[600px] overflow-y-auto px-3 sm:px-5 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0" 
+      />
+    </div>
+  );
+}
+

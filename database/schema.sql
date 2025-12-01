@@ -363,6 +363,34 @@ CREATE INDEX IF NOT EXISTS idx_demo_requests_email ON demo_requests(email);
 CREATE INDEX IF NOT EXISTS idx_demo_requests_created_at ON demo_requests(created_at);
 
 -- ============================================================================
+-- NOTES TABLES
+-- ============================================================================
+
+-- Notes table
+CREATE TABLE IF NOT EXISTS notes (
+  id VARCHAR(50) PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL, -- Rich text content (HTML)
+  owner_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
+  team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
+  tags JSONB DEFAULT '[]'::jsonb,
+  is_pinned BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_email);
+CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
+CREATE INDEX IF NOT EXISTS idx_notes_team ON notes(team_id);
+CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(is_pinned DESC, created_at DESC);
+
+-- Trigger to update updated_at timestamp
+DROP TRIGGER IF EXISTS update_notes_updated_at ON notes;
+CREATE TRIGGER update_notes_updated_at BEFORE UPDATE ON notes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
 -- GRANTS (adjust as needed for your user)
 -- ============================================================================
 

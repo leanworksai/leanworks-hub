@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { trackClick, trackFormSubmit } from '@/lib/analytics';
 
 // Common timezones list
 const TIMEZONES = [
@@ -107,7 +108,9 @@ export default function Signup() {
     }
 
     try {
+      trackClick('signup_submit', '/signup');
       await signUp(email, password, firstName, lastName, jobTitle, timezone, responsibilities);
+      trackFormSubmit('signup', true);
       // Redirect to login after successful signup
       navigate('/login');
     } catch (err: any) {

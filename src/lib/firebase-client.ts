@@ -1,6 +1,7 @@
 import { initializeApp, getApps, FirebaseApp, deleteApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
+import { initializeAnalytics } from './analytics';
 
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
@@ -276,6 +277,13 @@ async function initializeFirebase(forceRefresh = false): Promise<void> {
           error: networkError,
           message: networkError?.message,
         });
+      }
+      
+      // Initialize Analytics
+      try {
+        await initializeAnalytics();
+      } catch (analyticsError: any) {
+        console.warn('⚠️ Analytics initialization failed (non-critical):', analyticsError.message);
       }
     } catch (error: any) {
       // If initialization fails due to invalid API key, don't proceed

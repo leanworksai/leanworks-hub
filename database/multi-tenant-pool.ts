@@ -109,7 +109,7 @@ async function initializeSchemaForDatabase(
       return;
     }
 
-    // Schema exists, but check if demo_requests table exists (added later)
+    // Schema exists, but check if demo_requests or notes tables exist (added later)
     const demoRequestsCheck = await pool.query(`
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
@@ -118,17 +118,40 @@ async function initializeSchemaForDatabase(
       );
     `);
 
-    if (!demoRequestsCheck.rows[0].exists) {
-      // Schema exists but missing demo_requests table, add it
-      console.log(`📋 Adding missing demo_requests table to database "${dbName}"...`);
+    const notesCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'notes'
+      );
+    `);
+
+    if (!demoRequestsCheck.rows[0].exists || !notesCheck.rows[0].exists) {
+      // Schema exists but missing some tables, add them
+      console.log(`📋 Adding missing tables to database "${dbName}"...`);
       const schemaPath = join(__dirname, 'schema.sql');
       const schema = readFileSync(schemaPath, 'utf8');
       
-      // Extract just the demo_requests table creation part
-      const demoRequestsSection = schema.match(/-- ============================================================================\s*DEMO REQUESTS TABLE[\s\S]*?(?=-- ============================================================================|$)/);
-      if (demoRequestsSection) {
-        await pool.query(demoRequestsSection[0]);
-        console.log(`✅ demo_requests table added to database "${dbName}"`);
+      // Extract the sections we need
+      const sectionsToAdd: string[] = [];
+      
+      if (!demoRequestsCheck.rows[0].exists) {
+        const demoRequestsSection = schema.match(/-- ============================================================================\s*DEMO REQUESTS TABLE[\s\S]*?(?=-- ============================================================================|$)/);
+        if (demoRequestsSection) {
+          sectionsToAdd.push(demoRequestsSection[0]);
+        }
+      }
+      
+      if (!notesCheck.rows[0].exists) {
+        const notesSection = schema.match(/-- ============================================================================\s*NOTES TABLES[\s\S]*?(?=-- ============================================================================|$)/);
+        if (notesSection) {
+          sectionsToAdd.push(notesSection[0]);
+        }
+      }
+      
+      if (sectionsToAdd.length > 0) {
+        await pool.query(sectionsToAdd.join('\n'));
+        console.log(`✅ Missing tables added to database "${dbName}"`);
       } else {
         // Fallback: run the full schema (CREATE TABLE IF NOT EXISTS is safe)
         console.log(`📋 Running full schema update for database "${dbName}"...`);
@@ -191,6 +214,34 @@ async function ensureDatabaseExists(
         await adminClient.query(`CREATE DATABASE "${dbName}"`);
         await adminClient.end();
         console.log(`✅ Database "${dbName}" created successfully`);
+        
+        // Run schema on the newly created database
+        try {
+          console.log(`📋 Running schema on database "${dbName}"...`);
+          const schemaClient = new Client({
+            host: dbHost,
+            // Don't specify port for Unix socket connections
+            ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
+            database: dbName,
+            user: 'postgres',
+            password: password,
+            ssl: false,
+          });
+          
+          await schemaClient.connect();
+          const { readFileSync } = await import('fs');
+          const { join, dirname } = await import('path');
+          const { fileURLToPath } = await import('url');
+          const schemaPath = join(dirname(fileURLToPath(import.meta.url)), 'schema.sql');
+          const schema = readFileSync(schemaPath, 'utf8');
+          await schemaClient.query(schema);
+          await schemaClient.end();
+          console.log(`✅ Schema initialized for database "${dbName}"`);
+        } catch (schemaError) {
+          console.error(`⚠️  Failed to run schema on "${dbName}":`, schemaError);
+          // Don't throw - database exists, schema can be run manually if needed
+        }
+        
         return true; // Database was just created
       } catch (createError) {
         console.error(`❌ Failed to create database "${dbName}":`, createError);
