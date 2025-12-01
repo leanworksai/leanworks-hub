@@ -404,15 +404,6 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Create custom token
     const customToken = await auth.createCustomToken(userRecord.uid);
-    
-    // Log token creation for debugging (without exposing the full token)
-    console.log('✅ Custom token created:', {
-      uid: userRecord.uid,
-      email: userRecord.email,
-      tokenLength: customToken.length,
-      tokenPrefix: customToken.substring(0, 20),
-      projectId: serviceAccount.project_id,
-    });
 
     res.json({ 
       success: true,
