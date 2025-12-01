@@ -84,13 +84,74 @@ export function getDomainFromEmail(email: string): string {
   return sanitized;
 }
 
+// Initialize schema for a database
+async function initializeSchemaForDatabase(
+  pool: Pool,
+  dbName: string
+): Promise<void> {
+  try {
+    // Check if schema is already initialized by checking if users table exists
+    const usersCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'users'
+      );
+    `);
+
+    if (!usersCheck.rows[0].exists) {
+      // Schema not initialized at all, run full schema
+      console.log(`📋 Initializing schema for database "${dbName}"...`);
+      const schemaPath = join(__dirname, 'schema.sql');
+      const schema = readFileSync(schemaPath, 'utf8');
+      await pool.query(schema);
+      console.log(`✅ Schema initialized successfully for database "${dbName}"`);
+      return;
+    }
+
+    // Schema exists, but check if demo_requests table exists (added later)
+    const demoRequestsCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'demo_requests'
+      );
+    `);
+
+    if (!demoRequestsCheck.rows[0].exists) {
+      // Schema exists but missing demo_requests table, add it
+      console.log(`📋 Adding missing demo_requests table to database "${dbName}"...`);
+      const schemaPath = join(__dirname, 'schema.sql');
+      const schema = readFileSync(schemaPath, 'utf8');
+      
+      // Extract just the demo_requests table creation part
+      const demoRequestsSection = schema.match(/-- ============================================================================\s*DEMO REQUESTS TABLE[\s\S]*?(?=-- ============================================================================|$)/);
+      if (demoRequestsSection) {
+        await pool.query(demoRequestsSection[0]);
+        console.log(`✅ demo_requests table added to database "${dbName}"`);
+      } else {
+        // Fallback: run the full schema (CREATE TABLE IF NOT EXISTS is safe)
+        console.log(`📋 Running full schema update for database "${dbName}"...`);
+        await pool.query(schema);
+        console.log(`✅ Schema updated successfully for database "${dbName}"`);
+      }
+      return;
+    }
+
+    console.log(`✅ Schema already initialized for database "${dbName}"`);
+  } catch (error) {
+    console.error(`❌ Failed to initialize schema for database "${dbName}":`, error);
+    throw error;
+  }
+}
+
 // Auto-create database if it doesn't exist
 async function ensureDatabaseExists(
   password: string,
   dbName: string,
   dbHost: string,
   dbPort: number
-): Promise<void> {
+): Promise<boolean> {
   const { Client } = await import('pg');
 
   // Try to connect to the target database
@@ -108,7 +169,7 @@ async function ensureDatabaseExists(
     await testClient.connect();
     await testClient.end();
     console.log(`✅ Database "${dbName}" exists`);
-    return;
+    return false; // Database already existed
   } catch (error: any) {
     // If database doesn't exist (error code 3D000), create it
     if (error.code === '3D000') {
@@ -130,6 +191,7 @@ async function ensureDatabaseExists(
         await adminClient.query(`CREATE DATABASE "${dbName}"`);
         await adminClient.end();
         console.log(`✅ Database "${dbName}" created successfully`);
+        return true; // Database was just created
       } catch (createError) {
         console.error(`❌ Failed to create database "${dbName}":`, createError);
         throw createError;
@@ -141,23 +203,20 @@ async function ensureDatabaseExists(
   }
 }
 
-// Get or create connection pool for a specific tenant
-export async function getTenantPool(userEmail: string): Promise<Pool> {
-  const domain = getDomainFromEmail(userEmail);
-  const dbName = domain; // Database name is the domain
-
+// Get or create connection pool by database name directly
+async function getPoolByDbName(dbName: string): Promise<Pool> {
   // Return cached pool if exists
   if (tenantPools.has(dbName)) {
     return tenantPools.get(dbName)!;
   }
 
-  console.log(`🔌 Creating connection pool for tenant: ${dbName} (from ${userEmail})`);
+  console.log(`🔌 Creating connection pool for database: ${dbName}`);
 
   const password = await getPostgresPassword();
   const dbHost = process.env.DB_HOST || `/cloudsql/${projectId}:${region}:${instanceName}`;
   const dbPort = parseInt(process.env.DB_PORT || '5432');
 
-  // Ensure database exists
+  // Ensure database exists (returns true if database was just created)
   await ensureDatabaseExists(password, dbName, dbHost, dbPort);
 
   // Create new pool for this tenant
@@ -180,11 +239,27 @@ export async function getTenantPool(userEmail: string): Promise<Pool> {
     console.error(`❌ Error in pool for tenant ${dbName}:`, err);
   });
 
+  // Initialize schema if database was just created or if schema doesn't exist
+  // We always check and initialize if needed, in case schema wasn't initialized before
+  await initializeSchemaForDatabase(pool, dbName);
+
   // Cache the pool
   tenantPools.set(dbName, pool);
   console.log(`✅ Connection pool created for tenant: ${dbName}`);
 
   return pool;
+}
+
+// Get or create connection pool for a specific tenant
+export async function getTenantPool(userEmail: string): Promise<Pool> {
+  const domain = getDomainFromEmail(userEmail);
+  const dbName = domain; // Database name is the domain
+  return getPoolByDbName(dbName);
+}
+
+// Get pool by database name directly (for special cases like demo requests)
+export async function getTenantPoolByDbName(dbName: string): Promise<Pool> {
+  return getPoolByDbName(dbName);
 }
 
 // Get a client from the tenant's pool

@@ -22,6 +22,9 @@ import {
   Phone
 } from 'lucide-react';
 
+// API base URL - use localhost in development, relative path in production
+const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
+
 export default function Home() {
   const [isDemoDialogOpen, setIsDemoDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -33,27 +36,23 @@ export default function Home() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
 
     try {
-      // TODO: Replace with actual API endpoint
-      // For now, simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Here you would typically send the data to your backend:
-      // const response = await fetch('/api/contact', {
-      //   method: 'POST',
-      //   headers: { 'Content-Type': 'application/json' },
-      //   body: JSON.stringify(formData),
-      // });
-      
+      const url = import.meta.env.DEV ? `${API_BASE}/api/demo-requests` : `${API_BASE}/demo-requests`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to submit demo request');
+      }
+
       setSubmitSuccess(true);
       setTimeout(() => {
         setIsDemoDialogOpen(false);
@@ -61,8 +60,7 @@ export default function Home() {
         setFormData({ name: '', email: '', company: '', message: '' });
       }, 2000);
     } catch (error) {
-      console.error('Failed to submit form:', error);
-      alert('Failed to submit. Please try again.');
+      alert(`Failed to submit. ${error instanceof Error ? error.message : 'Please try again.'}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -283,7 +281,7 @@ export default function Home() {
                   type="text"
                   placeholder="John Doe"
                   value={formData.name}
-                  onChange={handleInputChange}
+                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
                   required
                   disabled={isSubmitting}
                 />
@@ -296,7 +294,7 @@ export default function Home() {
                   type="email"
                   placeholder="john@company.com"
                   value={formData.email}
-                  onChange={handleInputChange}
+                  onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
                   required
                   disabled={isSubmitting}
                 />
@@ -309,7 +307,7 @@ export default function Home() {
                   type="text"
                   placeholder="Acme Inc."
                   value={formData.company}
-                  onChange={handleInputChange}
+                  onChange={(e) => setFormData(prev => ({ ...prev, company: e.target.value }))}
                   disabled={isSubmitting}
                 />
               </div>
@@ -320,7 +318,7 @@ export default function Home() {
                   name="message"
                   placeholder="Tell us about your team's needs..."
                   value={formData.message}
-                  onChange={handleInputChange}
+                  onChange={(e) => setFormData(prev => ({ ...prev, message: e.target.value }))}
                   rows={4}
                   disabled={isSubmitting}
                 />
@@ -334,7 +332,10 @@ export default function Home() {
                 >
                   Cancel
                 </Button>
-                <Button type="submit" disabled={isSubmitting}>
+                <Button 
+                  type="submit"
+                  disabled={isSubmitting}
+                >
                   {isSubmitting ? 'Submitting...' : 'Submit Request'}
                 </Button>
               </DialogFooter>

@@ -346,6 +346,23 @@ DROP TRIGGER IF EXISTS update_tasks_updated_at ON tasks;
 CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
+-- DEMO REQUESTS TABLE
+-- ============================================================================
+
+-- Demo requests table (for public demo request form submissions)
+CREATE TABLE IF NOT EXISTS demo_requests (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  company VARCHAR(255),
+  message TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_demo_requests_email ON demo_requests(email);
+CREATE INDEX IF NOT EXISTS idx_demo_requests_created_at ON demo_requests(created_at);
+
+-- ============================================================================
 -- GRANTS (adjust as needed for your user)
 -- ============================================================================
 

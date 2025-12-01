@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import crypto from 'crypto';
-import { getTenantPool, getDomainFromEmail } from '../database/multi-tenant-pool.js';
+import { getTenantPool, getTenantPoolByDbName, getDomainFromEmail } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
@@ -256,6 +256,35 @@ app.get('/api/health', async (req, res) => {
     postgres: 'primary',
     firestore: 'messages-only'
   });
+});
+
+// ============================================================================
+// DEMO REQUESTS ENDPOINT (PostgreSQL - Public, no auth required)
+// ============================================================================
+
+app.post('/api/demo-requests', async (req, res) => {
+  try {
+    const { name, email, company, message } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Name and email are required' });
+    }
+
+    const pool = await getTenantPoolByDbName('leanworksai');
+    const result = await pool.query(`
+      INSERT INTO demo_requests (name, email, company, message, created_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      RETURNING id
+    `, [name, email.toLowerCase(), company || null, message || null]);
+
+    res.status(201).json({ 
+      success: true,
+      id: result.rows[0].id,
+      message: 'Demo request submitted successfully'
+    });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message || 'Failed to submit demo request' });
+  }
 });
 
 // ============================================================================
