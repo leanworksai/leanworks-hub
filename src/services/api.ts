@@ -817,7 +817,7 @@ export const callSignalingService = {
     import('firebase/firestore').then(async (firestore) => {
       if (!isActive) return;
 
-      const { collection, onSnapshot, query, where, orderBy, limit } = firestore;
+      const { collection, onSnapshot, query, where, orderBy, limit, Timestamp } = firestore;
       
       const userEmail = auth.currentUser?.email?.toLowerCase();
       if (!userEmail) {
@@ -829,12 +829,18 @@ export const callSignalingService = {
       const domain = sanitizeDomainForFirestore(userEmail);
       const callsRef = collection(db, `domains/${domain}/calls`);
 
-      // Query for active calls for this chat
-      // Using query without orderBy to avoid index requirement
+      // Calculate cutoff time - only get calls from the last 5 minutes
+      // This prevents old ended calls from overwhelming the query results
+      const cutoffTime = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
+
+      // Query for recent calls for this chat
+      // Requires composite index: chatId (asc) + createdAt (desc)
       const q = query(
         callsRef,
         where('chatId', '==', chatId),
-        limit(10) // Get up to 10 calls, we'll take the most recent one
+        where('createdAt', '>', cutoffTime),
+        orderBy('createdAt', 'desc'),
+        limit(10)
       );
 
       unsubscribeFn = onSnapshot(
@@ -861,12 +867,36 @@ export const callSignalingService = {
             return;
           }
 
-          // Sort documents by createdAt (most recent first) since we can't use orderBy
+          // Sort documents: prioritize non-ended calls, then by createdAt (most recent first)
           const sortedDocs = [...snapshot.docs].sort((a, b) => {
-            const aCreated = a.data().createdAt?.toMillis?.() || a.data().createdAt?.seconds * 1000 || 0;
-            const bCreated = b.data().createdAt?.toMillis?.() || b.data().createdAt?.seconds * 1000 || 0;
+            const aData = a.data();
+            const bData = b.data();
+            
+            // First, prioritize non-ended calls
+            const aEnded = aData.status === 'ended';
+            const bEnded = bData.status === 'ended';
+            if (aEnded !== bEnded) {
+              return aEnded ? 1 : -1; // Non-ended calls come first
+            }
+            
+            // Then sort by createdAt (most recent first)
+            const aCreated = aData.createdAt?.toMillis?.() || aData.createdAt?.seconds * 1000 || 0;
+            const bCreated = bData.createdAt?.toMillis?.() || bData.createdAt?.seconds * 1000 || 0;
             return bCreated - aCreated; // Descending order (newest first)
           });
+          
+          // Log for debugging
+          if (import.meta.env.DEV && sortedDocs.length > 0) {
+            console.log('📞 subscribeToCallSignals: Sorted call documents', {
+              count: sortedDocs.length,
+              docs: sortedDocs.slice(0, 3).map(doc => ({
+                id: doc.id,
+                status: doc.data().status,
+                hasAnswer: !!doc.data().answer,
+                createdAt: doc.data().createdAt?.toMillis?.() || doc.data().createdAt?.seconds * 1000 || 0,
+              })),
+            });
+          }
           
           if (sortedDocs.length === 0) {
             callback(null);
@@ -892,6 +922,15 @@ export const callSignalingService = {
             endedAt: data.endedAt?.toDate ? data.endedAt.toDate() : (data.endedAt ? new Date(data.endedAt) : undefined),
           };
 
+          if (import.meta.env.DEV) {
+            console.log('📞 subscribeToCallSignals: Returning signal', {
+              callId: signal.callId,
+              status: signal.status,
+              hasAnswer: !!signal.answer,
+              fromCache: snapshot.metadata.fromCache,
+            });
+          }
+
           callback(signal);
         },
         (error) => {
@@ -908,6 +947,231 @@ export const callSignalingService = {
     // Return unsubscribe function
     return () => {
       isActive = false;
+      if (unsubscribeFn) {
+        unsubscribeFn();
+      }
+    };
+  },
+
+  /**
+   * Subscribe to incoming call offers with criteria-based filtering
+   * Filters by: calleeEmail, status='ringing', offer exists, createdAt within 60s
+   */
+  subscribeToIncomingOffers(
+    currentUserEmail: string,
+    callback: CallSignalListener,
+    processedCallIds?: Set<string>
+  ): CallSignalUnsubscribe {
+    let unsubscribeFn: (() => void) | null = null;
+    let isActive = true;
+    let retryInterval: NodeJS.Timeout | null = null;
+    let isListenerEstablished = false;
+    const processedSet = processedCallIds || new Set<string>();
+
+    const setupListener = async () => {
+      if (!isActive || isListenerEstablished) return;
+
+      // Check if Firestore is available
+      if (!db) {
+        console.warn('📞 subscribeToIncomingOffers: Firestore not ready, will retry...');
+        return;
+      }
+
+      // Check auth - wait for it to be ready
+      if (!auth?.currentUser?.email) {
+        console.warn('📞 subscribeToIncomingOffers: Auth not ready, will retry...');
+        return;
+      }
+
+      try {
+        const firestore = await import('firebase/firestore');
+        if (!isActive) return;
+
+        const { collection, onSnapshot, query, where, orderBy, limit, Timestamp } = firestore;
+        
+        const userEmail = currentUserEmail.toLowerCase();
+        if (!userEmail) {
+          console.warn('No user email, cannot subscribe to incoming offers');
+          return;
+        }
+
+        const { sanitizeDomainForFirestore } = await import('@/lib/utils');
+        const domain = sanitizeDomainForFirestore(userEmail);
+        const callsRef = collection(db, `domains/${domain}/calls`);
+
+        // Calculate cutoff time (60 seconds ago)
+        const cutoffTime = Timestamp.fromMillis(Date.now() - 60000);
+
+        // Criteria-based query
+        // Note: Firestore doesn't support != null queries, so we filter offer existence in the callback
+        const q = query(
+          callsRef,
+          where('calleeEmail', '==', userEmail),
+          where('status', '==', 'ringing'),
+          where('createdAt', '>', cutoffTime),
+          orderBy('createdAt', 'desc'),
+          limit(1)
+        );
+
+        console.log('📞 subscribeToIncomingOffers: Setting up Firestore listener', {
+          userEmail,
+          domain,
+        });
+
+        unsubscribeFn = onSnapshot(
+          q,
+          {
+            includeMetadataChanges: true,
+          },
+          (snapshot) => {
+            if (!isActive) return;
+
+            // Mark listener as established on first successful callback
+            if (!isListenerEstablished) {
+              isListenerEstablished = true;
+              console.log('✅ subscribeToIncomingOffers: Firestore listener established successfully');
+              // Clear retry interval once listener is established
+              if (retryInterval) {
+                clearInterval(retryInterval);
+                retryInterval = null;
+              }
+            }
+
+            // Skip cache-only empty snapshots
+            if (snapshot.metadata.fromCache && snapshot.empty) {
+              return;
+            }
+
+            if (snapshot.empty) {
+              // Only clear if this is a server snapshot
+              if (!snapshot.metadata.fromCache) {
+                callback(null);
+              }
+              return;
+            }
+
+            // Process document changes (new or modified documents)
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === 'added' || change.type === 'modified') {
+                const data = change.doc.data();
+                const callId = change.doc.id || data.callId;
+
+                // Skip if already processed
+                if (processedSet.has(callId)) {
+                  return;
+                }
+
+                // Verify offer exists and is valid
+                if (!data.offer || data.status !== 'ringing') {
+                  return;
+                }
+
+                // Verify email matching
+                const calleeEmailLower = (data.calleeEmail || '').toLowerCase();
+                if (calleeEmailLower !== userEmail) {
+                  return;
+                }
+
+              // Verify call is recent (double-check)
+              const createdAt = data.createdAt?.toMillis?.() || 
+                               (data.createdAt?.seconds ? data.createdAt.seconds * 1000 : 0) ||
+                               (data.createdAt?.getTime ? data.createdAt.getTime() : 0);
+              const callAge = Date.now() - createdAt;
+              if (callAge > 60000) {
+                // Call is older than 60 seconds, skip it
+                processedSet.add(callId);
+                return;
+              }
+
+              console.log('📞 Incoming call detected:', { callId, callerEmail: data.callerEmail });
+              
+              // NOTE: Don't mark as processed here - let the callback handle it
+              // This allows the callback to decide whether to process the call
+
+              const signal: CallSignal = {
+                  callId,
+                  chatId: data.chatId || '',
+                  callerEmail: data.callerEmail || '',
+                  calleeEmail: data.calleeEmail || '',
+                  status: data.status || 'ringing',
+                  offer: data.offer ? (typeof data.offer === 'string' ? JSON.parse(data.offer) : data.offer) : undefined,
+                  answer: data.answer ? (typeof data.answer === 'string' ? JSON.parse(data.answer) : data.answer) : undefined,
+                  iceCandidates: data.iceCandidates || [],
+                  createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || Date.now()),
+                  endedAt: data.endedAt?.toDate ? data.endedAt.toDate() : (data.endedAt ? new Date(data.endedAt) : undefined),
+                };
+
+                callback(signal);
+              }
+            });
+          },
+          (error) => {
+            if (!isActive) return;
+            
+            // Handle index errors gracefully
+            if ((error as any)?.code === 9 || (error as any)?.message?.includes('index')) {
+              console.error('Firestore index error. Please create the composite index for database "leanworks-prod":', {
+                database: 'leanworks-prod',
+                indexFields: ['calleeEmail', 'status', 'createdAt'],
+              });
+            } else {
+              console.error('Error listening to incoming offers:', error);
+              // Reset listener state so retry can re-establish
+              isListenerEstablished = false;
+              unsubscribeFn = null;
+            }
+          }
+        );
+      } catch (error) {
+        console.error('Failed to setup incoming offers listener:', error);
+        isListenerEstablished = false;
+      }
+    };
+
+    // Initial setup attempt
+    setupListener();
+
+    // Retry every 2 seconds until listener is established (max 30 retries = 60 seconds)
+    let retryCount = 0;
+    const maxRetries = 30;
+    retryInterval = setInterval(() => {
+      if (!isActive) {
+        if (retryInterval) {
+          clearInterval(retryInterval);
+          retryInterval = null;
+        }
+        return;
+      }
+      
+      if (isListenerEstablished) {
+        if (retryInterval) {
+          clearInterval(retryInterval);
+          retryInterval = null;
+        }
+        return;
+      }
+
+      retryCount++;
+      if (retryCount > maxRetries) {
+        console.error('📞 subscribeToIncomingOffers: Max retries reached, giving up');
+        if (retryInterval) {
+          clearInterval(retryInterval);
+          retryInterval = null;
+        }
+        return;
+      }
+
+      console.log(`📞 subscribeToIncomingOffers: Retry attempt ${retryCount}/${maxRetries}`);
+      setupListener();
+    }, 2000);
+
+    // Return unsubscribe function
+    return () => {
+      isActive = false;
+      if (retryInterval) {
+        clearInterval(retryInterval);
+        retryInterval = null;
+      }
       if (unsubscribeFn) {
         unsubscribeFn();
       }
@@ -1065,11 +1329,19 @@ export const callSignalingService = {
    * Send call answer
    */
   async sendCallAnswer(callId: string, answer: RTCSessionDescriptionInit): Promise<void> {
+    console.log('📞 sendCallAnswer: Starting...', {
+      callId,
+      answerType: answer?.type,
+      hasAnswerSdp: !!answer?.sdp,
+    });
+    
     if (!db) {
+      console.error('❌ sendCallAnswer: Firestore not initialized');
       throw new Error('Firestore not initialized. Please ensure Firebase is properly configured.');
     }
 
     if (!auth?.currentUser?.email) {
+      console.error('❌ sendCallAnswer: User not authenticated');
       throw new Error('User not authenticated');
     }
 
@@ -1078,11 +1350,18 @@ export const callSignalingService = {
     const { sanitizeDomainForFirestore } = await import('@/lib/utils');
     const domain = sanitizeDomainForFirestore(userEmail);
     const callRef = doc(db, `domains/${domain}/calls`, callId);
+    
+    console.log('📞 sendCallAnswer: Updating Firestore document...', {
+      path: `domains/${domain}/calls/${callId}`,
+      userEmail,
+    });
 
     await updateDoc(callRef, {
       answer: JSON.stringify(answer),
       status: 'active',
     });
+    
+    console.log('✅ sendCallAnswer: Firestore document updated successfully');
   },
 
   /**

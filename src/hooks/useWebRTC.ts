@@ -56,8 +56,50 @@ export function useWebRTC(
     syncMuteState();
     
     // Also sync periodically during active calls to catch changes from other instances
-    if (callStatus === 'active' || callStatus === 'connecting') {
-      const interval = setInterval(syncMuteState, 500);
+    // AND ensure tracks stay enabled
+    if (callStatus === 'active' || callStatus === 'connecting' || callStatus === 'ringing') {
+      const interval = setInterval(() => {
+        syncMuteState();
+        
+        // Ensure tracks stay enabled during active calls
+        if (peerConnectionRef.current) {
+          const senders = peerConnectionRef.current.getSenders();
+          senders.forEach((sender) => {
+            if (sender.track && sender.track.kind === 'audio') {
+              if (sender.track.readyState === 'ended') {
+                console.error('❌ CRITICAL: Audio track ended during call! This should not happen. Track ID:', sender.track.id);
+                // Track is ended - cannot recover, would need to recreate stream
+              } else if (!sender.track.enabled) {
+                console.warn('⚠️ Audio track became disabled during call, re-enabling...', {
+                  trackId: sender.track.id,
+                  enabled: sender.track.enabled,
+                  muted: sender.track.muted,
+                  readyState: sender.track.readyState,
+                });
+                sender.track.enabled = true;
+              }
+            }
+          });
+        }
+        
+        // Also check local stream tracks
+        if (localStreamRef.current) {
+          localStreamRef.current.getAudioTracks().forEach((track) => {
+            if (track.readyState === 'ended') {
+              console.error('❌ CRITICAL: Local stream audio track ended during call! This should not happen. Track ID:', track.id);
+              // Track is ended - cannot recover, would need to recreate stream
+            } else if (!track.enabled) {
+              console.warn('⚠️ Local stream audio track became disabled during call, re-enabling...', {
+                trackId: track.id,
+                enabled: track.enabled,
+                muted: track.muted,
+                readyState: track.readyState,
+              });
+              track.enabled = true;
+            }
+          });
+        }
+      }, 500);
       return () => clearInterval(interval);
     }
   }, [localStream, callStatus]);
@@ -70,6 +112,8 @@ export function useWebRTC(
   const broadcastChannelCleanupRef = useRef<(() => void) | null>(null);
   const connectionRetryCount = useRef<number>(0);
   const maxRetries = 3; // Maximum number of connection retries
+  const localAudioMonitorRef = useRef<{ interval: NodeJS.Timeout; context: AudioContext } | null>(null);
+  const remoteAudioMonitorRef = useRef<{ interval: NodeJS.Timeout; context: AudioContext } | null>(null);
   
   // Log hook initialization to detect re-initialization (only in development)
   useEffect(() => {
@@ -98,11 +142,55 @@ export function useWebRTC(
     
     setCallStatus(status);
     
+    // CRITICAL: If status is changing to 'active', verify tracks are enabled
+    if (status === 'active' && import.meta.env.DEV) {
+      if (peerConnectionRef.current) {
+        const senders = peerConnectionRef.current.getSenders();
+        senders.forEach((sender) => {
+          if (sender.track && sender.track.kind === 'audio' && !sender.track.enabled) {
+            console.error('❌ CRITICAL: Audio track is disabled in updateStatus when setting to active! Re-enabling...');
+            sender.track.enabled = true;
+          }
+        });
+      }
+      
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach((track) => {
+          if (!track.enabled) {
+            console.error('❌ CRITICAL: Local stream audio track is disabled in updateStatus when setting to active! Re-enabling...');
+            track.enabled = true;
+          }
+        });
+      }
+    }
+    
     // Call the callback - but ensure it can't clear our ref
     try {
       onStatusChange?.(status);
     } catch (err) {
       console.error('Error in onStatusChange callback:', err);
+    }
+    
+    // CRITICAL: After callback, verify tracks are still enabled (callback might have disabled them)
+    if (status === 'active' && import.meta.env.DEV) {
+      if (peerConnectionRef.current) {
+        const senders = peerConnectionRef.current.getSenders();
+        senders.forEach((sender) => {
+          if (sender.track && sender.track.kind === 'audio' && !sender.track.enabled) {
+            console.error('❌ CRITICAL: Audio track became disabled after onStatusChange callback! Re-enabling...');
+            sender.track.enabled = true;
+          }
+        });
+      }
+      
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach((track) => {
+          if (!track.enabled) {
+            console.error('❌ CRITICAL: Local stream audio track became disabled after onStatusChange callback! Re-enabling...');
+            track.enabled = true;
+          }
+        });
+      }
     }
     
     // CRITICAL: Always restore ref if it was cleared
@@ -195,6 +283,55 @@ export function useWebRTC(
         });
         setRemoteStream(stream);
         onRemoteStream?.(stream);
+        
+        // Monitor remote audio levels to verify audio is actually flowing
+        if (audioTracks.length > 0 && import.meta.env.DEV) {
+          try {
+            // Clean up any existing monitor
+            if (remoteAudioMonitorRef.current) {
+              clearInterval(remoteAudioMonitorRef.current.interval);
+              remoteAudioMonitorRef.current.context.close().catch(() => {});
+              remoteAudioMonitorRef.current = null;
+            }
+            
+            const audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(stream);
+            const analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+            
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            let checkCount = 0;
+            const checkAudio = () => {
+              analyser.getByteFrequencyData(dataArray);
+              const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+              checkCount++;
+              // Log every 2 seconds (every 4th check) or when audio is detected
+              if (checkCount % 4 === 0 || average > 0) {
+                console.log('🔊 Remote audio monitor:', {
+                  level: average.toFixed(2),
+                  hasAudio: average > 0,
+                  checkCount,
+                });
+              }
+            };
+            const interval = setInterval(checkAudio, 500);
+            
+            console.log('🔊 Remote audio monitor started');
+            remoteAudioMonitorRef.current = { interval, context: audioContext };
+            
+            // Clean up after 60 seconds or when call ends
+            setTimeout(() => {
+              if (remoteAudioMonitorRef.current) {
+                clearInterval(remoteAudioMonitorRef.current.interval);
+                remoteAudioMonitorRef.current.context.close().catch(() => {});
+                remoteAudioMonitorRef.current = null;
+              }
+            }, 60000);
+          } catch (err) {
+            console.warn('Failed to create remote audio monitor:', err);
+          }
+        }
       }
     };
 
@@ -210,7 +347,133 @@ export function useWebRTC(
       switch (state) {
         case 'connected':
           connectionRetryCount.current = 0; // Reset retry count on successful connection
+          
+          // CRITICAL: Verify tracks are still enabled before changing to active
+          if (import.meta.env.DEV) {
+            const senders = pc.getSenders();
+            senders.forEach((sender, index) => {
+              if (sender.track && sender.track.kind === 'audio') {
+                console.log(`🔍 Before updateStatus('active'): Sender ${index} track state:`, {
+                  enabled: sender.track.enabled,
+                  muted: sender.track.muted,
+                  readyState: sender.track.readyState,
+                });
+                
+                if (sender.track.readyState === 'ended') {
+                  console.error(`❌ CRITICAL: Track ${index} is ENDED before status change to active! Attempting immediate recovery...`);
+                  // CRITICAL: Immediately try to recover by getting a new stream
+                  getUserMedia()
+                    .then((newStream) => {
+                      const newTracks = newStream.getAudioTracks();
+                      if (newTracks.length > 0) {
+                        const newTrack = newTracks[0];
+                        console.log('🔄 Recovering ended track before status change to active', {
+                          oldTrackId: sender.track?.id,
+                          newTrackId: newTrack.id,
+                        });
+                        return sender.replaceTrack(newTrack);
+                      }
+                    })
+                    .then(() => {
+                      console.log('✅ Successfully recovered track before status change to active');
+                    })
+                    .catch((err) => {
+                      console.error('❌ Failed to recover track before status change to active:', err);
+                    });
+                } else if (!sender.track.enabled) {
+                  console.error(`❌ CRITICAL: Track ${index} is DISABLED before status change to active! Re-enabling...`);
+                  sender.track.enabled = true;
+                }
+              }
+            });
+            
+            if (localStreamRef.current) {
+              localStreamRef.current.getAudioTracks().forEach((track, index) => {
+                console.log(`🔍 Before updateStatus('active'): Local stream track ${index} state:`, {
+                  enabled: track.enabled,
+                  muted: track.muted,
+                  readyState: track.readyState,
+                });
+                
+                if (track.readyState === 'ended') {
+                  console.error(`❌ CRITICAL: Local stream track ${index} is ENDED before status change to active! Attempting immediate recovery...`);
+                  // CRITICAL: Immediately try to recover by getting a new stream
+                  getUserMedia()
+                    .then((newStream) => {
+                      const newTracks = newStream.getAudioTracks();
+                      if (newTracks.length > 0 && peerConnectionRef.current) {
+                        const newTrack = newTracks[0];
+                        const senders = peerConnectionRef.current.getSenders();
+                        const audioSender = senders.find(s => s.track && s.track.kind === 'audio' && s.track.id === track.id);
+                        
+                        if (audioSender) {
+                          console.log('🔄 Recovering ended local stream track before status change to active', {
+                            oldTrackId: track.id,
+                            newTrackId: newTrack.id,
+                          });
+                          return audioSender.replaceTrack(newTrack).then(() => {
+                            // Update local stream ref
+                            if (localStreamRef.current) {
+                              localStreamRef.current.addTrack(newTrack);
+                            } else {
+                              localStreamRef.current = newStream;
+                              setLocalStream(newStream);
+                            }
+                          });
+                        }
+                      }
+                    })
+                    .then(() => {
+                      console.log('✅ Successfully recovered local stream track before status change to active');
+                    })
+                    .catch((err) => {
+                      console.error('❌ Failed to recover local stream track before status change to active:', err);
+                    });
+                } else if (!track.enabled) {
+                  console.error(`❌ CRITICAL: Local stream track ${index} is DISABLED before status change to active! Re-enabling...`);
+                  track.enabled = true;
+                }
+              });
+            }
+          }
+          
           updateStatus('active');
+          
+          // CRITICAL: Verify tracks are still enabled AFTER changing to active
+          if (import.meta.env.DEV) {
+            setTimeout(() => {
+              const senders = pc.getSenders();
+              senders.forEach((sender, index) => {
+                if (sender.track && sender.track.kind === 'audio') {
+                  console.log(`🔍 After updateStatus('active'): Sender ${index} track state:`, {
+                    enabled: sender.track.enabled,
+                    muted: sender.track.muted,
+                    readyState: sender.track.readyState,
+                  });
+                  
+                  if (!sender.track.enabled) {
+                    console.error(`❌ CRITICAL: Track ${index} became DISABLED after status change to active! Re-enabling...`);
+                    sender.track.enabled = true;
+                  }
+                }
+              });
+              
+              if (localStreamRef.current) {
+                localStreamRef.current.getAudioTracks().forEach((track, index) => {
+                  console.log(`🔍 After updateStatus('active'): Local stream track ${index} state:`, {
+                    enabled: track.enabled,
+                    muted: track.muted,
+                    readyState: track.readyState,
+                  });
+                  
+                  if (!track.enabled) {
+                    console.error(`❌ CRITICAL: Local stream track ${index} became DISABLED after status change to active! Re-enabling...`);
+                    track.enabled = true;
+                  }
+                });
+              }
+            }, 100); // Check after a short delay
+          }
           break;
         case 'disconnected':
           // Disconnected state - might recover, wait a bit before marking as error
@@ -281,17 +544,131 @@ export function useWebRTC(
   // Get user media (microphone)
   const getUserMedia = useCallback(async (): Promise<MediaStream> => {
     try {
+      console.log('🎤 Requesting microphone access...');
+      // IMPORTANT: Do NOT specify deviceId - let browser choose
+      // Specifying deviceId can cause conflicts when testing on same machine
+      // Multiple tabs/browsers can share the mic on macOS if we don't constrain deviceId
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          // Disable echo cancellation in local dev for testing, enable in production/GKE
+          echoCancellation: !import.meta.env.DEV,
           noiseSuppression: true,
           autoGainControl: true,
+          // DO NOT specify deviceId - allows multiple tabs/browsers to share mic
         },
         video: false,
       });
+      
+      // Verify the stream is valid and has active tracks
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        throw new Error('No audio tracks in stream. Please check your microphone.');
+      }
+      
+      // Verify each track is active
+      audioTracks.forEach((track, index) => {
+        const settings = track.getSettings();
+        const constraints = track.getConstraints();
+        const capabilities = track.getCapabilities();
+        
+        console.log(`🎤 Audio track ${index} state:`, {
+          id: track.id,
+          label: track.label,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+          settings: {
+            deviceId: settings.deviceId,
+            echoCancellation: settings.echoCancellation,
+            noiseSuppression: settings.noiseSuppression,
+            autoGainControl: settings.autoGainControl,
+            sampleRate: settings.sampleRate,
+            channelCount: settings.channelCount,
+          },
+          constraints: {
+            echoCancellation: constraints.echoCancellation,
+            noiseSuppression: constraints.noiseSuppression,
+            autoGainControl: constraints.autoGainControl,
+          },
+        });
+        
+        if (track.readyState !== 'live') {
+          console.warn(`⚠️ Audio track ${index} is not live! State: ${track.readyState}`);
+        }
+        
+        if (!track.enabled) {
+          console.warn(`⚠️ Audio track ${index} is disabled!`);
+          track.enabled = true; // Enable it
+        }
+        
+        if (track.muted) {
+          console.warn(`⚠️ Audio track ${index} is muted!`);
+        }
+      });
+      
+      // Verify browser is showing mic indicator (check if track is actually capturing)
+      const hasActiveTracks = audioTracks.some(track => 
+        track.readyState === 'live' && track.enabled && !track.muted
+      );
+      
+      if (!hasActiveTracks) {
+        throw new Error('Microphone tracks are not active. Please check your microphone permissions and settings.');
+      }
+      
+      console.log('✅ Microphone access granted and verified', {
+        trackCount: audioTracks.length,
+        activeTracks: audioTracks.filter(t => t.readyState === 'live' && t.enabled && !t.muted).length,
+      });
+      
+      // In the getUserMedia function, after getting the stream, add:
+      stream.getAudioTracks().forEach((track, index) => {
+        // Log track constraints and settings for debugging
+        console.log(`🔬 Track ${index} detailed info:`, {
+          id: track.id,
+          label: track.label,
+          kind: track.kind,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+          contentHint: track.contentHint,
+          constraints: track.getConstraints(),
+          settings: track.getSettings(),
+          capabilities: typeof track.getCapabilities === 'function' ? track.getCapabilities() : 'not supported',
+        });
+        
+        // Add a more detailed onended handler with timing info
+        const trackCreatedAt = Date.now();
+        track.onended = () => {
+          const endedAt = Date.now();
+          const durationMs = endedAt - trackCreatedAt;
+          console.error(`❌ TRACK ENDED - Detailed info:`, {
+            trackId: track.id,
+            label: track.label,
+            durationMs,
+            durationSeconds: (durationMs / 1000).toFixed(2),
+            callStatus,
+            hasPeerConnection: !!peerConnectionRef.current,
+            peerConnectionState: peerConnectionRef.current?.connectionState,
+            iceConnectionState: peerConnectionRef.current?.iceConnectionState,
+            // Check if document is visible (tab focus)
+            documentHidden: document.hidden,
+            documentVisibilityState: document.visibilityState,
+            // Check if there are other audio contexts
+            // This helps identify if another component is interfering
+            stackTrace: new Error().stack,
+          });
+        };
+      });
+      
       return stream;
     } catch (err) {
       const error = err as Error;
+      console.error('❌ getUserMedia error:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+      });
+      
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
         throw new Error('Microphone permission denied. Please allow microphone access.');
       } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
@@ -316,6 +693,8 @@ export function useWebRTC(
 
       // Check for multiple tabs trying to access media simultaneously
       // Use BroadcastChannel to detect other active tabs
+      // NOTE: This check prevents multiple tabs from the SAME user starting calls
+      // But it's OK for different users (caller/callee) to both have getUserMedia active
       const channel = new BroadcastChannel('webrtc-call');
       let otherTabActive = false;
       
@@ -333,12 +712,22 @@ export function useWebRTC(
       await new Promise(resolve => setTimeout(resolve, 50));
       
       if (otherTabActive) {
+        console.warn('⚠️ Another tab is already in a call. This check prevents same-user conflicts, but caller/callee should both be able to use mic.');
         channel.close();
-        throw new Error('Another tab is already in a call. Please close other tabs or end the call in the other tab.');
+        // Don't throw error - allow it for testing (caller and callee are different users)
+        // throw new Error('Another tab is already in a call. Please close other tabs or end the call in the other tab.');
       }
 
       // Get local media stream
+      // CRITICAL: Both caller and callee MUST call getUserMedia separately
+      // Each browser tab/instance needs its own MediaStream
+      console.log('📞 startCall: Requesting microphone access for caller...');
       const stream = await getUserMedia();
+      console.log('✅ startCall: Microphone access granted for caller', {
+        streamId: stream.id,
+        trackCount: stream.getTracks().length,
+        audioTracks: stream.getAudioTracks().length,
+      });
       
       // Verify stream is still valid and has tracks
       if (!stream || stream.getTracks().length === 0) {
@@ -355,12 +744,65 @@ export function useWebRTC(
       
       localStreamRef.current = stream;
       setLocalStream(stream);
+      
+      // CRITICAL: Monitor track ended events to detect when tracks are stopped
+      stream.getAudioTracks().forEach((track, index) => {
+        track.onended = async () => {
+          console.error(`❌ CRITICAL: Local audio track ${index} ended unexpectedly in startCall!`, {
+            trackId: track.id,
+            enabled: track.enabled,
+            muted: track.muted,
+            readyState: track.readyState,
+            stackTrace: new Error().stack,
+          });
+          
+          // CRITICAL: If track ends during an active call, try to recover by getting a new stream
+          if (callStatus === 'active' || callStatus === 'ringing' || callStatus === 'connecting') {
+            console.warn('🔄 Attempting to recover by getting a new audio stream (startCall track onended)...');
+            try {
+              // Get a new stream
+              const newStream = await getUserMedia();
+              const newTracks = newStream.getAudioTracks();
+              
+              if (newTracks.length > 0 && peerConnectionRef.current) {
+                const newTrack = newTracks[0];
+                const senders = peerConnectionRef.current.getSenders();
+                const audioSender = senders.find(s => s.track && s.track.kind === 'audio' && s.track.id === track.id);
+                
+                if (audioSender) {
+                  console.log('🔄 Replacing ended track with new track (startCall track onended)', {
+                    oldTrackId: track.id,
+                    newTrackId: newTrack.id,
+                  });
+                  
+                  // Replace the track in the sender
+                  await audioSender.replaceTrack(newTrack);
+                  
+                  // Update local stream ref
+                  if (localStreamRef.current) {
+                    // Add new track to local stream
+                    localStreamRef.current.addTrack(newTrack);
+                  } else {
+                    localStreamRef.current = newStream;
+                    setLocalStream(newStream);
+                  }
+                  
+                  console.log('✅ Successfully replaced ended track with new track (startCall track onended)');
+                }
+              }
+            } catch (recoverErr) {
+              console.error('❌ Failed to recover from ended track (startCall track onended):', recoverErr);
+            }
+          }
+        };
+      });
 
       // Clear processed ICE candidates for new call
       processedIceCandidates.current.clear();
 
       // For startCall, always create a fresh peer connection
       // Close any existing connection first to ensure clean state
+      // CRITICAL: Remove tracks from old connection BEFORE closing to prevent track ending
       if (peerConnectionRef.current) {
         const existingPc = peerConnectionRef.current;
         if (import.meta.env.DEV) {
@@ -369,6 +811,43 @@ export function useWebRTC(
             signalingState: existingPc.signalingState,
           });
         }
+        
+        // CRITICAL: Remove all tracks from old peer connection BEFORE closing
+        // This prevents the browser from ending tracks when the connection closes
+        // IMPORTANT: Only remove tracks if they're from a DIFFERENT stream
+        // If they're from the same stream, we need to be careful not to end them
+        const oldSenders = existingPc.getSenders();
+        const currentStreamId = stream.id;
+        
+        oldSenders.forEach((sender) => {
+          if (sender.track) {
+            // Check if this track belongs to the current stream
+            const trackStreams = sender.track.getSettings();
+            const isFromCurrentStream = localStreamRef.current?.getTracks().some(t => t.id === sender.track?.id);
+            
+            if (!isFromCurrentStream) {
+              // Track is from a different stream, safe to remove
+              console.log('🔵 Removing track from old peer connection before closing', {
+                trackId: sender.track.id,
+                kind: sender.track.kind,
+                isFromCurrentStream: false,
+              });
+              // Replace track with null to remove it without ending the track
+              sender.replaceTrack(null).catch(err => {
+                console.warn('Error replacing track with null:', err);
+              });
+            } else {
+              // Track is from current stream - DON'T remove it, just log
+              console.warn('⚠️ Track from current stream found in old peer connection - not removing to prevent ending', {
+                trackId: sender.track.id,
+              });
+            }
+          }
+        });
+        
+        // Wait a bit for replaceTrack to complete before closing
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
         if (existingPc.connectionState !== 'closed') {
           existingPc.close();
         }
@@ -428,9 +907,179 @@ export function useWebRTC(
       }
 
       // Add local stream tracks to peer connection
-      stream.getTracks().forEach((track) => {
+      // CRITICAL: Check track state BEFORE adding to catch any issues early
+      stream.getTracks().forEach((track, trackIndex) => {
+        if (track.readyState === 'ended') {
+          console.error(`❌ CRITICAL: Track ${trackIndex} is already ENDED before adding to peer connection! Cannot add ended track.`);
+          throw new Error(`Audio track ${trackIndex} is ended before being added to peer connection. This should not happen.`);
+        }
+        
+        // Ensure track is enabled before adding
+        if (!track.enabled) {
+          console.warn('⚠️ Track is disabled before adding to peer connection, enabling it...');
+          track.enabled = true;
+        }
+        
+        console.log(`📤 Adding track ${trackIndex} to peer connection:`, {
+          trackId: track.id,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+        });
+        
         pc.addTrack(track, stream);
+        
+        // Immediately verify track state after adding
+        if (track.readyState === 'ended') {
+          console.error(`❌ CRITICAL: Track ${trackIndex} became ENDED immediately after adding to peer connection!`);
+        }
+        
+        // Verify track is still enabled after adding
+        if (!track.enabled) {
+          console.error('❌ Track became disabled after adding to peer connection!');
+          track.enabled = true; // Force enable
+        }
       });
+      
+      // Verify tracks are still enabled after adding to peer connection
+      const senders = pc.getSenders();
+      senders.forEach((sender, index) => {
+        if (sender.track) {
+          console.log(`📡 Sender ${index} track state:`, {
+            id: sender.track.id,
+            kind: sender.track.kind,
+            enabled: sender.track.enabled,
+            muted: sender.track.muted,
+            readyState: sender.track.readyState,
+          });
+          
+          if (sender.track.readyState === 'ended') {
+            console.error(`❌ CRITICAL: Sender ${index} track is ENDED immediately after adding! Attempting immediate recovery...`);
+            // CRITICAL: Immediately try to recover by getting a new stream
+            getUserMedia()
+              .then((newStream) => {
+                const newTracks = newStream.getAudioTracks();
+                if (newTracks.length > 0) {
+                  const newTrack = newTracks[0];
+                  console.log('🔄 Recovering ended track immediately after adding', {
+                    oldTrackId: sender.track?.id,
+                    newTrackId: newTrack.id,
+                  });
+                  return sender.replaceTrack(newTrack);
+                }
+              })
+              .then(() => {
+                console.log('✅ Successfully recovered track immediately after adding');
+              })
+              .catch((err) => {
+                console.error('❌ Failed to recover track immediately after adding:', err);
+              });
+          } else if (!sender.track.enabled) {
+            console.warn(`⚠️ Sender ${index} track is disabled, enabling it...`);
+            sender.track.enabled = true;
+          }
+          
+          // Monitor track ended events
+          sender.track.onended = async () => {
+            console.error(`❌ CRITICAL: Sender ${index} track ended after being added to peer connection!`, {
+              trackId: sender.track?.id,
+              stackTrace: new Error().stack,
+            });
+            
+            // CRITICAL: If track ends during an active call, try to recover by getting a new stream
+            if (callStatus === 'active' || callStatus === 'ringing' || callStatus === 'connecting') {
+              console.warn('🔄 Attempting to recover by getting a new audio stream...');
+              try {
+                // Get a new stream
+                const newStream = await getUserMedia();
+                const newTracks = newStream.getAudioTracks();
+                
+                if (newTracks.length > 0 && peerConnectionRef.current) {
+                  // Replace the ended track with a new one
+                  const newTrack = newTracks[0];
+                  console.log('🔄 Replacing ended track with new track', {
+                    oldTrackId: sender.track?.id,
+                    newTrackId: newTrack.id,
+                  });
+                  
+                  // Replace the track in the sender
+                  await sender.replaceTrack(newTrack);
+                  
+                  // Update local stream ref
+                  if (localStreamRef.current) {
+                    localStreamRef.current.getTracks().forEach(t => {
+                      if (t.id === sender.track?.id) {
+                        // Track is already ended, can't replace
+                      }
+                    });
+                    // Add new track to local stream
+                    localStreamRef.current.addTrack(newTrack);
+                  } else {
+                    localStreamRef.current = newStream;
+                    setLocalStream(newStream);
+                  }
+                  
+                  console.log('✅ Successfully replaced ended track with new track');
+                }
+              } catch (recoverErr) {
+                console.error('❌ Failed to recover from ended track:', recoverErr);
+              }
+            }
+          };
+        }
+      });
+
+      // Monitor local audio levels to verify audio is being sent
+      if (import.meta.env.DEV) {
+        try {
+          // Clean up any existing monitor
+          if (localAudioMonitorRef.current) {
+            clearInterval(localAudioMonitorRef.current.interval);
+            localAudioMonitorRef.current.context.close().catch(() => {});
+            localAudioMonitorRef.current = null;
+          }
+          
+          const localAudioTracks = stream.getAudioTracks();
+          if (localAudioTracks.length > 0) {
+            const localAudioContext = new AudioContext();
+            const localSource = localAudioContext.createMediaStreamSource(stream);
+            const localAnalyser = localAudioContext.createAnalyser();
+            localAnalyser.fftSize = 256;
+            localSource.connect(localAnalyser);
+            
+            const localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
+            let localCheckCount = 0;
+            const checkLocalAudio = () => {
+              localAnalyser.getByteFrequencyData(localDataArray);
+              const average = localDataArray.reduce((a, b) => a + b) / localDataArray.length;
+              localCheckCount++;
+              // Log every 2 seconds (every 4th check) or when audio is detected
+              if (localCheckCount % 4 === 0 || average > 0) {
+                console.log('🎤 Local audio monitor:', {
+                  level: average.toFixed(2),
+                  hasAudio: average > 0,
+                  checkCount: localCheckCount,
+                });
+              }
+            };
+            const localInterval = setInterval(checkLocalAudio, 500);
+            
+            console.log('🎤 Local audio monitor started');
+            localAudioMonitorRef.current = { interval: localInterval, context: localAudioContext };
+            
+            // Clean up after 60 seconds or when call ends
+            setTimeout(() => {
+              if (localAudioMonitorRef.current) {
+                clearInterval(localAudioMonitorRef.current.interval);
+                localAudioMonitorRef.current.context.close().catch(() => {});
+                localAudioMonitorRef.current = null;
+              }
+            }, 60000);
+          }
+        } catch (err) {
+          console.warn('Failed to create local audio monitor:', err);
+        }
+      }
 
       // Tracks are added synchronously, no need to wait
       // Check connection state immediately
@@ -765,9 +1414,69 @@ export function useWebRTC(
       updateStatus('connecting');
 
       // Get local media stream
+      // CRITICAL: Both caller and callee MUST call getUserMedia separately
+      // Each browser tab/instance needs its own MediaStream
+      console.log('📞 answerCall: Requesting microphone access for callee...');
       stream = await getUserMedia();
+      console.log('✅ answerCall: Microphone access granted for callee', {
+        streamId: stream.id,
+        trackCount: stream.getTracks().length,
+        audioTracks: stream.getAudioTracks().length,
+      });
       localStreamRef.current = stream;
       setLocalStream(stream);
+      
+      // CRITICAL: Monitor track ended events to detect when tracks are stopped
+      stream.getAudioTracks().forEach((track, index) => {
+        track.onended = async () => {
+          console.error(`❌ CRITICAL: Local audio track ${index} ended unexpectedly in answerCall!`, {
+            trackId: track.id,
+            enabled: track.enabled,
+            muted: track.muted,
+            readyState: track.readyState,
+            stackTrace: new Error().stack,
+          });
+          
+          // CRITICAL: If track ends during an active call, try to recover by getting a new stream
+          if (callStatus === 'active' || callStatus === 'ringing' || callStatus === 'connecting') {
+            console.warn('🔄 Attempting to recover by getting a new audio stream (answerCall track onended)...');
+            try {
+              // Get a new stream
+              const newStream = await getUserMedia();
+              const newTracks = newStream.getAudioTracks();
+              
+              if (newTracks.length > 0 && peerConnectionRef.current) {
+                const newTrack = newTracks[0];
+                const senders = peerConnectionRef.current.getSenders();
+                const audioSender = senders.find(s => s.track && s.track.kind === 'audio' && s.track.id === track.id);
+                
+                if (audioSender) {
+                  console.log('🔄 Replacing ended track with new track (answerCall track onended)', {
+                    oldTrackId: track.id,
+                    newTrackId: newTrack.id,
+                  });
+                  
+                  // Replace the track in the sender
+                  await audioSender.replaceTrack(newTrack);
+                  
+                  // Update local stream ref
+                  if (localStreamRef.current) {
+                    // Add new track to local stream
+                    localStreamRef.current.addTrack(newTrack);
+                  } else {
+                    localStreamRef.current = newStream;
+                    setLocalStream(newStream);
+                  }
+                  
+                  console.log('✅ Successfully replaced ended track with new track (answerCall track onended)');
+                }
+              }
+            } catch (recoverErr) {
+              console.error('❌ Failed to recover from ended track (answerCall track onended):', recoverErr);
+            }
+          }
+        };
+      });
 
       // Clear processed ICE candidates for new call
       processedIceCandidates.current.clear();
@@ -776,14 +1485,125 @@ export function useWebRTC(
       const pc = initializePeerConnection();
 
       // Add local stream tracks
-      stream.getTracks().forEach((track) => {
+      // CRITICAL: Check track state BEFORE adding to catch any issues early
+      stream.getTracks().forEach((track, trackIndex) => {
+        if (track.readyState === 'ended') {
+          console.error(`❌ CRITICAL: Track ${trackIndex} is already ENDED before adding to peer connection in answerCall! Cannot add ended track.`);
+          throw new Error(`Audio track ${trackIndex} is ended before being added to peer connection. This should not happen.`);
+        }
+        
+        // Ensure track is enabled before adding
+        if (!track.enabled) {
+          console.warn('⚠️ Track is disabled before adding to peer connection (answerCall), enabling it...');
+          track.enabled = true;
+        }
+        
+        console.log(`📤 Adding track ${trackIndex} to peer connection (answerCall):`, {
+          trackId: track.id,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState,
+        });
+        
         pc.addTrack(track, stream);
+        
+        // Immediately verify track state after adding
+        if (track.readyState === 'ended') {
+          console.error(`❌ CRITICAL: Track ${trackIndex} became ENDED immediately after adding to peer connection in answerCall!`);
+        }
+        
+        // Verify track is still enabled after adding
+        if (!track.enabled) {
+          console.error('❌ Track became disabled after adding to peer connection (answerCall)!');
+          track.enabled = true; // Force enable
+        }
+      });
+      
+      // Verify tracks are still enabled after adding to peer connection
+      const senders = pc.getSenders();
+      senders.forEach((sender, index) => {
+        if (sender.track) {
+          console.log(`📡 Sender ${index} track state (answerCall):`, {
+            id: sender.track.id,
+            kind: sender.track.kind,
+            enabled: sender.track.enabled,
+            muted: sender.track.muted,
+            readyState: sender.track.readyState,
+          });
+          
+          if (sender.track.readyState === 'ended') {
+            console.error(`❌ CRITICAL: Sender ${index} track is ENDED immediately after adding in answerCall! This should not happen.`);
+          } else if (!sender.track.enabled) {
+            console.warn(`⚠️ Sender ${index} track is disabled (answerCall), enabling it...`);
+            sender.track.enabled = true;
+          }
+          
+          // Monitor track ended events
+          sender.track.onended = async () => {
+            console.error(`❌ CRITICAL: Sender ${index} track ended after being added to peer connection in answerCall!`, {
+              trackId: sender.track?.id,
+              stackTrace: new Error().stack,
+            });
+            
+            // CRITICAL: If track ends during an active call, try to recover by getting a new stream
+            if (callStatus === 'active' || callStatus === 'ringing' || callStatus === 'connecting') {
+              console.warn('🔄 Attempting to recover by getting a new audio stream (answerCall)...');
+              try {
+                // Get a new stream
+                const newStream = await getUserMedia();
+                const newTracks = newStream.getAudioTracks();
+                
+                if (newTracks.length > 0 && peerConnectionRef.current) {
+                  // Replace the ended track with a new one
+                  const newTrack = newTracks[0];
+                  console.log('🔄 Replacing ended track with new track (answerCall)', {
+                    oldTrackId: sender.track?.id,
+                    newTrackId: newTrack.id,
+                  });
+                  
+                  // Replace the track in the sender
+                  await sender.replaceTrack(newTrack);
+                  
+                  // Update local stream ref
+                  if (localStreamRef.current) {
+                    localStreamRef.current.getTracks().forEach(t => {
+                      if (t.id === sender.track?.id) {
+                        // Track is already ended, can't replace
+                      }
+                    });
+                    // Add new track to local stream
+                    localStreamRef.current.addTrack(newTrack);
+                  } else {
+                    localStreamRef.current = newStream;
+                    setLocalStream(newStream);
+                  }
+                  
+                  console.log('✅ Successfully replaced ended track with new track (answerCall)');
+                }
+              } catch (recoverErr) {
+                console.error('❌ Failed to recover from ended track (answerCall):', recoverErr);
+              }
+            }
+          };
+        }
       });
 
       // Set remote description (offer)
+      console.log('📞 answerCall: Setting remote description (offer)...', {
+        offerType: offer.type,
+        signalingState: pc.signalingState,
+      });
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      console.log('✅ answerCall: Remote description set', {
+        signalingState: pc.signalingState,
+        hasRemoteDescription: !!pc.remoteDescription,
+      });
 
       // Process any queued ICE candidates (with deduplication)
+      const queuedCandidates = iceCandidatesQueue.current.length;
+      if (queuedCandidates > 0) {
+        console.log(`📞 answerCall: Processing ${queuedCandidates} queued ICE candidates`);
+      }
       while (iceCandidatesQueue.current.length > 0) {
         const candidate = iceCandidatesQueue.current.shift();
         if (candidate) {
@@ -801,10 +1621,25 @@ export function useWebRTC(
       }
 
       // Create answer
+      console.log('📞 answerCall: Creating answer...', {
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+      });
       const answer = await pc.createAnswer();
+      console.log('✅ answerCall: Answer created', {
+        answerType: answer.type,
+        hasAnswerSdp: !!answer.sdp,
+      });
+      
+      console.log('📞 answerCall: Setting local description (answer)...');
       await pc.setLocalDescription(answer);
+      console.log('✅ answerCall: Local description set', {
+        signalingState: pc.signalingState,
+        hasLocalDescription: !!pc.localDescription,
+      });
 
       updateStatus('active');
+      console.log('✅ answerCall: Complete, returning answer');
       return answer;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to answer call';
@@ -831,29 +1666,53 @@ export function useWebRTC(
 
   // Set answer (for caller when callee answers)
   const setAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
+    console.log('📞 setAnswer: Attempting to set remote answer', {
+      hasAnswer: !!answer,
+      answerType: answer?.type,
+      hasPeerConnection: !!peerConnectionRef.current,
+    });
+    
     try {
       const pc = peerConnectionRef.current;
       if (!pc) {
+        console.error('❌ setAnswer: Peer connection not initialized');
         throw new Error('Peer connection not initialized');
       }
+
+      console.log('📞 setAnswer: Peer connection state before setting answer', {
+        connectionState: pc.connectionState,
+        signalingState: pc.signalingState,
+        iceConnectionState: pc.iceConnectionState,
+        hasRemoteDescription: !!pc.remoteDescription,
+      });
 
       // Check if remote description is already set
       // If it's already set and we're in stable state, don't try to set it again
       if (pc.remoteDescription && pc.signalingState === 'stable') {
+        console.log('📞 setAnswer: Answer already set, skipping');
         return;
       }
 
       // Check if we're in the right state to set the answer
       // We should be in 'have-local-offer' state (we created an offer, waiting for answer)
       if (pc.signalingState !== 'have-local-offer' && pc.signalingState !== 'stable') {
-        console.warn(`Cannot set answer in signaling state: ${pc.signalingState}`);
+        console.warn(`⚠️ setAnswer: Cannot set answer in signaling state: ${pc.signalingState}`);
         // Queue the answer to be processed later if needed
         return;
       }
 
+      console.log('📞 setAnswer: Setting remote description...');
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log('✅ setAnswer: Remote description set successfully', {
+        signalingState: pc.signalingState,
+        connectionState: pc.connectionState,
+      });
 
       // Process any queued ICE candidates after remote description is set (with deduplication)
+      const queueLength = iceCandidatesQueue.current.length;
+      if (queueLength > 0) {
+        console.log(`📞 setAnswer: Processing ${queueLength} queued ICE candidates`);
+      }
       while (iceCandidatesQueue.current.length > 0) {
         const candidate = iceCandidatesQueue.current.shift();
         if (candidate) {
@@ -870,13 +1729,15 @@ export function useWebRTC(
         }
       }
 
+      console.log('✅ setAnswer: Complete, updating status to active');
       updateStatus('active');
     } catch (err: any) {
       // Handle InvalidStateError gracefully - it means answer was already set
       if (err.name === 'InvalidStateError' && err.message.includes('stable')) {
+        console.log('📞 setAnswer: InvalidStateError (already stable), ignoring');
         return;
       }
-      console.error('Error setting answer:', err);
+      console.error('❌ setAnswer: Error setting answer:', err);
       setError(err instanceof Error ? err.message : 'Failed to set answer');
       updateStatus('error');
     }
@@ -1029,6 +1890,18 @@ export function useWebRTC(
       setLocalStream(null);
     }
 
+    // Clean up audio monitors
+    if (localAudioMonitorRef.current) {
+      clearInterval(localAudioMonitorRef.current.interval);
+      localAudioMonitorRef.current.context.close().catch(() => {});
+      localAudioMonitorRef.current = null;
+    }
+    if (remoteAudioMonitorRef.current) {
+      clearInterval(remoteAudioMonitorRef.current.interval);
+      remoteAudioMonitorRef.current.context.close().catch(() => {});
+      remoteAudioMonitorRef.current = null;
+    }
+
     // Cleanup BroadcastChannel
     if (broadcastChannelCleanupRef.current) {
       broadcastChannelCleanupRef.current();
@@ -1054,6 +1927,18 @@ export function useWebRTC(
     }
     setRemoteStream(null);
     onRemoteStream?.(null);
+
+    // Clean up audio monitors
+    if (localAudioMonitorRef.current) {
+      clearInterval(localAudioMonitorRef.current.interval);
+      localAudioMonitorRef.current.context.close().catch(() => {});
+      localAudioMonitorRef.current = null;
+    }
+    if (remoteAudioMonitorRef.current) {
+      clearInterval(remoteAudioMonitorRef.current.interval);
+      remoteAudioMonitorRef.current.context.close().catch(() => {});
+      remoteAudioMonitorRef.current = null;
+    }
 
     // Reset state - mic is closed/muted when call ends
     setIsMuted(true); // Set to true since mic is closed
