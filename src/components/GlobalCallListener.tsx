@@ -16,8 +16,10 @@ export function GlobalCallListener() {
   const [incomingCallSignal, setIncomingCallSignal] = useState<CallSignal | null>(null);
   const lastCallIdRef = useRef<string | null>(null);
   const unsubscribeFnRef = useRef<(() => void) | null>(null);
+  const processedCallIdsRef = useRef<Set<string>>(new Set());
   const {
     endCall: endWebRTCCall,
+    callStatus,
   } = useWebRTCContext();
 
   useEffect(() => {
@@ -36,16 +38,14 @@ export function GlobalCallListener() {
     }
 
     let isActive = true;
-    let setupAttempts = 0;
-    const maxSetupAttempts = 3;
-    let periodicCheckInterval: NodeJS.Timeout | null = null;
+    let healthCheckInterval: NodeJS.Timeout | null = null;
 
     // Check if auth.currentUser is ready, with retry logic
     const checkAuthAndSetup = async () => {
-      // Wait for auth.currentUser to be available (up to 5 seconds)
+      // Wait for auth.currentUser to be available (up to 10 seconds)
       let authReady = false;
-      const maxWaitTime = 5000;
-      const checkInterval = 100;
+      const maxWaitTime = 10000;
+      const checkInterval = 200;
       const startTime = Date.now();
 
       while (!authReady && (Date.now() - startTime) < maxWaitTime) {
@@ -57,205 +57,96 @@ export function GlobalCallListener() {
       }
 
       if (!auth?.currentUser?.email) {
-        console.warn('⚠️ GlobalCallListener: Auth currentUser not ready after waiting');
-        return;
+        console.warn('⚠️ GlobalCallListener: Auth currentUser not ready after waiting, will retry via health check');
+        // Don't return - let the health check retry
       }
 
       const setupListener = () => {
-        if (!isActive || !db || !auth?.currentUser?.email) return;
+        if (!isActive || !db) return;
 
-        setupAttempts++;
+        // Clean up previous subscription if any
+        if (unsubscribeFnRef.current) {
+          unsubscribeFnRef.current();
+          unsubscribeFnRef.current = null;
+        }
 
-        import('firebase/firestore').then(async (firestore) => {
-        if (!isActive || !db || !auth?.currentUser?.email) return;
+        const userEmail = (auth?.currentUser?.email || user?.email || '').toLowerCase();
+        if (!userEmail) {
+          console.warn('⚠️ GlobalCallListener: No user email available');
+          return;
+        }
+        
+        console.log('📞 GlobalCallListener: Setting up incoming call listener', { userEmail });
+        
+        // Use the new criteria-based subscribeToIncomingOffers function
+        // The subscribeToIncomingOffers now has its own retry logic built-in
+        unsubscribeFnRef.current = callSignalingService.subscribeToIncomingOffers(
+          userEmail,
+          async (signal) => {
+            if (!isActive) return;
 
-        const { collection, onSnapshot, query, where, orderBy, limit } = firestore;
-        const userEmail = auth.currentUser.email.toLowerCase();
-        const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-        const domain = sanitizeDomainForFirestore(userEmail);
-          const collectionPath = `domains/${domain}/calls`;
-          const callsRef = collection(db, collectionPath);
-
-        // Query for ringing calls where user is the callee
-        let q;
-          // Use query without orderBy to avoid index requirement
-          // The index would be: calleeEmail (ASC), status (ASC), createdAt (DESC)
-          // We'll get multiple results and sort in memory if needed
-          q = query(
-            callsRef,
-            where('calleeEmail', '==', userEmail),
-            where('status', '==', 'ringing'),
-            limit(10) // Get up to 10 calls, we'll take the most recent one
-          );
-          
-          unsubscribeFnRef.current = onSnapshot(
-            q,
-            {
-              includeMetadataChanges: true,
-            },
-            (snapshot) => {
-              if (!isActive) {
-                return;
+            if (!signal) {
+              // No signal - clear if we had one
+              if (lastCallIdRef.current) {
+                lastCallIdRef.current = null;
+                setIncomingCallSignal(null);
               }
+              return;
+            }
 
-              // Skip cache-only empty snapshots
-              if (snapshot.metadata.fromCache && snapshot.empty) {
-                return;
-              }
+            const callId = signal.callId;
 
-              if (snapshot.empty) {
-                if (lastCallIdRef.current) {
-                  lastCallIdRef.current = null;
-                  setIncomingCallSignal(null);
-                }
-                return;
-              }
+            // Skip if already processed
+            if (processedCallIdsRef.current.has(callId)) {
+              return;
+            }
 
-              // Sort documents by createdAt (most recent first) since we can't use orderBy
-              // Also filter out ended calls and stale calls (older than 5 minutes)
-              const now = Date.now();
-              const maxCallAge = 5 * 60 * 1000; // 5 minutes in milliseconds
-              
-              const sortedDocs = [...snapshot.docs]
-                .filter((doc) => {
-                  const data = doc.data();
-                  // Exclude calls that are ended or have endedAt set
-                  if (data.status === 'ended' || data.endedAt) {
-                    return false;
-                  }
-                  
-                  // Exclude stale calls (older than 5 minutes)
-                  const createdAt = data.createdAt?.toMillis?.() || 
-                                   (data.createdAt?.seconds ? data.createdAt.seconds * 1000 : 0) ||
-                                   (data.createdAt?.getTime ? data.createdAt.getTime() : 0);
-                  const callAge = now - createdAt;
-                  
-                  if (callAge > maxCallAge) {
-                    return false;
-                  }
-                  
-                  return true;
-                })
-                .sort((a, b) => {
-                  const aCreated = a.data().createdAt?.toMillis?.() || a.data().createdAt?.seconds * 1000 || 0;
-                  const bCreated = b.data().createdAt?.toMillis?.() || b.data().createdAt?.seconds * 1000 || 0;
-                  return bCreated - aCreated; // Descending order (newest first)
-                });
-              
-              // If no valid calls after filtering, clear the signal
-              if (sortedDocs.length === 0) {
-                if (lastCallIdRef.current) {
-                  lastCallIdRef.current = null;
-                  setIncomingCallSignal(null);
-                }
-                return;
+            // Auto-reject if already in an active call
+            if (callStatus !== 'idle') {
+              console.log('Already in a call, auto-rejecting incoming offer', { callId, currentCallStatus: callStatus });
+              try {
+                await callSignalingService.endCall(callId);
+                processedCallIdsRef.current.add(callId);
+              } catch (err) {
+                console.error('Error auto-rejecting call:', err);
+                // Still mark as processed to avoid showing UI
+                processedCallIdsRef.current.add(callId);
               }
-              
-              const callDoc = sortedDocs[0];
-              const data = callDoc.data();
-              const callId = callDoc.id;
+              return;
+            }
 
-              // Verify email matching
-              const calleeEmailLower = (data.calleeEmail || '').toLowerCase();
-              if (calleeEmailLower !== userEmail) {
-                return;
-              }
+            // Verify offer exists and is valid
+            if (!signal.offer || signal.status !== 'ringing') {
+              processedCallIdsRef.current.add(callId);
+              return;
+            }
 
             // Only update if this is a new call
             if (callId !== lastCallIdRef.current) {
+              console.log('📞 GlobalCallListener: New incoming call!', { callId, callerEmail: signal.callerEmail });
               lastCallIdRef.current = callId;
-              
-              const signal: CallSignal = {
-                callId,
-                chatId: data.chatId || '',
-                callerEmail: data.callerEmail || '',
-                calleeEmail: data.calleeEmail || '',
-                status: data.status || 'ringing',
-                offer: data.offer ? (typeof data.offer === 'string' ? JSON.parse(data.offer) : data.offer) : undefined,
-                answer: data.answer ? (typeof data.answer === 'string' ? JSON.parse(data.answer) : data.answer) : undefined,
-                iceCandidates: data.iceCandidates || [],
-                createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || Date.now()),
-                endedAt: data.endedAt?.toDate ? data.endedAt.toDate() : (data.endedAt ? new Date(data.endedAt) : undefined),
-              };
-
+              processedCallIdsRef.current.add(callId);
               setIncomingCallSignal(signal);
             }
           },
-          (error) => {
-            if (!isActive) return;
-              console.error('GlobalCallListener: Listener error', error);
-              
-              // If it's an index error and we haven't exceeded max attempts, retry
-              if (((error as any)?.code === 9 || (error as any)?.message?.includes('index')) && setupAttempts < maxSetupAttempts) {
-                setTimeout(() => {
-                  if (isActive) {
-                    setupListener();
-                  }
-                }, 1000);
-              }
-            }
-          );
-
-        }).catch((error) => {
-          console.error('❌ GlobalCallListener: Failed to import firestore', error);
-          
-          // Retry if we haven't exceeded max attempts
-          if (setupAttempts < maxSetupAttempts && isActive) {
-            setTimeout(() => {
-              if (isActive) {
-                setupListener();
-              }
-            }, 2000);
-          }
-        });
+          processedCallIdsRef.current
+        );
       };
 
       // Initial setup
       setupListener();
 
-      // Periodic check to verify listener is working (every 10 seconds)
-      periodicCheckInterval = setInterval(async () => {
-        if (!isActive || !db || !auth?.currentUser?.email) {
-          if (periodicCheckInterval) {
-            clearInterval(periodicCheckInterval);
-            periodicCheckInterval = null;
-          }
-          return;
+      // Health check: periodically verify the listener is working
+      // This helps recover from network disconnections or auth token refreshes
+      healthCheckInterval = setInterval(() => {
+        if (!isActive) return;
+        
+        // If auth state changed (e.g., token refresh), re-establish listener
+        if (auth?.currentUser?.email && !unsubscribeFnRef.current) {
+          console.log('📞 GlobalCallListener: Health check - re-establishing listener');
+          setupListener();
         }
-
-        try {
-          const { getDocs, collection, query, where, limit } = await import('firebase/firestore');
-          const userEmail = auth.currentUser.email.toLowerCase();
-          const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-          const domain = sanitizeDomainForFirestore(userEmail);
-          const collectionPath = `domains/${domain}/calls`;
-          const callsRef = collection(db, collectionPath);
-          
-          // Check for calls where user is callee
-          const calleeQuery = query(
-            callsRef,
-            where('calleeEmail', '==', userEmail),
-            where('status', '==', 'ringing'),
-            limit(10)
-          );
-          
-          // Also check ALL calls in the collection (for debugging)
-          const allCallsQuery = query(callsRef, limit(10));
-          
-          const [calleeSnapshot, allCallsSnapshot] = await Promise.all([
-            getDocs(calleeQuery),
-            getDocs(allCallsQuery),
-          ]);
-          
-          // Filter out ended calls from the results
-          const activeCalleeCalls = calleeSnapshot.docs.filter(doc => {
-            const data = doc.data();
-            return data.status !== 'ended' && !data.endedAt;
-          });
-        } catch (err) {
-          // Periodic check failed - silently continue
-        }
-      }, 10000); // Check every 10 seconds
+      }, 30000); // Check every 30 seconds
     };
 
     checkAuthAndSetup();
@@ -263,16 +154,16 @@ export function GlobalCallListener() {
     // Cleanup function for Firestore listener
     return () => {
       isActive = false;
-      if (periodicCheckInterval) {
-        clearInterval(periodicCheckInterval);
-        periodicCheckInterval = null;
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
       }
       if (unsubscribeFnRef.current) {
         unsubscribeFnRef.current();
         unsubscribeFnRef.current = null;
       }
     };
-  }, [user?.email, authLoading, endWebRTCCall]);
+  }, [user?.email, authLoading, callStatus]);
 
   // Handle ending the call
   const handleEndCall = async () => {
