@@ -502,6 +502,28 @@ export function useWebRTC(
         case 'closed':
           connectionRetryCount.current = 0; // Reset retry count when connection is closed
           updateStatus('ended');
+          // Clean up local resources when connection is closed by remote peer
+          // This ensures mic is released even if Firestore signal isn't received
+          if (localStreamRef.current) {
+            console.log('🔴 Connection closed, cleaning up local stream...');
+            localStreamRef.current.getTracks().forEach((track) => {
+              track.enabled = false;
+              track.stop();
+            });
+            localStreamRef.current = null;
+            setLocalStream(null);
+          }
+          // Clean up audio monitors
+          if (localAudioMonitorRef.current) {
+            clearInterval(localAudioMonitorRef.current.interval);
+            localAudioMonitorRef.current.context.close().catch(() => {});
+            localAudioMonitorRef.current = null;
+          }
+          if (remoteAudioMonitorRef.current) {
+            clearInterval(remoteAudioMonitorRef.current.interval);
+            remoteAudioMonitorRef.current.context.close().catch(() => {});
+            remoteAudioMonitorRef.current = null;
+          }
           break;
       }
     };
