@@ -6,14 +6,14 @@
 
 import express from 'express';
 import { userQueries } from '../../database/queries.js';
-import { getTenantPool } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getOrgSlugById } from '../../database/multi-tenant-pool.js';
 
 /**
  * Check if a user has access to a project (either as a member or owner)
  */
-async function isProjectMember(userEmail: string, projectId: string): Promise<boolean> {
+async function isProjectMember(orgId: string, userEmail: string, projectId: string): Promise<boolean> {
   try {
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     const result = await pool.query(
       `SELECT 1 
        FROM projects p
@@ -32,9 +32,9 @@ async function isProjectMember(userEmail: string, projectId: string): Promise<bo
 /**
  * Check if a user has access to a team (either as a member or owner)
  */
-async function isTeamMember(userEmail: string, teamId: string): Promise<boolean> {
+async function isTeamMember(orgId: string, userEmail: string, teamId: string): Promise<boolean> {
   try {
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     const result = await pool.query(
       `SELECT 1 
        FROM teams t
@@ -60,7 +60,7 @@ export function setupMessageEndpoints(
   // GET messages by chat ID - Read from Firestore
   app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
       const chatId = req.params.chatId;
       const afterTimestamp = req.query.afterTimestamp 
@@ -68,24 +68,36 @@ export function setupMessageEndpoints(
         : undefined;
       
       // Check authorization for project channels
-      if (chatId.startsWith('project-')) {
+      if (chatId.startsWith('project-') && orgId) {
         const projectId = chatId.replace('project-', '');
-        const isMember = await isProjectMember(userEmail, projectId);
+        const isMember = await isProjectMember(orgId, userEmail, projectId);
         if (!isMember) {
           return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view messages' });
         }
       }
       
       // Check authorization for team channels
-      if (chatId.startsWith('team-')) {
+      if (chatId.startsWith('team-') && orgId) {
         const teamId = chatId.replace('team-', '');
-        const isMember = await isTeamMember(userEmail, teamId);
+        const isMember = await isTeamMember(orgId, userEmail, teamId);
         if (!isMember) {
           return res.status(403).json({ error: 'Access denied: You must be a team member or owner to view messages' });
         }
       }
       
-      const messagesPath = `domains/${domain}/messages`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let messagesPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          messagesPath = `orgs/${orgSlug}/messages`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          messagesPath = `orgs/default/messages`;
+        }
+      } else {
+        messagesPath = `orgs/default/messages`;
+      }
       let query = db.collection(messagesPath).where('chatId', '==', chatId);
       
       // For AI assistant conversations, ensure privacy by filtering by userId
@@ -156,7 +168,7 @@ export function setupMessageEndpoints(
   // POST new message - Write to Firestore only
   app.post('/api/messages', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
       const { chatId, role, content, memberName, memberAvatar, projectId, teamId, citedContext, imageUrls } = req.body;
 
@@ -174,8 +186,8 @@ export function setupMessageEndpoints(
         actualProjectId = projectId;
       }
       
-      if (actualProjectId) {
-        const isMember = await isProjectMember(userEmail, actualProjectId);
+      if (actualProjectId && orgId) {
+        const isMember = await isProjectMember(orgId, userEmail, actualProjectId);
         if (!isMember) {
           return res.status(403).json({ error: 'Access denied: You must be a project member or owner to post messages' });
         }
@@ -191,8 +203,8 @@ export function setupMessageEndpoints(
         actualTeamId = teamId;
       }
       
-      if (actualTeamId) {
-        const isMember = await isTeamMember(userEmail, actualTeamId);
+      if (actualTeamId && orgId) {
+        const isMember = await isTeamMember(orgId, userEmail, actualTeamId);
         if (!isMember) {
           return res.status(403).json({ error: 'Access denied: You must be a team member or owner to post messages' });
         }
@@ -240,7 +252,19 @@ export function setupMessageEndpoints(
       }
 
       // Write to Firestore only - single source of truth for messages
-      const messagesPath = `domains/${domain}/messages`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let messagesPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          messagesPath = `orgs/${orgSlug}/messages`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          messagesPath = `orgs/default/messages`;
+        }
+      } else {
+        messagesPath = `orgs/default/messages`;
+      }
       const docRef = await db.collection(messagesPath).add(messageData);
       
       res.json({
@@ -263,11 +287,23 @@ export function setupMessageEndpoints(
   // PATCH toggle like on a message
   app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
       const messageId = req.params.messageId;
       
-      const messagesPath = `domains/${domain}/messages`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let messagesPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          messagesPath = `orgs/${orgSlug}/messages`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          messagesPath = `orgs/default/messages`;
+        }
+      } else {
+        messagesPath = `orgs/default/messages`;
+      }
       const messageRef = db.collection(messagesPath).doc(messageId);
       const messageDoc = await messageRef.get();
       

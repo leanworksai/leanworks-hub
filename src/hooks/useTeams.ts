@@ -2,17 +2,19 @@ import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/rea
 import { teamsService, teamJoinRequestsService, teamInvitationsService } from '@/services/api';
 import type { Team, TeamDetailData, TeamJoinRequest, TeamInvitation } from '@/data/teamsData';
 import { useAuth } from '@/contexts/AuthContext';
+import { useOrg } from '@/contexts/OrgContext';
 
 export const useTeams = () => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['teams'],
+    queryKey: ['teams', currentOrg?.id],
     queryFn: async () => {
       const teams = await teamsService.getAll();
       return teams;
     },
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -76,11 +78,12 @@ export const useUserTeams = () => {
 
 export const useTeam = (teamId: string) => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['teams', teamId],
+    queryKey: ['teams', teamId, currentOrg?.id],
     queryFn: () => teamsService.getById(teamId),
-    enabled: !loading && !!user && !!teamId, // Only fetch when user is authenticated and teamId is provided
+    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!teamId, // Only fetch when user is authenticated and teamId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
@@ -142,11 +145,12 @@ export const useDeleteTeam = () => {
 // Team join request hooks
 export const useJoinRequests = () => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['teamJoinRequests'],
+    queryKey: ['teamJoinRequests', currentOrg?.id],
     queryFn: () => teamJoinRequestsService.getPendingRequests(),
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
     staleTime: 0, // Always consider data stale to allow immediate refetches
     refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
     refetchOnWindowFocus: true, // Refetch when user returns to the tab
@@ -220,11 +224,12 @@ export const useLeaveTeam = () => {
 // Team invitation hooks
 export const useInvitations = () => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['teamInvitations'],
+    queryKey: ['teamInvitations', currentOrg?.id],
     queryFn: () => teamInvitationsService.getInvitations(),
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
     staleTime: 0, // Always consider data stale to allow immediate refetches
     refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
     refetchOnWindowFocus: true, // Refetch when user returns to the tab

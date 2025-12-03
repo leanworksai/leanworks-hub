@@ -13,12 +13,12 @@ export function setupUpdateEndpoints(
   // GET update summaries
   app.get('/api/update-summaries', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const projectId = req.query.projectId as string | undefined;
       
       if (projectId) {
         // Get summary for specific project
-        const summary = await updateSummaryQueries.getByProjectId(projectId, domain);
+        const summary = await updateSummaryQueries.getByProjectId(projectId, orgId);
         
         if (!summary) {
           return res.json(null);
@@ -27,7 +27,7 @@ export function setupUpdateEndpoints(
         res.json(convertToFirestoreFormat(summary));
       } else {
         // Get latest summaries for all projects
-        const summaries = await updateSummaryQueries.getLatestByDomain(domain);
+        const summaries = await updateSummaryQueries.getLatestByDomain(orgId);
         res.json(summaries);
       }
     } catch (error) {
@@ -39,7 +39,7 @@ export function setupUpdateEndpoints(
   // GET updates by task ID
   app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const taskId = req.params.taskId;
       
       // Query updates that include this task ID in associated_tasks

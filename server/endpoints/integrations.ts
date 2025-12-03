@@ -6,7 +6,7 @@
 import express from 'express';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getFirestore } from 'firebase-admin/firestore';
-import { getTenantPool, getDomainFromEmail } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getOrgPoolBySlug } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
 
 // Helper function to create secret name for domain and integration
@@ -90,8 +90,13 @@ export function setupIntegrationEndpoints(
   app.get('/api/integrations', authenticateUser, async (req, res) => {
     try {
       const userEmail = (req as any).userEmail;
-      const domain = (req as any).userDomain;
-      const pool = await getTenantPool(userEmail);
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      
+      if (!orgId) {
+        return res.status(400).json({ error: 'Organization ID is required' });
+      }
+      
+      const pool = await getOrgPool(orgId);
       
       // Get connected integrations from PostgreSQL using tenant pool
       // Note: No domain column needed - each tenant has its own database
@@ -132,10 +137,15 @@ export function setupIntegrationEndpoints(
   app.post('/api/integrations/:integrationId/connect', authenticateUser, async (req, res) => {
     try {
       const userEmail = (req as any).userEmail;
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const integrationId = req.params.integrationId;
       const body = req.body;
-      const pool = await getTenantPool(userEmail);
+      
+      if (!orgId) {
+        return res.status(400).json({ error: 'Organization ID is required' });
+      }
+      
+      const pool = await getOrgPool(orgId);
 
       // Validate integration ID
       if (!['slack', 'atlassian', 'outlook'].includes(integrationId)) {
@@ -222,16 +232,21 @@ export function setupIntegrationEndpoints(
   app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async (req, res) => {
     try {
       const userEmail = (req as any).userEmail;
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const integrationId = req.params.integrationId;
-      const pool = await getTenantPool(userEmail);
+      
+      if (!orgId) {
+        return res.status(400).json({ error: 'Organization ID is required' });
+      }
+      
+      const pool = await getOrgPool(orgId);
 
       if (!['slack', 'atlassian', 'github', 'outlook'].includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 
-      // Get the secret name from PostgreSQL using tenant pool
-      // Note: No domain column - each tenant has its own database
+      // Get the secret name from PostgreSQL using org pool
+      // Note: No domain column - each org has its own database
       const result = await pool.query(
         `SELECT id, integration_id, integration_name, connected, 
                 secret_name, connected_at, installation_id, metadata
@@ -240,7 +255,7 @@ export function setupIntegrationEndpoints(
         [integrationId]
       );
       const integration = result.rows[0] || null;
-      const secretName = integration?.secret_name || getSecretName(domain, integrationId);
+      const secretName = integration?.secret_name || getSecretName(orgId, integrationId);
 
       // Delete secret from GCP Secret Manager
       await deleteSecret(secretManagerClient, projectId, secretName);
@@ -272,20 +287,14 @@ export function setupIntegrationEndpoints(
         return res.status(400).send('Invalid installation_id');
       }
       
-      const rawDomain = state as string;
+      // State contains the org slug for org-based routing
+      const orgSlug = state as string;
       
-      // Sanitize domain to match database name format (same as getDomainFromEmail does)
-      // The state contains the raw domain (e.g., "example.com"), but DB name is sanitized (e.g., "examplecom")
-      const sanitizedDomain = rawDomain.toLowerCase().replace(/[^a-z0-9]/g, '');
-      // Ensure database name doesn't start with a number (PostgreSQL requirement)
-      const domain = sanitizedDomain && /^\d/.test(sanitizedDomain) ? 'db_' + sanitizedDomain : sanitizedDomain;
-      
-      // Get tenant pool - create a dummy email to get the pool
-      const dummyEmail = `admin@${rawDomain}`;
-      const pool = await getTenantPool(dummyEmail);
+      // Get org pool by slug
+      const pool = await getOrgPoolBySlug(orgSlug);
 
-      // Store mapping in PostgreSQL using tenant pool
-      // Note: github_installations table doesn't have domain column in multi-tenant setup
+      // Store mapping in PostgreSQL using org pool
+      // Note: github_installations table doesn't have domain column in org-based setup
       await pool.query(
         `INSERT INTO github_installations (installation_id, setup_action, created_at)
          VALUES ($1, $2, NOW())
@@ -296,18 +305,18 @@ export function setupIntegrationEndpoints(
       );
 
       // Save basic installation data to Secret Manager
-      // Use rawDomain for secret naming (getSecretName will sanitize it)
-      const secretName = getSecretName(rawDomain, 'github');
+      // Use orgSlug for secret naming (getSecretName will sanitize it)
+      const secretName = getSecretName(orgSlug, 'github');
       const basicInstallationData = {
         installationId,
-        domain: rawDomain,
+        orgSlug,
         connectedAt: new Date().toISOString(),
       };
 
       await saveSecret(secretManagerClient, projectId, secretName, JSON.stringify(basicInstallationData));
 
-      // Update PostgreSQL integration record using tenant pool
-      // Note: No domain column - each tenant has its own database
+      // Update PostgreSQL integration record using org pool
+      // Note: No domain column - each org has its own database
       await pool.query(
         `INSERT INTO integrations (
           integration_id, integration_name, connected,

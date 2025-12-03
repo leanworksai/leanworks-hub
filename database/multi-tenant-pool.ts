@@ -44,9 +44,16 @@ const projectId = serviceAccount.project_id;
 const instanceName = 'leanworks-prod';
 const region = process.env.DB_REGION || 'us-west1';
 
-// Cache for connection pools per tenant
-const tenantPools = new Map<string, Pool>();
+// Shared database name (for users, organizations, invitations)
+const SHARED_DB_NAME = 'shared';
+
+// Cache for connection pools
+const orgPools = new Map<string, Pool>();
+let sharedPool: Pool | null = null;
 let cachedPassword: string | null = null;
+
+// Cache for org slug lookups (org_id -> slug)
+const orgSlugCache = new Map<string, string>();
 
 // Fetch PostgreSQL password from Secret Manager (cached)
 async function getPostgresPassword(): Promise<string> {
@@ -66,104 +73,101 @@ async function getPostgresPassword(): Promise<string> {
   }
 }
 
-// Extract domain from email (part after @)
-export function getDomainFromEmail(email: string): string {
-  const domain = email.split('@')[1];
-  if (!domain) {
-    throw new Error(`Invalid email format: ${email}`);
-  }
-  // Sanitize domain name for database naming
-  // Remove all special characters (dots, hyphens, etc.)
-  const sanitized = domain.toLowerCase().replace(/[^a-z0-9]/g, '');
+// Sanitize org slug for database naming
+export function sanitizeSlugForDb(slug: string): string {
+  // Remove all special characters, keep only alphanumeric
+  const sanitized = slug.toLowerCase().replace(/[^a-z0-9]/g, '');
   
   // Ensure database name doesn't start with a number (PostgreSQL requirement)
   if (sanitized && /^\d/.test(sanitized)) {
-    return 'db_' + sanitized;
+    return 'org_' + sanitized;
   }
   
-  return sanitized;
+  return 'org_' + sanitized;
+}
+
+// Generate a unique slug from org name
+export function generateOrgSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .substring(0, 50);
+}
+
+// Generate personal workspace slug from email
+export function generatePersonalSlug(email: string): string {
+  const username = email.split('@')[0];
+  const sanitized = username
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .substring(0, 30);
+  return `personal_${sanitized}_${Date.now().toString(36)}`;
 }
 
 // Initialize schema for a database
 async function initializeSchemaForDatabase(
   pool: Pool,
-  dbName: string
+  dbName: string,
+  schemaFile: string = 'schema.sql'
 ): Promise<void> {
   try {
-    // Check if schema is already initialized by checking if users table exists
-    const usersCheck = await pool.query(`
+    // Check if schema is already initialized by checking if teams table exists (for org DBs)
+    // or users table (for shared DB)
+    const checkTable = schemaFile === 'shared-schema.sql' ? 'users' : 'teams';
+    const tableCheck = await pool.query(`
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
         WHERE table_schema = 'public' 
-        AND table_name = 'users'
+        AND table_name = $1
       );
-    `);
+    `, [checkTable]);
 
-    if (!usersCheck.rows[0].exists) {
-      // Schema not initialized at all, run full schema
-      console.log(`📋 Initializing schema for database "${dbName}"...`);
-      const schemaPath = join(__dirname, 'schema.sql');
+    if (!tableCheck.rows[0].exists) {
+      console.log(`📋 Initializing schema for database "${dbName}" using ${schemaFile}...`);
+      const schemaPath = join(__dirname, schemaFile);
       const schema = readFileSync(schemaPath, 'utf8');
       await pool.query(schema);
       console.log(`✅ Schema initialized successfully for database "${dbName}"`);
       return;
     }
 
-    // Schema exists, but check if demo_requests or notes tables exist (added later)
-    const demoRequestsCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'demo_requests'
-      );
-    `);
-
-    const notesCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'notes'
-      );
-    `);
-
-    if (!demoRequestsCheck.rows[0].exists || !notesCheck.rows[0].exists) {
-      // Schema exists but missing some tables, add them
-      console.log(`📋 Adding missing tables to database "${dbName}"...`);
-      const schemaPath = join(__dirname, 'schema.sql');
-      const schema = readFileSync(schemaPath, 'utf8');
-      
-      // Extract the sections we need
-      const sectionsToAdd: string[] = [];
-      
-      if (!demoRequestsCheck.rows[0].exists) {
-        const demoRequestsSection = schema.match(/-- ============================================================================\s*DEMO REQUESTS TABLE[\s\S]*?(?=-- ============================================================================|$)/);
-        if (demoRequestsSection) {
-          sectionsToAdd.push(demoRequestsSection[0]);
-        }
-      }
-      
-      if (!notesCheck.rows[0].exists) {
-        const notesSection = schema.match(/-- ============================================================================\s*NOTES TABLES[\s\S]*?(?=-- ============================================================================|$)/);
-        if (notesSection) {
-          sectionsToAdd.push(notesSection[0]);
-        }
-      }
-      
-      if (sectionsToAdd.length > 0) {
-        await pool.query(sectionsToAdd.join('\n'));
-        console.log(`✅ Missing tables added to database "${dbName}"`);
-      } else {
-        // Fallback: run the full schema (CREATE TABLE IF NOT EXISTS is safe)
-        console.log(`📋 Running full schema update for database "${dbName}"...`);
-        await pool.query(schema);
-        console.log(`✅ Schema updated successfully for database "${dbName}"`);
-      }
-      return;
-    }
-
     console.log(`✅ Schema already initialized for database "${dbName}"`);
   } catch (error) {
     console.error(`❌ Failed to initialize schema for database "${dbName}":`, error);
+    throw error;
+  }
+}
+
+// Check if a database exists (without creating it)
+export async function checkDatabaseExists(dbName: string): Promise<boolean> {
+  const password = await getPostgresPassword();
+  const dbHost = process.env.DB_HOST || `/cloudsql/${projectId}:${region}:${instanceName}`;
+  const dbPort = parseInt(process.env.DB_PORT || '5432', 10);
+  
+  const { Client } = await import('pg');
+
+  // Try to connect to the target database
+  const testClient = new Client({
+    host: dbHost,
+    ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
+    database: dbName,
+    user: 'postgres',
+    password: password,
+    ssl: false,
+  });
+
+  try {
+    await testClient.connect();
+    await testClient.end();
+    return true; // Database exists
+  } catch (error: any) {
+    // If database doesn't exist (error code 3D000), return false
+    if (error.code === '3D000') {
+      return false; // Database does not exist
+    }
+    // For other errors, rethrow
     throw error;
   }
 }
@@ -180,7 +184,6 @@ async function ensureDatabaseExists(
   // Try to connect to the target database
   const testClient = new Client({
     host: dbHost,
-    // Don't specify port for Unix socket connections
     ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
     database: dbName,
     user: 'postgres',
@@ -196,12 +199,10 @@ async function ensureDatabaseExists(
   } catch (error: any) {
     // If database doesn't exist (error code 3D000), create it
     if (error.code === '3D000') {
-      console.log(`📝 Creating database "${dbName}" for new tenant...`);
+      console.log(`📝 Creating database "${dbName}"...`);
 
-      // Connect to default postgres database to create new database
       const adminClient = new Client({
         host: dbHost,
-        // Don't specify port for Unix socket connections
         ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
         database: 'postgres',
         user: 'postgres',
@@ -214,71 +215,33 @@ async function ensureDatabaseExists(
         await adminClient.query(`CREATE DATABASE "${dbName}"`);
         await adminClient.end();
         console.log(`✅ Database "${dbName}" created successfully`);
-        
-        // Run schema on the newly created database
-        try {
-          console.log(`📋 Running schema on database "${dbName}"...`);
-          const schemaClient = new Client({
-            host: dbHost,
-            // Don't specify port for Unix socket connections
-            ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
-            database: dbName,
-            user: 'postgres',
-            password: password,
-            ssl: false,
-          });
-          
-          await schemaClient.connect();
-          const { readFileSync } = await import('fs');
-          const { join, dirname } = await import('path');
-          const { fileURLToPath } = await import('url');
-          const schemaPath = join(dirname(fileURLToPath(import.meta.url)), 'schema.sql');
-          const schema = readFileSync(schemaPath, 'utf8');
-          await schemaClient.query(schema);
-          await schemaClient.end();
-          console.log(`✅ Schema initialized for database "${dbName}"`);
-        } catch (schemaError) {
-          console.error(`⚠️  Failed to run schema on "${dbName}":`, schemaError);
-          // Don't throw - database exists, schema can be run manually if needed
-        }
-        
         return true; // Database was just created
       } catch (createError) {
         console.error(`❌ Failed to create database "${dbName}":`, createError);
         throw createError;
       }
     } else {
-      // Other connection errors
       throw error;
     }
   }
 }
 
-// Get or create connection pool by database name directly
-async function getPoolByDbName(dbName: string): Promise<Pool> {
-  // Return cached pool if exists
-  if (tenantPools.has(dbName)) {
-    return tenantPools.get(dbName)!;
-  }
-
-  console.log(`🔌 Creating connection pool for database: ${dbName}`);
-
+// Create a connection pool for a specific database
+async function createPool(dbName: string): Promise<Pool> {
   const password = await getPostgresPassword();
   const dbHost = process.env.DB_HOST || `/cloudsql/${projectId}:${region}:${instanceName}`;
   const dbPort = parseInt(process.env.DB_PORT || '5432');
 
-  // Ensure database exists (returns true if database was just created)
+  // Ensure database exists
   await ensureDatabaseExists(password, dbName, dbHost, dbPort);
 
-  // Create new pool for this tenant
   const poolConfig: PoolConfig = {
     host: dbHost,
-    // Don't specify port for Unix socket connections
     ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
     database: dbName,
     user: process.env.DB_USER || 'postgres',
     password: password,
-    max: 10, // Smaller pool per tenant
+    max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
     ssl: false,
@@ -287,57 +250,284 @@ async function getPoolByDbName(dbName: string): Promise<Pool> {
   const pool = new Pool(poolConfig);
 
   pool.on('error', (err) => {
-    console.error(`❌ Error in pool for tenant ${dbName}:`, err);
+    console.error(`❌ Error in pool for database ${dbName}:`, err);
   });
-
-  // Initialize schema if database was just created or if schema doesn't exist
-  // We always check and initialize if needed, in case schema wasn't initialized before
-  await initializeSchemaForDatabase(pool, dbName);
-
-  // Cache the pool
-  tenantPools.set(dbName, pool);
-  console.log(`✅ Connection pool created for tenant: ${dbName}`);
 
   return pool;
 }
 
-// Get or create connection pool for a specific tenant
-export async function getTenantPool(userEmail: string): Promise<Pool> {
-  const domain = getDomainFromEmail(userEmail);
-  const dbName = domain; // Database name is the domain
-  return getPoolByDbName(dbName);
+// ============================================================================
+// SHARED DATABASE POOL
+// ============================================================================
+
+/**
+ * Get the shared database pool (for users, organizations, invitations)
+ */
+export async function getSharedPool(): Promise<Pool> {
+  if (sharedPool) {
+    return sharedPool;
+  }
+
+  console.log(`🔌 Creating connection pool for shared database: ${SHARED_DB_NAME}`);
+  sharedPool = await createPool(SHARED_DB_NAME);
+  
+  // Initialize shared schema
+  await initializeSchemaForDatabase(sharedPool, SHARED_DB_NAME, 'shared-schema.sql');
+  
+  console.log(`✅ Shared database pool created`);
+  return sharedPool;
 }
 
-// Get pool by database name directly (for special cases like demo requests)
-export async function getTenantPoolByDbName(dbName: string): Promise<Pool> {
-  return getPoolByDbName(dbName);
+// ============================================================================
+// ORGANIZATION DATABASE POOL
+// ============================================================================
+
+/**
+ * Get org slug from org ID (with caching)
+ */
+export async function getOrgSlugById(orgId: string): Promise<string> {
+  // Check cache first
+  if (orgSlugCache.has(orgId)) {
+    return orgSlugCache.get(orgId)!;
+  }
+
+  // Query shared DB for org slug
+  const shared = await getSharedPool();
+  const result = await shared.query(
+    'SELECT slug FROM organizations WHERE id = $1',
+    [orgId]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error(`Organization not found: ${orgId}`);
+  }
+
+  const slug = result.rows[0].slug;
+  orgSlugCache.set(orgId, slug);
+  return slug;
 }
 
-// Get a client from the tenant's pool
-export async function getTenantClient(userEmail: string) {
-  const pool = await getTenantPool(userEmail);
-  return await pool.connect();
+/**
+ * Get or create connection pool for an organization's database
+ * @param orgId - Organization UUID
+ */
+export async function getOrgPool(orgId: string): Promise<Pool> {
+  // Get org slug for database naming
+  const slug = await getOrgSlugById(orgId);
+  const dbName = sanitizeSlugForDb(slug);
+
+  // Return cached pool if exists
+  if (orgPools.has(dbName)) {
+    return orgPools.get(dbName)!;
+  }
+
+  console.log(`🔌 Creating connection pool for org database: ${dbName} (org: ${orgId})`);
+  
+  const pool = await createPool(dbName);
+  
+  // Initialize org schema
+  await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
+  
+  // Cache the pool
+  orgPools.set(dbName, pool);
+  console.log(`✅ Connection pool created for org: ${orgId} (db: ${dbName})`);
+
+  return pool;
 }
 
-// Execute a query for a specific tenant
-export async function queryTenant<T = any>(
-  userEmail: string,
+/**
+ * Get org pool by slug directly (used during org creation before ID is known)
+ */
+export async function getOrgPoolBySlug(slug: string): Promise<Pool> {
+  const dbName = sanitizeSlugForDb(slug);
+
+  // Return cached pool if exists
+  if (orgPools.has(dbName)) {
+    return orgPools.get(dbName)!;
+  }
+
+  console.log(`🔌 Creating connection pool for org database: ${dbName}`);
+  
+  const pool = await createPool(dbName);
+  
+  // Initialize org schema
+  await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
+  
+  // Cache the pool
+  orgPools.set(dbName, pool);
+  console.log(`✅ Connection pool created for org database: ${dbName}`);
+
+  return pool;
+}
+
+// ============================================================================
+// QUERY HELPERS
+// ============================================================================
+
+/**
+ * Execute a query on the shared database
+ */
+export async function queryShared<T = any>(
   text: string,
   params?: any[]
 ): Promise<T[]> {
-  const pool = await getTenantPool(userEmail);
+  const pool = await getSharedPool();
   const result = await pool.query<T>(text, params);
   return result.rows;
 }
 
-// Close all tenant pools (for graceful shutdown)
-export async function closeAllPools(): Promise<void> {
-  console.log('🔌 Closing all tenant connection pools...');
-  for (const [tenant, pool] of tenantPools.entries()) {
-    await pool.end();
-    console.log(`  ✅ Closed pool for tenant: ${tenant}`);
+/**
+ * Execute a query on an organization's database
+ */
+export async function queryOrg<T = any>(
+  orgId: string,
+  text: string,
+  params?: any[]
+): Promise<T[]> {
+  const pool = await getOrgPool(orgId);
+  const result = await pool.query<T>(text, params);
+  return result.rows;
+}
+
+// ============================================================================
+// USER/ORG LOOKUP HELPERS
+// ============================================================================
+
+/**
+ * Get user from shared database
+ */
+export async function getUser(email: string): Promise<any | null> {
+  const result = await queryShared(
+    'SELECT * FROM users WHERE email = $1',
+    [email.toLowerCase()]
+  );
+  return result[0] || null;
+}
+
+/**
+ * Get user's organizations with membership info
+ */
+export async function getUserOrganizations(email: string): Promise<any[]> {
+  return queryShared(`
+    SELECT 
+      o.id,
+      o.name,
+      o.slug,
+      o.type,
+      o.owner_email,
+      o.description,
+      o.avatar,
+      o.created_at,
+      om.role,
+      om.joined_at
+    FROM organizations o
+    INNER JOIN org_members om ON o.id = om.org_id
+    WHERE om.user_email = $1
+    ORDER BY o.type ASC, o.created_at ASC
+  `, [email.toLowerCase()]);
+}
+
+/**
+ * Get user's personal workspace
+ */
+export async function getPersonalWorkspace(email: string): Promise<any | null> {
+  const result = await queryShared(`
+    SELECT o.*, om.role, om.joined_at
+    FROM organizations o
+    INNER JOIN org_members om ON o.id = om.org_id
+    WHERE om.user_email = $1 AND o.type = 'personal'
+    LIMIT 1
+  `, [email.toLowerCase()]);
+  return result[0] || null;
+}
+
+/**
+ * Check if user is member of an organization
+ */
+export async function checkOrgMembership(
+  orgId: string,
+  email: string
+): Promise<{ isMember: boolean; role: string | null }> {
+  const result = await queryShared(
+    'SELECT role FROM org_members WHERE org_id = $1 AND user_email = $2',
+    [orgId, email.toLowerCase()]
+  );
+  
+  if (result.length === 0) {
+    return { isMember: false, role: null };
   }
-  tenantPools.clear();
+  
+  return { isMember: true, role: result[0].role };
+}
+
+/**
+ * Check if user is owner of an organization
+ */
+export async function isOrgOwner(orgId: string, email: string): Promise<boolean> {
+  const result = await queryShared(
+    'SELECT 1 FROM organizations WHERE id = $1 AND owner_email = $2',
+    [orgId, email.toLowerCase()]
+  );
+  return result.length > 0;
+}
+
+/**
+ * Get organization members
+ */
+export async function getOrgMembers(orgId: string): Promise<any[]> {
+  return queryShared(`
+    SELECT 
+      om.user_email as email,
+      om.role,
+      om.joined_at,
+      u.first_name,
+      u.last_name,
+      u.job_title,
+      u.timezone
+    FROM org_members om
+    INNER JOIN users u ON om.user_email = u.email
+    WHERE om.org_id = $1
+    ORDER BY 
+      CASE om.role WHEN 'owner' THEN 0 ELSE 1 END,
+      om.joined_at ASC
+  `, [orgId]);
+}
+
+// ============================================================================
+// CLEANUP
+// ============================================================================
+
+/**
+ * Clear org slug cache (useful when org is updated/deleted)
+ */
+export function clearOrgSlugCache(orgId?: string): void {
+  if (orgId) {
+    orgSlugCache.delete(orgId);
+  } else {
+    orgSlugCache.clear();
+  }
+}
+
+/**
+ * Close all connection pools (for graceful shutdown)
+ */
+export async function closeAllPools(): Promise<void> {
+  console.log('🔌 Closing all connection pools...');
+  
+  // Close org pools
+  for (const [dbName, pool] of orgPools.entries()) {
+    await pool.end();
+    console.log(`  ✅ Closed pool for org database: ${dbName}`);
+  }
+  orgPools.clear();
+  
+  // Close shared pool
+  if (sharedPool) {
+    await sharedPool.end();
+    sharedPool = null;
+    console.log(`  ✅ Closed shared database pool`);
+  }
+  
   console.log('✅ All pools closed');
 }
 
@@ -345,3 +535,155 @@ export async function closeAllPools(): Promise<void> {
 process.on('SIGTERM', closeAllPools);
 process.on('SIGINT', closeAllPools);
 
+// ============================================================================
+// USER DATA HELPERS (for cross-database queries)
+// ============================================================================
+
+/**
+ * Batch fetch user info from shared database
+ * @param emails - Array of email addresses to look up
+ * @returns Map of email -> {firstName, lastName, name, jobTitle}
+ */
+export async function getUserInfoBatch(emails: string[]): Promise<Map<string, {
+  firstName: string;
+  lastName: string;
+  name: string;
+  jobTitle?: string;
+}>> {
+  if (!emails || emails.length === 0) {
+    return new Map();
+  }
+
+  const uniqueEmails = [...new Set(emails.filter(e => e))];
+  if (uniqueEmails.length === 0) {
+    return new Map();
+  }
+
+  try {
+    const pool = await getSharedPool();
+    const result = await pool.query(
+      `SELECT email, first_name, last_name, job_title 
+       FROM users 
+       WHERE email = ANY($1)`,
+      [uniqueEmails]
+    );
+
+    const userMap = new Map<string, { firstName: string; lastName: string; name: string; jobTitle?: string }>();
+    for (const row of result.rows) {
+      userMap.set(row.email, {
+        firstName: row.first_name || '',
+        lastName: row.last_name || '',
+        name: row.first_name && row.last_name 
+          ? `${row.first_name} ${row.last_name}` 
+          : row.first_name || row.last_name || row.email,
+        jobTitle: row.job_title,
+      });
+    }
+    return userMap;
+  } catch (error) {
+    console.error('Failed to batch fetch user info:', error);
+    return new Map();
+  }
+}
+
+/**
+ * Enrich an array of objects with user names from shared database
+ * @param items - Array of objects containing user email references
+ * @param emailFields - Array of field names that contain emails to look up
+ * @param nameFields - Corresponding field names to set with user names
+ */
+export async function enrichWithUserNames<T extends Record<string, any>>(
+  items: T[],
+  emailFields: string[],
+  nameFields: string[]
+): Promise<T[]> {
+  if (!items || items.length === 0) return items;
+
+  // Collect all unique emails
+  const allEmails: string[] = [];
+  for (const item of items) {
+    for (const field of emailFields) {
+      if (item[field]) {
+        allEmails.push(item[field]);
+      }
+    }
+  }
+
+  // Batch fetch user info
+  const userInfo = await getUserInfoBatch(allEmails);
+
+  // Enrich items
+  return items.map(item => {
+    const enriched = { ...item };
+    for (let i = 0; i < emailFields.length; i++) {
+      const email = item[emailFields[i]];
+      if (email && userInfo.has(email)) {
+        const user = userInfo.get(email)!;
+        enriched[nameFields[i]] = user.name;
+      }
+    }
+    return enriched;
+  });
+}
+
+// ============================================================================
+// DEPRECATED - For backward compatibility during migration
+// ============================================================================
+
+/**
+ * @deprecated Use getOrgPool(orgId) instead
+ * Extract domain from email - kept for migration purposes only
+ */
+export function getDomainFromEmail(email: string): string {
+  console.warn('⚠️ getDomainFromEmail is deprecated. Use getOrgPool(orgId) instead.');
+  const domain = email.split('@')[1];
+  if (!domain) {
+    throw new Error(`Invalid email format: ${email}`);
+  }
+  const sanitized = domain.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (sanitized && /^\d/.test(sanitized)) {
+    return 'db_' + sanitized;
+  }
+  return sanitized;
+}
+
+/**
+ * @deprecated Use getOrgPool(orgId) instead
+ * Get tenant pool by email domain - kept for migration purposes only
+ */
+export async function getTenantPool(userEmail: string): Promise<Pool> {
+  console.warn('⚠️ getTenantPool is deprecated. Use getOrgPool(orgId) instead.');
+  const domain = getDomainFromEmail(userEmail);
+  
+  if (orgPools.has(domain)) {
+    return orgPools.get(domain)!;
+  }
+
+  console.log(`🔌 [DEPRECATED] Creating pool for domain: ${domain}`);
+  const pool = await createPool(domain);
+  await initializeSchemaForDatabase(pool, domain, 'schema.sql');
+  orgPools.set(domain, pool);
+  
+  return pool;
+}
+
+/**
+ * @deprecated Use getSharedPool() or getOrgPoolBySlug() instead
+ */
+export async function getTenantPoolByDbName(dbName: string): Promise<Pool> {
+  console.warn('⚠️ getTenantPoolByDbName is deprecated.');
+  
+  if (dbName === SHARED_DB_NAME || dbName === 'shared') {
+    return getSharedPool();
+  }
+  
+  if (orgPools.has(dbName)) {
+    return orgPools.get(dbName)!;
+  }
+
+  const pool = await createPool(dbName);
+  await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
+  orgPools.set(dbName, pool);
+  
+  return pool;
+}

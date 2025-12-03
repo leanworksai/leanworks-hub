@@ -568,7 +568,7 @@ export const taskQueries = {
 
 // Messages are stored ONLY in Firestore for real-time capabilities
 // No PostgreSQL queries needed - all message operations use Firestore directly
-// Path: domains/{domain}/messages
+// Path: orgs/{orgId}/messages
 // This ensures true real-time messaging without sync complexity
 
 // ============================================================================

@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users } from "lucide-react";
+import { Bell, Search, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -16,8 +16,9 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, NavLink } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOrg } from "@/contexts/OrgContext";
 import { usersService } from "@/services/api";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
@@ -40,6 +41,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations, acceptInvitation: acceptOrgInvitation, declineInvitation: declineOrgInvitation } = useOrg();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
   const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
@@ -63,10 +65,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     (invitation: TeamInvitation) => invitation.status === 'pending'
   );
 
-  // Get total pending notifications count
+  // Get total pending notifications count (including org invitations)
   const pendingRequestsCount = manageableRequests.length;
   const pendingInvitationsCount = userInvitations.length;
-  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount;
+  const pendingOrgInvitationsCount = orgInvitations.length;
+  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + pendingOrgInvitationsCount;
 
 
   useEffect(() => {
@@ -185,6 +188,27 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     }
   };
 
+  // Handle accept org invitation
+  const handleAcceptOrgInvitation = async (invitationId: string) => {
+    try {
+      const org = await acceptOrgInvitation(invitationId);
+      toast.success(`You've joined ${org.name}`);
+      await switchOrg(org.id);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to accept invitation');
+    }
+  };
+
+  // Handle decline org invitation
+  const handleDeclineOrgInvitation = async (invitationId: string) => {
+    try {
+      await declineOrgInvitation(invitationId);
+      toast.success('Invitation declined');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to decline invitation');
+    }
+  };
+
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full">
@@ -193,6 +217,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
           <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-lg">
             <div className="flex h-16 items-center gap-4 px-6">
               <SidebarTrigger className="-ml-2" />
+              
               <div className="flex-1 flex items-center gap-4">
                 <div className="relative w-full max-w-md">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -254,6 +279,64 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       </div>
                     ) : (
                       <div className="max-h-96 overflow-y-auto">
+                        {/* Org Invitations */}
+                        {orgInvitations.map((invitation) => (
+                          <div
+                            key={invitation.id}
+                            className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"
+                          >
+                            <div className="flex items-start gap-3 mb-3">
+                              <Avatar className="h-10 w-10 flex-shrink-0">
+                                <AvatarFallback className={`${getAvatarColor(invitation.inviterEmail || invitation.inviterName)} text-xs`}>
+                                  {getUserInitials(invitation.inviterName, invitation.inviterEmail)}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className="font-semibold text-sm truncate">{invitation.inviterName}</p>
+                                  <Badge variant="outline" className="text-xs flex-shrink-0">
+                                    <Clock className="mr-1 h-3 w-3" />
+                                    Org Invitation
+                                  </Badge>
+                                </div>
+                                <p className="text-xs text-muted-foreground truncate mb-1">
+                                  {invitation.inviterEmail}
+                                </p>
+                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                  <Building2 className="h-3 w-3 flex-shrink-0" />
+                                  <span className="truncate">
+                                    Invited you to join <span className="font-medium text-foreground">{invitation.orgName}</span>
+                                  </span>
+                                </div>
+                                {invitation.createdAt && (
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {formatDate(invitation.createdAt)}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="flex-1 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => handleDeclineOrgInvitation(invitation.id)}
+                              >
+                                <X className="mr-2 h-3 w-3" />
+                                Decline
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="flex-1 bg-primary hover:bg-primary/90"
+                                onClick={() => handleAcceptOrgInvitation(invitation.id)}
+                              >
+                                <Check className="mr-2 h-3 w-3" />
+                                Accept
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+
                         {/* Team Invitations */}
                         {userInvitations.map((invitation: TeamInvitation) => (
                           <div

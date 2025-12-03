@@ -31,6 +31,42 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "callerEmail",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "chatId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "calls",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "calleeEmail",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "chatId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

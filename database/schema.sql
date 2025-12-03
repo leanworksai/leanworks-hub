@@ -1,41 +1,30 @@
--- Leanworks Hub PostgreSQL Schema
--- Database: leanworks-prod
--- Migration from Firestore to PostgreSQL
+-- Leanworks Hub Per-Organization PostgreSQL Schema
+-- Database: org_{slug} (one database per organization)
+-- Contains: teams, projects, tasks, updates, integrations, notes
+-- NOTE: Users and demo_requests are in the shared database (shared)
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ============================================================================
--- CORE TABLES
+-- NOTES ON ARCHITECTURE
 -- ============================================================================
-
--- Users table (replaces domains/{domain}/users)
-CREATE TABLE IF NOT EXISTS users (
-  email VARCHAR(255) PRIMARY KEY,
-  password_hash VARCHAR(255) NOT NULL,
-  first_name VARCHAR(100) NOT NULL,
-  last_name VARCHAR(100) NOT NULL,
-  job_title VARCHAR(100) NOT NULL,
-  timezone VARCHAR(100) NOT NULL,
-  responsibilities TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  last_login TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
+-- This schema is for per-organization databases.
+-- User data is stored in the shared database (shared).
+-- Email references to users are NOT foreign keys since users are in a different DB.
+-- The application layer is responsible for validating user membership.
 
 -- ============================================================================
 -- TEAMS TABLES
 -- ============================================================================
 
--- Teams table (replaces domains/{domain}/teams)
+-- Teams table
 CREATE TABLE IF NOT EXISTS teams (
   id VARCHAR(50) PRIMARY KEY,
   name VARCHAR(255) NOT NULL UNIQUE,
   description TEXT,
   avatar VARCHAR(10),
-  owner_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -47,7 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_teams_name ON teams(name);
 CREATE TABLE IF NOT EXISTS team_members (
   id SERIAL PRIMARY KEY,
   team_id VARCHAR(50) NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  user_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  user_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   role VARCHAR(100),
   avatar VARCHAR(10),
   joined_at TIMESTAMP DEFAULT NOW(),
@@ -57,17 +46,17 @@ CREATE TABLE IF NOT EXISTS team_members (
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_email);
 
--- Team join requests (replaces domains/{domain}/teamJoinRequests)
+-- Team join requests
 CREATE TABLE IF NOT EXISTS team_join_requests (
   id SERIAL PRIMARY KEY,
   team_id VARCHAR(50) NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  user_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  user_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   user_name VARCHAR(255),
   status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
-  owner_email VARCHAR(255) NOT NULL REFERENCES users(email),
+  owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW(),
-  processed_by VARCHAR(255) REFERENCES users(email),
+  processed_by VARCHAR(255),  -- References user in shared DB
   processed_at TIMESTAMP
 );
 
@@ -75,13 +64,13 @@ CREATE INDEX IF NOT EXISTS idx_team_join_requests_status ON team_join_requests(s
 CREATE INDEX IF NOT EXISTS idx_team_join_requests_owner ON team_join_requests(owner_email);
 CREATE INDEX IF NOT EXISTS idx_team_join_requests_team ON team_join_requests(team_id);
 
--- Team invitations (replaces domains/{domain}/teamInvitations)
+-- Team invitations
 CREATE TABLE IF NOT EXISTS team_invitations (
   id SERIAL PRIMARY KEY,
   team_id VARCHAR(50) NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
   team_description TEXT,
-  invitee_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
-  inviter_email VARCHAR(255) NOT NULL REFERENCES users(email),
+  invitee_email VARCHAR(255) NOT NULL,  -- References user in shared DB
+  inviter_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   inviter_name VARCHAR(255),
   status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'accepted', 'declined')),
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -96,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_team_invitations_team ON team_invitations(team_id
 -- PROJECTS TABLES
 -- ============================================================================
 
--- Projects table (replaces domains/{domain}/projects)
+-- Projects table
 CREATE TABLE IF NOT EXISTS projects (
   id VARCHAR(50) PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
@@ -107,7 +96,7 @@ CREATE TABLE IF NOT EXISTS projects (
   start_date DATE,
   end_date DATE,
   due_date DATE,
-  owner_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -121,7 +110,7 @@ CREATE INDEX IF NOT EXISTS idx_projects_priority ON projects(priority);
 CREATE TABLE IF NOT EXISTS project_members (
   id SERIAL PRIMARY KEY,
   project_id VARCHAR(50) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  user_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  user_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   role VARCHAR(100),
   avatar VARCHAR(10),
   joined_at TIMESTAMP DEFAULT NOW(),
@@ -130,10 +119,6 @@ CREATE TABLE IF NOT EXISTS project_members (
 
 CREATE INDEX IF NOT EXISTS idx_project_members_project ON project_members(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_email);
-
--- Project progress updates (normalized from projects.progressUpdates array)
--- Project progress updates removed - use updates table with associated_tasks instead
--- Updates table (below) handles all project/task updates with proper task associations
 
 -- Project comments (normalized from projects.comments array)
 CREATE TABLE IF NOT EXISTS project_comments (
@@ -152,19 +137,19 @@ CREATE INDEX IF NOT EXISTS idx_project_comments_project ON project_comments(proj
 -- TASKS TABLES
 -- ============================================================================
 
--- Tasks table (replaces domains/{domain}/tasks)
+-- Tasks table
 CREATE TABLE IF NOT EXISTS tasks (
   id VARCHAR(50) PRIMARY KEY,
   title VARCHAR(255) NOT NULL,
   description TEXT,
   status VARCHAR(20) CHECK (status IN ('todo', 'in-progress', 'review', 'completed', 'blocked')),
   priority VARCHAR(20) CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
-  assignee_id VARCHAR(255) REFERENCES users(email) ON DELETE SET NULL,
+  assignee_id VARCHAR(255),  -- References user in shared DB (email)
   assignee_name VARCHAR(255),
   assignee_avatar VARCHAR(10),
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE CASCADE,
   project_name VARCHAR(255),
-  created_by VARCHAR(255) REFERENCES users(email) ON DELETE SET NULL,
+  created_by VARCHAR(255),  -- References user in shared DB (email)
   due_date DATE,
   created_date DATE,
   created_at BIGINT,
@@ -181,13 +166,6 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_tags ON tasks USING GIN (tags);
-
--- Task-Team association removed - tasks are associated with projects, which are associated with teams
--- Use: tasks.project_id -> projects.team_id to find team relationships
-
--- Task progress updates (normalized from tasks.progressUpdates array)
--- Task progress updates removed - use updates table with associated_tasks instead  
--- Updates table handles all task updates through associated_tasks JSONB array
 
 -- Task comments (normalized from tasks.comments array)
 CREATE TABLE IF NOT EXISTS task_comments (
@@ -206,12 +184,12 @@ CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 -- UPDATES TABLES
 -- ============================================================================
 
--- Task progress updates table (replaces domains/{domain}/updates)
+-- Task progress updates table
 CREATE TABLE IF NOT EXISTS task_progress_updates (
   id SERIAL PRIMARY KEY,
   update_id VARCHAR(50) UNIQUE,
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE CASCADE,
-  user_id VARCHAR(255) REFERENCES users(email) ON DELETE SET NULL,
+  user_id VARCHAR(255),  -- References user in shared DB (email)
   associated_tasks JSONB DEFAULT '[]'::jsonb,
   date_id DATE,
   reason TEXT,
@@ -224,7 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_task_progress_updates_date ON task_progress_updat
 CREATE INDEX IF NOT EXISTS idx_task_progress_updates_user ON task_progress_updates(user_id);
 CREATE INDEX IF NOT EXISTS idx_task_progress_updates_timestamp ON task_progress_updates(timestamp);
 
--- Project progress updates (replaces domains/{domain}/update_summaries)
+-- Project progress updates (update summaries)
 CREATE TABLE IF NOT EXISTS project_progress_updates (
   id SERIAL PRIMARY KEY,
   project_id VARCHAR(50) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -240,7 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_project_progress_updates_project_date ON project_
 -- INTEGRATIONS TABLES
 -- ============================================================================
 
--- Integrations table (replaces domains/{domain}/integrations)
+-- Integrations table
 CREATE TABLE IF NOT EXISTS integrations (
   id SERIAL PRIMARY KEY,
   integration_id VARCHAR(50) NOT NULL UNIQUE,
@@ -255,7 +233,7 @@ CREATE TABLE IF NOT EXISTS integrations (
 
 CREATE INDEX IF NOT EXISTS idx_integrations_integration_id ON integrations(integration_id);
 
--- GitHub installations (replaces root-level github-installations collection)
+-- GitHub installations
 CREATE TABLE IF NOT EXISTS github_installations (
   installation_id BIGINT PRIMARY KEY,
   setup_action VARCHAR(50),
@@ -264,13 +242,28 @@ CREATE TABLE IF NOT EXISTS github_installations (
 );
 
 -- ============================================================================
--- MESSAGES - FIRESTORE ONLY
+-- NOTES TABLES
 -- ============================================================================
 
--- Messages are stored ONLY in Firestore for real-time messaging
--- Path: domains/{domain}/messages
--- No PostgreSQL table needed - Firestore handles all message storage
--- This ensures true real-time capabilities without sync complexity
+-- Notes table
+CREATE TABLE IF NOT EXISTS notes (
+  id VARCHAR(50) PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,  -- Rich text content (HTML)
+  owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
+  project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
+  team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
+  tags JSONB DEFAULT '[]'::jsonb,
+  is_pinned BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_email);
+CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
+CREATE INDEX IF NOT EXISTS idx_notes_team ON notes(team_id);
+CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(is_pinned DESC, created_at DESC);
 
 -- ============================================================================
 -- MATERIALIZED VIEWS FOR ANALYTICS
@@ -333,9 +326,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Apply to all tables with updated_at
-DROP TRIGGER IF EXISTS update_users_updated_at ON users;
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
 DROP TRIGGER IF EXISTS update_teams_updated_at ON teams;
 CREATE TRIGGER update_teams_updated_at BEFORE UPDATE ON teams FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -345,58 +335,15 @@ CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW
 DROP TRIGGER IF EXISTS update_tasks_updated_at ON tasks;
 CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- ============================================================================
--- DEMO REQUESTS TABLE
--- ============================================================================
-
--- Demo requests table (for public demo request form submissions)
-CREATE TABLE IF NOT EXISTS demo_requests (
-  id SERIAL PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  email VARCHAR(255) NOT NULL,
-  company VARCHAR(255),
-  message TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_demo_requests_email ON demo_requests(email);
-CREATE INDEX IF NOT EXISTS idx_demo_requests_created_at ON demo_requests(created_at);
-
--- ============================================================================
--- NOTES TABLES
--- ============================================================================
-
--- Notes table
-CREATE TABLE IF NOT EXISTS notes (
-  id VARCHAR(50) PRIMARY KEY,
-  title VARCHAR(255) NOT NULL,
-  content TEXT NOT NULL, -- Rich text content (HTML)
-  owner_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
-  project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
-  team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
-  tags JSONB DEFAULT '[]'::jsonb,
-  is_pinned BOOLEAN DEFAULT FALSE,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_email);
-CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
-CREATE INDEX IF NOT EXISTS idx_notes_team ON notes(team_id);
-CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(is_pinned DESC, created_at DESC);
-
--- Trigger to update updated_at timestamp
 DROP TRIGGER IF EXISTS update_notes_updated_at ON notes;
 CREATE TRIGGER update_notes_updated_at BEFORE UPDATE ON notes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
--- GRANTS (adjust as needed for your user)
+-- COMMENTS
 -- ============================================================================
 
--- Grant permissions to the application user (adjust username as needed)
--- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO leanworks_app;
--- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO leanworks_app;
-
-COMMENT ON DATABASE "leanworks-prod" IS 'Leanworks Hub - Migrated from Firestore';
-
+COMMENT ON TABLE teams IS 'Teams within this organization';
+COMMENT ON TABLE projects IS 'Projects within this organization';
+COMMENT ON TABLE tasks IS 'Tasks within this organization';
+COMMENT ON TABLE notes IS 'Notes within this organization';
+COMMENT ON TABLE integrations IS 'Third-party integrations for this organization';

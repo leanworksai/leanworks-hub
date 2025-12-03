@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { usersService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
+import { useOrg } from '@/contexts/OrgContext';
 
 export interface User {
   email: string;
@@ -14,11 +15,12 @@ export interface User {
 
 export const useUsers = () => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['users'],
+    queryKey: ['users', currentOrg?.id],
     queryFn: () => usersService.getAll() as Promise<User[]>,
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };

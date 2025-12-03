@@ -18,9 +18,6 @@ import {
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
-import { useUserTeams } from "@/hooks/useTeams";
-import { teamsService } from "@/services/api";
-import { useQueries } from "@tanstack/react-query";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
@@ -100,47 +97,24 @@ export default function ProjectDetail() {
   const { toast } = useToast();
   
   // Fetch project by ID
+  // Backend already handles access control - if user doesn't have access, it returns 403
   const { data: project, isLoading: isLoadingProject, error: projectError } = useProject(projectId || '');
   const { data: projects = [] } = useUserProjects();
   const { user } = useAuth();
-  const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
   
-  // Fetch team details to check project access
-  const teamDetailsQueries = useQueries({
-    queries: userTeams.map((team) => ({
-      queryKey: ['teams', team.id],
-      queryFn: () => teamsService.getById(team.id),
-      enabled: !!team.id && !!user?.email,
-      staleTime: 1000 * 60 * 5,
-    })),
-  });
-  
-  // Check if team details are still loading
-  const isLoadingTeamDetails = teamDetailsQueries.some((query) => query.isLoading);
-  const allTeamDetailsLoaded = teamDetailsQueries.length === 0 || teamDetailsQueries.every(
-    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
-  );
-  
-  const isLoading = isLoadingProject || isLoadingTeamDetails || !allTeamDetailsLoaded;
-  
-  // Get all team member names from user's teams
-  const userTeamMemberNames = new Set<string>();
-  if (allTeamDetailsLoaded) {
-    teamDetailsQueries.forEach((query) => {
-      if (query.data?.members) {
-        query.data.members.forEach((member) => {
-          userTeamMemberNames.add(member.name.toLowerCase());
-        });
-      }
-    });
-  }
+  const isLoading = isLoadingProject;
   
   // Get user's email for access check
   const userEmail = user?.email?.toLowerCase();
   
-  // Check if current user is the project owner
+  // Check if current user is the project owner (for UI permissions)
   const isOwner = project && userEmail && project.ownerEmail?.toLowerCase() === userEmail;
+  
+  // Check if current user is a project member (for UI permissions)
+  const isMember = project && userEmail && project.members.some((member) => 
+    member.email?.toLowerCase() === userEmail || member.id?.toLowerCase() === userEmail
+  );
   
   // Get available users to add (exclude existing members)
   const existingMemberEmails = new Set(
@@ -160,40 +134,21 @@ export default function ProjectDetail() {
     return fullName.includes(query) || email.includes(query) || jobTitle.includes(query);
   });
   
-  // Check if user has access to the project:
-  // 1. User is the owner, OR
-  // 2. User is a project member (by email match), OR
-  // 3. At least one project member is from user's teams (by name match)
-  // Only check access after all data is loaded
-  const hasAccess = project && allTeamDetailsLoaded ? (() => {
-    // Always allow if user is the owner
-    if (userEmail && project.ownerEmail?.toLowerCase() === userEmail) {
-      return true;
-    }
-    
-    // Check if user is a project member by email
-    if (userEmail && project.members.some((member) => 
-      member.email?.toLowerCase() === userEmail
-    )) {
-      return true;
-    }
-    
-    // Check if any project member is from user's teams (by name match)
-    if (userTeamMemberNames.size > 0) {
-      return project.members.some((member) =>
-        userTeamMemberNames.has(member.name.toLowerCase())
-      );
-    }
-    
-    return false;
-  })() : true; // Default to true while loading to avoid premature redirects
-  
-  // Redirect if user doesn't have access (only after all data is loaded)
+  // Redirect if backend returns 403 (access denied) or project not found
   useEffect(() => {
-    if (!isLoading && !isLoadingTeamDetails && project && allTeamDetailsLoaded && !hasAccess) {
+    if (!isLoading && projectError) {
+      // If it's a 403 or 404, redirect to projects list
+      const status = (projectError as any)?.response?.status || (projectError as any)?.status;
+      if (status === 403 || status === 404) {
       navigate("/projects");
+        toast({
+          title: "Access Denied",
+          description: "You don't have access to this project.",
+          variant: "destructive",
+        });
     }
-  }, [isLoading, isLoadingTeamDetails, project, hasAccess, allTeamDetailsLoaded, navigate]);
+    }
+  }, [isLoading, projectError, navigate, toast]);
 
   // Reset task page index when project changes
   useEffect(() => {
@@ -235,20 +190,6 @@ export default function ProjectDetail() {
     );
   }
 
-  // Show access denied if user doesn't have access (only after all data is loaded)
-  if (project && allTeamDetailsLoaded && !hasAccess && !isLoading) {
-    return (
-      <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
-        </Button>
-        <div className="text-center py-12">
-          <p className="text-muted-foreground">You don't have access to this project.</p>
-        </div>
-      </div>
-    );
-  }
 
   // Show loading state
   if (isLoading) {

@@ -16,6 +16,7 @@ const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 const STORAGE_KEYS = {
   CUSTOM_TOKEN: 'leanworks_custom_token',
   USER_DATA: 'leanworks_user_data',
+  CURRENT_ORG: 'leanworks_current_org',
 };
 
 // Store custom token for API requests (bypasses Firebase Auth if needed)
@@ -47,7 +48,10 @@ const storage = {
   },
   clear: (): void => {
     try {
-      Object.values(STORAGE_KEYS).forEach(key => localStorage.removeItem(key));
+      // Clear auth-related keys but preserve org selection
+      localStorage.removeItem(STORAGE_KEYS.CUSTOM_TOKEN);
+      localStorage.removeItem(STORAGE_KEYS.USER_DATA);
+      // Don't clear CURRENT_ORG - preserve user's org selection across sessions
     } catch (error) {
       console.warn('Failed to clear localStorage:', error);
     }
@@ -291,6 +295,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Persist user data to localStorage
       storage.set(STORAGE_KEYS.USER_DATA, JSON.stringify(userData));
       
+      // Store default org ID if provided by login response
+      if (data.defaultOrgId && data.organizations?.length > 0) {
+        const defaultOrg = data.organizations.find((org: any) => org.id === data.defaultOrgId) || data.organizations[0];
+        if (defaultOrg) {
+          storage.set(STORAGE_KEYS.CURRENT_ORG, JSON.stringify({
+            id: defaultOrg.id,
+            name: defaultOrg.name,
+            slug: defaultOrg.slug,
+            type: defaultOrg.type,
+          }));
+        }
+      }
+      
       // Try to sign in with custom token (may fail if Firebase not initialized properly)
       // Only attempt if Firebase is properly configured
       if (auth && isFirebaseConfigured()) {
@@ -299,6 +316,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           
           await signInWithCustomToken(auth, data.customToken);
           console.log('signInWithCustomToken completed successfully');
+          
+          // Force refresh the ID token to ensure it includes the email claim
+          // This is important for Firestore security rules that check request.auth.token.email
+          if (auth.currentUser) {
+            try {
+              await auth.currentUser.getIdToken(true); // Force refresh
+              console.log('✅ ID token refreshed after sign-in');
+            } catch (tokenError: any) {
+              console.warn('⚠️ Failed to refresh ID token (non-critical):', tokenError.message);
+            }
+          }
           
           // Wait for auth.currentUser to be available using onAuthStateChanged
           // This is more reliable than polling
@@ -498,8 +526,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       storedCustomToken = null;
       (window as any).__customToken = null;
       
-      // Clear localStorage cache
+      // Clear localStorage cache (including org selection on logout)
       storage.clear();
+      // Also explicitly clear org selection on logout
+      try {
+        localStorage.removeItem(STORAGE_KEYS.CURRENT_ORG);
+      } catch (e) {
+        // ignore
+      }
       
       // Clear user state
       setUser(null);
@@ -517,6 +551,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       storedCustomToken = null;
       (window as any).__customToken = null;
       storage.clear();
+      // Also explicitly clear org selection on logout error
+      try {
+        localStorage.removeItem(STORAGE_KEYS.CURRENT_ORG);
+      } catch (e) {
+        // ignore
+      }
       setUser(null);
       
       toast({

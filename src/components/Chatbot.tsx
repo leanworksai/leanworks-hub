@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
+import { X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/api";
 import { CallStatus } from "@/hooks/useWebRTC";
@@ -24,6 +24,7 @@ import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOrg } from "@/contexts/OrgContext";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -108,6 +109,7 @@ export function Chatbot() {
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
   const { user } = useAuth();
+  const { currentOrg } = useOrg();
   
   // Calculate current user's full profile data once (has firstName/lastName)
   // AuthContext user only has email, not firstName/lastName
@@ -132,6 +134,186 @@ export function Chatbot() {
     };
   }, [currentUserProfile, user?.email]);
   const [isOpen, setIsOpen] = useState(false);
+  
+  // Clear old cache entries that don't have orgId (from domain-based system)
+  const clearLegacyMessageCaches = useCallback(() => {
+    if (!user?.email) return;
+    const userEmailLower = user.email.toLowerCase();
+    const keysToRemove: string[] = [];
+    
+    try {
+      // UUID pattern: 8-4-4-4-12 hex characters (e.g., 550e8400-e29b-41d4-a716-446655440000)
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const currentOrgId = currentOrg?.id || 'default';
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        
+        // Only process keys that start with chat_messages_
+        if (!key.startsWith('chat_messages_')) continue;
+        
+        // Extract the part after "chat_messages_"
+        const afterPrefix = key.substring('chat_messages_'.length);
+        
+        // Check if this is the old format (starts directly with email, no orgId)
+        // Old format: chat_messages_{email}_{chatId}
+        // New format: chat_messages_{orgId}_{email}_{chatId} (orgId is UUID)
+        if (afterPrefix.startsWith(userEmailLower + '_')) {
+          // This is old format - remove it
+            keysToRemove.push(key);
+          continue;
+        }
+        
+        // Check if it's new format but orgId is invalid (not a UUID)
+        // Split by underscore to check parts
+        const parts = afterPrefix.split('_');
+        if (parts.length >= 2) {
+          const firstPart = parts[0];
+          // If first part is not a UUID and not 'default', it might be old format
+          if (!uuidPattern.test(firstPart) && firstPart !== 'default') {
+            // Check if second part is the email (indicating old format with wrong first part)
+            if (parts[1] === userEmailLower) {
+              keysToRemove.push(key);
+              continue;
+        }
+      }
+          
+          // Additional check: if cache key has orgId but it doesn't match current org, remove it
+          // This handles cases where user switched orgs and old cache entries remain
+          if (uuidPattern.test(firstPart) && firstPart !== currentOrgId && parts[1] === userEmailLower) {
+            // This cache belongs to a different org - remove it
+            keysToRemove.push(key);
+            continue;
+          }
+        }
+        
+        // Special handling for project- and team- channels: ensure they have correct orgId
+        // Check if chatId contains project- or team- prefix
+        const chatIdPart = afterPrefix.includes('_') ? afterPrefix.substring(afterPrefix.indexOf('_', afterPrefix.indexOf('_') + 1) + 1) : '';
+        if (chatIdPart.startsWith('project-') || chatIdPart.startsWith('team-')) {
+          // This is a channel cache - verify it has correct orgId
+          if (parts.length >= 2 && parts[1] === userEmailLower) {
+            const cacheOrgId = parts[0];
+            if (cacheOrgId !== currentOrgId && cacheOrgId !== 'default') {
+              // Wrong org - remove it
+              keysToRemove.push(key);
+              continue;
+            }
+          }
+        }
+      }
+      
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+      if (keysToRemove.length > 0) {
+        console.log(`🧹 Cleared ${keysToRemove.length} legacy message cache entries (domain-based format)`);
+      }
+    } catch (error) {
+      console.error('Failed to clear legacy message caches:', error);
+    }
+  }, [user?.email, currentOrg?.id]);
+
+  // Clear legacy message caches (domain-based format) on mount and when org changes
+  useEffect(() => {
+    clearLegacyMessageCaches();
+    
+    // Clear channelMessages state when org changes to prevent showing old messages
+    if (currentOrg?.id) {
+      setChannelMessages(new Map());
+      console.log('🧹 Cleared channelMessages state due to org change');
+    }
+    
+    // Also do a one-time aggressive cleanup of ALL old format cache entries
+    // This ensures we catch any edge cases the main cleanup might miss
+    if (!user?.email) return;
+    try {
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const currentOrgId = currentOrg?.id || 'default';
+      const userEmailLower = user.email.toLowerCase();
+      const keysToRemove: string[] = [];
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith('chat_messages_')) continue;
+        
+        const afterPrefix = key.substring('chat_messages_'.length);
+        const parts = afterPrefix.split('_');
+        
+        if (parts.length === 0) continue;
+        
+        const firstPart = parts[0];
+        
+        // If it doesn't start with a UUID or 'default', it's likely old format
+        if (!uuidPattern.test(firstPart) && firstPart !== 'default') {
+          // This is likely old format - remove it
+          keysToRemove.push(key);
+          continue;
+        }
+        
+        // Check if cache belongs to wrong org (if it has a valid UUID but doesn't match current org)
+        if (parts.length >= 2 && parts[1] === userEmailLower) {
+          const cacheOrgId = firstPart;
+          // If it's a valid UUID but doesn't match current org, remove it
+          if (uuidPattern.test(cacheOrgId) && cacheOrgId !== currentOrgId) {
+            keysToRemove.push(key);
+            continue;
+          }
+        }
+        
+        // Special check for channel caches (project- or team- prefixes)
+        // Reconstruct chatId to check if it's a channel
+        if (parts.length >= 3) {
+          const chatId = parts.slice(2).join('_'); // Everything after orgId_email
+          if (chatId.startsWith('project-') || chatId.startsWith('team-')) {
+            // This is a channel cache - verify orgId matches
+            if (uuidPattern.test(firstPart) && firstPart !== currentOrgId) {
+              keysToRemove.push(key);
+              continue;
+            }
+            // Also remove if it's 'default' org but we have a real orgId
+            if (firstPart === 'default' && currentOrgId !== 'default') {
+              keysToRemove.push(key);
+              continue;
+            }
+          }
+        }
+      }
+      
+      // Additional aggressive cleanup: remove ALL project- and team- cache entries that don't match current org
+      // This is a safety net to catch any edge cases
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith('chat_messages_')) continue;
+        
+        // Check if this is a project or team channel cache
+        if (key.includes('_project-') || key.includes('_team-')) {
+          const afterPrefix = key.substring('chat_messages_'.length);
+          const parts = afterPrefix.split('_');
+          
+          if (parts.length >= 3) {
+            const cacheOrgId = parts[0];
+            const chatId = parts.slice(2).join('_');
+            
+            // If it's a channel cache and orgId doesn't match, remove it
+            if ((chatId.startsWith('project-') || chatId.startsWith('team-')) && 
+                cacheOrgId !== currentOrgId) {
+              // Don't add duplicates
+              if (!keysToRemove.includes(key)) {
+                keysToRemove.push(key);
+              }
+            }
+          }
+        }
+      }
+      
+      if (keysToRemove.length > 0) {
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+        console.log(`🧹 Aggressive cleanup: Cleared ${keysToRemove.length} additional legacy cache entries (including wrong org and channels)`);
+      }
+    } catch (error) {
+      console.error('Failed to perform aggressive cache cleanup:', error);
+    }
+  }, [clearLegacyMessageCaches, currentOrg?.id, user?.email]);
   
   // Load last selected member from localStorage
   const getLastSelectedMember = useCallback((): string => {
@@ -249,12 +431,23 @@ export function Chatbot() {
   // Helper functions for message caching
   const getCacheKey = (chatId: string) => {
     if (!user?.email) return null;
-    return `chat_messages_${user.email.toLowerCase()}_${chatId}`;
+    const orgId = currentOrg?.id || 'default';
+    // Include orgId in cache key to isolate messages per organization
+    // This ensures old cached messages from domain-based system don't show up
+    return `chat_messages_${orgId}_${user.email.toLowerCase()}_${chatId}`;
   };
 
   const loadCachedMessages = (chatId: string): { messages: ChatMessage[], lastSync: number } | null => {
     const cacheKey = getCacheKey(chatId);
     if (!cacheKey) return null;
+    
+    // Safety check: ensure cache key matches current org
+    const currentOrgId = currentOrg?.id || 'default';
+    if (!cacheKey.includes(currentOrgId)) {
+      // Cache key doesn't match current org - don't load it
+      console.warn('⚠️ Cache key mismatch - skipping cache load', { cacheKey, currentOrgId });
+      return null;
+    }
     
     try {
       const cached = localStorage.getItem(cacheKey);
@@ -351,7 +544,9 @@ export function Chatbot() {
 
   const clearOldMessageCaches = () => {
     if (!user?.email) return;
-    const prefix = `chat_messages_${user.email.toLowerCase()}_`;
+    const orgId = currentOrg?.id || 'default';
+    // Include orgId in prefix to only clear caches for current organization
+    const prefix = `chat_messages_${orgId}_${user.email.toLowerCase()}_`;
     const keysToRemove: string[] = [];
     
     try {
@@ -1570,7 +1765,9 @@ export function Chatbot() {
               if (newMessages.length > 0 || !hasCachedMessages) {
                 const messageMap = new Map<string, ChatMessage>();
                 if (cached) {
-                  cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+                  if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
                 }
                 newMessages.forEach(msg => messageMap.set(msg.id, msg));
 
@@ -1748,15 +1945,65 @@ export function Chatbot() {
     const cached = (isInitialLoad && cacheLoadedForSession) 
       ? (allChatCaches.get(chatId) || loadCachedMessages(chatId))
       : null;
-    const hasCachedMessages = cached && cached.messages.length > 0;
-    const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
+    
+    // Additional safety check: verify cached messages belong to current org
+    // This prevents loading old messages from wrong org, especially for channels
+    let validCached = cached;
+    if (cached && currentOrg?.id) {
+      const cacheKey = getCacheKey(chatId);
+      if (cacheKey && !cacheKey.includes(currentOrg.id)) {
+        // Cache key doesn't match current org - don't use it
+        console.warn('⚠️ Cache key org mismatch - ignoring cached messages', { 
+          chatId, 
+          cacheKey, 
+          currentOrgId: currentOrg.id,
+          isProjectChannel: chatId.startsWith('project-'),
+          isTeamChannel: chatId.startsWith('team-'),
+        });
+        validCached = null;
+      }
+      
+      // Additional check for project/team channels: verify messages have correct projectId/teamId
+      if (validCached && validCached.messages.length > 0) {
+        if (isProjectChannel && selectedProjectId) {
+          // Verify all cached messages belong to this project
+          const invalidMessages = validCached.messages.filter(
+            msg => msg.projectId !== selectedProjectId
+          );
+          if (invalidMessages.length > 0) {
+            console.warn('⚠️ Found cached messages with wrong projectId - ignoring cache', {
+              chatId,
+              selectedProjectId,
+              invalidCount: invalidMessages.length,
+            });
+            validCached = null;
+          }
+        } else if (isTeamChannel && selectedTeamId) {
+          // Verify all cached messages belong to this team
+          const invalidMessages = validCached.messages.filter(
+            msg => msg.teamId !== selectedTeamId
+          );
+          if (invalidMessages.length > 0) {
+            console.warn('⚠️ Found cached messages with wrong teamId - ignoring cache', {
+              chatId,
+              selectedTeamId,
+              invalidCount: invalidMessages.length,
+            });
+            validCached = null;
+          }
+        }
+      }
+    }
+    
+    const hasCachedMessages = validCached && validCached.messages.length > 0;
+    const cacheIsStale = validCached ? isCacheStale(validCached.lastSync) : true;
     
     // Only use cache for initial load - never after
     if (isInitialLoad && hasCachedMessages && cacheLoadedForSession) {
       // Show cached messages immediately without loading state
       setIsLoadingMessages(false);
       if (isProjectChannel && selectedProjectId) {
-        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+        const cachedChannelMsgs: ChannelMessage[] = validCached!.messages
           .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
           .map(msg => ({
             id: msg.id,
@@ -1777,7 +2024,7 @@ export function Chatbot() {
           return newMap;
         });
       } else if (isTeamChannel && selectedTeamId) {
-        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+        const cachedChannelMsgs: ChannelMessage[] = validCached!.messages
           .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
           .map(msg => ({
             id: msg.id,
@@ -1799,8 +2046,8 @@ export function Chatbot() {
         });
       } else {
         const filteredCached = isAIAssistantChatId(chatId) 
-          ? cached.messages 
-          : cached.messages.filter(msg => msg.role === 'user');
+          ? validCached!.messages 
+          : validCached!.messages.filter(msg => msg.role === 'user');
         
         const cachedRegularMsgs: Message[] = filteredCached.map(msg => ({
           id: msg.id,
@@ -1843,7 +2090,7 @@ export function Chatbot() {
     // 3. Cache is stale
     // 4. Cache shows empty (need to verify it's still empty)
     // After initial load, always fetch fresh - don't rely on cache
-    const shouldFetch = !isInitialLoad || !hasCachedMessages || cacheIsStale || (hasCachedMessages && cached.messages.length === 0);
+    const shouldFetch = !isInitialLoad || !hasCachedMessages || cacheIsStale || (hasCachedMessages && validCached && validCached.messages.length === 0);
     
     if (shouldFetch) {
       // Fetch fresh messages from Firestore in the background
@@ -1852,9 +2099,9 @@ export function Chatbot() {
         try {
           // Get the latest message timestamp from cache to fetch only new messages
           let afterTimestamp: Date | undefined;
-          if (cached && cached.messages.length > 0) {
+          if (validCached && validCached.messages.length > 0) {
             const latestTimestamp = Math.max(
-              ...cached.messages.map(msg => 
+              ...validCached.messages.map(msg => 
                 msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
               )
             );
@@ -1862,7 +2109,7 @@ export function Chatbot() {
           }
           
           // If cache shows empty and is recent, skip API call for empty chats
-          if (hasCachedMessages && cached.messages.length === 0 && !cacheIsStale) {
+          if (hasCachedMessages && validCached && validCached.messages.length === 0 && !cacheIsStale) {
             // Cache shows empty and is fresh - don't make API call
             setIsLoadingMessages(false);
             return;
@@ -1874,12 +2121,26 @@ export function Chatbot() {
               ? await messagesService.getByChatId(chatId, afterTimestamp)
               : await messagesService.getByChatId(chatId);
             
+            // Filter out any messages that don't belong to this project (safety check)
+            const filteredMessages = newMessages.filter(msg => {
+              const belongsToProject = msg.projectId === selectedProjectId;
+              if (!belongsToProject) {
+                console.warn('⚠️ Filtered out message with wrong projectId', {
+                  messageId: msg.id,
+                  messageProjectId: msg.projectId,
+                  expectedProjectId: selectedProjectId,
+                  chatId,
+                });
+              }
+              return belongsToProject;
+            });
+            
             // Merge with cached messages (prefer new messages if there are duplicates)
             const messageMap = new Map<string, ChatMessage>();
-            if (cached) {
-              cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
             }
-            newMessages.forEach(msg => messageMap.set(msg.id, msg));
+            filteredMessages.forEach(msg => messageMap.set(msg.id, msg));
           
           const allMessages = Array.from(messageMap.values()).sort((a, b) => {
             const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
@@ -1891,7 +2152,19 @@ export function Chatbot() {
           const messagesWithRefreshedUrls = await refreshMessageImageUrls(allMessages, chatId);
           
           const channelMsgs: ChannelMessage[] = messagesWithRefreshedUrls
-            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
+            .filter(msg => {
+              const isValid = (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId;
+              if (!isValid && msg.projectId !== selectedProjectId) {
+                console.warn('⚠️ Filtered out channel message with wrong projectId', {
+                  messageId: msg.id,
+                  messageProjectId: msg.projectId,
+                  expectedProjectId: selectedProjectId,
+                  chatId,
+                  currentOrgId: currentOrg?.id,
+                });
+              }
+              return isValid;
+            })
             .map(msg => ({
               id: msg.id,
               memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -1905,9 +2178,17 @@ export function Chatbot() {
               citedContext: msg.citedContext,
             }));
           
-          // Only update state if it's initial load (state is empty)
+          // Update state if it's initial load or chat has changed (to show fresh messages)
           // Otherwise, real-time listener will handle updates
-          if (isInitialLoad) {
+          if (isInitialLoad || chatHasChanged) {
+            console.log('📨 Loading project channel messages', {
+              projectId: selectedProjectId,
+              messageCount: channelMsgs.length,
+              currentOrgId: currentOrg?.id,
+              chatId,
+              isInitialLoad,
+              chatHasChanged,
+            });
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
               newMap.set(selectedProjectId, channelMsgs);
@@ -1947,7 +2228,9 @@ export function Chatbot() {
           // Merge with cached messages (prefer new messages if there are duplicates)
           const messageMap = new Map<string, ChatMessage>();
           if (cached) {
-            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
           }
           newMessages.forEach(msg => messageMap.set(msg.id, msg));
         
@@ -2017,7 +2300,9 @@ export function Chatbot() {
           // Merge with cached messages (prefer new messages if there are duplicates)
           const messageMap = new Map<string, ChatMessage>();
           if (cached) {
-            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
           }
           newMessages.forEach(msg => messageMap.set(msg.id, msg));
           
@@ -3833,12 +4118,12 @@ export function Chatbot() {
             }
           }}
           className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto bg-black/70 text-white hover:bg-black/80",
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto p-0",
             isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
           )}
           size="icon"
         >
-        <MessageCircle className="h-6 w-6" />
+        <img src="/logo.png" alt="Logo" className="h-14 w-14 rounded-full object-contain" />
         {/* Unread indicator - red dot */}
         {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
           <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background" />

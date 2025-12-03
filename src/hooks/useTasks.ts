@@ -2,26 +2,26 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksService } from '@/services/api';
 import type { Task } from '@/data/tasksData';
 import { useUserProjects } from './useProjects';
-import { useUserTeams } from './useTeams';
 import { useAuth } from '@/contexts/AuthContext';
+import { useOrg } from '@/contexts/OrgContext';
 
 export const useTasks = () => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['tasks'],
+    queryKey: ['tasks', currentOrg?.id],
     queryFn: () => tasksService.getAll(),
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
 
-// Hook to get tasks filtered by current user's team membership (via projects or teams)
+// Hook to get tasks filtered by current user's project membership
+// Tasks without projects are visible to all org members
 export const useUserTasks = () => {
-  const { user } = useAuth();
   const { data: allTasks = [], isLoading: isLoadingTasks } = useTasks();
   const { data: userProjects = [], isLoading: isLoadingProjects } = useUserProjects();
-  const { data: userTeams = [], isLoading: isLoadingTeams } = useUserTeams();
 
   // Create a set of project IDs from user's projects
   const userProjectIds = new Set(
@@ -33,15 +33,9 @@ export const useUserTasks = () => {
     userProjects.map((project) => project.name.toLowerCase())
   );
 
-  // Create a set of team names from user's teams
-  const userTeamNames = new Set(
-    userTeams.map((team) => team.name.toLowerCase())
-  );
-
   // Filter tasks to show:
   // 1. Tasks whose project is in user's projects (matched by ID or name)
-  // 2. Tasks without a project but associated with user's teams
-  // 3. Tasks created by the user (even if no project/team association)
+  // 2. Tasks without a project - visible to all org members
   const userTasks = allTasks.filter((task) => {
     // If task has a project, check if it's in user's projects
     if (task.projectId) {
@@ -53,6 +47,8 @@ export const useUserTasks = () => {
       if (userProjectNames.has(task.projectId.toLowerCase())) {
         return true;
       }
+      // Task has a project but user doesn't have access - don't show it
+      return false;
     }
     
     // If task has project name but no ID (legacy format)
@@ -60,50 +56,40 @@ export const useUserTasks = () => {
       if (userProjectNames.has(task.project.toLowerCase())) {
         return true;
       }
+      // Task has a project but user doesn't have access - don't show it
+      return false;
     }
     
-    // If task has no project, check if it's associated with user's teams
-    if (task.teams && task.teams.length > 0) {
-      return task.teams.some(teamName => 
-        userTeamNames.has(teamName.toLowerCase())
-      );
-    }
-    
-    // If task has no project and no teams, check if it was created by the current user
-    // This ensures user-created tasks are always visible to the creator
-    if (task.createdBy && user?.email) {
-      if (task.createdBy.toLowerCase() === user.email.toLowerCase()) {
+    // If task has no project, it's visible to all org members
         return true;
-      }
-    }
-    
-    return false;
   });
 
   return {
     data: userTasks,
-    isLoading: isLoadingTasks || isLoadingProjects || isLoadingTeams,
+    isLoading: isLoadingTasks || isLoadingProjects,
   };
 };
 
 export const useTask = (taskId: string) => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['tasks', taskId],
+    queryKey: ['tasks', taskId, currentOrg?.id],
     queryFn: () => tasksService.getById(taskId),
-    enabled: !loading && !!user && !!taskId, // Only fetch when user is authenticated and taskId is provided
+    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!taskId, // Only fetch when user is authenticated and taskId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
 
 export const useTasksByProject = (projectId: string) => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['tasks', 'project', projectId],
+    queryKey: ['tasks', 'project', projectId, currentOrg?.id],
     queryFn: () => tasksService.getByProject(projectId),
-    enabled: !loading && !!user && !!projectId, // Only fetch when user is authenticated and projectId is provided
+    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId, // Only fetch when user is authenticated and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };

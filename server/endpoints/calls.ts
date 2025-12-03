@@ -5,7 +5,7 @@
  */
 
 import express from 'express';
-import { getDomainFromEmail } from '../../database/multi-tenant-pool.js';
+import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
 
 export function setupCallEndpoints(
   app: express.Application,
@@ -83,7 +83,7 @@ export function setupCallEndpoints(
   // POST /api/calls/:chatId/offer - Create call offer
   app.post('/api/calls/:chatId/offer', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { offer, calleeEmail } = req.body;
@@ -104,7 +104,20 @@ export function setupCallEndpoints(
       }
 
       // Create call document in Firestore
-      const callsPath = `domains/${domain}/calls`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let callsPath: string;
+      let orgSlug: string | null = null;
+      if (orgId) {
+        try {
+          orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
       const callId = `${chatId}-${Date.now()}`;
       
       const callData = {
@@ -118,9 +131,26 @@ export function setupCallEndpoints(
         createdAt: new Date(),
       };
 
+      console.log('📞 [Backend] Creating call document', {
+        callId,
+        callsPath,
+        orgSlug,
+        orgId,
+        callerEmail: userEmail,
+        calleeEmail: calleeEmail.toLowerCase(),
+        chatId,
+        databaseId: db.databaseId,
+      });
+
       try {
         const docRef = db.collection(callsPath).doc(callId);
         await docRef.set(callData);
+        
+        console.log('✅ [Backend] Call document created successfully', {
+          callId,
+          documentPath: docRef.path,
+          databaseId: db.databaseId,
+        });
         
         // Verify the document was written
         const verifyDoc = await docRef.get();
@@ -128,6 +158,19 @@ export function setupCallEndpoints(
         if (!verifyDoc.exists) {
           console.error('❌ [Backend] Call document not found after write!', {
             documentPath: docRef.path,
+          });
+        } else {
+          const verifyData = verifyDoc.data();
+          console.log('✅ [Backend] Call document verified', {
+            callId,
+            documentPath: docRef.path,
+            data: {
+              callerEmail: verifyData?.callerEmail,
+              calleeEmail: verifyData?.calleeEmail,
+              status: verifyData?.status,
+              hasOffer: !!verifyData?.offer,
+              createdAt: verifyData?.createdAt?.toDate ? verifyData.createdAt.toDate().toISOString() : verifyData?.createdAt,
+            },
           });
         }
       } catch (writeError: any) {
@@ -156,7 +199,7 @@ export function setupCallEndpoints(
   // POST /api/calls/:chatId/answer - Send call answer
   app.post('/api/calls/:chatId/answer', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { callId, answer } = req.body;
@@ -172,7 +215,19 @@ export function setupCallEndpoints(
       }
 
       // Update call document
-      const callsPath = `domains/${domain}/calls`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let callsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -200,7 +255,7 @@ export function setupCallEndpoints(
   // POST /api/calls/:chatId/ice-candidate - Send ICE candidate
   app.post('/api/calls/:chatId/ice-candidate', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { callId, candidate } = req.body;
@@ -216,7 +271,19 @@ export function setupCallEndpoints(
       }
 
       // Update call document with ICE candidate
-      const callsPath = `domains/${domain}/calls`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let callsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -248,7 +315,7 @@ export function setupCallEndpoints(
   // POST /api/calls/:chatId/end - End call
   app.post('/api/calls/:chatId/end', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { callId } = req.body;
@@ -264,7 +331,19 @@ export function setupCallEndpoints(
       }
 
       // Update call document
-      const callsPath = `domains/${domain}/calls`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let callsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -296,11 +375,23 @@ export function setupCallEndpoints(
   // MUST be registered BEFORE /api/calls/:chatId/status to avoid route conflicts
   app.get('/api/calls/incoming', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
 
       // Get all active calls where user is the callee
-      const callsPath = `domains/${domain}/calls`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let callsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
       let snapshot;
       
       try {
@@ -384,7 +475,7 @@ export function setupCallEndpoints(
   // GET /api/calls/:chatId/status - Get call status
   app.get('/api/calls/:chatId/status', authenticateUser, async (req, res) => {
     try {
-      const domain = (req as any).userDomain;
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
 
@@ -395,7 +486,19 @@ export function setupCallEndpoints(
       }
 
       // Get latest call for this chat
-      const callsPath = `domains/${domain}/calls`;
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      let callsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
       let snapshot;
       
       try {

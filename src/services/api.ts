@@ -8,10 +8,42 @@ import { auth, db } from '@/lib/firebase-client';
 // In production, use relative path so nginx can proxy to the backend server
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 
+// Storage key for current org
+const CURRENT_ORG_KEY = 'leanworks_current_org';
+
 // Initialize API - legacy function name kept for compatibility
 export const initFirestore = () => {
   // API initialization (legacy name)
 };
+
+// Get current org ID from storage (set by OrgContext)
+export function getCurrentOrgId(): string | null {
+  try {
+    const saved = localStorage.getItem(CURRENT_ORG_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return parsed.id || null;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+// Get current org slug from storage (set by OrgContext)
+// Used for Firestore paths (sanitized name instead of ID)
+export function getCurrentOrgSlug(): string | null {
+  try {
+    const saved = localStorage.getItem(CURRENT_ORG_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return parsed.slug || null;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 // Helper to get auth token for API requests
 export async function getAuthToken(): Promise<string | null> {
@@ -55,11 +87,21 @@ export async function getAuthToken(): Promise<string | null> {
 // Helper to make authenticated API requests
 async function authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = await getAuthToken();
-  const headers = {
+  const orgId = getCurrentOrgId();
+  
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(token && { Authorization: `Bearer ${token}` }),
-    ...options.headers,
+    ...(options.headers as Record<string, string> || {}),
   };
+  
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  
+  // Include org context for org-scoped endpoints
+  if (orgId) {
+    headers['X-Org-Id'] = orgId;
+  }
   
   return fetch(url, {
     ...options,
@@ -824,51 +866,81 @@ export const callSignalingService = {
         console.warn('No user email, cannot subscribe to call signals');
         return;
       }
-
-      const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-      const domain = sanitizeDomainForFirestore(userEmail);
-      const callsRef = collection(db, `domains/${domain}/calls`);
+      
+      const orgSlug = getCurrentOrgSlug();
+      const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+      const callsRef = collection(db, callsPath);
 
       // Calculate cutoff time - only get calls from the last 5 minutes
       // This prevents old ended calls from overwhelming the query results
       const cutoffTime = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
 
-      // Query for recent calls for this chat
-      // Requires composite index: chatId (asc) + createdAt (desc)
-      const q = query(
+      // Create two queries: one for when user is caller, one for when user is callee
+      // Firestore requires queries to filter by fields checked in security rules
+      // We'll combine results from both queries and filter by chatId in the callback
+      const callerQuery = query(
         callsRef,
-        where('chatId', '==', chatId),
+        where('callerEmail', '==', userEmail),
         where('createdAt', '>', cutoffTime),
         orderBy('createdAt', 'desc'),
         limit(10)
       );
 
-      unsubscribeFn = onSnapshot(
-        q,
-        {
-          // Include metadata changes to detect when data comes from cache vs server
-          includeMetadataChanges: true,
-        },
-        (snapshot) => {
-          if (!isActive) return;
+      const calleeQuery = query(
+        callsRef,
+        where('calleeEmail', '==', userEmail),
+        where('createdAt', '>', cutoffTime),
+        orderBy('createdAt', 'desc'),
+        limit(10)
+      );
 
-          // In Safari, sometimes we get cache-only snapshots first
-          // Only process if we have data or if this is a server snapshot
-          if (snapshot.metadata.fromCache && snapshot.empty) {
-            // This is a cached empty result, wait for server result
-            return;
-          }
+      // Combine results from both queries
+      let callerSnapshot: any = null;
+      let calleeSnapshot: any = null;
+      let callerUnsubscribe: (() => void) | null = null;
+      let calleeUnsubscribe: (() => void) | null = null;
 
-          if (snapshot.empty) {
-            // Only clear if this is a server snapshot (not just cache)
-            if (!snapshot.metadata.fromCache) {
-              callback(null);
+      const processCombinedResults = () => {
+        if (!isActive) return;
+        if (!callerSnapshot && !calleeSnapshot) return;
+
+        // Combine documents from both queries
+        const allDocs = new Map<string, any>();
+        
+        if (callerSnapshot) {
+          callerSnapshot.docs.forEach((doc: any) => {
+            const data = doc.data();
+            // Filter by chatId to ensure we only get calls for this chat
+            if (data.chatId === chatId) {
+              allDocs.set(doc.id, doc);
             }
-            return;
+          });
+        }
+        
+        if (calleeSnapshot) {
+          calleeSnapshot.docs.forEach((doc: any) => {
+            const data = doc.data();
+            // Filter by chatId to ensure we only get calls for this chat
+            if (data.chatId === chatId) {
+              allDocs.set(doc.id, doc);
+            }
+          });
+        }
+
+        const userCalls = Array.from(allDocs.values());
+
+        if (userCalls.length === 0) {
+          // Only clear if both snapshots are from server (not just cache)
+          const bothFromServer = (!callerSnapshot || !callerSnapshot.metadata.fromCache) &&
+                                 (!calleeSnapshot || !calleeSnapshot.metadata.fromCache);
+          if (bothFromServer) {
+            callback(null);
           }
+          return;
+        }
 
           // Sort documents: prioritize non-ended calls, then by createdAt (most recent first)
-          const sortedDocs = [...snapshot.docs].sort((a, b) => {
+          const sortedDocs = [...userCalls].sort((a, b) => {
             const aData = a.data();
             const bData = b.data();
             
@@ -907,10 +979,10 @@ export const callSignalingService = {
           const data = callDoc.data();
           
           // Use the document ID as callId (should match the callId in the data)
-          const callId = callDoc.id || data.callId;
+          const docCallId = callDoc.id || data.callId;
           
           const signal: CallSignal = {
-            callId: callId,
+            callId: docCallId,
             chatId: data.chatId || chatId,
             callerEmail: data.callerEmail || '',
             calleeEmail: data.calleeEmail || '',
@@ -923,25 +995,69 @@ export const callSignalingService = {
           };
 
           if (import.meta.env.DEV) {
+            const fromCache = (callerSnapshot?.metadata.fromCache || false) && 
+                             (calleeSnapshot?.metadata.fromCache || false);
             console.log('📞 subscribeToCallSignals: Returning signal', {
               callId: signal.callId,
               status: signal.status,
               hasAnswer: !!signal.answer,
-              fromCache: snapshot.metadata.fromCache,
+              fromCache: fromCache,
             });
           }
 
           callback(signal);
+      };
+
+      // Set up listener for caller query
+      callerUnsubscribe = onSnapshot(
+        callerQuery,
+        {
+          includeMetadataChanges: true,
         },
-        (error) => {
+        (snapshot) => {
           if (!isActive) return;
-          console.error('Error listening to call signals:', error);
-          // Don't call callback(null) on error - keep existing state
-          // This prevents clearing the call signal on temporary errors
+          if (snapshot.metadata.fromCache && snapshot.empty) {
+            return;
+          }
+          callerSnapshot = snapshot;
+          processCombinedResults();
+        },
+        (error: any) => {
+          if (!isActive) return;
+          console.error('Error listening to call signals (caller query):', error);
         }
       );
-    }).catch((error) => {
-      console.error('Failed to import firestore:', error);
+
+      // Set up listener for callee query
+      calleeUnsubscribe = onSnapshot(
+        calleeQuery,
+        {
+          includeMetadataChanges: true,
+        },
+        (snapshot) => {
+          if (!isActive) return;
+          if (snapshot.metadata.fromCache && snapshot.empty) {
+            return;
+          }
+          calleeSnapshot = snapshot;
+          processCombinedResults();
+        },
+        (error: any) => {
+          if (!isActive) return;
+          console.error('Error listening to call signals (callee query):', error);
+        }
+      );
+
+      // Return unsubscribe function that cleans up both listeners
+      unsubscribeFn = () => {
+        if (callerUnsubscribe) callerUnsubscribe();
+        if (calleeUnsubscribe) calleeUnsubscribe();
+      };
+    }).catch((error: any) => {
+      if (!isActive) return;
+      console.error('Error listening to call signals:', error);
+      // Don't call callback(null) on error - keep existing state
+      // This prevents clearing the call signal on temporary errors
     });
 
     // Return unsubscribe function
@@ -994,16 +1110,48 @@ export const callSignalingService = {
           console.warn('No user email, cannot subscribe to incoming offers');
           return;
         }
+        
+        // Verify the ID token has email claim (required for Firestore security rules)
+        if (auth.currentUser) {
+          try {
+            const idToken = await auth.currentUser.getIdToken();
+            // Decode token to check if email is present
+            const payload = JSON.parse(atob(idToken.split('.')[1]));
+            if (!payload.email) {
+              console.error('❌ ID token missing email claim. Please sign out and sign back in.');
+              console.error('Token payload:', { uid: payload.uid, hasEmail: !!payload.email });
+              // Force token refresh
+              await auth.currentUser.getIdToken(true);
+            }
+          } catch (tokenError) {
+            console.warn('⚠️ Could not verify token email claim:', tokenError);
+          }
+        }
 
-        const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-        const domain = sanitizeDomainForFirestore(userEmail);
-        const callsRef = collection(db, `domains/${domain}/calls`);
+        const orgSlug = getCurrentOrgSlug();
+        if (!orgSlug) {
+          console.warn('📞 subscribeToIncomingOffers: No orgSlug available yet, will retry...');
+          return;
+        }
+        
+        const callsRef = collection(db, `orgs/${orgSlug}/calls`);
 
         // Calculate cutoff time (60 seconds ago)
         const cutoffTime = Timestamp.fromMillis(Date.now() - 60000);
 
         // Criteria-based query
         // Note: Firestore doesn't support != null queries, so we filter offer existence in the callback
+        console.log('📞 subscribeToIncomingOffers: Setting up query', {
+          userEmail,
+          orgSlug,
+          collectionPath: `orgs/${orgSlug}/calls`,
+          queryFilters: {
+            calleeEmail: userEmail,
+            status: 'ringing',
+            createdAt: `> ${cutoffTime.toMillis()}`,
+          },
+        });
+        
         const q = query(
           callsRef,
           where('calleeEmail', '==', userEmail),
@@ -1013,10 +1161,6 @@ export const callSignalingService = {
           limit(1)
         );
 
-        console.log('📞 subscribeToIncomingOffers: Setting up Firestore listener', {
-          userEmail,
-          domain,
-        });
 
         unsubscribeFn = onSnapshot(
           q,
@@ -1037,38 +1181,78 @@ export const callSignalingService = {
               }
             }
 
+            // Log snapshot details for debugging
+            console.log('📞 subscribeToIncomingOffers: Snapshot received', {
+              empty: snapshot.empty,
+              size: snapshot.size,
+              fromCache: snapshot.metadata.fromCache,
+              hasPendingWrites: snapshot.metadata.hasPendingWrites,
+            });
+
             // Skip cache-only empty snapshots
             if (snapshot.metadata.fromCache && snapshot.empty) {
+              console.log('📞 subscribeToIncomingOffers: Skipping cache-only empty snapshot');
               return;
             }
 
             if (snapshot.empty) {
               // Only clear if this is a server snapshot
               if (!snapshot.metadata.fromCache) {
+                console.log('📞 subscribeToIncomingOffers: Empty server snapshot, clearing callback');
                 callback(null);
               }
               return;
             }
 
             // Process document changes (new or modified documents)
+            console.log('📞 subscribeToIncomingOffers: Processing document changes', {
+              changesCount: snapshot.docChanges().length,
+            });
+            
             snapshot.docChanges().forEach((change) => {
+              console.log('📞 subscribeToIncomingOffers: Document change', {
+                type: change.type,
+                docId: change.doc.id,
+              });
+              
               if (change.type === 'added' || change.type === 'modified') {
                 const data = change.doc.data();
                 const callId = change.doc.id || data.callId;
 
+                console.log('📞 subscribeToIncomingOffers: Processing call document', {
+                  callId,
+                  callerEmail: data.callerEmail,
+                  calleeEmail: data.calleeEmail,
+                  status: data.status,
+                  hasOffer: !!data.offer,
+                  createdAt: data.createdAt?.toMillis?.() || data.createdAt?.seconds * 1000 || 0,
+                });
+
                 // Skip if already processed
                 if (processedSet.has(callId)) {
+                  console.log('📞 subscribeToIncomingOffers: Call already processed, skipping', { callId });
                   return;
                 }
 
                 // Verify offer exists and is valid
                 if (!data.offer || data.status !== 'ringing') {
+                  console.log('📞 subscribeToIncomingOffers: Call missing offer or wrong status', {
+                    callId,
+                    hasOffer: !!data.offer,
+                    status: data.status,
+                  });
                   return;
                 }
 
                 // Verify email matching
                 const calleeEmailLower = (data.calleeEmail || '').toLowerCase();
                 if (calleeEmailLower !== userEmail) {
+                  console.log('📞 subscribeToIncomingOffers: Email mismatch', {
+                    callId,
+                    calleeEmail: data.calleeEmail,
+                    calleeEmailLower,
+                    userEmail,
+                  });
                   return;
                 }
 
@@ -1108,11 +1292,24 @@ export const callSignalingService = {
           (error) => {
             if (!isActive) return;
             
+            console.error('❌ subscribeToIncomingOffers: Error in listener', {
+              error: error,
+              code: (error as any)?.code,
+              message: (error as any)?.message,
+              stack: (error as any)?.stack,
+            });
+            
             // Handle index errors gracefully
             if ((error as any)?.code === 9 || (error as any)?.message?.includes('index')) {
               console.error('Firestore index error. Please create the composite index for database "leanworks-prod":', {
                 database: 'leanworks-prod',
                 indexFields: ['calleeEmail', 'status', 'createdAt'],
+              });
+            } else if ((error as any)?.code === 'permission-denied') {
+              console.error('❌ subscribeToIncomingOffers: Permission denied', {
+                userEmail,
+                orgSlug,
+                note: 'Check Firestore security rules and ensure email matches',
               });
             } else {
               console.error('Error listening to incoming offers:', error);
@@ -1230,12 +1427,29 @@ export const callSignalingService = {
         tokenLength: idToken?.length,
       });
 
+      // Get current org ID to include in request header
+      const currentOrgId = getCurrentOrgId();
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${idToken}`,
+      };
+      
+      if (currentOrgId) {
+        headers['X-Org-Id'] = currentOrgId;
+      }
+      
+      console.log('📡 createCallOffer: Sending API request with headers', {
+        apiUrl,
+        method: 'POST',
+        hasToken: !!idToken,
+        hasOrgId: !!currentOrgId,
+        orgId: currentOrgId,
+        headers: Object.keys(headers),
+      });
+
       const response = await fetch(apiUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${idToken}`,
-        },
+        headers,
         body: JSON.stringify({
           offer,
           calleeEmail: calleeEmail.toLowerCase(),
@@ -1281,12 +1495,12 @@ export const callSignalingService = {
       await new Promise(resolve => setTimeout(resolve, 500));
       
       // Verify the document was written by querying Firestore directly
+      // Note: This is optional - if it fails due to permissions, the document still exists
+      // and will be picked up by the Firestore listeners (subscribeToCallSignals)
       try {
-        const { getDoc, doc: docFn, collection: collectionFn } = await import('firebase/firestore');
-        const userEmail = auth.currentUser?.email?.toLowerCase() || '';
-        const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-        const domain = sanitizeDomainForFirestore(userEmail);
-        const collectionPath = `domains/${domain}/calls`;
+        const { getDoc, doc: docFn } = await import('firebase/firestore');
+        const orgSlug = getCurrentOrgSlug();
+        const collectionPath = `orgs/${orgSlug || 'default'}/calls`;
         const callDocRef = docFn(db, collectionPath, callId);
         const verifyDoc = await getDoc(callDocRef);
         
@@ -1304,10 +1518,20 @@ export const callSignalingService = {
           });
         }
       } catch (verifyError: any) {
-        console.warn('⚠️ createCallOffer: Could not verify document', {
-          error: verifyError.message,
-          code: verifyError.code,
-        });
+        // Permission errors are expected if there's a case mismatch between
+        // auth token email and stored email, but the document still exists
+        // The Firestore listeners will pick it up automatically
+        if (verifyError.code === 'permission-denied') {
+          console.log('ℹ️ createCallOffer: Document verification skipped (permission denied - document still exists)', {
+            callId,
+            note: 'This is non-critical - the document was created successfully and listeners will pick it up',
+          });
+        } else {
+          console.warn('⚠️ createCallOffer: Could not verify document', {
+            error: verifyError.message,
+            code: verifyError.code,
+          });
+        }
       }
 
       // The GlobalCallListener will automatically receive the new call document
@@ -1346,14 +1570,12 @@ export const callSignalingService = {
     }
 
     const { doc, updateDoc } = await import('firebase/firestore');
-    const userEmail = auth.currentUser.email.toLowerCase();
-    const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-    const domain = sanitizeDomainForFirestore(userEmail);
-    const callRef = doc(db, `domains/${domain}/calls`, callId);
+    const orgSlug = getCurrentOrgSlug();
+    const callRef = doc(db, `orgs/${orgSlug || 'default'}/calls`, callId);
     
     console.log('📞 sendCallAnswer: Updating Firestore document...', {
-      path: `domains/${domain}/calls/${callId}`,
-      userEmail,
+      path: `orgs/${orgSlug || 'default'}/calls/${callId}`,
+      orgSlug,
     });
 
     await updateDoc(callRef, {
@@ -1377,10 +1599,8 @@ export const callSignalingService = {
     }
 
     const { doc, getDoc, updateDoc, arrayUnion } = await import('firebase/firestore');
-    const userEmail = auth.currentUser.email.toLowerCase();
-    const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-    const domain = sanitizeDomainForFirestore(userEmail);
-    const callRef = doc(db, `domains/${domain}/calls`, callId);
+    const orgSlug = getCurrentOrgSlug();
+    const callRef = doc(db, `orgs/${orgSlug || 'default'}/calls`, callId);
 
     // Get current candidates and add new one
     const callDoc = await getDoc(callRef);
@@ -1407,10 +1627,8 @@ export const callSignalingService = {
     }
 
     const { doc, updateDoc, serverTimestamp, getDoc } = await import('firebase/firestore');
-    const userEmail = auth.currentUser?.email?.toLowerCase();
-    const { sanitizeDomainForFirestore } = await import('@/lib/utils');
-    const domain = sanitizeDomainForFirestore(userEmail);
-    const callRef = doc(db, `domains/${domain}/calls`, callId);
+    const orgSlug = getCurrentOrgSlug();
+    const callRef = doc(db, `orgs/${orgSlug || 'default'}/calls`, callId);
 
     try {
       // First verify the document exists
