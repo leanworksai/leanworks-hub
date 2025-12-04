@@ -531,11 +531,21 @@ export function useWebRTC(
     // Handle ICE connection state
     pc.oniceconnectionstatechange = () => {
       const state = pc.iceConnectionState;
+      const connectionState = pc.connectionState;
+      const signalingState = pc.signalingState;
+      
+      console.log('🔄 ICE connection state changed', {
+        iceConnectionState: state,
+        connectionState,
+        signalingState,
+        hasLocalDescription: !!pc.localDescription,
+        hasRemoteDescription: !!pc.remoteDescription,
+      });
       
       if (state === 'failed') {
         // ICE failed - might be able to recover with ICE restart
         if (connectionRetryCount.current < maxRetries) {
-          console.warn('ICE connection failed, will attempt recovery...');
+          console.warn('❌ ICE connection failed, will attempt recovery...');
           // Don't immediately mark as error - let connection state handler manage retries
         } else {
           updateStatus('error');
@@ -543,16 +553,50 @@ export function useWebRTC(
         }
       } else if (state === 'disconnected') {
         // ICE disconnected - might recover
-        console.warn('ICE connection disconnected, waiting for potential recovery...');
+        console.warn('⚠️ ICE connection disconnected, waiting for potential recovery...');
       } else if (state === 'connected' || state === 'completed') {
+        console.log('✅ ICE connection established', {
+          iceConnectionState: state,
+          connectionState,
+          signalingState,
+        });
         connectionRetryCount.current = 0; // Reset retry count on successful ICE connection
+      } else if (state === 'checking') {
+        console.log('🔍 ICE connection checking...', {
+          connectionState,
+          signalingState,
+        });
+      }
+    };
+    
+    // Handle connection state changes
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      const iceState = pc.iceConnectionState;
+      console.log('🔄 Peer connection state changed', {
+        connectionState: state,
+        iceConnectionState: iceState,
+        signalingState: pc.signalingState,
+      });
+      
+      if (state === 'connected') {
+        console.log('✅ Peer connection connected!');
+      } else if (state === 'failed') {
+        console.error('❌ Peer connection failed');
       }
     };
 
     // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log('🧊 ICE candidate generated', {
+          candidate: event.candidate.candidate?.substring(0, 50),
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+          sdpMid: event.candidate.sdpMid,
+        });
         // ICE candidates will be sent via Firestore signaling
+      } else {
+        console.log('✅ ICE candidate gathering complete');
       }
     };
 
@@ -1809,6 +1853,15 @@ export function useWebRTC(
       }
 
       // Try to add the candidate
+      console.log('🧊 Adding ICE candidate', {
+        candidate: candidate.candidate?.substring(0, 50),
+        sdpMLineIndex: candidate.sdpMLineIndex,
+        sdpMid: candidate.sdpMid,
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        signalingState: pc.signalingState,
+      });
+      
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
         // Mark as processed only after successful addition

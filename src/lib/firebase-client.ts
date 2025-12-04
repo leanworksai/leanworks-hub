@@ -444,7 +444,7 @@ if (typeof window !== 'undefined') {
     
     try {
       const { doc, setDoc, getDoc } = await import('firebase/firestore');
-      const testRef = doc(db, 'domains/leanworks.ai/calls', 'test-' + Date.now());
+      const testRef = doc(db, 'orgs/test/calls', 'test-' + Date.now());
       console.log('🧪 Testing Firestore write...', { path: testRef.path });
       
       const testData = { test: true, timestamp: new Date(), user: auth.currentUser.email };

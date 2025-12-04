@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { MessageCircle, X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
+import { X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/api";
 import { CallStatus } from "@/hooks/useWebRTC";
@@ -24,11 +24,30 @@ import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOrg } from "@/contexts/OrgContext";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
+
+// Import reusable chat components
+import { 
+  ChatMessage as ChatMessageComponent,
+  ChatMessageList,
+  LikeButton,
+  CitedContextBadges,
+  type LikedByUser,
+  type Message as ChatMessageType,
+  type ChannelMessage as ChatChannelMessage,
+  type TeamMember as ChatTeamMember,
+} from "@/components/chat";
+import { 
+  useChatId, 
+  getDirectMessageChatId, 
+  getAIAssistantChatId, 
+  isAIAssistantChatId 
+} from "@/hooks/useChatId";
 
 interface Message {
   id: string;
@@ -82,23 +101,7 @@ interface SearchResult {
 }
 
 
-// Generate a consistent chatId for direct messages between two users
-// This ensures both users see the same conversation regardless of who initiated it
-const getDirectMessageChatId = (userEmail: string, otherUserEmail: string): string => {
-  const emails = [userEmail.toLowerCase(), otherUserEmail.toLowerCase()].sort();
-  return `dm-${emails[0]}-${emails[1]}`;
-};
-
-// Generate a user-specific chatId for AI assistant conversations
-// This ensures each user has a private conversation with the AI
-const getAIAssistantChatId = (userEmail: string): string => {
-  return `ai-assistant-${userEmail.toLowerCase()}`;
-};
-
-// Check if a chatId is for an AI assistant conversation
-const isAIAssistantChatId = (chatId: string): boolean => {
-  return chatId.startsWith('ai-assistant-');
-};
+// Chat ID helper functions are now imported from @/hooks/useChatId
 
 export function Chatbot() {
   const { selectedProjects, clearSelection: clearSelectedProjects } = useSelectedProjects();
@@ -108,6 +111,7 @@ export function Chatbot() {
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
   const { user } = useAuth();
+  const { currentOrg } = useOrg();
   
   // Calculate current user's full profile data once (has firstName/lastName)
   // AuthContext user only has email, not firstName/lastName
@@ -132,6 +136,186 @@ export function Chatbot() {
     };
   }, [currentUserProfile, user?.email]);
   const [isOpen, setIsOpen] = useState(false);
+  
+  // Clear old cache entries that don't have orgId (from domain-based system)
+  const clearLegacyMessageCaches = useCallback(() => {
+    if (!user?.email) return;
+    const userEmailLower = user.email.toLowerCase();
+    const keysToRemove: string[] = [];
+    
+    try {
+      // UUID pattern: 8-4-4-4-12 hex characters (e.g., 550e8400-e29b-41d4-a716-446655440000)
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const currentOrgId = currentOrg?.id || 'default';
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        
+        // Only process keys that start with chat_messages_
+        if (!key.startsWith('chat_messages_')) continue;
+        
+        // Extract the part after "chat_messages_"
+        const afterPrefix = key.substring('chat_messages_'.length);
+        
+        // Check if this is the old format (starts directly with email, no orgId)
+        // Old format: chat_messages_{email}_{chatId}
+        // New format: chat_messages_{orgId}_{email}_{chatId} (orgId is UUID)
+        if (afterPrefix.startsWith(userEmailLower + '_')) {
+          // This is old format - remove it
+            keysToRemove.push(key);
+          continue;
+        }
+        
+        // Check if it's new format but orgId is invalid (not a UUID)
+        // Split by underscore to check parts
+        const parts = afterPrefix.split('_');
+        if (parts.length >= 2) {
+          const firstPart = parts[0];
+          // If first part is not a UUID and not 'default', it might be old format
+          if (!uuidPattern.test(firstPart) && firstPart !== 'default') {
+            // Check if second part is the email (indicating old format with wrong first part)
+            if (parts[1] === userEmailLower) {
+              keysToRemove.push(key);
+              continue;
+        }
+      }
+          
+          // Additional check: if cache key has orgId but it doesn't match current org, remove it
+          // This handles cases where user switched orgs and old cache entries remain
+          if (uuidPattern.test(firstPart) && firstPart !== currentOrgId && parts[1] === userEmailLower) {
+            // This cache belongs to a different org - remove it
+            keysToRemove.push(key);
+            continue;
+          }
+        }
+        
+        // Special handling for project- and team- channels: ensure they have correct orgId
+        // Check if chatId contains project- or team- prefix
+        const chatIdPart = afterPrefix.includes('_') ? afterPrefix.substring(afterPrefix.indexOf('_', afterPrefix.indexOf('_') + 1) + 1) : '';
+        if (chatIdPart.startsWith('project-') || chatIdPart.startsWith('team-')) {
+          // This is a channel cache - verify it has correct orgId
+          if (parts.length >= 2 && parts[1] === userEmailLower) {
+            const cacheOrgId = parts[0];
+            if (cacheOrgId !== currentOrgId && cacheOrgId !== 'default') {
+              // Wrong org - remove it
+              keysToRemove.push(key);
+              continue;
+            }
+          }
+        }
+      }
+      
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+      if (keysToRemove.length > 0) {
+        console.log(`🧹 Cleared ${keysToRemove.length} legacy message cache entries (domain-based format)`);
+      }
+    } catch (error) {
+      console.error('Failed to clear legacy message caches:', error);
+    }
+  }, [user?.email, currentOrg?.id]);
+
+  // Clear legacy message caches (domain-based format) on mount and when org changes
+  useEffect(() => {
+    clearLegacyMessageCaches();
+    
+    // Clear channelMessages state when org changes to prevent showing old messages
+    if (currentOrg?.id) {
+      setChannelMessages(new Map());
+      console.log('🧹 Cleared channelMessages state due to org change');
+    }
+    
+    // Also do a one-time aggressive cleanup of ALL old format cache entries
+    // This ensures we catch any edge cases the main cleanup might miss
+    if (!user?.email) return;
+    try {
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const currentOrgId = currentOrg?.id || 'default';
+      const userEmailLower = user.email.toLowerCase();
+      const keysToRemove: string[] = [];
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith('chat_messages_')) continue;
+        
+        const afterPrefix = key.substring('chat_messages_'.length);
+        const parts = afterPrefix.split('_');
+        
+        if (parts.length === 0) continue;
+        
+        const firstPart = parts[0];
+        
+        // If it doesn't start with a UUID or 'default', it's likely old format
+        if (!uuidPattern.test(firstPart) && firstPart !== 'default') {
+          // This is likely old format - remove it
+          keysToRemove.push(key);
+          continue;
+        }
+        
+        // Check if cache belongs to wrong org (if it has a valid UUID but doesn't match current org)
+        if (parts.length >= 2 && parts[1] === userEmailLower) {
+          const cacheOrgId = firstPart;
+          // If it's a valid UUID but doesn't match current org, remove it
+          if (uuidPattern.test(cacheOrgId) && cacheOrgId !== currentOrgId) {
+            keysToRemove.push(key);
+            continue;
+          }
+        }
+        
+        // Special check for channel caches (project- or team- prefixes)
+        // Reconstruct chatId to check if it's a channel
+        if (parts.length >= 3) {
+          const chatId = parts.slice(2).join('_'); // Everything after orgId_email
+          if (chatId.startsWith('project-') || chatId.startsWith('team-')) {
+            // This is a channel cache - verify orgId matches
+            if (uuidPattern.test(firstPart) && firstPart !== currentOrgId) {
+              keysToRemove.push(key);
+              continue;
+            }
+            // Also remove if it's 'default' org but we have a real orgId
+            if (firstPart === 'default' && currentOrgId !== 'default') {
+              keysToRemove.push(key);
+              continue;
+            }
+          }
+        }
+      }
+      
+      // Additional aggressive cleanup: remove ALL project- and team- cache entries that don't match current org
+      // This is a safety net to catch any edge cases
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith('chat_messages_')) continue;
+        
+        // Check if this is a project or team channel cache
+        if (key.includes('_project-') || key.includes('_team-')) {
+          const afterPrefix = key.substring('chat_messages_'.length);
+          const parts = afterPrefix.split('_');
+          
+          if (parts.length >= 3) {
+            const cacheOrgId = parts[0];
+            const chatId = parts.slice(2).join('_');
+            
+            // If it's a channel cache and orgId doesn't match, remove it
+            if ((chatId.startsWith('project-') || chatId.startsWith('team-')) && 
+                cacheOrgId !== currentOrgId) {
+              // Don't add duplicates
+              if (!keysToRemove.includes(key)) {
+                keysToRemove.push(key);
+              }
+            }
+          }
+        }
+      }
+      
+      if (keysToRemove.length > 0) {
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+        console.log(`🧹 Aggressive cleanup: Cleared ${keysToRemove.length} additional legacy cache entries (including wrong org and channels)`);
+      }
+    } catch (error) {
+      console.error('Failed to perform aggressive cache cleanup:', error);
+    }
+  }, [clearLegacyMessageCaches, currentOrg?.id, user?.email]);
   
   // Load last selected member from localStorage
   const getLastSelectedMember = useCallback((): string => {
@@ -249,12 +433,23 @@ export function Chatbot() {
   // Helper functions for message caching
   const getCacheKey = (chatId: string) => {
     if (!user?.email) return null;
-    return `chat_messages_${user.email.toLowerCase()}_${chatId}`;
+    const orgId = currentOrg?.id || 'default';
+    // Include orgId in cache key to isolate messages per organization
+    // This ensures old cached messages from domain-based system don't show up
+    return `chat_messages_${orgId}_${user.email.toLowerCase()}_${chatId}`;
   };
 
   const loadCachedMessages = (chatId: string): { messages: ChatMessage[], lastSync: number } | null => {
     const cacheKey = getCacheKey(chatId);
     if (!cacheKey) return null;
+    
+    // Safety check: ensure cache key matches current org
+    const currentOrgId = currentOrg?.id || 'default';
+    if (!cacheKey.includes(currentOrgId)) {
+      // Cache key doesn't match current org - don't load it
+      console.warn('⚠️ Cache key mismatch - skipping cache load', { cacheKey, currentOrgId });
+      return null;
+    }
     
     try {
       const cached = localStorage.getItem(cacheKey);
@@ -351,7 +546,9 @@ export function Chatbot() {
 
   const clearOldMessageCaches = () => {
     if (!user?.email) return;
-    const prefix = `chat_messages_${user.email.toLowerCase()}_`;
+    const orgId = currentOrg?.id || 'default';
+    // Include orgId in prefix to only clear caches for current organization
+    const prefix = `chat_messages_${orgId}_${user.email.toLowerCase()}_`;
     const keysToRemove: string[] = [];
     
     try {
@@ -728,7 +925,7 @@ export function Chatbot() {
   }, [allDomainUsers]);
 
   // Helper function to get user names from like emails
-  const getLikedByUsers = useCallback((likes: string[] = []) => {
+  const getLikedByUsers = useCallback((likes: string[] = []): LikedByUser[] => {
     return likes.map(email => {
       const userInfo = getUserInfo(email);
       return {
@@ -738,17 +935,66 @@ export function Chatbot() {
       };
     });
   }, [getUserInfo]);
+
+  // Helper function to get display info for a message (used by ChatMessageList)
+  const getMessageDisplayInfo = useCallback((message: Message | ChannelMessage) => {
+    // Check if it's a ChannelMessage (has memberName) or regular Message (has role)
+    const isChannelMessage = 'memberName' in message;
+    
+    // Check if message is from lean/AI assistant
+    const isLean = isChannelMessage 
+      ? (message.memberName === "lean" || message.userId === "ai-assistant")
+      : (message as Message).role === "assistant";
+    
+    // Determine if message is from current user
+    const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
+    
+    // Get display name and initials
+    let displayName: string;
+    let displayInitials: string;
+    
+    if (isSent) {
+      displayName = currentUserDisplayInfo.displayName;
+      displayInitials = currentUserDisplayInfo.initials;
+    } else if (isLean) {
+      displayName = "lean";
+      displayInitials = "L";
+    } else {
+      const userInfo = message.userId ? getUserInfo(message.userId) : null;
+      if (userInfo) {
+        displayName = userInfo.name;
+        displayInitials = userInfo.initials;
+      } else if (isChannelMessage) {
+        displayName = message.memberName || "Unknown";
+        displayInitials = message.memberAvatar || "U";
+      } else {
+        displayName = "Unknown";
+        displayInitials = "U";
+      }
+    }
+    
+    return { isSent, isLean, displayName, displayInitials };
+  }, [user?.email, currentUserDisplayInfo, getUserInfo]);
   
-  // Check if selected member is a project channel
-  const isProjectChannel = selectedMember.startsWith("project-");
-  const selectedProjectId = isProjectChannel ? selectedMember.replace("project-", "") : null;
+  // Use the useChatId hook to determine chat type and IDs
+  const { 
+    chatId: resolvedChatId, 
+    isProjectChannel, 
+    isTeamChannel, 
+    isAIAssistant,
+    isDM,
+    selectedProjectId, 
+    selectedTeamId 
+  } = useChatId({
+    selectedMember,
+    userEmail: user?.email,
+    allTeamMembers,
+  });
+  
+  // Get the selected project/team based on the IDs
   const selectedProject = selectedProjectId 
     ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === selectedProjectId)
     : null;
-  
-  // Check if selected member is a team channel
-  const isTeamChannel = selectedMember.startsWith("team-");
-  const selectedTeamId = isTeamChannel ? selectedMember.replace("team-", "") : null;
   const selectedTeam = selectedTeamId 
     ? userTeams.find(t => t.name.toLowerCase().replace(/\s+/g, '-') === selectedTeamId)
     : null;
@@ -1570,7 +1816,9 @@ export function Chatbot() {
               if (newMessages.length > 0 || !hasCachedMessages) {
                 const messageMap = new Map<string, ChatMessage>();
                 if (cached) {
-                  cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+                  if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
                 }
                 newMessages.forEach(msg => messageMap.set(msg.id, msg));
 
@@ -1748,15 +1996,65 @@ export function Chatbot() {
     const cached = (isInitialLoad && cacheLoadedForSession) 
       ? (allChatCaches.get(chatId) || loadCachedMessages(chatId))
       : null;
-    const hasCachedMessages = cached && cached.messages.length > 0;
-    const cacheIsStale = cached ? isCacheStale(cached.lastSync) : true;
+    
+    // Additional safety check: verify cached messages belong to current org
+    // This prevents loading old messages from wrong org, especially for channels
+    let validCached = cached;
+    if (cached && currentOrg?.id) {
+      const cacheKey = getCacheKey(chatId);
+      if (cacheKey && !cacheKey.includes(currentOrg.id)) {
+        // Cache key doesn't match current org - don't use it
+        console.warn('⚠️ Cache key org mismatch - ignoring cached messages', { 
+          chatId, 
+          cacheKey, 
+          currentOrgId: currentOrg.id,
+          isProjectChannel: chatId.startsWith('project-'),
+          isTeamChannel: chatId.startsWith('team-'),
+        });
+        validCached = null;
+      }
+      
+      // Additional check for project/team channels: verify messages have correct projectId/teamId
+      if (validCached && validCached.messages.length > 0) {
+        if (isProjectChannel && selectedProjectId) {
+          // Verify all cached messages belong to this project
+          const invalidMessages = validCached.messages.filter(
+            msg => msg.projectId !== selectedProjectId
+          );
+          if (invalidMessages.length > 0) {
+            console.warn('⚠️ Found cached messages with wrong projectId - ignoring cache', {
+              chatId,
+              selectedProjectId,
+              invalidCount: invalidMessages.length,
+            });
+            validCached = null;
+          }
+        } else if (isTeamChannel && selectedTeamId) {
+          // Verify all cached messages belong to this team
+          const invalidMessages = validCached.messages.filter(
+            msg => msg.teamId !== selectedTeamId
+          );
+          if (invalidMessages.length > 0) {
+            console.warn('⚠️ Found cached messages with wrong teamId - ignoring cache', {
+              chatId,
+              selectedTeamId,
+              invalidCount: invalidMessages.length,
+            });
+            validCached = null;
+          }
+        }
+      }
+    }
+    
+    const hasCachedMessages = validCached && validCached.messages.length > 0;
+    const cacheIsStale = validCached ? isCacheStale(validCached.lastSync) : true;
     
     // Only use cache for initial load - never after
     if (isInitialLoad && hasCachedMessages && cacheLoadedForSession) {
       // Show cached messages immediately without loading state
       setIsLoadingMessages(false);
       if (isProjectChannel && selectedProjectId) {
-        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+        const cachedChannelMsgs: ChannelMessage[] = validCached!.messages
           .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
           .map(msg => ({
             id: msg.id,
@@ -1777,7 +2075,7 @@ export function Chatbot() {
           return newMap;
         });
       } else if (isTeamChannel && selectedTeamId) {
-        const cachedChannelMsgs: ChannelMessage[] = cached.messages
+        const cachedChannelMsgs: ChannelMessage[] = validCached!.messages
           .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
           .map(msg => ({
             id: msg.id,
@@ -1799,8 +2097,8 @@ export function Chatbot() {
         });
       } else {
         const filteredCached = isAIAssistantChatId(chatId) 
-          ? cached.messages 
-          : cached.messages.filter(msg => msg.role === 'user');
+          ? validCached!.messages 
+          : validCached!.messages.filter(msg => msg.role === 'user');
         
         const cachedRegularMsgs: Message[] = filteredCached.map(msg => ({
           id: msg.id,
@@ -1843,7 +2141,7 @@ export function Chatbot() {
     // 3. Cache is stale
     // 4. Cache shows empty (need to verify it's still empty)
     // After initial load, always fetch fresh - don't rely on cache
-    const shouldFetch = !isInitialLoad || !hasCachedMessages || cacheIsStale || (hasCachedMessages && cached.messages.length === 0);
+    const shouldFetch = !isInitialLoad || !hasCachedMessages || cacheIsStale || (hasCachedMessages && validCached && validCached.messages.length === 0);
     
     if (shouldFetch) {
       // Fetch fresh messages from Firestore in the background
@@ -1852,9 +2150,9 @@ export function Chatbot() {
         try {
           // Get the latest message timestamp from cache to fetch only new messages
           let afterTimestamp: Date | undefined;
-          if (cached && cached.messages.length > 0) {
+          if (validCached && validCached.messages.length > 0) {
             const latestTimestamp = Math.max(
-              ...cached.messages.map(msg => 
+              ...validCached.messages.map(msg => 
                 msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime()
               )
             );
@@ -1862,7 +2160,7 @@ export function Chatbot() {
           }
           
           // If cache shows empty and is recent, skip API call for empty chats
-          if (hasCachedMessages && cached.messages.length === 0 && !cacheIsStale) {
+          if (hasCachedMessages && validCached && validCached.messages.length === 0 && !cacheIsStale) {
             // Cache shows empty and is fresh - don't make API call
             setIsLoadingMessages(false);
             return;
@@ -1874,12 +2172,26 @@ export function Chatbot() {
               ? await messagesService.getByChatId(chatId, afterTimestamp)
               : await messagesService.getByChatId(chatId);
             
+            // Filter out any messages that don't belong to this project (safety check)
+            const filteredMessages = newMessages.filter(msg => {
+              const belongsToProject = msg.projectId === selectedProjectId;
+              if (!belongsToProject) {
+                console.warn('⚠️ Filtered out message with wrong projectId', {
+                  messageId: msg.id,
+                  messageProjectId: msg.projectId,
+                  expectedProjectId: selectedProjectId,
+                  chatId,
+                });
+              }
+              return belongsToProject;
+            });
+            
             // Merge with cached messages (prefer new messages if there are duplicates)
             const messageMap = new Map<string, ChatMessage>();
-            if (cached) {
-              cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
             }
-            newMessages.forEach(msg => messageMap.set(msg.id, msg));
+            filteredMessages.forEach(msg => messageMap.set(msg.id, msg));
           
           const allMessages = Array.from(messageMap.values()).sort((a, b) => {
             const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
@@ -1891,7 +2203,19 @@ export function Chatbot() {
           const messagesWithRefreshedUrls = await refreshMessageImageUrls(allMessages, chatId);
           
           const channelMsgs: ChannelMessage[] = messagesWithRefreshedUrls
-            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
+            .filter(msg => {
+              const isValid = (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId;
+              if (!isValid && msg.projectId !== selectedProjectId) {
+                console.warn('⚠️ Filtered out channel message with wrong projectId', {
+                  messageId: msg.id,
+                  messageProjectId: msg.projectId,
+                  expectedProjectId: selectedProjectId,
+                  chatId,
+                  currentOrgId: currentOrg?.id,
+                });
+              }
+              return isValid;
+            })
             .map(msg => ({
               id: msg.id,
               memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -1905,9 +2229,17 @@ export function Chatbot() {
               citedContext: msg.citedContext,
             }));
           
-          // Only update state if it's initial load (state is empty)
+          // Update state if it's initial load or chat has changed (to show fresh messages)
           // Otherwise, real-time listener will handle updates
-          if (isInitialLoad) {
+          if (isInitialLoad || chatHasChanged) {
+            console.log('📨 Loading project channel messages', {
+              projectId: selectedProjectId,
+              messageCount: channelMsgs.length,
+              currentOrgId: currentOrg?.id,
+              chatId,
+              isInitialLoad,
+              chatHasChanged,
+            });
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
               newMap.set(selectedProjectId, channelMsgs);
@@ -1947,7 +2279,9 @@ export function Chatbot() {
           // Merge with cached messages (prefer new messages if there are duplicates)
           const messageMap = new Map<string, ChatMessage>();
           if (cached) {
-            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
           }
           newMessages.forEach(msg => messageMap.set(msg.id, msg));
         
@@ -2017,7 +2351,9 @@ export function Chatbot() {
           // Merge with cached messages (prefer new messages if there are duplicates)
           const messageMap = new Map<string, ChatMessage>();
           if (cached) {
-            cached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            if (validCached) {
+              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
+            }
           }
           newMessages.forEach(msg => messageMap.set(msg.id, msg));
           
@@ -3833,12 +4169,12 @@ export function Chatbot() {
             }
           }}
           className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto bg-black/70 text-white hover:bg-black/80",
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto p-0",
             isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
           )}
           size="icon"
         >
-        <MessageCircle className="h-6 w-6" />
+        <img src="/logo.png" alt="Logo" className="h-14 w-14 rounded-full object-contain" />
         {/* Unread indicator - red dot */}
         {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
           <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background" />
@@ -4253,745 +4589,67 @@ export function Chatbot() {
             </div>
           )}
 
-          {/* Team Channel Messages */}
+          {/* Team Channel Messages - Using reusable ChatMessageList */}
           {!isLoadingMessages && isTeamChannel && !isSearching && selectedTeamId && (
-            <>
-              {(() => {
-                const teamMessages = channelMessages.get(selectedTeamId) || [];
-                if (teamMessages.length === 0) {
-                  return (
-                    <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                      <Users className="h-12 w-12 text-muted-foreground mb-4" />
-                      <h3 className="text-lg font-semibold mb-2">{selectedTeam?.name} Channel</h3>
-                      <p className="text-sm text-muted-foreground max-w-sm">
-                        Start a conversation with your team. Your messages will be visible to all team members.
-                      </p>
-                    </div>
-                  );
-                }
-                // Pagination for team channel messages
-                const totalTeamMessages = teamMessages.length;
-                const visibleTeamMessages = teamMessages.slice(-visibleMessageCount);
-                const hasMoreTeamMessages = totalTeamMessages > visibleMessageCount;
-                
-                return (
-                  <div className="space-y-4">
-                    {hasMoreTeamMessages && (
-                      <div className="flex justify-center py-2">
-                        <button
-                          onClick={() => setVisibleMessageCount(prev => Math.min(prev + MESSAGE_LOAD_INCREMENT, totalTeamMessages))}
-                          className="text-sm text-muted-foreground hover:text-foreground px-4 py-2 rounded-md hover:bg-muted transition-colors"
-                        >
-                          Load {Math.min(MESSAGE_LOAD_INCREMENT, totalTeamMessages - visibleMessageCount)} older messages
-                        </button>
-                      </div>
-                    )}
-                    {visibleTeamMessages.map((message) => {
-                      // Check if message is from lean
-                      const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
-                      // Determine if message is from current user (lean messages are always left-aligned)
-                      const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
-                      
-                      // Get actual user info for display
-                      const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
-                      // For sent messages, use pre-calculated current user display info
-                      const displayName = isSent 
-                        ? currentUserDisplayInfo.displayName
-                        : (isLean ? "lean" : userInfo.name);
-                      const displayInitials = isSent 
-                        ? currentUserDisplayInfo.initials
-                        : (isLean ? "L" : userInfo.initials);
-                      
-                      return (
-                        <div
-                          key={message.id}
-                          data-message-id={message.id}
-                          data-message-timestamp={message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}
-                          data-message-user-id={message.userId || ''}
-                          data-message-role={isLean ? 'assistant' : 'user'}
-                          className={cn(
-                            "flex gap-3 group",
-                            isSent ? "justify-end" : "justify-start"
-                          )}
-                        >
-                          {/* Avatar for received messages (other users) */}
-                          {!isSent && (
-                            <Avatar className="h-8 w-8 flex-shrink-0">
-                              {isLean ? (
-                                <>
-                                  <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-                                  <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                    L
-                                  </AvatarFallback>
-                                </>
-                              ) : (
-                                <AvatarFallback className={getAvatarColor(message.userId?.toLowerCase())}>
-                                  {displayInitials}
-                                </AvatarFallback>
-                              )}
-                            </Avatar>
-                          )}
-                          
-                          {/* Message bubble */}
-                          <div className={cn(
-                            "flex flex-col min-w-0 max-w-[75%] relative",
-                            isSent && "ml-auto"
-                          )}>
-                            {!isSent && (
-                              <div className="flex items-center gap-2 mb-1 px-1">
-                                <p className="font-medium text-sm">{displayName}</p>
-                                <span className="text-xs text-muted-foreground">
-                                  {message.timestamp.toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}
-                                </span>
-                              </div>
-                            )}
-                            {/* Like button - floating container next to message */}
-                            {(message.likes && message.likes.length > 0) && (
-                              <div className={cn(
-                                "absolute top-0 flex items-start z-10",
-                                isSent ? "-left-8" : "-right-8"
-                              )}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      onClick={() => handleToggleLike(message.id, message.likes)}
-                                      className={cn(
-                                        "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap",
-                                        message.likes?.includes(user?.email?.toLowerCase() || '')
-                                          ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/20"
-                                          : "text-muted-foreground hover:bg-muted"
-                                      )}
-                                    >
-                                      <ThumbsUp className={cn(
-                                        "h-3 w-3",
-                                        message.likes?.includes(user?.email?.toLowerCase() || '') && "fill-current text-red-500"
-                                      )} />
-                                      <span>{message.likes.length}</span>
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side={isSent ? "left" : "right"} className="max-w-xs">
-                                    <div className="space-y-1">
-                                      <div className="text-xs font-semibold mb-1">
-                                        {message.likes.length === 1 ? "Liked by" : `Liked by ${message.likes.length} people`}
-                                      </div>
-                                      <div className="space-y-0.5">
-                                        {getLikedByUsers(message.likes).map((likedUser, idx) => (
-                                          <div key={idx} className="text-xs flex items-center gap-2">
-                                            <Avatar className="h-4 w-4">
-                                              <AvatarFallback className="text-[10px] bg-primary/10">
-                                                {likedUser.initials}
-                                              </AvatarFallback>
-                                            </Avatar>
-                                            <span>{likedUser.name}</span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  </TooltipContent>
-                                </Tooltip>
-                              </div>
-                            )}
-                            {/* Like button - show on hover if no likes yet */}
-                            {(!message.likes || message.likes.length === 0) && (
-                              <div className={cn(
-                                "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
-                                isSent ? "-left-8" : "-right-8"
-                              )}>
-                                <button
-                                  onClick={() => handleToggleLike(message.id, message.likes)}
-                                  className="flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap text-muted-foreground hover:bg-muted"
-                                >
-                                  <ThumbsUp className="h-3 w-3" />
-                                </button>
-                              </div>
-                            )}
-                            <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words">
-                              {/* Display cited context for channel messages */}
-                              {message.citedContext && (
-                                <div className="mb-2 pb-2 border-b border-border/50">
-                                  {message.citedContext.projects && message.citedContext.projects.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                                      <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary">Cited Projects:</span>
-                                      {message.citedContext.projects.map((project) => (
-                                        <Badge key={project.id} variant="secondary" className="text-xs">
-                                          {project.name}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                                      <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary">Cited Tasks:</span>
-                                      {message.citedContext.tasks.map((task) => (
-                                        <Badge key={task.id} variant="secondary" className="text-xs">
-                                          {task.title}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {message.citedContext.teams && message.citedContext.teams.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <Users className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary">Cited Teams:</span>
-                                      {message.citedContext.teams.map((team) => (
-                                        <Badge key={team.id} variant="secondary" className="text-xs">
-                                          {team.name}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words">
-                                {renderMessageContent(message.content)}
-                              </p>
-                              {/* Display images if any */}
-                              {message.imageUrls && message.imageUrls.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  {message.imageUrls.map((imageUrl, idx) => (
-                                    <a
-                                      key={idx}
-                                      href={imageUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="block"
-                                    >
-                                      <img
-                                        src={imageUrl}
-                                        alt={`Image ${idx + 1}`}
-                                        loading="lazy"
-                                        decoding="async"
-                                        className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
-                                        onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
-                                      />
-                                    </a>
-                                  ))}
-                                </div>
-                              )}
-                              <p className="text-xs mt-1 opacity-60">
-                                {message.timestamp.toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* Avatar for sent messages (current user) */}
-                          {isSent && (
-                            <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className={getAvatarColor(isSent ? user?.email?.toLowerCase() : message.userId?.toLowerCase())}>
-                                {displayInitials}
-                              </AvatarFallback>
-                            </Avatar>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </>
-          )}
-
-          {/* Project Channel Messages */}
-          {!isLoadingMessages && isProjectChannel && !isSearching && selectedProjectId && (
-            <>
-              {(() => {
-                const projectMessages = channelMessages.get(selectedProjectId) || [];
-                if (projectMessages.length === 0) {
-                  return (
-                    <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                      <Hash className="h-12 w-12 text-muted-foreground mb-4" />
-                      <h3 className="text-lg font-semibold mb-2">{selectedProject?.name} Channel</h3>
-                      <p className="text-sm text-muted-foreground max-w-sm">
-                        Start a conversation about this project. Your messages will be linked to project activities.
-                      </p>
-                    </div>
-                  );
-                }
-                // Pagination for project channel messages
-                const totalProjectMessages = projectMessages.length;
-                const visibleProjectMessages = projectMessages.slice(-visibleMessageCount);
-                const hasMoreProjectMessages = totalProjectMessages > visibleMessageCount;
-                
-                return (
-                  <div className="space-y-4 w-full min-w-0 max-w-full">
-                    {hasMoreProjectMessages && (
-                      <div className="flex justify-center py-2">
-                        <button
-                          onClick={() => setVisibleMessageCount(prev => Math.min(prev + MESSAGE_LOAD_INCREMENT, totalProjectMessages))}
-                          className="text-sm text-muted-foreground hover:text-foreground px-4 py-2 rounded-md hover:bg-muted transition-colors"
-                        >
-                          Load {Math.min(MESSAGE_LOAD_INCREMENT, totalProjectMessages - visibleMessageCount)} older messages
-                        </button>
-                      </div>
-                    )}
-                    {visibleProjectMessages.map((message) => {
-                      // Check if message is from lean
-                      const isLean = message.memberName === "lean" || message.userId === "ai-assistant";
-                      // Determine if message is from current user (lean messages are always left-aligned)
-                      const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
-                      
-                      // Get actual user info for display
-                      const userInfo = message.userId ? getUserInfo(message.userId) : { name: message.memberName || "Unknown", initials: message.memberAvatar || "U" };
-                      // For sent messages, use pre-calculated current user display info
-                      const displayName = isSent 
-                        ? currentUserDisplayInfo.displayName
-                        : (isLean ? "lean" : userInfo.name);
-                      const displayInitials = isSent 
-                        ? currentUserDisplayInfo.initials
-                        : (isLean ? "L" : userInfo.initials);
-                      
-                      return (
-                        <div
-                          key={message.id}
-                          data-message-id={message.id}
-                          data-message-timestamp={message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}
-                          data-message-user-id={message.userId || ''}
-                          data-message-role={isLean ? 'assistant' : 'user'}
-                          className={cn(
-                            "flex gap-3 w-full min-w-0 max-w-full group",
-                            isSent ? "justify-end" : "justify-start"
-                          )}
-                        >
-                          {/* Avatar for received messages (other users) */}
-                          {!isSent && (
-                            <Avatar className="h-8 w-8 flex-shrink-0">
-                              {isLean ? (
-                                <>
-                                  <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-                                  <AvatarFallback className="bg-muted-foreground/20 text-foreground">
-                                    L
-                                  </AvatarFallback>
-                                </>
-                              ) : (
-                                <AvatarFallback className={getAvatarColor(message.userId?.toLowerCase())}>
-                                  {displayInitials}
-                                </AvatarFallback>
-                              )}
-                            </Avatar>
-                          )}
-                          
-                          {/* Message bubble */}
-                          <div className={cn(
-                            "flex flex-col min-w-0 shrink relative",
-                            isSent ? "max-w-[75%] ml-auto" : "max-w-[75%]"
-                          )}>
-                            {!isSent && (
-                              <div className="flex items-center gap-2 mb-1 px-1">
-                                <p className="font-medium text-sm">{displayName}</p>
-                                <span className="text-xs text-muted-foreground">
-                                  {message.timestamp.toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}
-                                </span>
-                              </div>
-                            )}
-                            {/* Like button - floating container next to message */}
-                            {(message.likes && message.likes.length > 0) && (
-                              <div className={cn(
-                                "absolute top-0 flex items-start z-10",
-                                isSent ? "-left-8" : "-right-8"
-                              )}>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      onClick={() => handleToggleLike(message.id, message.likes)}
-                                      className={cn(
-                                        "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap",
-                                        message.likes?.includes(user?.email?.toLowerCase() || '')
-                                          ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/20"
-                                          : "text-muted-foreground hover:bg-muted"
-                                      )}
-                                    >
-                                      <ThumbsUp className={cn(
-                                        "h-3 w-3",
-                                        message.likes?.includes(user?.email?.toLowerCase() || '') && "fill-current text-red-500"
-                                      )} />
-                                      <span>{message.likes.length}</span>
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent side={isSent ? "left" : "right"} className="max-w-xs">
-                                    <div className="space-y-1">
-                                      <div className="text-xs font-semibold mb-1">
-                                        {message.likes.length === 1 ? "Liked by" : `Liked by ${message.likes.length} people`}
-                                      </div>
-                                      <div className="space-y-0.5">
-                                        {getLikedByUsers(message.likes).map((likedUser, idx) => (
-                                          <div key={idx} className="text-xs flex items-center gap-2">
-                                            <Avatar className="h-4 w-4">
-                                              <AvatarFallback className="text-[10px] bg-primary/10">
-                                                {likedUser.initials}
-                                              </AvatarFallback>
-                                            </Avatar>
-                                            <span>{likedUser.name}</span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  </TooltipContent>
-                                </Tooltip>
-                              </div>
-                            )}
-                            {/* Like button - show on hover if no likes yet */}
-                            {(!message.likes || message.likes.length === 0) && (
-                              <div className={cn(
-                                "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
-                                isSent ? "-left-8" : "-right-8"
-                              )}>
-                                <button
-                                  onClick={() => handleToggleLike(message.id, message.likes)}
-                                  className="flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap text-muted-foreground hover:bg-muted"
-                                >
-                                  <ThumbsUp className="h-3 w-3" />
-                                </button>
-                              </div>
-                            )}
-                            <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words min-w-0 w-full overflow-x-hidden" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                              {/* Display cited context for channel messages */}
-                              {message.citedContext && (
-                                <div className="mb-2 pb-2 border-b border-border/50 w-full min-w-0">
-                                  {message.citedContext.projects && message.citedContext.projects.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap mb-1.5 min-w-0 w-full">
-                                      <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">Cited Projects:</span>
-                                      {message.citedContext.projects.map((project) => (
-                                        <Badge key={project.id} variant="secondary" className="text-xs">
-                                          {project.name}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap mb-1.5 min-w-0 w-full">
-                                      <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">Cited Tasks:</span>
-                                      {message.citedContext.tasks.map((task) => (
-                                        <Badge key={task.id} variant="secondary" className="text-xs">
-                                          {task.title}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {message.citedContext.teams && message.citedContext.teams.length > 0 && (
-                                    <div className="flex items-center gap-2 flex-wrap min-w-0 w-full">
-                                      <Users className="h-3 w-3 text-primary flex-shrink-0" />
-                                      <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">Cited Teams:</span>
-                                      {message.citedContext.teams.map((team) => (
-                                        <Badge key={team.id} variant="secondary" className="text-xs">
-                                          {team.name}
-                                        </Badge>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words" style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-                                {renderMessageContent(message.content)}
-                              </p>
-                              {/* Display images if any */}
-                              {message.imageUrls && message.imageUrls.length > 0 && (
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  {message.imageUrls.map((imageUrl, idx) => (
-                                    <a
-                                      key={idx}
-                                      href={imageUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="block"
-                                    >
-                                      <img
-                                        src={imageUrl}
-                                        alt={`Image ${idx + 1}`}
-                                        loading="lazy"
-                                        decoding="async"
-                                        className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
-                                        onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
-                                      />
-                                    </a>
-                                  ))}
-                                </div>
-                              )}
-                              <p className="text-xs mt-1 opacity-60">
-                                {message.timestamp.toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* Avatar for sent messages (current user) */}
-                          {isSent && (
-                            <Avatar className="h-8 w-8 flex-shrink-0">
-                              <AvatarFallback className={getAvatarColor(isSent ? user?.email?.toLowerCase() : message.userId?.toLowerCase())}>
-                                {displayInitials}
-                              </AvatarFallback>
-                            </Avatar>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
-            </>
-          )}
-
-          {/* Regular Messages (AI Assistant or Team Members) */}
-          {!isLoadingMessages && !isProjectChannel && !isTeamChannel && (() => {
-            // Show only the most recent messages (pagination)
-            const totalMessages = messages.length;
-            const visibleMessages = messages.slice(-visibleMessageCount);
-            const hasMoreMessages = totalMessages > visibleMessageCount;
-            
-            return (
-              <>
-                {hasMoreMessages && (
-                  <div className="flex justify-center py-2">
-                    <button
-                      onClick={() => setVisibleMessageCount(prev => Math.min(prev + MESSAGE_LOAD_INCREMENT, totalMessages))}
-                      className="text-sm text-muted-foreground hover:text-foreground px-4 py-2 rounded-md hover:bg-muted transition-colors"
-                    >
-                      Load {Math.min(MESSAGE_LOAD_INCREMENT, totalMessages - visibleMessageCount)} older messages
-                    </button>
-                  </div>
-                )}
-                {visibleMessages.map((message) => {
-            // Check if message is from lean (assistant role)
-            const isLean = message.role === "assistant";
-            // Determine if message is from current user (sent) or other user (received)
-            // Lean messages are always left-aligned (received)
-            const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
-            
-            // For team member chats, if it's not from current user, it's received
-            const isTeamMemberChat = selectedMember !== "ai-assistant" && !isProjectChannel;
-            const isReceived = isTeamMemberChat && !isSent && message.role === "user";
-            
-            // Get actual user info for display - always use current user data for sent messages
-            // For received messages, try to get from current user list, fallback to message data
-            let displayInitials: string;
-            if (isSent) {
-              // Use pre-calculated current user display info
-              displayInitials = currentUserDisplayInfo.initials;
-            } else if (isLean) {
-              displayInitials = "L";
-            } else {
-              // For received messages, always use current user data from allDomainUsers
-              // This ensures avatar matches the user's current profile
-              const userInfo = message.userId ? getUserInfo(message.userId) : null;
-              if (userInfo && userInfo.initials) {
-                displayInitials = userInfo.initials;
-              } else {
-                // Fallback: try to get from allTeamMembers (which uses current user data)
-                const teamMember = allTeamMembers.find(m => m.email?.toLowerCase() === message.userId?.toLowerCase());
-                if (teamMember) {
-                  displayInitials = teamMember.avatar;
-                } else {
-                  // Last resort: use message data (might be stale)
-                  displayInitials = message.memberAvatar || "U";
-                }
-              }
-            }
-            
-            return (
-              <div
-                key={message.id}
-                data-message-id={message.id}
-                data-message-timestamp={message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}
-                data-message-user-id={message.userId || ''}
-                data-message-role={message.role}
-                className={cn(
-                  "flex gap-3 w-full group",
-                  isSent ? "justify-end" : "justify-start"
-                )}
-              >
-                {/* Avatar for received messages (assistant or other team member) */}
-                {!isSent && (
-                  <Avatar className="h-8 w-8 flex-shrink-0">
-                    {isLean ? (
-                      <>
-                        <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-                        <AvatarFallback className="bg-primary text-primary-foreground">
-                          L
-                        </AvatarFallback>
-                      </>
-                    ) : (
-                      <AvatarFallback className={getAvatarColor(message.userId)}>
-                        {displayInitials || <User className="h-4 w-4" />}
-                      </AvatarFallback>
-                    )}
-                  </Avatar>
-                )}
-                
-                {/* Message bubble wrapper */}
-                <div className={cn(
-                  "flex flex-col min-w-0 max-w-[75%] relative",
-                  isSent && "ml-auto"
-                )}>
-                  {/* Like button - floating container next to message */}
-                  {(message.likes && message.likes.length > 0) && (
-                    <div className={cn(
-                      "absolute top-0 flex items-start z-10",
-                      isSent ? "-left-8" : "-right-8"
-                    )}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            onClick={() => handleToggleLike(message.id, message.likes)}
-                            className={cn(
-                              "flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap",
-                              message.likes?.includes(user?.email?.toLowerCase() || '')
-                                ? "bg-red-500/10 text-red-500 hover:bg-red-500/20 border-red-500/20"
-                                : "text-muted-foreground hover:bg-muted"
-                            )}
-                          >
-                            <ThumbsUp className={cn(
-                              "h-3 w-3",
-                              message.likes?.includes(user?.email?.toLowerCase() || '') && "fill-current text-red-500"
-                            )} />
-                            <span>{message.likes.length}</span>
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent side={isSent ? "left" : "right"} className="max-w-xs">
-                          <div className="space-y-1">
-                            <div className="text-xs font-semibold mb-1">
-                              {message.likes.length === 1 ? "Liked by" : `Liked by ${message.likes.length} people`}
-                            </div>
-                            <div className="space-y-0.5">
-                              {getLikedByUsers(message.likes).map((likedUser, idx) => (
-                                <div key={idx} className="text-xs flex items-center gap-2">
-                                  <Avatar className="h-4 w-4">
-                                    <AvatarFallback className="text-[10px] bg-primary/10">
-                                      {likedUser.initials}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                  <span>{likedUser.name}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                  )}
-                  {/* Like button - show on hover if no likes yet */}
-                  {(!message.likes || message.likes.length === 0) && (
-                    <div className={cn(
-                      "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
-                      isSent ? "-left-8" : "-right-8"
-                    )}>
-                      <button
-                        onClick={() => handleToggleLike(message.id, message.likes)}
-                        className="flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors shadow-md bg-background border border-border whitespace-nowrap text-muted-foreground hover:bg-muted"
-                      >
-                        <ThumbsUp className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
-                  {/* Message bubble */}
-                  <div
-                    className={cn(
-                      "rounded-lg px-4 py-2 bg-muted border border-border break-words"
-                    )}
-                  >
-                  {/* Display cited context for user messages */}
-                  {message.role === "user" && message.citedContext && (
-                    <div className="mb-2 pb-2 border-b border-border/50">
-                      {message.citedContext.projects && message.citedContext.projects.length > 0 && (
-                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                          <FolderOpen className="h-3 w-3 text-primary flex-shrink-0" />
-                          <span className="text-xs font-medium text-primary">Cited Projects:</span>
-                          {message.citedContext.projects.map((project) => (
-                            <Badge key={project.id} variant="secondary" className="text-xs">
-                              {project.name}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                      {message.citedContext.tasks && message.citedContext.tasks.length > 0 && (
-                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                          <CheckSquare className="h-3 w-3 text-primary flex-shrink-0" />
-                          <span className="text-xs font-medium text-primary">Cited Tasks:</span>
-                          {message.citedContext.tasks.map((task) => (
-                            <Badge key={task.id} variant="secondary" className="text-xs">
-                              {task.title}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                      {message.citedContext.teams && message.citedContext.teams.length > 0 && (
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Users className="h-3 w-3 text-primary flex-shrink-0" />
-                          <span className="text-xs font-medium text-primary">Cited Teams:</span>
-                          {message.citedContext.teams.map((team) => (
-                            <Badge key={team.id} variant="secondary" className="text-xs">
-                              {team.name}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                    <p className="text-sm whitespace-pre-wrap font-medium text-foreground break-words">
-                      {renderMessageContent(message.content)}
-                    </p>
-                    {/* Display images if any */}
-                    {message.imageUrls && message.imageUrls.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        {message.imageUrls.map((imageUrl, idx) => (
-                          <a
-                            key={idx}
-                            href={imageUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="block"
-                          >
-                            <img
-                              src={imageUrl}
-                              alt={`Image ${idx + 1}`}
-                              loading="lazy"
-                              decoding="async"
-                              className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                target.style.display = 'none';
-                              }}
-                            />
-                          </a>
-                        ))}
-                      </div>
-                    )}
-                    <p className="text-xs mt-1 opacity-60">
-                      {message.timestamp.toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  </div>
+            <ChatMessageList
+              messages={channelMessages.get(selectedTeamId) || []}
+              visibleCount={visibleMessageCount}
+              onLoadMore={(increment) => setVisibleMessageCount(prev => prev + increment)}
+              currentUserEmail={user?.email?.toLowerCase() || ''}
+              onToggleLike={handleToggleLike}
+              getLikedByUsers={getLikedByUsers}
+              getUserDisplayInfo={getMessageDisplayInfo}
+              onImageError={handleImageError}
+              emptyState={
+                <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                  <Users className="h-12 w-12 text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">{selectedTeam?.name} Channel</h3>
+                  <p className="text-sm text-muted-foreground max-w-sm">
+                    Start a conversation with your team. Your messages will be visible to all team members.
+                  </p>
                 </div>
-                
-                {/* Avatar for sent messages */}
-                {isSent && (
-                  <Avatar className="h-8 w-8 flex-shrink-0">
-                    <AvatarFallback className={getAvatarColor(user?.email?.toLowerCase())}>
-                      {displayInitials || <User className="h-4 w-4" />}
-                    </AvatarFallback>
-                  </Avatar>
-                )}
-              </div>
-            );
-          })}
-            </>
-            );
-          })()}
+              }
+              className="flex-1 min-h-0"
+            />
+          )}
+
+          {/* Project Channel Messages - Using reusable ChatMessageList */}
+          {!isLoadingMessages && isProjectChannel && !isSearching && selectedProjectId && (
+            <ChatMessageList
+              messages={channelMessages.get(selectedProjectId) || []}
+              visibleCount={visibleMessageCount}
+              onLoadMore={(increment) => setVisibleMessageCount(prev => prev + increment)}
+              currentUserEmail={user?.email?.toLowerCase() || ''}
+              onToggleLike={handleToggleLike}
+              getLikedByUsers={getLikedByUsers}
+              getUserDisplayInfo={getMessageDisplayInfo}
+              onImageError={handleImageError}
+              emptyState={
+                <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                  <Hash className="h-12 w-12 text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">{selectedProject?.name} Channel</h3>
+                  <p className="text-sm text-muted-foreground max-w-sm">
+                    Start a conversation about this project. Your messages will be linked to project activities.
+                  </p>
+                </div>
+              }
+              className="flex-1 min-h-0"
+            />
+          )}
+
+          {/* Regular Messages (AI Assistant or Team Members) - Using reusable ChatMessageList */}
+          {!isLoadingMessages && !isProjectChannel && !isTeamChannel && (
+            <ChatMessageList
+              messages={messages}
+              visibleCount={visibleMessageCount}
+              onLoadMore={(increment) => setVisibleMessageCount(prev => prev + increment)}
+              currentUserEmail={user?.email?.toLowerCase() || ''}
+              onToggleLike={handleToggleLike}
+              getLikedByUsers={getLikedByUsers}
+              getUserDisplayInfo={getMessageDisplayInfo}
+              className="flex-1 min-h-0"
+            />
+          )}
           {!isLoadingMessages && isLoading && !isProjectChannel && !isTeamChannel && (
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">

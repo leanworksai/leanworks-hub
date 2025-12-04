@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { SlackConnectDialog } from "@/components/SlackConnectDialog";
-import { AtlassianConnectDialog } from "@/components/AtlassianConnectDialog";
-import { OutlookConnectDialog } from "@/components/OutlookConnectDialog";
+import { IntegrationConnectDialog } from "@/components/IntegrationConnectDialog";
+import { integrationConfigs } from "@/config/integrations";
 import { integrationsService } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOrg } from "@/contexts/OrgContext";
 import { useToast } from "@/hooks/use-toast";
 
 const integrations = [
@@ -43,10 +43,9 @@ const integrations = [
 export default function Integrations() {
   const [connectedIntegrations, setConnectedIntegrations] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [slackDialogOpen, setSlackDialogOpen] = useState(false);
-  const [atlassianDialogOpen, setAtlassianDialogOpen] = useState(false);
-  const [outlookDialogOpen, setOutlookDialogOpen] = useState(false);
+  const [openDialogId, setOpenDialogId] = useState<string | null>(null);
   const { user } = useAuth();
+  const { currentOrg } = useOrg();
   const { toast } = useToast();
 
   const loadIntegrations = useCallback(async () => {
@@ -99,28 +98,24 @@ export default function Integrations() {
   }, [toast, loadIntegrations]);
 
   const handleConnect = (integrationId: string) => {
-    if (integrationId === "slack") {
-      setSlackDialogOpen(true);
-    } else if (integrationId === "atlassian") {
-      setAtlassianDialogOpen(true);
-    } else if (integrationId === "outlook") {
-      setOutlookDialogOpen(true);
-    } else if (integrationId === "github") {
-      // Include domain in state parameter so we can identify which client installed
-      const domain = user?.email ? user.email.split('@')[1]?.toLowerCase() : '';
-      if (!domain) {
+    if (integrationId === "github") {
+      // GitHub uses OAuth flow, not a form dialog
+      if (!currentOrg?.slug) {
         toast({
           title: "Error",
-          description: "Unable to determine your domain. Please ensure you're logged in.",
+          description: "Please select an organization before connecting GitHub.",
           variant: "destructive",
         });
         return;
       }
-      // GitHub App installation URL with state parameter containing domain
+      // GitHub App installation URL with state parameter containing org slug
       // The callback URL should be configured in GitHub App settings as:
       // https://leanworks.ai/api/integrations/github/callback
-      const githubAppUrl = `https://github.com/apps/leanworksai/installations/new?state=${encodeURIComponent(domain)}`;
+      const githubAppUrl = `https://github.com/apps/leanworksai/installations/new?state=${encodeURIComponent(currentOrg.slug)}`;
       window.open(githubAppUrl, "_blank");
+    } else if (integrationConfigs[integrationId]) {
+      // Open the appropriate dialog for form-based integrations
+      setOpenDialogId(integrationId);
     }
   };
 
@@ -147,9 +142,7 @@ export default function Integrations() {
 
   const handleConnectionSuccess = (integrationId: string) => {
     setConnectedIntegrations(prev => new Set(prev).add(integrationId));
-    setSlackDialogOpen(false);
-    setAtlassianDialogOpen(false);
-    setOutlookDialogOpen(false);
+    setOpenDialogId(null);
     toast({
       title: "Success",
       description: "Integration connected successfully",
@@ -212,23 +205,15 @@ export default function Integrations() {
         })}
       </div>
 
-      <SlackConnectDialog
-        open={slackDialogOpen}
-        onOpenChange={setSlackDialogOpen}
-        onSuccess={() => handleConnectionSuccess("slack")}
-      />
-
-      <AtlassianConnectDialog
-        open={atlassianDialogOpen}
-        onOpenChange={setAtlassianDialogOpen}
-        onSuccess={() => handleConnectionSuccess("atlassian")}
-      />
-
-      <OutlookConnectDialog
-        open={outlookDialogOpen}
-        onOpenChange={setOutlookDialogOpen}
-        onSuccess={() => handleConnectionSuccess("outlook")}
-      />
+      {/* Render dialog for the currently selected integration */}
+      {openDialogId && integrationConfigs[openDialogId] && (
+        <IntegrationConnectDialog
+          open={openDialogId !== null}
+          onOpenChange={(open) => !open && setOpenDialogId(null)}
+          onSuccess={() => handleConnectionSuccess(openDialogId)}
+          config={integrationConfigs[openDialogId]}
+        />
+      )}
     </div>
   );
 }

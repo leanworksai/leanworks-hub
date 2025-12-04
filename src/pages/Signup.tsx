@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { trackClick, trackFormSubmit } from '@/lib/analytics';
+import { CheckCircle2, Mail } from 'lucide-react';
 
 // Common timezones list
 const TIMEZONES = [
@@ -53,6 +54,8 @@ export default function Signup() {
   const [responsibilities, setResponsibilities] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [signupSuccess, setSignupSuccess] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState('');
   const { signUp, user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
@@ -111,8 +114,9 @@ export default function Signup() {
       trackClick('signup_submit', '/signup');
       await signUp(email, password, firstName, lastName, jobTitle, timezone, responsibilities);
       trackFormSubmit('signup', true);
-      // Redirect to login after successful signup
-      navigate('/login');
+      // Show success message instead of redirecting
+      setSubmittedEmail(email);
+      setSignupSuccess(true);
     } catch (err: any) {
       setError(err.message || 'Failed to sign up');
     } finally {
@@ -127,6 +131,58 @@ export default function Signup() {
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
           <p className="mt-4 text-muted-foreground">Loading...</p>
         </div>
+      </div>
+    );
+  }
+
+  // Show success message after signup
+  if (signupSuccess) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="space-y-1 text-center">
+            <div className="flex justify-center mb-4">
+              <div className="rounded-full bg-green-100 p-3">
+                <Mail className="h-12 w-12 text-green-600" />
+              </div>
+            </div>
+            <CardTitle className="text-2xl font-bold">Check Your Email</CardTitle>
+            <CardDescription>
+              We've sent a verification link to your email
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="bg-slate-50 rounded-lg p-4 text-center">
+              <p className="text-sm text-muted-foreground">Verification email sent to:</p>
+              <p className="font-medium text-lg">{submittedEmail}</p>
+            </div>
+            <div className="space-y-2 text-sm text-muted-foreground">
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                <span>Click the link in your email to verify your account</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                <span>The verification link expires in 24 hours</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                <span>Check your spam folder if you don't see it</span>
+              </div>
+            </div>
+          </CardContent>
+          <CardFooter className="flex flex-col space-y-4">
+            <Button onClick={() => navigate('/login')} className="w-full">
+              Go to Login
+            </Button>
+            <div className="text-sm text-center text-muted-foreground">
+              Didn't receive the email?{' '}
+              <Link to="/verify-email" className="text-primary hover:underline">
+                Resend verification
+              </Link>
+            </div>
+          </CardFooter>
+        </Card>
       </div>
     );
   }

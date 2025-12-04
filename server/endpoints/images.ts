@@ -1,7 +1,7 @@
 /**
  * Image Upload Endpoints
  * Handles image uploads to Firebase Storage via Admin SDK
- * Images are stored at: domains/{domain}/chat-images/{chatId}/{imageId}.jpg
+ * Images are stored at: orgs/{orgId}/chat-images/{chatId}/{imageId}.jpg
  * All images are converted to JPG format for consistent storage
  */
 
@@ -9,6 +9,7 @@ import express from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import sharp from 'sharp';
+import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
 
 // Image URL expiration time (default: 1 year)
 // Can be configured via environment variable IMAGE_URL_EXPIRATION_DAYS
@@ -79,11 +80,11 @@ export function setupImageEndpoints(
     async (req, res) => {
       try {
         console.log('📸 Processing image upload...');
-        const domain = (req as any).userDomain;
+        const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
         const userEmail = (req as any).user.email?.toLowerCase();
         const { chatId } = req.body;
         
-        console.log('📸 Upload params:', { domain, userEmail, chatId, hasFile: !!req.file });
+        console.log('📸 Upload params:', { orgId, userEmail, chatId, hasFile: !!req.file });
 
         if (!chatId) {
           return res.status(400).json({ error: 'chatId is required' });
@@ -157,9 +158,20 @@ export function setupImageEndpoints(
         // Generate unique image ID
         const imageId = `${uuidv4()}.jpg`;
         
-        // Construct storage path: domains/{sanitized-domain}/chat-images/{chatId}/{imageId}
-        // Domain is already sanitized by getDomainFromEmail (removes special chars)
-        const storagePath = `domains/${domain}/chat-images/${chatId}/${imageId}`;
+        // Construct storage path: orgs/{orgSlug}/chat-images/{chatId}/{imageId}
+        // Use org slug for storage path (sanitized name instead of ID)
+        let orgSlugForPath: string;
+        if (orgId) {
+          try {
+            orgSlugForPath = await getOrgSlugById(orgId);
+          } catch (error) {
+            console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+            orgSlugForPath = 'default';
+          }
+        } else {
+          orgSlugForPath = 'default';
+        }
+        const storagePath = `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageId}`;
 
         // Use fixed bucket name
         const bucketName = 'leanworks-prod';
@@ -290,15 +302,28 @@ export function setupImageEndpoints(
   };
 
   // Helper function to extract storage path from signed URL or imageId
-  const extractStoragePath = (imageUrlOrId: string, chatId: string, domain: string): string | null => {
-    // If it's already a storage path, return it
-    if (imageUrlOrId.startsWith('domains/')) {
+  const extractStoragePath = async (imageUrlOrId: string, chatId: string, orgId: string | undefined): Promise<string | null> => {
+    // If it's already a storage path (either old domains/ or new orgs/ format), return it
+    if (imageUrlOrId.startsWith('domains/') || imageUrlOrId.startsWith('orgs/')) {
       return imageUrlOrId;
     }
     
-    // If it's an imageId (UUID.jpg), construct the path
+    // Get org slug for path construction
+    let orgSlugForPath: string;
+    if (orgId) {
+      try {
+        orgSlugForPath = await getOrgSlugById(orgId);
+      } catch (error) {
+        console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+        orgSlugForPath = 'default';
+      }
+    } else {
+      orgSlugForPath = 'default';
+    }
+    
+    // If it's an imageId (UUID.jpg), construct the path using org-based format
     if (imageUrlOrId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/i)) {
-      return `domains/${domain}/chat-images/${chatId}/${imageUrlOrId}`;
+      return `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageUrlOrId}`;
     }
     
     // Try to extract from signed URL
@@ -312,7 +337,7 @@ export function setupImageEndpoints(
       }
     } catch (e) {
       // Not a valid URL, try to construct from chatId
-      return `domains/${domain}/chat-images/${chatId}/${imageUrlOrId}`;
+      return `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageUrlOrId}`;
     }
     
     return null;
@@ -324,7 +349,7 @@ export function setupImageEndpoints(
     authenticateUser,
     async (req, res) => {
       try {
-        const domain = (req as any).userDomain;
+        const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
         const { imageUrls, chatId } = req.body;
         
         if (!imageUrls || !Array.isArray(imageUrls)) {
@@ -338,7 +363,7 @@ export function setupImageEndpoints(
         // Process all URLs in parallel for better performance
         const refreshPromises = imageUrls.map(async (imageUrl) => {
           try {
-            const storagePath = extractStoragePath(imageUrl, chatId, domain);
+            const storagePath = await extractStoragePath(imageUrl, chatId, orgId);
             if (storagePath) {
               const newSignedUrl = await generateSignedUrl(storagePath);
               return newSignedUrl;

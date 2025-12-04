@@ -21,15 +21,11 @@ import {
 } from "@/components/ui/command";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useCreateProject } from "@/hooks/useProjects";
-import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
-import { teamsService } from "@/services/api";
 import type { Project, ProjectMember } from "@/data/projectsData";
-import type { TeamMember } from "@/data/teamsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown } from "lucide-react";
-import { useQueries } from "@tanstack/react-query";
 import { v4 as uuidv4 } from 'uuid';
 import { trackCreate, trackFormSubmit } from "@/lib/analytics";
 
@@ -68,13 +64,9 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   const createProject = useCreateProject();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
-  const { data: teams = [] } = useUserTeams();
-  const { data: users = [] } = useUsers();
+  const { data: orgMembers = [], isLoading: isLoadingMembers } = useUsers();
   const { user } = useAuth();
   const [membersOpen, setMembersOpen] = useState(false);
-  const [allTeamMembers, setAllTeamMembers] = useState<TeamMember[]>([]);
-  const [isLoadingMembers, setIsLoadingMembers] = useState(false);
-  const [memberToTeamMap, setMemberToTeamMap] = useState<Map<string, string>>(new Map());
 
   type FormData = {
     name: string;
@@ -90,259 +82,72 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
     },
   });
 
-  // Fetch team details for all user teams to get member emails
-  const teamDetailsQueries = useQueries({
-    queries: teams.map((team) => ({
-      queryKey: ['teams', team.id],
-      queryFn: () => teamsService.getById(team.id),
-      enabled: !!team.id && !!user?.email && open,
-      staleTime: 1000 * 60 * 5,
-    })),
-  });
-
-  // Extract team details data and loading states
-  const isLoadingDetails = teamDetailsQueries.some((query) => query.isLoading);
-  const allQueriesCompleted = teamDetailsQueries.length === 0 || teamDetailsQueries.every(
-    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
-  );
-  
-  // Create a stable key from team details data for dependency tracking
-  const teamDetailsKey = teamDetailsQueries
-    .map((query, index) => query.data ? `${teams[index]?.name}-${query.data.members?.length || 0}` : null)
-    .filter(Boolean)
-    .join('|');
-
-  // Load all team members when dialog opens or teams/team details change
-  useEffect(() => {
-    if (!open) {
-      setAllTeamMembers([]);
-      setMemberToTeamMap(new Map());
-      setIsLoadingMembers(false);
-      return;
-    }
-
-    if (teams.length === 0) {
-      setAllTeamMembers([]);
-      setMemberToTeamMap(new Map());
-      setIsLoadingMembers(false);
-      return;
-    }
-
-    if (users.length === 0) {
-      setIsLoadingMembers(true);
-      return;
-    }
-
-    if (isLoadingDetails || !allQueriesCompleted) {
-      setIsLoadingMembers(true);
-      return;
-    }
-
-    setIsLoadingMembers(true);
-    try {
-      // Get all team member emails from user's teams
-      const teamMemberEmails = new Set<string>();
-      const emailToTeamMap = new Map<string, string>();
-      
-      teamDetailsQueries.forEach((query, index) => {
-        if (query.data?.members && teams[index]) {
-          query.data.members.forEach(member => {
-            if (member.email) {
-              teamMemberEmails.add(member.email.toLowerCase());
-              emailToTeamMap.set(member.email.toLowerCase(), teams[index].name);
-            }
-          });
-        }
-      });
-      
-
-      // Filter users to only those in user's teams
-      const filteredUsers = users.filter(user => 
-        teamMemberEmails.has(user.email.toLowerCase())
-      );
-
-      // Convert users to TeamMember format and create member-to-team mapping
-      const memberMap = new Map<string, TeamMember>();
-      const memberTeamMap = new Map<string, string>();
-      
-      filteredUsers.forEach(user => {
-        const fullName = `${user.firstName} ${user.lastName}`;
-        const teamName = emailToTeamMap.get(user.email.toLowerCase());
-        
-        // Only add members that have a valid team name
-        if (teamName && !memberMap.has(fullName)) {
-          const avatar = `${user.firstName.charAt(0)}${user.lastName.charAt(0)}`.toUpperCase();
-          memberMap.set(fullName, {
-            name: fullName,
-            role: user.jobTitle || "Member",
-            email: user.email,
-            avatar: avatar,
-          });
-          memberTeamMap.set(fullName, teamName);
-        }
-      });
-      
-      // Also add members directly from team details (in case they're not in users list)
-      teamDetailsQueries.forEach((query, index) => {
-        if (query.data?.members && teams[index]) {
-          const teamName = teams[index].name;
-          query.data.members.forEach(member => {
-            if (member.name && !memberTeamMap.has(member.name)) {
-              // Only add if not already in map
-              memberTeamMap.set(member.name, teamName);
-              
-              // Add to memberMap if not already there
-              if (!memberMap.has(member.name)) {
-                memberMap.set(member.name, {
-                  name: member.name,
-                  role: member.role || "Member",
-                  email: member.email || '',
-                  avatar: member.avatar || getInitials(member.name),
-                });
-              }
-            }
-          });
-        }
-      });
-
-      // Sort by name
-      const sortedMembers = Array.from(memberMap.values()).sort((a, b) => 
-        a.name.localeCompare(b.name)
-      );
-
-      setAllTeamMembers(sortedMembers);
-      setMemberToTeamMap(memberTeamMap);
-    } catch (error) {
-      console.error('Failed to load team members:', error);
-      setAllTeamMembers([]);
-      setMemberToTeamMap(new Map());
-    } finally {
-      setIsLoadingMembers(false);
-    }
-  }, [open, teams.length, users.length, isLoadingDetails, allQueriesCompleted, teamDetailsKey]);
+  // Convert org members to a format suitable for selection
+  const availableMembers = orgMembers
+    .filter(member => member.email.toLowerCase() !== user?.email?.toLowerCase()) // Exclude current user
+    .map(member => ({
+      email: member.email,
+      name: `${member.firstName || ''} ${member.lastName || ''}`.trim() || member.email,
+      role: member.jobTitle || 'Member',
+      avatar: `${(member.firstName || '').charAt(0)}${(member.lastName || '').charAt(0)}`.toUpperCase() || member.email.charAt(0).toUpperCase(),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   // Reset selected members when dialog opens/closes
   useEffect(() => {
     if (open) {
       setSelectedMembers(new Set());
       setMembersOpen(false);
-      setMemberToTeamMap(new Map());
     }
   }, [open]);
 
-  // Convert TeamMember to ProjectMember
-  const convertToProjectMember = (teamMember: TeamMember, teamName: string, index: number): ProjectMember => {
+  // Convert selected member emails to ProjectMember format
+  const getSelectedProjectMembers = (): ProjectMember[] => {
+    return Array.from(selectedMembers)
+      .map(email => {
+        const member = orgMembers.find(m => m.email.toLowerCase() === email.toLowerCase());
+        if (!member) return null;
+        
+        const firstName = member.firstName || '';
+        const lastName = member.lastName || '';
+        const name = `${firstName} ${lastName}`.trim() || member.email;
+        const avatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || member.email.charAt(0).toUpperCase();
+        
     return {
-      id: teamMember.email?.toLowerCase() || `${teamName}-${teamMember.name}-${index}`,
-      name: teamMember.name,
-      role: teamMember.role,
-      avatar: teamMember.avatar,
-    };
-  };
-
-  // Get all selected members from all teams
-  const getSelectedProjectMembers = async (): Promise<ProjectMember[]> => {
-    const members: ProjectMember[] = [];
-    let memberIndex = 0;
-
-    // Fetch all team details in parallel
-    const teamDetailsPromises = teams.map(team => 
-      teamsService.getById(team.id).catch(error => {
-        console.error(`Failed to fetch team ${team.id}:`, error);
-        return null;
+          id: member.email.toLowerCase(),
+          email: member.email,
+          name: name,
+          role: member.jobTitle || 'Member',
+          avatar: avatar,
+        };
       })
-    );
-
-    const teamDetails = await Promise.all(teamDetailsPromises);
-
-    // Process all selected members
-    for (let i = 0; i < teams.length; i++) {
-      const team = teams[i];
-      const teamDetail = teamDetails[i];
-      
-      if (teamDetail?.members) {
-        for (const teamMember of teamDetail.members) {
-          const memberKey = `${team.name}:${teamMember.name}`;
-          if (selectedMembers.has(memberKey)) {
-            members.push(convertToProjectMember(teamMember, team.name, memberIndex++));
-          }
-        }
-      }
-    }
-
-    return members;
+      .filter((m): m is ProjectMember => m !== null);
   };
 
   // Toggle member selection
-  const toggleMemberSelection = (memberName: string) => {
-    const teamName = memberToTeamMap.get(memberName);
-    
-    // If team name not found, try to find it from allTeamMembers
-    if (!teamName) {
-      const member = allTeamMembers.find(m => m.name === memberName);
-      if (member) {
-        // Try to find team name from team details queries
-        for (let i = 0; i < teams.length; i++) {
-          const teamDetail = teamDetailsQueries[i]?.data;
-          if (teamDetail?.members?.some(m => m.name === memberName || m.email === member.email)) {
-            const foundTeamName = teams[i]?.name;
-            if (foundTeamName) {
-              // Update the map for future use
-              setMemberToTeamMap(prev => {
-                const newMap = new Map(prev);
-                newMap.set(memberName, foundTeamName);
-                return newMap;
-              });
-              
-              const memberKey = `${foundTeamName}:${memberName}`;
-              const newSelected = new Set(selectedMembers);
-              if (newSelected.has(memberKey)) {
-                newSelected.delete(memberKey);
-              } else {
-                newSelected.add(memberKey);
-              }
-              setSelectedMembers(newSelected);
-              return;
-            }
-          }
-        }
-      }
-      
-      // If still not found, log error and show toast
-      console.error('Member not found in team map:', {
-        memberName,
-        memberToTeamMapSize: memberToTeamMap.size,
-        allTeamMembersCount: allTeamMembers.length,
-        memberExists: !!allTeamMembers.find(m => m.name === memberName)
-      });
-      toast({
-        title: "Error",
-        description: `Unable to add member "${memberName}". Please try again.`,
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const memberKey = `${teamName}:${memberName}`;
+  const toggleMemberSelection = (memberEmail: string) => {
+    const normalizedEmail = memberEmail.toLowerCase();
     const newSelected = new Set(selectedMembers);
-    if (newSelected.has(memberKey)) {
-      newSelected.delete(memberKey);
+    if (newSelected.has(normalizedEmail)) {
+      newSelected.delete(normalizedEmail);
     } else {
-      newSelected.add(memberKey);
+      newSelected.add(normalizedEmail);
     }
     setSelectedMembers(newSelected);
   };
 
   // Check if a member is selected
-  const isMemberSelected = (memberName: string): boolean => {
-    return Array.from(selectedMembers).some(key => key.endsWith(`:${memberName}`));
+  const isMemberSelected = (memberEmail: string): boolean => {
+    return selectedMembers.has(memberEmail.toLowerCase());
   };
 
   // Get selected member names for display
   const getSelectedMemberNames = (): string[] => {
-    return allTeamMembers
-      .filter(member => isMemberSelected(member.name))
-      .map(member => member.name);
+    return Array.from(selectedMembers)
+      .map(email => {
+        const member = orgMembers.find(m => m.email.toLowerCase() === email.toLowerCase());
+        return member ? `${member.firstName || ''} ${member.lastName || ''}`.trim() || member.email : email;
+      });
   };
 
   const onSubmit = async (data: FormData) => {
@@ -370,7 +175,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       }
 
       // Get selected project members
-      const projectMembers = await getSelectedProjectMembers();
+      const projectMembers = getSelectedProjectMembers();
 
       const project: Project = {
         id: uuidv4(), // Generate unique ID
@@ -468,7 +273,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
             <FormItem>
               <FormLabel>Project Members</FormLabel>
               <FormDescription>
-                Select team members to add to this project
+                Select organization members to add to this project
               </FormDescription>
               <Popover open={membersOpen} onOpenChange={setMembersOpen}>
                 <PopoverTrigger asChild>
@@ -482,12 +287,15 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
                       {selectedMembers.size > 0 ? (
                         <div className="flex items-center gap-2 flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                            {getSelectedMemberNames().slice(0, 3).map((name, idx) => {
-                              const member = allTeamMembers.find(m => m.name === name);
+                            {Array.from(selectedMembers).slice(0, 3).map((email, idx) => {
+                              const member = orgMembers.find(m => m.email.toLowerCase() === email.toLowerCase());
+                              const avatar = member 
+                                ? `${(member.firstName || '').charAt(0)}${(member.lastName || '').charAt(0)}`.toUpperCase() || email.charAt(0).toUpperCase()
+                                : email.charAt(0).toUpperCase();
                               return (
                                 <Avatar key={idx} className="h-5 w-5 shrink-0">
                                   <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                                    {member?.avatar || getInitials(name)}
+                                    {avatar}
                                   </AvatarFallback>
                                 </Avatar>
                               );
@@ -513,22 +321,22 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
                 </PopoverTrigger>
                 <PopoverContent className="w-[400px] p-0">
                   <Command>
-                    <CommandInput placeholder="Search team members..." />
+                    <CommandInput placeholder="Search organization members..." />
                     <CommandList>
                       {isLoadingMembers ? (
                         <div className="p-4 text-sm text-muted-foreground">Loading members...</div>
-                      ) : allTeamMembers.length === 0 ? (
-                        <CommandEmpty>No team members found.</CommandEmpty>
+                      ) : availableMembers.length === 0 ? (
+                        <CommandEmpty>No organization members found.</CommandEmpty>
                       ) : (
                         <CommandGroup>
-                          {allTeamMembers.map((member) => {
-                            const isSelected = isMemberSelected(member.name);
+                          {availableMembers.map((member) => {
+                            const isSelected = isMemberSelected(member.email);
                             return (
                               <CommandItem
-                                key={member.name}
-                                value={member.name}
+                                key={member.email}
+                                value={member.email}
                                 onSelect={() => {
-                                  toggleMemberSelection(member.name);
+                                  toggleMemberSelection(member.email);
                                 }}
                               >
                                 <Check

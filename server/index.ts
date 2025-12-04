@@ -10,10 +10,29 @@ import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import crypto from 'crypto';
-import { getTenantPool, getTenantPoolByDbName, getDomainFromEmail } from '../database/multi-tenant-pool.js';
+import { 
+  getSharedPool, 
+  getOrgPool, 
+  getOrgPoolBySlug,
+  getUserOrganizations,
+  getPersonalWorkspace,
+  checkOrgMembership,
+  isOrgOwner,
+  getOrgMembers,
+  generateOrgSlug,
+  generatePersonalSlug,
+  sanitizeSlugForDb,
+  checkDatabaseExists,
+  queryShared,
+  queryOrg,
+  getUserInfoBatch,
+  enrichWithUserNames,
+  getOrgSlugById,
+} from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
+import { sendVerificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -130,15 +149,14 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     }
 
     const token = authHeader.substring(7);
+    let userEmail: string | undefined;
     
     // Try to verify as ID token first (normal flow when Firebase Auth works)
     try {
       const decodedToken = await auth.verifyIdToken(token);
     (req as any).user = decodedToken;
-    (req as any).userEmail = decodedToken.email;
-    (req as any).userDomain = getDomainFromEmail(decodedToken.email!);
-      next();
-      return;
+      userEmail = decodedToken.email;
+      (req as any).userEmail = userEmail;
     } catch (idTokenError: any) {
       // If ID token verification fails, try to verify as custom token
       // by decoding and checking the UID
@@ -162,10 +180,8 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
               };
               
               (req as any).user = decodedToken;
-              (req as any).userEmail = userRecord.email;
-              (req as any).userDomain = getDomainFromEmail(userRecord.email!);
-    next();
-              return;
+              userEmail = userRecord.email;
+              (req as any).userEmail = userEmail;
             }
           }
         } catch (customTokenError: any) {
@@ -177,11 +193,24 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
           });
           throw idTokenError;
         }
-      }
-      
+      } else {
       // If we get here, both methods failed or it's not a custom token error
       throw idTokenError;
     }
+    }
+    
+    // Get org context from header (if provided)
+    const orgId = req.headers['x-org-id'] as string | undefined;
+    if (orgId && userEmail) {
+      // Validate org membership
+      const membership = await checkOrgMembership(orgId, userEmail);
+      if (membership.isMember) {
+        (req as any).orgId = orgId;
+        (req as any).orgRole = membership.role;
+      }
+    }
+    
+    next();
   } catch (error: any) {
     console.error('❌ [Backend] authenticateUser: Authentication failed', {
       error: error.message,
@@ -194,9 +223,98 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
   }
 }
 
-// Helper to get Firestore collection path (only for messages now)
-function getCollectionPath(collection: string, domain: string) {
-  return `domains/${domain}/${collection}`;
+// ============================================================================
+// ORG MEMBERSHIP MIDDLEWARE
+// ============================================================================
+
+/**
+ * Middleware to require org membership for org-scoped endpoints
+ * Must be used after authenticateUser
+ */
+async function requireOrgMembership(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = req.headers['x-org-id'] as string || req.params.orgId;
+    
+    if (!orgId) {
+      return res.status(400).json({ error: 'Organization ID is required (X-Org-Id header or orgId param)' });
+    }
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
+    const membership = await checkOrgMembership(orgId, userEmail);
+    if (!membership.isMember) {
+      return res.status(403).json({ error: 'Not a member of this organization' });
+    }
+    
+    (req as any).orgId = orgId;
+    (req as any).orgRole = membership.role;
+    
+    next();
+  } catch (error: any) {
+    console.error('❌ [Backend] requireOrgMembership failed:', error.message);
+    res.status(500).json({ error: 'Failed to verify organization membership' });
+  }
+}
+
+/**
+ * Middleware to require org owner role
+ * Must be used after authenticateUser
+ */
+async function requireOrgOwner(req: express.Request, res: express.Response, next: express.NextFunction) {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = req.headers['x-org-id'] as string || req.params.orgId;
+    
+    if (!orgId) {
+      return res.status(400).json({ error: 'Organization ID is required' });
+    }
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
+    const isOwner = await isOrgOwner(orgId, userEmail);
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only organization owners can perform this action' });
+    }
+    
+    (req as any).orgId = orgId;
+    (req as any).orgRole = 'owner';
+    
+    next();
+  } catch (error: any) {
+    console.error('❌ [Backend] requireOrgOwner failed:', error.message);
+    res.status(500).json({ error: 'Failed to verify organization ownership' });
+  }
+}
+
+/**
+ * Helper to get org pool from request (after requireOrgMembership)
+ */
+async function getReqOrgPool(req: express.Request) {
+  const orgId = (req as any).orgId;
+  if (!orgId) {
+    throw new Error('Organization ID not set in request');
+  }
+  return getOrgPool(orgId);
+}
+
+// Helper to get Firestore collection path using org slug (sanitized name)
+async function getOrgCollectionPath(collection: string, orgId: string | undefined): Promise<string> {
+  if (!orgId) {
+    return `orgs/default/${collection}`;
+  }
+  
+  try {
+    const orgSlug = await getOrgSlugById(orgId);
+    return `orgs/${orgSlug}/${collection}`;
+  } catch (error) {
+    console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+    return `orgs/default/${collection}`;
+  }
 }
 
 // Helper to convert snake_case to camelCase
@@ -232,10 +350,13 @@ function transformMembers(members: any[] | null): any[] {
 
 /**
  * Check if a user has access to a project (either as a member or owner)
+ * @param orgId - Organization ID to query in the correct database
+ * @param userEmail - User's email
+ * @param projectId - Project ID to check access for
  */
-async function hasProjectAccess(userEmail: string, projectId: string): Promise<boolean> {
+async function hasProjectAccess(orgId: string, userEmail: string, projectId: string): Promise<boolean> {
   try {
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     const result = await pool.query(`
       SELECT 1 
       FROM projects p
@@ -272,7 +393,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ============================================================================
-// DEMO REQUESTS ENDPOINT (PostgreSQL - Public, no auth required)
+// DEMO REQUESTS ENDPOINT (Shared DB - Public, no auth required)
 // ============================================================================
 
 app.post('/api/demo-requests', async (req, res) => {
@@ -283,7 +404,7 @@ app.post('/api/demo-requests', async (req, res) => {
       return res.status(400).json({ error: 'Name and email are required' });
     }
 
-    const pool = await getTenantPoolByDbName('leanworksai');
+    const pool = await getSharedPool();
     const result = await pool.query(`
       INSERT INTO demo_requests (name, email, company, message, created_at)
       VALUES ($1, $2, $3, $4, NOW())
@@ -301,7 +422,7 @@ app.post('/api/demo-requests', async (req, res) => {
 });
 
 // ============================================================================
-// USER ENDPOINTS (PostgreSQL)
+// USER ENDPOINTS (Shared DB for users, Per-org DB for org data)
 // ============================================================================
 
 app.post('/api/auth/signup', async (req, res) => {
@@ -309,37 +430,119 @@ app.post('/api/auth/signup', async (req, res) => {
     const { email, password, firstName, lastName, jobTitle, timezone } = req.body;
     
     // Validate required fields
+    if (!email || !password || !firstName || !lastName) {
+      return res.status(400).json({ error: 'Email, password, first name, and last name are required' });
+    }
+    
     if (!timezone) {
       return res.status(400).json({ error: 'Timezone is required' });
     }
     
+    const normalizedEmail = email.toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    // Check if user already exists
+    const existingUser = await sharedPool.query(
+      'SELECT email FROM users WHERE email = $1',
+      [normalizedEmail]
+    );
+    
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({ error: 'An account with this email already exists' });
+    }
+    
     // Create user in Firebase Auth
     const userRecord = await auth.createUser({
-      email,
+      email: normalizedEmail,
       password,
       displayName: `${firstName} ${lastName}`,
     });
-
-    // Get tenant pool
-    const pool = await getTenantPool(email);
     
     // Hash password for PostgreSQL
     const passwordHash = await bcrypt.hash(password, 10);
     
-    // Store in PostgreSQL
-    await pool.query(`
+    // Store user in shared database
+    await sharedPool.query(`
       INSERT INTO users (email, password_hash, first_name, last_name, job_title, timezone, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-    `, [email.toLowerCase(), passwordHash, firstName, lastName, jobTitle, timezone]);
+    `, [normalizedEmail, passwordHash, firstName, lastName, jobTitle || '', timezone]);
+    
+    // Auto-create personal workspace for the user
+    const personalOrgName = `${firstName}'s Workspace`;
+    const personalSlug = generatePersonalSlug(normalizedEmail);
+    
+    // Create organization record
+    const orgResult = await sharedPool.query(`
+      INSERT INTO organizations (name, slug, type, owner_email, created_at)
+      VALUES ($1, $2, 'personal', $3, NOW())
+      RETURNING id, name, slug
+    `, [personalOrgName, personalSlug, normalizedEmail]);
+    
+    const personalOrg = orgResult.rows[0];
+    
+    // Add user as owner of personal workspace
+    await sharedPool.query(`
+      INSERT INTO org_members (org_id, user_email, role, joined_at)
+      VALUES ($1, $2, 'owner', NOW())
+    `, [personalOrg.id, normalizedEmail]);
+    
+    // Initialize the org database (this auto-creates the DB and schema)
+    await getOrgPoolBySlug(personalSlug);
+    
+    console.log(`✅ Created personal workspace for ${normalizedEmail}: ${personalOrgName} (${personalSlug})`);
+
+    // Generate email verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    
+    // Store verification token in database
+    await sharedPool.query(`
+      INSERT INTO email_verification_tokens (email, token, created_at, expires_at)
+      VALUES ($1, $2, NOW(), NOW() + INTERVAL '24 hours')
+    `, [normalizedEmail, verificationToken]);
+    
+    // Send verification email
+    try {
+      await sendVerificationEmail(
+        secretManagerClient,
+        serviceAccount.project_id,
+        normalizedEmail,
+        firstName,
+        verificationToken
+      );
+      console.log(`✅ Verification email sent to ${normalizedEmail}`);
+    } catch (emailError: any) {
+      console.error(`⚠️ Failed to send verification email to ${normalizedEmail}:`, emailError.message);
+      // Don't fail signup if email fails - user can request resend
+    }
 
     res.status(201).json({ 
       success: true, 
       uid: userRecord.uid,
-      email: userRecord.email 
+      email: userRecord.email,
+      message: 'Account created! Please check your email to verify your account.',
+      personalOrg: {
+        id: personalOrg.id,
+        name: personalOrg.name,
+        slug: personalOrg.slug,
+        type: 'personal'
+      }
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Signup error:', error);
-    res.status(500).json({ error: (error as Error).message });
+    // Clean up Firebase user if database operations failed
+    if (error.message?.includes('INSERT') || error.message?.includes('database')) {
+      try {
+        const email = req.body.email?.toLowerCase();
+        if (email) {
+          const userRecord = await auth.getUserByEmail(email);
+          await auth.deleteUser(userRecord.uid);
+          console.log('Cleaned up Firebase user after signup failure');
+        }
+      } catch (cleanupError) {
+        // Ignore cleanup errors
+      }
+    }
+    res.status(500).json({ error: error.message || 'Failed to create account' });
   }
 });
 
@@ -351,13 +554,13 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Get tenant pool
-    const pool = await getTenantPool(email);
+    const normalizedEmail = email.toLowerCase();
+    const sharedPool = await getSharedPool();
 
-    // Get user from PostgreSQL
-    const userResult = await pool.query(
-      'SELECT email, password_hash, first_name, last_name FROM users WHERE email = $1',
-      [email.toLowerCase()]
+    // Get user from shared PostgreSQL database
+    const userResult = await sharedPool.query(
+      'SELECT email, password_hash, first_name, last_name, timezone, email_verified FROM users WHERE email = $1',
+      [normalizedEmail]
     );
     
     if (userResult.rows.length === 0) {
@@ -372,21 +575,67 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    // Check if email is verified
+    if (!userData.email_verified) {
+      return res.status(403).json({ 
+        error: 'Please verify your email before logging in',
+        code: 'EMAIL_NOT_VERIFIED',
+        email: normalizedEmail
+      });
+    }
+
     // Update last login
-    await pool.query(
+    await sharedPool.query(
       'UPDATE users SET last_login = NOW() WHERE email = $1',
-      [email.toLowerCase()]
+      [normalizedEmail]
     );
+
+    // Get user's organizations
+    const organizations = await getUserOrganizations(normalizedEmail);
+    
+    // Find personal workspace (should always exist)
+    const personalOrg = organizations.find(org => org.type === 'personal');
+    
+    // If user has no orgs (shouldn't happen, but handle gracefully)
+    if (organizations.length === 0) {
+      console.warn(`User ${normalizedEmail} has no organizations, creating personal workspace`);
+      
+      // Create personal workspace
+      const personalOrgName = `${userData.first_name}'s Workspace`;
+      const personalSlug = generatePersonalSlug(normalizedEmail);
+      
+      const orgResult = await sharedPool.query(`
+        INSERT INTO organizations (name, slug, type, owner_email, created_at)
+        VALUES ($1, $2, 'personal', $3, NOW())
+        RETURNING id, name, slug, type
+      `, [personalOrgName, personalSlug, normalizedEmail]);
+      
+      const newOrg = orgResult.rows[0];
+      
+      await sharedPool.query(`
+        INSERT INTO org_members (org_id, user_email, role, joined_at)
+        VALUES ($1, $2, 'owner', NOW())
+      `, [newOrg.id, normalizedEmail]);
+      
+      // Initialize the org database
+      await getOrgPoolBySlug(personalSlug);
+      
+      organizations.push({
+        ...newOrg,
+        role: 'owner',
+        owner_email: normalizedEmail
+      });
+    }
 
     // Get or create Firebase Auth user (for custom token generation)
     let userRecord;
     try {
-      userRecord = await auth.getUserByEmail(email.toLowerCase());
+      userRecord = await auth.getUserByEmail(normalizedEmail);
     } catch (error: any) {
       if (error.code === 'auth/user-not-found') {
         // Create Firebase Auth user if it doesn't exist
         userRecord = await auth.createUser({
-          email: email.toLowerCase(),
+          email: normalizedEmail,
           password,
           emailVerified: true,
           displayName: `${userData.first_name} ${userData.last_name}`,
@@ -396,13 +645,35 @@ app.post('/api/auth/login', async (req, res) => {
       }
     }
 
-    // Ensure user is verified
+    // Ensure user is verified and has email
+    if (!userRecord.email) {
+      throw new Error('User record must have an email');
+    }
+    
+    // Ensure email is verified
     if (!userRecord.emailVerified) {
       await auth.updateUser(userRecord.uid, { emailVerified: true });
       userRecord = await auth.getUser(userRecord.uid);
     }
+    
+    // Set custom claims to ensure email is available in ID tokens
+    // Note: Firebase should automatically include email from user record, but we set it explicitly
+    // to ensure it's available in request.auth.token.email for Firestore security rules
+    // Note: The email in the ID token comes from userRecord.email (which is lowercase from normalizedEmail)
+    try {
+      await auth.setCustomUserClaims(userRecord.uid, {
+        email: userRecord.email,
+        email_verified: userRecord.emailVerified,
+      });
+      console.log('✅ Set custom claims for user:', userRecord.uid, 'email:', userRecord.email);
+    } catch (claimsError: any) {
+      // If setting claims fails, log but continue (email should still be in standard claims)
+      console.warn('⚠️ Failed to set custom claims (non-critical):', claimsError.message);
+    }
 
     // Create custom token
+    // The email should be included in the ID token when this custom token is exchanged
+    // Firebase automatically includes email from user record, and our custom claims above ensure it
     const customToken = await auth.createCustomToken(userRecord.uid);
 
     res.json({ 
@@ -412,7 +683,19 @@ app.post('/api/auth/login', async (req, res) => {
         uid: userRecord.uid,
         email: userRecord.email,
         emailVerified: userRecord.emailVerified,
-      }
+        firstName: userData.first_name,
+        lastName: userData.last_name,
+      },
+      organizations: organizations.map(org => ({
+        id: org.id,
+        name: org.name,
+        slug: org.slug,
+        type: org.type,
+        role: org.role,
+        isOwner: org.owner_email === normalizedEmail,
+      })),
+      // Default to personal workspace
+      defaultOrgId: personalOrg?.id || organizations[0]?.id,
     });
   } catch (error: any) {
     console.error('Login error:', error);
@@ -420,21 +703,224 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+// ============================================================================
+// EMAIL VERIFICATION ENDPOINTS
+// ============================================================================
+
+// Verify email with token
+app.get('/api/auth/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+    
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Verification token is required' });
+    }
+    
+    const sharedPool = await getSharedPool();
+    
+    // Find the token and check if it's valid
+    const tokenResult = await sharedPool.query(`
+      SELECT email, expires_at, used_at
+      FROM email_verification_tokens
+      WHERE token = $1
+    `, [token]);
+    
+    if (tokenResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification token' });
+    }
+    
+    const tokenData = tokenResult.rows[0];
+    
+    // Check if token was already used
+    if (tokenData.used_at) {
+      return res.status(400).json({ error: 'This verification link has already been used' });
+    }
+    
+    // Check if token is expired
+    if (new Date(tokenData.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'This verification link has expired. Please request a new one.' });
+    }
+    
+    // Mark email as verified
+    await sharedPool.query(
+      'UPDATE users SET email_verified = TRUE WHERE email = $1',
+      [tokenData.email]
+    );
+    
+    // Mark token as used
+    await sharedPool.query(
+      'UPDATE email_verification_tokens SET used_at = NOW() WHERE token = $1',
+      [token]
+    );
+    
+    // Update Firebase Auth user's email verification status
+    try {
+      const userRecord = await auth.getUserByEmail(tokenData.email);
+      if (!userRecord.emailVerified) {
+        await auth.updateUser(userRecord.uid, { emailVerified: true });
+      }
+    } catch (firebaseError: any) {
+      console.warn('⚠️ Could not update Firebase email verification (non-critical):', firebaseError.message);
+    }
+    
+    console.log(`✅ Email verified for ${tokenData.email}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Email verified successfully! You can now log in.',
+      email: tokenData.email
+    });
+  } catch (error: any) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ error: error.message || 'Failed to verify email' });
+  }
+});
+
+// Resend verification email
+app.post('/api/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    const normalizedEmail = email.toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    // Check if user exists and is not already verified
+    const userResult = await sharedPool.query(
+      'SELECT email, first_name, email_verified FROM users WHERE email = $1',
+      [normalizedEmail]
+    );
+    
+    if (userResult.rows.length === 0) {
+      // Don't reveal if email exists or not for security
+      return res.json({ 
+        success: true, 
+        message: 'If an account exists with this email, a verification link will be sent.' 
+      });
+    }
+    
+    const userData = userResult.rows[0];
+    
+    if (userData.email_verified) {
+      return res.status(400).json({ error: 'This email is already verified' });
+    }
+    
+    // Check for rate limiting - don't allow more than 10 tokens in the last hour
+    const recentTokens = await sharedPool.query(`
+      SELECT COUNT(*) as count
+      FROM email_verification_tokens
+      WHERE email = $1 AND created_at > NOW() - INTERVAL '1 hour'
+    `, [normalizedEmail]);
+    
+    if (parseInt(recentTokens.rows[0].count) >= 10) {
+      return res.status(429).json({ error: 'Too many verification emails requested. Please try again later.' });
+    }
+    
+    // Generate new verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    
+    // Store new verification token
+    await sharedPool.query(`
+      INSERT INTO email_verification_tokens (email, token, created_at, expires_at)
+      VALUES ($1, $2, NOW(), NOW() + INTERVAL '24 hours')
+    `, [normalizedEmail, verificationToken]);
+    
+    // Send verification email
+    await sendVerificationEmail(
+      secretManagerClient,
+      serviceAccount.project_id,
+      normalizedEmail,
+      userData.first_name,
+      verificationToken
+    );
+    
+    console.log(`✅ Verification email resent to ${normalizedEmail}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Verification email sent! Please check your inbox.' 
+    });
+  } catch (error: any) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send verification email' });
+  }
+});
+
+// Check email verification status (public endpoint for signup flow)
+app.get('/api/auth/verification-status', async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    const normalizedEmail = email.toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    const result = await sharedPool.query(
+      'SELECT email_verified FROM users WHERE email = $1',
+      [normalizedEmail]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ 
+      verified: result.rows[0].email_verified 
+    });
+  } catch (error: any) {
+    console.error('Verification status error:', error);
+    res.status(500).json({ error: error.message || 'Failed to check verification status' });
+  }
+});
+
 app.get('/api/users', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = req.headers['x-org-id'] as string;
     
-    const result = await pool.query(`
-      SELECT email, first_name, last_name, job_title, responsibilities, created_at
-      FROM users
-      ORDER BY created_at DESC
-    `);
-    
-    // Transform to camelCase and add full name
+    // If org context is provided, return org members
+    // Otherwise, return all users the requesting user can see (from their orgs)
+    if (orgId) {
+      // Validate membership
+      const membership = await checkOrgMembership(orgId, userEmail);
+      if (!membership.isMember) {
+        return res.status(403).json({ error: 'Not a member of this organization' });
+      }
+      
+      // Get org members
+      const members = await getOrgMembers(orgId);
+      const transformed = members.map(member => ({
+        email: member.email,
+        firstName: member.first_name,
+        lastName: member.last_name,
+        name: `${member.first_name || ''} ${member.last_name || ''}`.trim() || member.email,
+        jobTitle: member.job_title,
+        role: member.role,
+        joinedAt: member.joined_at,
+      }));
+      
+      res.json(transformed);
+    } else {
+      // No org context - return users from all orgs the user belongs to
+      const sharedPool = await getSharedPool();
+      const result = await sharedPool.query(`
+        SELECT DISTINCT u.email, u.first_name, u.last_name, u.job_title, u.responsibilities, u.created_at
+        FROM users u
+        INNER JOIN org_members om ON u.email = om.user_email
+        WHERE om.org_id IN (
+          SELECT org_id FROM org_members WHERE user_email = $1
+        )
+        ORDER BY u.created_at DESC
+      `, [userEmail]);
+      
     const transformed = result.rows.map(row => {
       const user = transformRow(row);
-      // Combine first_name and last_name into name field
       const firstName = user.firstName || '';
       const lastName = user.lastName || '';
       user.name = `${firstName} ${lastName}`.trim() || user.email;
@@ -442,6 +928,7 @@ app.get('/api/users', authenticateUser, async (req, res) => {
     });
     
     res.json(transformed);
+    }
   } catch (error) {
     console.error('Get users error:', error);
     res.status(500).json({ error: (error as Error).message });
@@ -452,9 +939,9 @@ app.get('/api/users', authenticateUser, async (req, res) => {
 app.get('/api/users/profile', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const sharedPool = await getSharedPool();
     
-    const result = await pool.query(`
+    const result = await sharedPool.query(`
       SELECT email, first_name, last_name, job_title, timezone, responsibilities, created_at, last_login
       FROM users
       WHERE email = $1
@@ -465,7 +952,10 @@ app.get('/api/users/profile', authenticateUser, async (req, res) => {
     }
     
     const user = transformRow(result.rows[0]);
-    const domain = getDomainFromEmail(userEmail);
+    
+    // Get user's organizations
+    const organizations = await getUserOrganizations(userEmail);
+    
     res.json({
       email: user.email,
       firstName: user.firstName,
@@ -473,9 +963,16 @@ app.get('/api/users/profile', authenticateUser, async (req, res) => {
       jobTitle: user.jobTitle,
       timezone: user.timezone,
       responsibilities: user.responsibilities,
-      domain: domain,
       createdAt: user.createdAt ? new Date(user.createdAt).toISOString() : null,
-      lastLogin: user.lastLogin ? new Date(user.lastLogin).toISOString() : null
+      lastLogin: user.lastLogin ? new Date(user.lastLogin).toISOString() : null,
+      organizations: organizations.map(org => ({
+        id: org.id,
+        name: org.name,
+        slug: org.slug,
+        type: org.type,
+        role: org.role,
+        isOwner: org.owner_email === userEmail,
+      })),
     });
   } catch (error) {
     console.error('Get user profile error:', error);
@@ -505,10 +1002,11 @@ app.put('/api/users/profile', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Timezone is required' });
     }
     
-    const pool = await getTenantPool(userEmail);
+    // User data is in shared DB
+    const sharedPool = await getSharedPool();
     
     // Update user profile
-    await pool.query(`
+    await sharedPool.query(`
       UPDATE users
       SET job_title = $1, timezone = $2, responsibilities = $3, updated_at = NOW()
       WHERE email = $4
@@ -529,9 +1027,9 @@ app.get('/api/users/:email', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const targetEmail = req.params.email;
-    const pool = await getTenantPool(userEmail);
+    const sharedPool = await getSharedPool();
     
-    const result = await pool.query(`
+    const result = await sharedPool.query(`
       SELECT email, first_name, last_name, job_title, responsibilities, created_at, last_login
       FROM users
       WHERE email = $1
@@ -548,14 +1046,613 @@ app.get('/api/users/:email', authenticateUser, async (req, res) => {
   }
 });
 
-// ============================================================================
-// TEAM ENDPOINTS (PostgreSQL)
-// ============================================================================
-
-app.get('/api/teams', authenticateUser, async (req, res) => {
+// Delete user's own account
+app.delete('/api/users/me', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    console.log(`🗑️ [Backend] DELETE /api/users/me - Deleting account for: ${userEmail}`);
+    
+    const sharedPool = await getSharedPool();
+    
+    // 1. Check if user owns any team organizations (cannot delete if owner of team org)
+    const ownedTeamOrgs = await sharedPool.query(
+      `SELECT id, name, type FROM organizations WHERE owner_email = $1 AND type = 'team'`,
+      [userEmail]
+    );
+    
+    if (ownedTeamOrgs.rows.length > 0) {
+      console.log(`❌ [Backend] Cannot delete account - user owns ${ownedTeamOrgs.rows.length} team organization(s)`);
+      return res.status(400).json({ 
+        error: 'Cannot delete account while you own team organizations. Please transfer ownership or delete your organizations first.',
+        ownedOrganizations: ownedTeamOrgs.rows.map(org => ({ id: org.id, name: org.name }))
+      });
+    }
+    
+    // 2. Get user's personal workspace (will be deleted)
+    const personalWorkspace = await sharedPool.query(
+      `SELECT id, slug FROM organizations WHERE owner_email = $1 AND type = 'personal'`,
+      [userEmail]
+    );
+    
+    // 3. Get all organizations where user is a member (to clean up per-org data)
+    const memberOrgs = await sharedPool.query(
+      `SELECT o.id, o.slug FROM organizations o 
+       INNER JOIN org_members om ON o.id = om.org_id 
+       WHERE om.user_email = $1`,
+      [userEmail]
+    );
+    
+    console.log(`📋 [Backend] User is member of ${memberOrgs.rows.length} organization(s)`);
+    
+    // 4. Clean up per-org databases
+    for (const org of memberOrgs.rows) {
+      try {
+        console.log(`🧹 [Backend] Cleaning up user data from org: ${org.slug}`);
+        const orgPool = await getOrgPoolBySlug(org.slug);
+        
+        // Remove from team_members
+        await orgPool.query('DELETE FROM team_members WHERE user_email = $1', [userEmail]);
+        
+        // Remove from project_members
+        await orgPool.query('DELETE FROM project_members WHERE user_email = $1', [userEmail]);
+        
+        // Unassign from tasks (set assignee to null)
+        await orgPool.query(
+          'UPDATE tasks SET assignee_id = NULL, assignee_name = NULL, assignee_avatar = NULL WHERE assignee_id = $1', 
+          [userEmail]
+        );
+        
+        // Update task created_by to indicate deleted user
+        await orgPool.query(
+          `UPDATE tasks SET created_by = '[deleted user]' WHERE created_by = $1`,
+          [userEmail]
+        );
+        
+        // Delete notes owned by user
+        await orgPool.query('DELETE FROM notes WHERE owner_email = $1', [userEmail]);
+        
+        // Delete teams owned by user
+        await orgPool.query('DELETE FROM teams WHERE owner_email = $1', [userEmail]);
+        
+        // Delete projects owned by user
+        await orgPool.query('DELETE FROM projects WHERE owner_email = $1', [userEmail]);
+        
+        // Clean up team invitations
+        await orgPool.query('DELETE FROM team_invitations WHERE invitee_email = $1 OR inviter_email = $1', [userEmail]);
+        
+        // Clean up team join requests
+        await orgPool.query('DELETE FROM team_join_requests WHERE user_email = $1 OR owner_email = $1', [userEmail]);
+        
+        console.log(`✅ [Backend] Cleaned up org: ${org.slug}`);
+      } catch (orgError) {
+        console.error(`⚠️ [Backend] Error cleaning up org ${org.slug}:`, orgError);
+        // Continue with other orgs even if one fails
+      }
+    }
+    
+    // 5. Delete personal workspace if it exists (this will cascade delete org_members for that org)
+    if (personalWorkspace.rows.length > 0) {
+      const personalOrgId = personalWorkspace.rows[0].id;
+      const personalSlug = personalWorkspace.rows[0].slug;
+      
+      console.log(`🗑️ [Backend] Deleting personal workspace: ${personalSlug}`);
+      await sharedPool.query('DELETE FROM organizations WHERE id = $1', [personalOrgId]);
+    }
+    
+    // 6. Delete user from shared database (cascades to org_members, org_invitations, email_verification_tokens)
+    console.log(`🗑️ [Backend] Deleting user from shared database: ${userEmail}`);
+    await sharedPool.query('DELETE FROM users WHERE email = $1', [userEmail]);
+    
+    // 7. Delete from Firebase Auth
+    try {
+      console.log(`🗑️ [Backend] Deleting user from Firebase Auth: ${userEmail}`);
+      const userRecord = await auth.getUserByEmail(userEmail);
+      await auth.deleteUser(userRecord.uid);
+      console.log(`✅ [Backend] Deleted user from Firebase Auth`);
+    } catch (firebaseError: any) {
+      // Log but don't fail - user data is already deleted from database
+      console.warn(`⚠️ [Backend] Failed to delete Firebase user (may not exist):`, firebaseError.message);
+    }
+    
+    console.log(`✅ [Backend] Account deleted successfully for: ${userEmail}`);
+    res.json({ success: true, message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('❌ [Backend] Delete user account error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to delete account' });
+  }
+});
+
+// ============================================================================
+// ORGANIZATION ENDPOINTS (Shared DB)
+// ============================================================================
+
+// Get user's organizations
+app.get('/api/orgs', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const organizations = await getUserOrganizations(userEmail);
+    
+    res.json(organizations.map(org => ({
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      type: org.type,
+      role: org.role,
+      description: org.description,
+      avatar: org.avatar,
+      isOwner: org.owner_email === userEmail,
+      createdAt: org.created_at,
+      joinedAt: org.joined_at,
+    })));
+  } catch (error) {
+    console.error('Get orgs error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Create a new organization
+app.post('/api/orgs', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const { name, description } = req.body;
+    
+    if (!name || name.trim().length === 0) {
+      return res.status(400).json({ error: 'Organization name is required' });
+    }
+    
+    const sharedPool = await getSharedPool();
+    
+    // Generate slug from name
+    const slug = generateOrgSlug(name.trim());
+    
+    // Check if slug already exists in organizations table
+    const existingOrg = await sharedPool.query(
+      'SELECT 1 FROM organizations WHERE slug = $1',
+      [slug]
+    );
+    if (existingOrg.rows.length > 0) {
+      return res.status(409).json({ 
+        error: `An organization with a similar name already exists. Please choose a different name.` 
+      });
+    }
+    
+    // Check if a database with the sanitized name already exists
+    const dbName = sanitizeSlugForDb(slug);
+    const dbExists = await checkDatabaseExists(dbName);
+    if (dbExists) {
+      return res.status(409).json({ 
+        error: `An organization with this name cannot be created because the database "${dbName}" already exists. Please choose a different name.` 
+      });
+    }
+    
+    // Create organization
+    const orgResult = await sharedPool.query(`
+      INSERT INTO organizations (name, slug, type, owner_email, description, created_at)
+      VALUES ($1, $2, 'team', $3, $4, NOW())
+      RETURNING id, name, slug, type, owner_email, description, created_at
+    `, [name.trim(), slug, userEmail, description || null]);
+    
+    const org = orgResult.rows[0];
+    
+    // Add creator as owner
+    await sharedPool.query(`
+      INSERT INTO org_members (org_id, user_email, role, joined_at)
+      VALUES ($1, $2, 'owner', NOW())
+    `, [org.id, userEmail]);
+    
+    // Initialize org database (this will create it since we already checked it doesn't exist)
+    await getOrgPoolBySlug(slug);
+    
+    console.log(`✅ Created organization ${name} (${slug}) with database ${dbName} for ${userEmail}`);
+    
+    res.status(201).json({
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      type: org.type,
+      description: org.description,
+      isOwner: true,
+      role: 'owner',
+      createdAt: org.created_at,
+    });
+  } catch (error) {
+    console.error('Create org error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Get organization details
+app.get('/api/orgs/:orgId', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = req.params.orgId;
+    const sharedPool = await getSharedPool();
+    
+    // Get org details
+    const orgResult = await sharedPool.query(`
+      SELECT o.*, 
+             (SELECT COUNT(*) FROM org_members WHERE org_id = o.id) as member_count,
+             (SELECT COUNT(*) FROM org_invitations WHERE org_id = o.id AND status = 'pending') as pending_invitations
+      FROM organizations o
+      WHERE o.id = $1
+    `, [orgId]);
+    
+    if (orgResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+    
+    const org = orgResult.rows[0];
+    
+    // Get members
+    const members = await getOrgMembers(orgId);
+    
+    res.json({
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      type: org.type,
+      description: org.description,
+      avatar: org.avatar,
+      isOwner: org.owner_email === userEmail,
+      ownerEmail: org.owner_email,
+      memberCount: parseInt(org.member_count),
+      pendingInvitations: parseInt(org.pending_invitations),
+      createdAt: org.created_at,
+      members: members.map(m => ({
+        email: m.email,
+        firstName: m.first_name,
+        lastName: m.last_name,
+        name: `${m.first_name || ''} ${m.last_name || ''}`.trim() || m.email,
+        role: m.role,
+        jobTitle: m.job_title,
+        joinedAt: m.joined_at,
+      })),
+    });
+  } catch (error) {
+    console.error('Get org details error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Update organization
+app.put('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, res) => {
+  try {
+    const orgId = req.params.orgId;
+    const { name, description, avatar } = req.body;
+    const sharedPool = await getSharedPool();
+    
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    if (name !== undefined) {
+      updates.push(`name = $${paramIndex++}`);
+      values.push(name);
+    }
+    if (description !== undefined) {
+      updates.push(`description = $${paramIndex++}`);
+      values.push(description);
+    }
+    if (avatar !== undefined) {
+      updates.push(`avatar = $${paramIndex++}`);
+      values.push(avatar);
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No updates provided' });
+    }
+    
+    values.push(orgId);
+    const result = await sharedPool.query(`
+      UPDATE organizations 
+      SET ${updates.join(', ')}, updated_at = NOW()
+      WHERE id = $${paramIndex}
+      RETURNING id, name, slug, type, description, avatar, owner_email, created_at
+    `, values);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update org error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Delete organization (owner only, cannot delete personal workspace)
+app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, res) => {
+  try {
+    const orgId = req.params.orgId;
+    const sharedPool = await getSharedPool();
+    
+    // Check if it's a personal workspace
+    const orgResult = await sharedPool.query(
+      'SELECT type FROM organizations WHERE id = $1',
+      [orgId]
+    );
+    
+    if (orgResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+    
+    if (orgResult.rows[0].type === 'personal') {
+      return res.status(400).json({ error: 'Cannot delete personal workspace' });
+    }
+    
+    // Delete org (cascade will handle members and invitations)
+    await sharedPool.query('DELETE FROM organizations WHERE id = $1', [orgId]);
+    
+    res.json({ success: true, message: 'Organization deleted' });
+  } catch (error) {
+    console.error('Delete org error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Invite user to organization
+app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = req.params.orgId;
+    const { email: inviteeEmail, message } = req.body;
+    
+    if (!inviteeEmail) {
+      return res.status(400).json({ error: 'Invitee email is required' });
+    }
+    
+    const normalizedInviteeEmail = inviteeEmail.toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    // Check if user is already a member
+    const existingMember = await sharedPool.query(
+      'SELECT 1 FROM org_members WHERE org_id = $1 AND user_email = $2',
+      [orgId, normalizedInviteeEmail]
+    );
+    
+    if (existingMember.rows.length > 0) {
+      return res.status(400).json({ error: 'User is already a member of this organization' });
+    }
+    
+    // Check for existing pending invitation
+    const existingInvite = await sharedPool.query(
+      "SELECT 1 FROM org_invitations WHERE org_id = $1 AND invitee_email = $2 AND status = 'pending'",
+      [orgId, normalizedInviteeEmail]
+    );
+    
+    if (existingInvite.rows.length > 0) {
+      return res.status(400).json({ error: 'User already has a pending invitation' });
+    }
+    
+    // Generate invitation token
+    const token = crypto.randomBytes(32).toString('hex');
+    
+    // Create invitation
+    const result = await sharedPool.query(`
+      INSERT INTO org_invitations (org_id, invitee_email, inviter_email, message, token, created_at, expires_at)
+      VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + INTERVAL '7 days')
+      RETURNING id, org_id, invitee_email, inviter_email, status, created_at, expires_at
+    `, [orgId, normalizedInviteeEmail, userEmail, message || null, token]);
+    
+    const invitation = result.rows[0];
+    
+    // Get org name for logging
+    const orgResult = await sharedPool.query('SELECT name FROM organizations WHERE id = $1', [orgId]);
+    const orgName = orgResult.rows[0]?.name || 'Unknown Organization';
+    
+    console.log(`✅ Invitation created for ${normalizedInviteeEmail} to join ${orgName}`);
+    
+    res.status(201).json({
+      id: invitation.id,
+      inviteeEmail: invitation.invitee_email,
+      status: invitation.status,
+      createdAt: invitation.created_at,
+      expiresAt: invitation.expires_at,
+    });
+  } catch (error) {
+    console.error('Invite to org error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Get pending invitations for user
+app.get('/api/orgs/invitations/pending', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const sharedPool = await getSharedPool();
+    
+    const result = await sharedPool.query(`
+      SELECT 
+        i.id,
+        i.org_id,
+        i.inviter_email,
+        i.message,
+        i.created_at,
+        i.expires_at,
+        o.name as org_name,
+        o.slug as org_slug,
+        o.type as org_type,
+        u.first_name as inviter_first_name,
+        u.last_name as inviter_last_name
+      FROM org_invitations i
+      INNER JOIN organizations o ON i.org_id = o.id
+      INNER JOIN users u ON i.inviter_email = u.email
+      WHERE i.invitee_email = $1 
+        AND i.status = 'pending'
+        AND i.expires_at > NOW()
+      ORDER BY i.created_at DESC
+    `, [userEmail]);
+    
+    res.json(result.rows.map(row => ({
+      id: row.id,
+      orgId: row.org_id,
+      orgName: row.org_name,
+      orgSlug: row.org_slug,
+      orgType: row.org_type,
+      inviterEmail: row.inviter_email,
+      inviterName: `${row.inviter_first_name || ''} ${row.inviter_last_name || ''}`.trim(),
+      message: row.message,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+    })));
+  } catch (error) {
+    console.error('Get pending invitations error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Accept invitation
+app.post('/api/orgs/invitations/:invitationId/accept', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const invitationId = req.params.invitationId;
+    const sharedPool = await getSharedPool();
+    
+    // Get invitation
+    const inviteResult = await sharedPool.query(`
+      SELECT i.*, o.name as org_name, o.slug as org_slug
+      FROM org_invitations i
+      INNER JOIN organizations o ON i.org_id = o.id
+      WHERE i.id = $1 AND i.invitee_email = $2
+    `, [invitationId, userEmail]);
+    
+    if (inviteResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+    
+    const invitation = inviteResult.rows[0];
+    
+    if (invitation.status !== 'pending') {
+      return res.status(400).json({ error: `Invitation has already been ${invitation.status}` });
+    }
+    
+    if (new Date(invitation.expires_at) < new Date()) {
+      await sharedPool.query(
+        "UPDATE org_invitations SET status = 'expired' WHERE id = $1",
+        [invitationId]
+      );
+      return res.status(400).json({ error: 'Invitation has expired' });
+    }
+    
+    // Add user to org
+    await sharedPool.query(`
+      INSERT INTO org_members (org_id, user_email, role, joined_at)
+      VALUES ($1, $2, 'member', NOW())
+      ON CONFLICT (org_id, user_email) DO NOTHING
+    `, [invitation.org_id, userEmail]);
+    
+    // Update invitation status
+    await sharedPool.query(`
+      UPDATE org_invitations 
+      SET status = 'accepted', responded_at = NOW()
+      WHERE id = $1
+    `, [invitationId]);
+    
+    console.log(`✅ ${userEmail} accepted invitation to org ${invitation.org_name}`);
+    
+    res.json({
+      success: true,
+      orgId: invitation.org_id,
+      orgName: invitation.org_name,
+      orgSlug: invitation.org_slug,
+    });
+  } catch (error) {
+    console.error('Accept invitation error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Decline invitation
+app.post('/api/orgs/invitations/:invitationId/decline', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const invitationId = req.params.invitationId;
+    const sharedPool = await getSharedPool();
+    
+    const result = await sharedPool.query(`
+      UPDATE org_invitations 
+      SET status = 'declined', responded_at = NOW()
+      WHERE id = $1 AND invitee_email = $2 AND status = 'pending'
+      RETURNING id
+    `, [invitationId, userEmail]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Invitation not found or already processed' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Decline invitation error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Remove member from organization
+app.delete('/api/orgs/:orgId/members/:memberEmail', authenticateUser, requireOrgOwner, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = req.params.orgId;
+    const memberEmail = decodeURIComponent(req.params.memberEmail).toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    // Cannot remove yourself (owner)
+    if (memberEmail === userEmail) {
+      return res.status(400).json({ error: 'Cannot remove yourself from the organization. Transfer ownership first.' });
+    }
+    
+    // Remove member
+    const result = await sharedPool.query(
+      'DELETE FROM org_members WHERE org_id = $1 AND user_email = $2 RETURNING id',
+      [orgId, memberEmail]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove member error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Leave organization (for non-owners)
+app.post('/api/orgs/:orgId/leave', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = req.params.orgId;
+    const sharedPool = await getSharedPool();
+    
+    // Check if user is owner
+    const isOwner = await isOrgOwner(orgId, userEmail);
+    if (isOwner) {
+      return res.status(400).json({ error: 'Owners cannot leave. Transfer ownership or delete the organization.' });
+    }
+    
+    // Remove membership
+    await sharedPool.query(
+      'DELETE FROM org_members WHERE org_id = $1 AND user_email = $2',
+      [orgId, userEmail]
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Leave org error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// TEAM ENDPOINTS (Per-Org DB)
+// ============================================================================
+
+app.get('/api/teams', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -570,14 +1667,38 @@ app.get('/api/teams', authenticateUser, async (req, res) => {
           'email', tm.user_email,
           'role', tm.role,
           'avatar', tm.avatar,
-          'name', COALESCE(u.first_name || ' ' || u.last_name, tm.user_email)
+          'name', tm.user_email
         )) FROM team_members tm
-        LEFT JOIN users u ON tm.user_email = u.email
         WHERE tm.team_id = t.id), '[]'::json) as members,
         (SELECT COUNT(*) FROM team_members WHERE team_id = t.id) as member_count
       FROM teams t
       ORDER BY t.created_at DESC
     `);
+
+    // Collect all member emails for batch user lookup
+    const allMemberEmails: string[] = [];
+    for (const row of result.rows) {
+      if (row.members && Array.isArray(row.members)) {
+        for (const member of row.members) {
+          if (member.email) allMemberEmails.push(member.email);
+        }
+      }
+      if (row.owner_email) allMemberEmails.push(row.owner_email);
+    }
+
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(allMemberEmails);
+
+    // Enrich members with user names
+    for (const row of result.rows) {
+      if (row.members && Array.isArray(row.members)) {
+        for (const member of row.members) {
+          if (member.email && userInfo.has(member.email)) {
+            member.name = userInfo.get(member.email)!.name;
+          }
+        }
+      }
+    }
     
     // Transform to camelCase and backfill missing team members
     const transformed = await Promise.all(result.rows.map(async (row) => {
@@ -630,11 +1751,12 @@ app.get('/api/teams', authenticateUser, async (req, res) => {
 
 // Specific routes must come before parameterized routes
 // Team join request endpoints - must come before /api/teams/:id to avoid route conflicts
-app.post('/api/teams/:teamName/join-request', authenticateUser, async (req, res) => {
+app.post('/api/teams/:teamName/join-request', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const teamName = req.params.teamName;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     // Get team by name
     const teamResult = await pool.query(`
@@ -696,10 +1818,11 @@ app.post('/api/teams/:teamName/join-request', authenticateUser, async (req, res)
   }
 });
 
-app.get('/api/teams/join-requests', authenticateUser, async (req, res) => {
+app.get('/api/teams/join-requests', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     // Get pending join requests for teams owned by the user
     const result = await pool.query(`
@@ -735,11 +1858,12 @@ app.get('/api/teams/join-requests', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async (req, res) => {
+app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const requestId = req.params.requestId;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     // Get the request with team info
     const requestResult = await pool.query(`
@@ -819,11 +1943,12 @@ app.post('/api/teams/join-requests/:requestId/approve', authenticateUser, async 
   }
 });
 
-app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, async (req, res) => {
+app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const requestId = req.params.requestId;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     // Get the request with team info
     const requestResult = await pool.query(`
@@ -865,10 +1990,11 @@ app.post('/api/teams/join-requests/:requestId/reject', authenticateUser, async (
   }
 });
 
-app.get('/api/teams/invitations', authenticateUser, async (req, res) => {
+app.get('/api/teams/invitations', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     // Get pending invitations for the current user
     const result = await pool.query(`
@@ -904,11 +2030,12 @@ app.get('/api/teams/invitations', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/teams/:id', authenticateUser, async (req, res) => {
+app.get('/api/teams/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const teamId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -917,9 +2044,8 @@ app.get('/api/teams/:id', authenticateUser, async (req, res) => {
           'email', tm.user_email,
           'role', tm.role,
           'avatar', tm.avatar,
-          'name', u.first_name || ' ' || u.last_name
+          'name', tm.user_email
         )) FROM team_members tm
-        LEFT JOIN users u ON tm.user_email = u.email
         WHERE tm.team_id = t.id), '[]'::json) as members
       FROM teams t
       WHERE t.id = $1
@@ -929,8 +2055,29 @@ app.get('/api/teams/:id', authenticateUser, async (req, res) => {
       return res.status(404).json({ error: 'Team not found' });
     }
     
+    // Collect member emails for batch user lookup
+    const row = result.rows[0];
+    const memberEmails: string[] = [];
+    if (row.members && Array.isArray(row.members)) {
+      for (const member of row.members) {
+        if (member.email) memberEmails.push(member.email);
+      }
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(memberEmails);
+    
+    // Enrich members with user names
+    if (row.members && Array.isArray(row.members)) {
+      for (const member of row.members) {
+        if (member.email && userInfo.has(member.email)) {
+          member.name = userInfo.get(member.email)!.name;
+        }
+      }
+    }
+    
     // Transform to camelCase
-    const team = transformRow(result.rows[0]);
+    const team = transformRow(row);
     team.members = transformMembers(team.members);
     
     res.json(team);
@@ -940,9 +2087,10 @@ app.get('/api/teams/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/teams', authenticateUser, async (req, res) => {
+app.post('/api/teams', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const { team, teamDetail } = req.body;
     
     // Extract data from team object (frontend sends { team, teamDetail })
@@ -955,7 +2103,7 @@ app.post('/api/teams', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Team name is required' });
     }
     
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Normalize email to lowercase (emails are stored in lowercase in users table)
     const normalizedEmail = userEmail.toLowerCase();
@@ -1050,12 +2198,13 @@ app.post('/api/teams', authenticateUser, async (req, res) => {
 
 // Remove a member from a team (only for owners)
 // NOTE: More specific routes must come before less specific routes like /api/teams/:id
-app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req, res) => {
+app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const teamName = req.params.name;
     const memberEmail = decodeURIComponent(req.params.memberEmail).toLowerCase();
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Get team by name
     const teamResult = await pool.query(`
@@ -1104,11 +2253,12 @@ app.delete('/api/teams/:name/members/:memberEmail', authenticateUser, async (req
 
 // Leave a team (for members)
 // NOTE: More specific routes must come before less specific routes like /api/teams/:id
-app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
+app.delete('/api/teams/:name/leave', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const teamName = req.params.name;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Get team by name
     const teamResult = await pool.query(`
@@ -1150,11 +2300,12 @@ app.delete('/api/teams/:name/leave', authenticateUser, async (req, res) => {
   }
 });
 
-app.delete('/api/teams/:id', authenticateUser, async (req, res) => {
+app.delete('/api/teams/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const teamId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Verify team exists and user is owner
     const teamResult = await pool.query(`
@@ -1184,10 +2335,11 @@ app.delete('/api/teams/:id', authenticateUser, async (req, res) => {
 // PROJECT ENDPOINTS (PostgreSQL)
 // ============================================================================
 
-app.get('/api/projects', authenticateUser, async (req, res) => {
+app.get('/api/projects', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -1196,9 +2348,8 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
           'email', pm.user_email,
           'role', pm.role,
           'avatar', pm.avatar,
-          'name', COALESCE(u.first_name || ' ' || u.last_name, pm.user_email)
+          'name', pm.user_email
         )) FROM project_members pm
-        LEFT JOIN users u ON pm.user_email = u.email
         WHERE pm.project_id = p.id), '[]'::json) as members,
         COALESCE((SELECT json_agg(json_build_object(
           'id', t.id,
@@ -1241,6 +2392,30 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
       )
       ORDER BY p.created_at DESC
     `, [userEmail.toLowerCase()]);
+    
+    // Collect all member emails for batch user lookup
+    const allMemberEmails: string[] = [];
+    for (const row of result.rows) {
+      if (row.members && Array.isArray(row.members)) {
+        for (const member of row.members) {
+          if (member.email) allMemberEmails.push(member.email);
+        }
+      }
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(allMemberEmails);
+    
+    // Enrich members with user names
+    for (const row of result.rows) {
+      if (row.members && Array.isArray(row.members)) {
+        for (const member of row.members) {
+          if (member.email && userInfo.has(member.email)) {
+            member.name = userInfo.get(member.email)!.name;
+          }
+        }
+      }
+    }
     
     // Transform to camelCase and fix members structure
     const transformed = result.rows.map(row => {
@@ -1287,14 +2462,15 @@ app.get('/api/projects', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/projects/:id', authenticateUser, async (req, res) => {
+app.get('/api/projects/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Check if user has access to this project
-    const hasAccess = await hasProjectAccess(userEmail, projectId);
+    const hasAccess = await hasProjectAccess(orgId, userEmail, projectId);
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view this project' });
     }
@@ -1317,9 +2493,8 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
           'email', pm.user_email,
           'role', pm.role,
           'avatar', pm.avatar,
-          'name', u.first_name || ' ' || u.last_name
+          'name', pm.user_email
         )) FROM project_members pm
-        LEFT JOIN users u ON pm.user_email = u.email
         WHERE pm.project_id = p.id), '[]'::json) as members,
         COALESCE((SELECT json_agg(json_build_object(
           'id', pc.id,
@@ -1330,19 +2505,13 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
         ) ORDER BY pc.created_at DESC) FROM project_comments pc WHERE pc.project_id = p.id), '[]'::json) as comments,
         COALESCE((SELECT json_agg(json_build_object(
           'id', upd.update_id,
-          'memberName', COALESCE(u.first_name || ' ' || u.last_name, upd.user_id),
-          'memberAvatar', COALESCE(
-            CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-              THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
-              ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
-            END,
-            'U'
-          ),
+          'userId', upd.user_id,
+          'memberName', upd.user_id,
+          'memberAvatar', COALESCE(UPPER(SUBSTRING(upd.user_id, 1, 2)), 'U'),
           'date', upd.date_id,
           'update', upd.update_text,
           'type', 'progress'
         ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd
-        LEFT JOIN users u ON upd.user_id = u.email
         WHERE upd.project_id = p.id), '[]'::json) as progressUpdates,
         COALESCE((SELECT json_agg(json_build_object(
           'id', t.id,
@@ -1380,8 +2549,48 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
       return res.status(404).json({ error: 'Project not found' });
     }
     
+    const row = result.rows[0];
+    
+    // Collect all emails for batch user lookup
+    const allEmails: string[] = [];
+    if (row.members && Array.isArray(row.members)) {
+      for (const member of row.members) {
+        if (member.email) allEmails.push(member.email);
+      }
+    }
+    if (row.progressUpdates && Array.isArray(row.progressUpdates)) {
+      for (const update of row.progressUpdates) {
+        if (update.userId) allEmails.push(update.userId);
+      }
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(allEmails);
+    
+    // Enrich members with user names
+    if (row.members && Array.isArray(row.members)) {
+      for (const member of row.members) {
+        if (member.email && userInfo.has(member.email)) {
+          member.name = userInfo.get(member.email)!.name;
+        }
+      }
+    }
+    
+    // Enrich progress updates with user names
+    if (row.progressUpdates && Array.isArray(row.progressUpdates)) {
+      for (const update of row.progressUpdates) {
+        if (update.userId && userInfo.has(update.userId)) {
+          const user = userInfo.get(update.userId)!;
+          update.memberName = user.name;
+          update.memberAvatar = user.firstName && user.lastName 
+            ? (user.firstName[0] + user.lastName[0]).toUpperCase() 
+            : update.memberAvatar;
+        }
+      }
+    }
+    
     // Transform to camelCase
-    const project = transformRow(result.rows[0]);
+    const project = transformRow(row);
     project.members = transformMembers(project.members || []);
     
     // Ensure arrays are always arrays, never null
@@ -1490,10 +2699,11 @@ app.get('/api/projects/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/projects', authenticateUser, async (req, res) => {
+app.post('/api/projects', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     // Extract data from project object (frontend sends full Project object)
     const project = req.body;
@@ -1581,12 +2791,13 @@ app.post('/api/projects', authenticateUser, async (req, res) => {
   }
 });
 
-app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
+app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.params.id;
     const updates = req.body;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     const setClauses: string[] = [];
     const values: any[] = [];
@@ -1634,11 +2845,12 @@ app.patch('/api/projects/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.delete('/api/projects/:id', authenticateUser, async (req, res) => {
+app.delete('/api/projects/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     await pool.query('DELETE FROM projects WHERE id = $1', [projectId]);
     
@@ -1650,12 +2862,13 @@ app.delete('/api/projects/:id', authenticateUser, async (req, res) => {
 });
 
 // Add project member
-app.post('/api/projects/:id/members', authenticateUser, async (req, res) => {
+app.post('/api/projects/:id/members', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.params.id;
     const { memberEmail, role, avatar } = req.body;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Verify user is the project owner
     const projectResult = await pool.query(
@@ -1719,21 +2932,23 @@ app.post('/api/projects/:id/members', authenticateUser, async (req, res) => {
       SELECT 
         pm.user_email as email,
         pm.role,
-        pm.avatar,
-        u.first_name || ' ' || u.last_name as name
+        pm.avatar
       FROM project_members pm
-      LEFT JOIN users u ON pm.user_email = u.email
       WHERE pm.project_id = $1 AND pm.user_email = $2
     `, [projectId, normalizedMemberEmail]);
     
     const member = memberResult.rows[0];
+    
+    // Fetch user name from shared database
+    const userInfo = await getUserInfoBatch([member.email]);
+    const userName = userInfo.has(member.email) ? userInfo.get(member.email)!.name : member.email;
     
     res.json({
       success: true,
       member: {
         id: member.email,
         email: member.email,
-        name: member.name || member.email,
+        name: userName,
         role: member.role || 'member',
         avatar: member.avatar || generatedAvatar || 'U'
       }
@@ -1745,12 +2960,13 @@ app.post('/api/projects/:id/members', authenticateUser, async (req, res) => {
 });
 
 // Remove project member
-app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, async (req, res) => {
+app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.params.id;
     const memberEmail = req.params.memberEmail.toLowerCase();
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Verify project exists
     const projectResult = await pool.query(
@@ -1793,10 +3009,11 @@ app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, async (re
 // NOTES ENDPOINTS (PostgreSQL)
 // ============================================================================
 
-app.get('/api/notes', authenticateUser, async (req, res) => {
+app.get('/api/notes', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -1831,11 +3048,12 @@ app.get('/api/notes', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/notes/:id', authenticateUser, async (req, res) => {
+app.get('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const noteId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -1869,10 +3087,11 @@ app.get('/api/notes/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/notes', authenticateUser, async (req, res) => {
+app.post('/api/notes', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     const { title, content, projectId, teamId, tags, isPinned } = req.body;
     
@@ -1913,12 +3132,13 @@ app.post('/api/notes', authenticateUser, async (req, res) => {
   }
 });
 
-app.patch('/api/notes/:id', authenticateUser, async (req, res) => {
+app.patch('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const noteId = req.params.id;
     const updates = req.body;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Verify note exists and user owns it
     const checkResult = await pool.query(
@@ -1979,11 +3199,12 @@ app.patch('/api/notes/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.delete('/api/notes/:id', authenticateUser, async (req, res) => {
+app.delete('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const noteId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Verify note exists and user owns it
     const checkResult = await pool.query(
@@ -2012,10 +3233,11 @@ app.delete('/api/notes/:id', authenticateUser, async (req, res) => {
 // TASK ENDPOINTS (PostgreSQL)
 // ============================================================================
 
-app.get('/api/tasks', authenticateUser, async (req, res) => {
+app.get('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const pool = await getTenantPool(userEmail);
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -2025,13 +3247,8 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
         t.status,
         t.priority,
         t.assignee_id,
-        COALESCE(t.assignee_name, u.first_name || ' ' || u.last_name) as assignee_name,
-        COALESCE(t.assignee_avatar, 
-          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
-            ELSE NULL
-          END
-        ) as assignee_avatar,
+        t.assignee_name,
+        t.assignee_avatar,
         t.project_id,
         COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
@@ -2047,27 +3264,20 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
         (SELECT COALESCE(json_agg(update_data), '[]'::json) FROM (
           SELECT json_build_object(
             'id', upd.update_id,
-            'memberName', COALESCE(u2.first_name || ' ' || u2.last_name, upd.user_id),
-            'memberAvatar', COALESCE(
-              CASE WHEN u2.first_name IS NOT NULL AND u2.last_name IS NOT NULL 
-                THEN UPPER(SUBSTRING(u2.first_name, 1, 1) || SUBSTRING(u2.last_name, 1, 1))
-                ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
-              END,
-              'U'
-            ),
+            'userId', upd.user_id,
+            'memberName', upd.user_id,
+            'memberAvatar', COALESCE(UPPER(SUBSTRING(upd.user_id, 1, 2)), 'U'),
             'date', CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END,
             'update', upd.update_text,
             'type', 'progress'
           ) as update_data
           FROM task_progress_updates upd
-          LEFT JOIN users u2 ON upd.user_id = u2.email
           WHERE upd.associated_tasks @> jsonb_build_array(t.id)
           ORDER BY upd.timestamp DESC
           LIMIT 1
         ) latest_update) as progressUpdates
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
-      LEFT JOIN users u ON t.assignee_id = u.email
       WHERE (
         -- User is a member of the project
         EXISTS (
@@ -2095,6 +3305,42 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
         END,
         t.created_at DESC
     `, [userEmail.toLowerCase()]);
+    
+    // Collect all user emails for batch lookup
+    const allEmails: string[] = [];
+    for (const row of result.rows) {
+      if (row.assignee_id) allEmails.push(row.assignee_id);
+      if (row.progressUpdates && Array.isArray(row.progressUpdates)) {
+        for (const update of row.progressUpdates) {
+          if (update.userId) allEmails.push(update.userId);
+        }
+      }
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(allEmails);
+    
+    // Enrich results with user names
+    for (const row of result.rows) {
+      if (row.assignee_id && userInfo.has(row.assignee_id)) {
+        const user = userInfo.get(row.assignee_id)!;
+        if (!row.assignee_name) row.assignee_name = user.name;
+        if (!row.assignee_avatar && user.firstName && user.lastName) {
+          row.assignee_avatar = (user.firstName[0] + user.lastName[0]).toUpperCase();
+        }
+      }
+      if (row.progressUpdates && Array.isArray(row.progressUpdates)) {
+        for (const update of row.progressUpdates) {
+          if (update.userId && userInfo.has(update.userId)) {
+            const user = userInfo.get(update.userId)!;
+            update.memberName = user.name;
+            if (user.firstName && user.lastName) {
+              update.memberAvatar = (user.firstName[0] + user.lastName[0]).toUpperCase();
+            }
+          }
+        }
+      }
+    }
     
     // Transform to camelCase
     const transformed = result.rows.map(row => {
@@ -2200,14 +3446,15 @@ app.get('/api/tasks', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
+app.get('/api/tasks/project/:projectId', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.params.projectId;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // Check if user has access to this project
-    const hasAccess = await hasProjectAccess(userEmail, projectId);
+    const hasAccess = await hasProjectAccess(orgId, userEmail, projectId);
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view tasks' });
     }
@@ -2220,13 +3467,8 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
         t.status,
         t.priority,
         t.assignee_id,
-        COALESCE(t.assignee_name, u.first_name || ' ' || u.last_name) as assignee_name,
-        COALESCE(t.assignee_avatar, 
-          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
-            ELSE NULL
-          END
-        ) as assignee_avatar,
+        t.assignee_name,
+        t.assignee_avatar,
         t.project_id,
         COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
@@ -2241,7 +3483,6 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
         p.team_id
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
-      LEFT JOIN users u ON t.assignee_id = u.email
       WHERE t.project_id = $1
       ORDER BY 
         CASE t.status
@@ -2254,6 +3495,26 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
         END,
         t.created_at DESC
     `, [projectId]);
+    
+    // Collect all assignee emails for batch lookup
+    const assigneeEmails: string[] = [];
+    for (const row of result.rows) {
+      if (row.assignee_id) assigneeEmails.push(row.assignee_id);
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(assigneeEmails);
+    
+    // Enrich results with user names
+    for (const row of result.rows) {
+      if (row.assignee_id && userInfo.has(row.assignee_id)) {
+        const user = userInfo.get(row.assignee_id)!;
+        if (!row.assignee_name) row.assignee_name = user.name;
+        if (!row.assignee_avatar && user.firstName && user.lastName) {
+          row.assignee_avatar = (user.firstName[0] + user.lastName[0]).toUpperCase();
+        }
+      }
+    }
     
     // Transform to camelCase
     const transformed = result.rows.map(row => {
@@ -2313,11 +3574,12 @@ app.get('/api/tasks/project/:projectId', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
+app.get('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const taskId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // First, get the task to check its project_id
     const taskCheck = await pool.query(`
@@ -2334,18 +3596,13 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
     
     // If task has a project, check if user has access to that project
     if (taskInfo.project_id) {
-      const hasAccess = await hasProjectAccess(userEmail, taskInfo.project_id);
+      const hasAccess = await hasProjectAccess(orgId, userEmail, taskInfo.project_id);
       if (!hasAccess) {
         return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view this task' });
       }
-    } else {
-      // If task has no project, only allow access to assignee or creator
-      const userEmailLower = userEmail.toLowerCase();
-      if (taskInfo.assignee_id?.toLowerCase() !== userEmailLower && 
-          taskInfo.created_by?.toLowerCase() !== userEmailLower) {
-        return res.status(403).json({ error: 'Access denied: You must be the assignee or creator to view this task' });
-      }
     }
+    // If task has no project, it's visible to all org members (no access check needed)
+    // The requireOrgMembership middleware already ensures the user is a member of the org
     
     const result = await pool.query(`
       SELECT 
@@ -2355,13 +3612,8 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
         t.status,
         t.priority,
         t.assignee_id,
-        COALESCE(t.assignee_name, u.first_name || ' ' || u.last_name) as assignee_name,
-        COALESCE(t.assignee_avatar, 
-          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
-            ELSE NULL
-          END
-        ) as assignee_avatar,
+        t.assignee_name,
+        t.assignee_avatar,
         t.project_id,
         COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
@@ -2383,23 +3635,16 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
         ) ORDER BY tc.created_at DESC) FROM task_comments tc WHERE tc.task_id = t.id) as comments,
         COALESCE((SELECT json_agg(json_build_object(
           'id', upd.update_id,
-          'memberName', COALESCE(u2.first_name || ' ' || u2.last_name, upd.user_id),
-          'memberAvatar', COALESCE(
-            CASE WHEN u2.first_name IS NOT NULL AND u2.last_name IS NOT NULL 
-              THEN UPPER(SUBSTRING(u2.first_name, 1, 1) || SUBSTRING(u2.last_name, 1, 1))
-              ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
-            END,
-            'U'
-          ),
+          'userId', upd.user_id,
+          'memberName', upd.user_id,
+          'memberAvatar', COALESCE(UPPER(SUBSTRING(upd.user_id, 1, 2)), 'U'),
           'date', CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END,
           'update', upd.update_text,
           'type', 'progress'
         ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd
-        LEFT JOIN users u2 ON upd.user_id = u2.email
         WHERE upd.associated_tasks @> $2::jsonb), '[]'::json) as progressUpdates
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
-      LEFT JOIN users u ON t.assignee_id = u.email
       WHERE t.id = $1
     `, [taskId, JSON.stringify([taskId])]);
     
@@ -2407,8 +3652,42 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
       return res.status(404).json({ error: 'Task not found' });
     }
     
+    const row = result.rows[0];
+    
+    // Collect all emails for batch user lookup
+    const allEmails: string[] = [];
+    if (row.assignee_id) allEmails.push(row.assignee_id);
+    if (row.progressupdates && Array.isArray(row.progressupdates)) {
+      for (const update of row.progressupdates) {
+        if (update.userId) allEmails.push(update.userId);
+      }
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(allEmails);
+    
+    // Enrich results with user names
+    if (row.assignee_id && userInfo.has(row.assignee_id)) {
+      const user = userInfo.get(row.assignee_id)!;
+      if (!row.assignee_name) row.assignee_name = user.name;
+      if (!row.assignee_avatar && user.firstName && user.lastName) {
+        row.assignee_avatar = (user.firstName[0] + user.lastName[0]).toUpperCase();
+      }
+    }
+    if (row.progressupdates && Array.isArray(row.progressupdates)) {
+      for (const update of row.progressupdates) {
+        if (update.userId && userInfo.has(update.userId)) {
+          const user = userInfo.get(update.userId)!;
+          update.memberName = user.name;
+          if (user.firstName && user.lastName) {
+            update.memberAvatar = (user.firstName[0] + user.lastName[0]).toUpperCase();
+          }
+        }
+      }
+    }
+    
     // Transform to camelCase
-    const task = transformRow(result.rows[0]);
+    const task = transformRow(row);
     
     // Handle progressUpdates - it comes as JSON from the SQL query
     // transformRow converts progressUpdates (already camelCase) correctly, but we need to ensure it's parsed
@@ -2513,11 +3792,12 @@ app.get('/api/tasks/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/tasks', authenticateUser, async (req, res) => {
+app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const { title, description, projectId, projectName, assigneeId, assignee, assigneeAvatar, status, priority, dueDate, tags, reason, estimatedHours } = req.body;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     // If assigneeId is provided but assignee/assigneeAvatar are not, look up the user
     let finalAssignee = assignee;
@@ -2604,12 +3884,13 @@ app.post('/api/tasks', authenticateUser, async (req, res) => {
   }
 });
 
-app.put('/api/tasks/:id', authenticateUser, async (req, res) => {
+app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const taskId = req.params.id;
     const updates = req.body;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     const setClauses: string[] = [];
     const values: any[] = [];
@@ -2668,13 +3949,14 @@ app.put('/api/tasks/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.patch('/api/tasks/:id', authenticateUser, async (req, res) => {
+app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   // PATCH uses same logic as PUT
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const taskId = req.params.id;
     const updates = req.body;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     const setClauses: string[] = [];
     const values: any[] = [];
@@ -2733,11 +4015,12 @@ app.patch('/api/tasks/:id', authenticateUser, async (req, res) => {
   }
 });
 
-app.delete('/api/tasks/:id', authenticateUser, async (req, res) => {
+app.delete('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const taskId = req.params.id;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     await pool.query('DELETE FROM tasks WHERE id = $1', [taskId]);
     
@@ -2754,8 +4037,8 @@ app.delete('/api/tasks/:id', authenticateUser, async (req, res) => {
 
 app.get('/api/messages', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
-    const collectionPath = getCollectionPath('messages', domain);
+    const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+    const collectionPath = await getOrgCollectionPath('messages', orgId);
     
     const snapshot = await db.collection(collectionPath)
       .orderBy('timestamp', 'desc')
@@ -2779,12 +4062,12 @@ app.get('/api/messages', authenticateUser, async (req, res) => {
 });
 
 app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).user?.email?.toLowerCase() || (req as any).userEmail?.toLowerCase();
-    const chatId = decodeURIComponent(req.params.chatId);
-    const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : undefined;
-    const collectionPath = getCollectionPath('messages', domain);
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user?.email?.toLowerCase() || (req as any).userEmail?.toLowerCase();
+      const chatId = decodeURIComponent(req.params.chatId);
+      const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : undefined;
+      const collectionPath = await getOrgCollectionPath('messages', orgId);
     
     // For AI assistant conversations, ensure privacy by filtering by userId
     // This provides an additional security layer even if chatId is somehow compromised
@@ -2796,16 +4079,37 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
     }
     
     let docs: any[] = [];
+    
+    // Extract projectId or teamId for filtering
+    let projectId: string | null = null;
+    let teamId: string | null = null;
+    if (chatId.startsWith('project-')) {
+      projectId = chatId.replace('project-', '');
+    } else if (chatId.startsWith('team-')) {
+      teamId = chatId.replace('team-', '');
+    }
+    
     try {
       // Query by chatId (may need Firestore index)
       let query = db.collection(collectionPath)
-        .where('chatId', '==', chatId)
-        .limit(100);
+        .where('chatId', '==', chatId);
       
       // For AI assistant conversations, also filter by userId for privacy
       if (chatId.startsWith('ai-assistant-') && userEmail) {
         query = query.where('userId', '==', userEmail);
       }
+      
+      // For project channels, also filter by projectId to ensure we only get messages for this project
+      if (projectId) {
+        query = query.where('projectId', '==', projectId);
+      }
+      
+      // For team channels, also filter by teamId to ensure we only get messages for this team
+      if (teamId) {
+        query = query.where('teamId', '==', teamId);
+      }
+      
+      query = query.limit(100);
       
       const snapshot = await query.get();
       docs = Array.from(snapshot.docs);
@@ -2818,14 +4122,26 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           .limit(500) // Get more to filter
           .get();
         
-        // Filter by chatId in memory (and userId for AI assistant conversations)
+        // Filter by chatId in memory (and userId for AI assistant conversations, projectId/teamId for channels)
         docs = Array.from(snapshot.docs).filter(doc => {
           const data = doc.data();
           const matchesChatId = data.chatId === chatId || (!data.chatId && chatId === 'general');
+          
           // For AI assistant conversations, also check userId
           if (chatId.startsWith('ai-assistant-') && userEmail) {
             return matchesChatId && data.userId?.toLowerCase() === userEmail;
           }
+          
+          // For project channels, also check projectId
+          if (projectId) {
+            return matchesChatId && data.projectId === projectId;
+          }
+          
+          // For team channels, also check teamId
+          if (teamId) {
+            return matchesChatId && data.teamId === teamId;
+          }
+          
           return matchesChatId;
         });
       } else {
@@ -2901,21 +4217,21 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
 });
 
 app.post('/api/messages', authenticateUser, async (req, res) => {
-  try {
-    const domain = (req as any).userDomain;
-    const userEmail = (req as any).userEmail;
-    const { 
-      chatId, 
-      role, 
-      content, 
-      projectId, 
-      teamId, 
-      memberName, 
-      memberAvatar,
-      citedContext,
-      imageUrls
-    } = req.body;
-    const collectionPath = getCollectionPath('messages', domain);
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).userEmail;
+      const { 
+        chatId, 
+        role, 
+        content, 
+        projectId, 
+        teamId, 
+        memberName, 
+        memberAvatar,
+        citedContext,
+        imageUrls
+      } = req.body;
+      const collectionPath = await getOrgCollectionPath('messages', orgId);
     
     const messageData: any = {
       chatId: chatId || 'general',
@@ -2967,7 +4283,7 @@ app.post('/api/messages', authenticateUser, async (req, res) => {
 // PATCH toggle like on a message
 app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) => {
   try {
-    const domain = (req as any).userDomain;
+    const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
     const userEmail = (req as any).user?.email?.toLowerCase() || (req as any).userEmail?.toLowerCase();
     const messageId = req.params.messageId;
     
@@ -2975,7 +4291,7 @@ app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) =>
       return res.status(401).json({ error: 'User email not found' });
     }
     
-    const collectionPath = getCollectionPath('messages', domain);
+    const collectionPath = await getOrgCollectionPath('messages', orgId);
     const messageRef = db.collection(collectionPath).doc(messageId);
     const messageDoc = await messageRef.get();
     
@@ -3259,11 +4575,12 @@ setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
 // ============================================================================
 
-app.get('/api/update-summaries', authenticateUser, async (req, res) => {
+app.get('/api/update-summaries', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const projectId = req.query.projectId as string | undefined;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     let query = `
       SELECT 
@@ -3321,11 +4638,12 @@ app.get('/api/update-summaries', authenticateUser, async (req, res) => {
 });
 
 // GET updates by task ID
-app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
+app.get('/api/updates/task/:taskId', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
     const taskId = req.params.taskId;
-    const pool = await getTenantPool(userEmail);
+    const pool = await getOrgPool(orgId);
     
     const result = await pool.query(`
       SELECT 
@@ -3337,35 +4655,40 @@ app.get('/api/updates/task/:taskId', authenticateUser, async (req, res) => {
         CASE WHEN upd.date_id IS NOT NULL THEN upd.date_id::text ELSE NULL END as date_id,
         upd.reason,
         upd.update_text as update,
-        upd.timestamp,
-        COALESCE(u.first_name || ' ' || u.last_name, upd.user_id) as memberName,
-        COALESCE(
-          CASE WHEN u.first_name IS NOT NULL AND u.last_name IS NOT NULL 
-            THEN UPPER(SUBSTRING(u.first_name, 1, 1) || SUBSTRING(u.last_name, 1, 1))
-            ELSE UPPER(SUBSTRING(upd.user_id, 1, 2))
-          END,
-          'U'
-        ) as memberAvatar
+        upd.timestamp
       FROM task_progress_updates upd
-      LEFT JOIN users u ON upd.user_id = u.email
       WHERE upd.associated_tasks @> $1::jsonb
       ORDER BY upd.timestamp DESC
     `, [JSON.stringify([taskId])]);
     
+    // Collect all user emails for batch lookup
+    const userEmails: string[] = [];
+    for (const row of result.rows) {
+      if (row.user_id) userEmails.push(row.user_id);
+    }
+    
+    // Batch fetch user names from shared database
+    const userInfo = await getUserInfoBatch(userEmails);
+    
     // Transform to the format expected by frontend
     // Note: PostgreSQL returns unquoted column names in lowercase
-    const updates = result.rows.map(row => ({
-      updateId: row.update_id,
-      associatedTasks: row.associated_tasks,
-      dateId: row.date_id || '',
-      projectId: row.project_id || '',
-      reason: row.reason || '',
-      timestamp: row.timestamp ? (typeof row.timestamp === 'string' ? row.timestamp : new Date(row.timestamp).toISOString()) : '',
-      update: row.update || '',
-      userId: row.user_id || '',
-      memberName: row.membername || row.user_id || '',
-      memberAvatar: row.memberavatar || 'U',
-    }));
+    const updates = result.rows.map(row => {
+      const user = row.user_id && userInfo.has(row.user_id) ? userInfo.get(row.user_id)! : null;
+      return {
+        updateId: row.update_id,
+        associatedTasks: row.associated_tasks,
+        dateId: row.date_id || '',
+        projectId: row.project_id || '',
+        reason: row.reason || '',
+        timestamp: row.timestamp ? (typeof row.timestamp === 'string' ? row.timestamp : new Date(row.timestamp).toISOString()) : '',
+        update: row.update || '',
+        userId: row.user_id || '',
+        memberName: user ? user.name : row.user_id || '',
+        memberAvatar: user && user.firstName && user.lastName 
+          ? (user.firstName[0] + user.lastName[0]).toUpperCase() 
+          : (row.user_id ? row.user_id.substring(0, 2).toUpperCase() : 'U'),
+      };
+    });
     
     res.json(updates);
   } catch (error) {
@@ -3410,4 +4733,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`✅ Health check available at http://0.0.0.0:${PORT}/api/health`);
 });
+
 

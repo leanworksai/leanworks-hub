@@ -62,7 +62,6 @@ import { Task } from "@/data/tasksData";
 import { useTask, useUpdateTask, useDeleteTask } from "@/hooks/useTasks";
 import { useToast } from "@/hooks/use-toast";
 import { useUserProjects } from "@/hooks/useProjects";
-import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
@@ -147,44 +146,48 @@ const getUpdateTypeColor = (type?: string) => {
   }
 };
 
-// Get all unique team members from projects
-const getAllTeamMembers = (projects: any[]) => {
+// Get all unique team members from projects, or all org users if task has no project
+const getAllTeamMembers = (projects: any[], users: any[] = [], task?: any) => {
   const memberMap = new Map<string, { id?: string; name: string; avatar: string; role: string }>();
   
-  // Collect from project members
-  projects.forEach(project => {
-    project.members?.forEach((member: any) => {
+  // If task has a project, collect from project members
+  const taskProjectId = task?.projectId;
+  const taskProjectName = task?.project;
+  
+  if (taskProjectId || taskProjectName) {
+    // Find the project by ID or name
+    const taskProject = projects.find(p => 
+      p.id === taskProjectId || 
+      p.name === taskProjectId || 
+      p.name === taskProjectName
+    );
+    
+    if (taskProject?.members) {
+      taskProject.members.forEach((member: any) => {
       if (!memberMap.has(member.name)) {
         memberMap.set(member.name, {
-          id: member.id, // Include the ID (email address)
+            id: member.id || member.email, // Include the ID (email address)
           name: member.name,
           avatar: member.avatar,
           role: member.role,
         });
       }
     });
-  });
-  
-  // Also include team members from TeamDetail teamData
-  const teamDataMembers = [
-    { name: "Sarah Johnson", avatar: "SJ", role: "Team Lead" },
-    { name: "Michael Chen", avatar: "MC", role: "Senior Developer" },
-    { name: "Alex Rivera", avatar: "AR", role: "Frontend Developer" },
-    { name: "David Kim", avatar: "DK", role: "Backend Developer" },
-    { name: "Emma Davis", avatar: "ED", role: "Design Lead" },
-    { name: "Sophie Turner", avatar: "ST", role: "UI Designer" },
-    { name: "Lucas Brown", avatar: "LB", role: "UX Researcher" },
-    { name: "James Wilson", avatar: "JW", role: "Product Manager" },
-    { name: "Olivia Martinez", avatar: "OM", role: "Product Owner" },
-    { name: "Ryan Taylor", avatar: "RT", role: "Marketing Lead" },
-    { name: "Nina Patel", avatar: "NP", role: "Content Strategist" },
-  ];
-  
-  teamDataMembers.forEach(member => {
-    if (!memberMap.has(member.name)) {
-      memberMap.set(member.name, member);
+    }
+  } else {
+    // No project - use all org users
+    users.forEach(user => {
+      const name = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+      if (!memberMap.has(name)) {
+        memberMap.set(name, {
+          id: user.email.toLowerCase(),
+          name: name,
+          avatar: `${(user.firstName || '').charAt(0)}${(user.lastName || '').charAt(0)}`.toUpperCase() || user.email.charAt(0).toUpperCase(),
+          role: user.jobTitle || 'Member',
+        });
     }
   });
+  }
   
   return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 };
@@ -211,7 +214,6 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   
   const { data: task, isLoading } = useTask(taskId || '');
   const { data: projects = [] } = useUserProjects();
-  const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
   
   // Check if user has access to the task
@@ -227,22 +229,21 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       // If ID match fails, try matching by name (for legacy tasks where projectId is actually a name)
       const hasProjectAccessByName = projects.some((project) => project.name === task.projectId);
       if (hasProjectAccessByName) return true;
+      
+      // Task has a project but user doesn't have access
+      return false;
     }
     
     // If task has a project name (legacy), try to find it by name
     if (task.project) {
       const hasProjectAccess = projects.some((project) => project.name === task.project);
       if (hasProjectAccess) return true;
+    
+      // Task has a project but user doesn't have access
+      return false;
     }
     
-    // If task has no project, check if it's associated with user's teams
-    if (task.teams && task.teams.length > 0) {
-      const userTeamNames = new Set(userTeams.map(team => team.name.toLowerCase()));
-      const hasTeamAccess = task.teams.some(teamName => userTeamNames.has(teamName.toLowerCase()));
-      return hasTeamAccess;
-    }
-    
-    // If task has no project or teams, allow access (user created it or it's a standalone task)
+    // If task has no project, it's visible to all org members
     return true;
   })() : false;
   
@@ -258,7 +259,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const updateTaskMutation = useUpdateTask();
   const deleteTask = useDeleteTask();
   const { toast } = useToast();
-  const teamMembers = getAllTeamMembers(projects);
+  const teamMembers = getAllTeamMembers(projects, users, task);
 
   // Find creator user from users list
   const creator = task?.createdBy 
@@ -400,6 +401,8 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       taskId, 
       updates: { [field]: value, ...additionalData } 
     });
+    // Keep editedTask updated so it persists after edit mode ends
+    // The task will refetch automatically via query invalidation
     setEditingField(null);
   };
 
@@ -588,9 +591,11 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                 </PopoverTrigger>
                 <PopoverContent className="w-[300px] p-0">
                   <Command>
-                    <CommandInput placeholder="Search team members..." />
+                    <CommandInput placeholder={(task?.projectId || task?.project) ? "Search project members..." : "Search organization members..."} />
                     <CommandList>
-                      <CommandEmpty>No team member found.</CommandEmpty>
+                      <CommandEmpty>
+                        {(task?.projectId || task?.project) ? "No project member found." : "No organization member found."}
+                      </CommandEmpty>
                       <CommandGroup>
                         {teamMembers.map((member) => (
                           <CommandItem
@@ -601,7 +606,8 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                               if (selectedMember && selectedMember.id) {
                                 setAssigneeJustSelected(true);
                                 handleFieldSave('assigneeId', selectedMember.id, {
-                                  assignee: selectedMember.name,
+                                  assigneeName: selectedMember.name,
+                                  assignee: selectedMember.name, // Also keep assignee for frontend display
                                   assigneeAvatar: selectedMember.avatar
                                 });
                                 setAssigneeOpen(false);
@@ -635,14 +641,14 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
               <div className="flex items-center gap-2">
                 <Avatar className="h-6 w-6">
                   <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                    {task.assigneeAvatar || (task.assignee ? getInitials(task.assignee) : "?")}
+                    {(editedTask?.assigneeAvatar || task.assigneeAvatar) || ((editedTask?.assignee || task.assignee) ? getInitials(editedTask?.assignee || task.assignee || "") : "?")}
                   </AvatarFallback>
                 </Avatar>
                 <span 
                   className="text-foreground font-medium cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
                   onClick={() => handleFieldClick('assigneeId')}
                 >
-                  {task.assignee || "Unassigned"}
+                  {editedTask?.assignee || task.assignee || "Unassigned"}
                 </span>
               </div>
             )}

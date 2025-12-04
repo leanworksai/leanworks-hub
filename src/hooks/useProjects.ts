@@ -1,102 +1,39 @@
-import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { projectsService } from '@/services/api';
 import type { Project } from '@/data/projectsData';
-import { useUserTeams } from './useTeams';
 import { useAuth } from '@/contexts/AuthContext';
-import { teamsService } from '@/services/api';
+import { useOrg } from '@/contexts/OrgContext';
 
 export const useProjects = () => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['projects'],
+    queryKey: ['projects', currentOrg?.id],
     queryFn: () => projectsService.getAll(),
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
 
-// Hook to get projects filtered by current user's team membership
+// Hook to get projects accessible to the current user
+// Backend already filters projects to only return those where user is a member or owner
 export const useUserProjects = () => {
-  const { user } = useAuth();
-  const { data: allProjects = [], isLoading: isLoadingProjects } = useProjects();
-  const { data: userTeams = [], isLoading: isLoadingTeams } = useUserTeams();
-
-  // Fetch team details for all user teams to get member names
-  const teamDetailsQueries = useQueries({
-    queries: userTeams.map((team) => ({
-      queryKey: ['teams', team.id],
-      queryFn: () => teamsService.getById(team.id),
-      enabled: !!team.id && !!user?.email,
-      staleTime: 1000 * 60 * 5,
-    })),
-  });
-
-  // Check if all team details are loaded
-  const isLoadingDetails = teamDetailsQueries.some((query) => query.isLoading);
-  
-  // Check if all queries have completed
-  const allQueriesCompleted = teamDetailsQueries.length === 0 || teamDetailsQueries.every(
-    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
-  );
-
-  // Get all team member names from user's teams
-  const userTeamMemberNames = new Set<string>();
-  if (allQueriesCompleted && !isLoadingDetails) {
-    teamDetailsQueries.forEach((query) => {
-      if (query.data?.members) {
-        query.data.members.forEach((member) => {
-          userTeamMemberNames.add(member.name.toLowerCase());
-        });
-      }
-    });
-  }
-
-  // Get user's email for owner check
-  const userEmail = user?.email?.toLowerCase();
-
-  // Filter projects where:
-  // 1. User is the owner, OR
-  // 2. At least one project member is from user's teams (by name match), OR
-  // 3. User is a project member (by email match)
-  const userProjects = allQueriesCompleted && !isLoadingDetails
-    ? allProjects.filter((project) => {
-        // Always show projects where user is the owner
-        if (userEmail && project.ownerEmail?.toLowerCase() === userEmail) {
-          return true;
-        }
-        
-        // Check if user is a project member by email
-        if (userEmail && project.members.some((member) => 
-          member.email?.toLowerCase() === userEmail
-        )) {
-          return true;
-        }
-        
-        // Check if any project member is from user's teams (by name match)
-        if (userTeamMemberNames.size > 0) {
-          return project.members.some((member) =>
-            userTeamMemberNames.has(member.name.toLowerCase())
-          );
-        }
-        
-        return false;
-      })
-    : [];
-
-  return {
-    data: userProjects,
-    isLoading: isLoadingProjects || isLoadingTeams || isLoadingDetails || !allQueriesCompleted,
-  };
+  // Backend already handles access control - it only returns projects where:
+  // 1. User is a project member (in project_members table), OR
+  // 2. User is the project owner
+  // So we can just return the projects directly without additional filtering
+  return useProjects();
 };
 
 export const useProject = (projectId: string) => {
   const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
-    queryKey: ['projects', projectId],
+    queryKey: ['projects', projectId, currentOrg?.id],
     queryFn: () => projectsService.getById(projectId),
-    enabled: !loading && !!user && !!projectId, // Only fetch when user is authenticated and projectId is provided
+    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId, // Only fetch when user is authenticated and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };

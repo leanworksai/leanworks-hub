@@ -79,10 +79,14 @@ export function getAvatarColor(identifier?: string | null): string {
 }
 
 /**
- * Sanitize domain from email for Firestore paths (remove dots and special characters)
- * Matches the backend getDomainFromEmail function behavior
+ * @deprecated Use org-based Firestore paths instead of domain-based paths.
+ * Organization ID is available via getCurrentOrgId() from services/api.ts
+ * 
+ * This function was used for legacy domain-based Firestore paths (domains/{sanitized-domain}/)
+ * The new approach uses org-based paths (orgs/{orgId}/)
  */
 export function sanitizeDomainForFirestore(email: string): string {
+  console.warn('sanitizeDomainForFirestore is deprecated. Use org-based paths with getCurrentOrgId() instead.');
   const domain = email.split('@')[1];
   if (!domain) {
     throw new Error(`Invalid email format: ${email}`);

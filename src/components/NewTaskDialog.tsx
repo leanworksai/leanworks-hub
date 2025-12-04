@@ -127,7 +127,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   // Memoize the projects array to prevent infinite loops
   const projectsMemo = useMemo(() => projects, [projects.map(p => p.name).join(',')]);
 
-  // Load project members when project is selected
+  // Load project members when project is selected, or use all org users when no project is selected
   useEffect(() => {
     if (selectedProjectId && projectsMemo.length > 0) {
       // Find the selected project
@@ -143,9 +143,18 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         setProjectMembers([]);
       }
     } else {
-      setProjectMembers([]);
+      // No project selected - use all org users
+      // Convert org users to ProjectMember format
+      const orgMembersAsProjectMembers: ProjectMember[] = users.map(user => ({
+        id: user.email.toLowerCase(),
+        email: user.email,
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
+        role: user.jobTitle || 'Member',
+        avatar: `${(user.firstName || '').charAt(0)}${(user.lastName || '').charAt(0)}`.toUpperCase() || user.email.charAt(0).toUpperCase(),
+      }));
+      setProjectMembers(orgMembersAsProjectMembers);
     }
-  }, [selectedProjectId, projectsMemo]);
+  }, [selectedProjectId, projectsMemo, users]);
 
   // Reset assignee when project changes (but not during AI generation)
   useEffect(() => {
@@ -176,9 +185,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         }
       } else {
         setSelectedProjectId("");
-        if (!initialProjectId) {
-          setProjectMembers([]);
-        }
+        // Don't clear projectMembers here - the useEffect will handle setting org users
       }
       setSelectedAssignee(null);
       setSelectedAssigneeId(null);
@@ -652,7 +659,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
                   <FormDescription>
                     {selectedProjectId 
                       ? "Select a project member to assign this task to"
-                      : "Select a team member to assign this task to"}
+                      : "Select an organization member to assign this task to"}
                   </FormDescription>
                   <Popover open={assigneeOpen} onOpenChange={setAssigneeOpen}>
                     <PopoverTrigger asChild>
@@ -681,12 +688,14 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
                     </PopoverTrigger>
                     <PopoverContent className="w-[400px] p-0">
                       <Command>
-                        <CommandInput placeholder="Search project members..." />
+                        <CommandInput placeholder={selectedProjectId ? "Search project members..." : "Search organization members..."} />
                         <CommandList>
-                          {selectedProjectId && projectMembers.length === 0 ? (
-                            <CommandEmpty>No project members found.</CommandEmpty>
-                          ) : !selectedProjectId ? (
-                            <CommandEmpty>Select a project to see project members, or leave unassigned for a team-wide task.</CommandEmpty>
+                          {projectMembers.length === 0 ? (
+                            <CommandEmpty>
+                              {selectedProjectId 
+                                ? "No project members found." 
+                                : "No organization members found."}
+                            </CommandEmpty>
                           ) : (
                             <CommandGroup>
                               {projectMembers.map((member) => (
