@@ -17,8 +17,7 @@
     "migrate:team-owners": "tsx scripts/migrate-team-owners.ts",
     "db:init": "tsx database/init-schema.ts",
     "migrate:postgres": "tsx database/migrate-multi-tenant.ts",
-    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts",
-    "migrate:email-verification": "tsx database/migrate-add-email-verification.ts"
+    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^6.1.1",
