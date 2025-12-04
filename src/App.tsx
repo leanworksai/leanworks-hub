@@ -19,6 +19,7 @@ import { Chatbot } from "./components/Chatbot";
 import { GlobalCallListener } from "./components/GlobalCallListener";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import VerifyEmail from "./pages/VerifyEmail";
 import Home from "./pages/Home";
 import Teams from "./pages/Teams";
 import TeamDetail from "./pages/TeamDetail";
@@ -53,6 +54,7 @@ const AppRoutesContent = () => {
     if (pathname === '/') return 'Home';
     if (pathname === '/login') return 'Login';
     if (pathname === '/signup') return 'Signup';
+    if (pathname === '/verify-email') return 'Verify Email';
     if (pathname.startsWith('/projects/')) return 'Project Detail';
     if (pathname === '/projects') return 'Projects';
     if (pathname.startsWith('/tasks/')) return 'Task Detail';
@@ -75,6 +77,7 @@ const AppRoutesContent = () => {
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route
           path="/teams"
           element={

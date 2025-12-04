@@ -95,6 +95,25 @@ CREATE INDEX IF NOT EXISTS idx_org_invitations_token ON org_invitations(token);
 CREATE INDEX IF NOT EXISTS idx_org_invitations_expires ON org_invitations(expires_at);
 
 -- ============================================================================
+-- EMAIL VERIFICATION TOKENS TABLE
+-- ============================================================================
+
+-- Email verification tokens for signup email verification
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id SERIAL PRIMARY KEY,
+  email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+  token VARCHAR(255) NOT NULL UNIQUE,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMP NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'),
+  used_at TIMESTAMP,
+  UNIQUE(email, token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_email ON email_verification_tokens(email);
+CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_token ON email_verification_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_expires ON email_verification_tokens(expires_at);
+
+-- ============================================================================
 -- DEMO REQUESTS TABLE
 -- ============================================================================
 
@@ -248,6 +267,7 @@ COMMENT ON TABLE users IS 'Global registry of all users across all organizations
 COMMENT ON TABLE organizations IS 'Organizations - each org has its own isolated database';
 COMMENT ON TABLE org_members IS 'Membership records linking users to organizations';
 COMMENT ON TABLE org_invitations IS 'Pending invitations to join organizations';
+COMMENT ON TABLE email_verification_tokens IS 'Tokens for email verification during signup';
 COMMENT ON TABLE demo_requests IS 'Public demo request form submissions';
 
 COMMENT ON COLUMN organizations.type IS 'personal = auto-created personal workspace, team = user-created org';

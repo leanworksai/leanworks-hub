@@ -32,6 +32,7 @@ import {
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
+import { sendVerificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -490,10 +491,35 @@ app.post('/api/auth/signup', async (req, res) => {
     
     console.log(`✅ Created personal workspace for ${normalizedEmail}: ${personalOrgName} (${personalSlug})`);
 
+    // Generate email verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    
+    // Store verification token in database
+    await sharedPool.query(`
+      INSERT INTO email_verification_tokens (email, token, created_at, expires_at)
+      VALUES ($1, $2, NOW(), NOW() + INTERVAL '24 hours')
+    `, [normalizedEmail, verificationToken]);
+    
+    // Send verification email
+    try {
+      await sendVerificationEmail(
+        secretManagerClient,
+        serviceAccount.project_id,
+        normalizedEmail,
+        firstName,
+        verificationToken
+      );
+      console.log(`✅ Verification email sent to ${normalizedEmail}`);
+    } catch (emailError: any) {
+      console.error(`⚠️ Failed to send verification email to ${normalizedEmail}:`, emailError.message);
+      // Don't fail signup if email fails - user can request resend
+    }
+
     res.status(201).json({ 
       success: true, 
       uid: userRecord.uid,
       email: userRecord.email,
+      message: 'Account created! Please check your email to verify your account.',
       personalOrg: {
         id: personalOrg.id,
         name: personalOrg.name,
@@ -533,7 +559,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Get user from shared PostgreSQL database
     const userResult = await sharedPool.query(
-      'SELECT email, password_hash, first_name, last_name, timezone FROM users WHERE email = $1',
+      'SELECT email, password_hash, first_name, last_name, timezone, email_verified FROM users WHERE email = $1',
       [normalizedEmail]
     );
     
@@ -547,6 +573,15 @@ app.post('/api/auth/login', async (req, res) => {
     const isPasswordValid = await bcrypt.compare(password, userData.password_hash);
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    // Check if email is verified
+    if (!userData.email_verified) {
+      return res.status(403).json({ 
+        error: 'Please verify your email before logging in',
+        code: 'EMAIL_NOT_VERIFIED',
+        email: normalizedEmail
+      });
     }
 
     // Update last login
@@ -665,6 +700,182 @@ app.post('/api/auth/login', async (req, res) => {
   } catch (error: any) {
     console.error('Login error:', error);
     res.status(500).json({ error: error.message || 'Failed to sign in' });
+  }
+});
+
+// ============================================================================
+// EMAIL VERIFICATION ENDPOINTS
+// ============================================================================
+
+// Verify email with token
+app.get('/api/auth/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+    
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Verification token is required' });
+    }
+    
+    const sharedPool = await getSharedPool();
+    
+    // Find the token and check if it's valid
+    const tokenResult = await sharedPool.query(`
+      SELECT email, expires_at, used_at
+      FROM email_verification_tokens
+      WHERE token = $1
+    `, [token]);
+    
+    if (tokenResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Invalid verification token' });
+    }
+    
+    const tokenData = tokenResult.rows[0];
+    
+    // Check if token was already used
+    if (tokenData.used_at) {
+      return res.status(400).json({ error: 'This verification link has already been used' });
+    }
+    
+    // Check if token is expired
+    if (new Date(tokenData.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'This verification link has expired. Please request a new one.' });
+    }
+    
+    // Mark email as verified
+    await sharedPool.query(
+      'UPDATE users SET email_verified = TRUE WHERE email = $1',
+      [tokenData.email]
+    );
+    
+    // Mark token as used
+    await sharedPool.query(
+      'UPDATE email_verification_tokens SET used_at = NOW() WHERE token = $1',
+      [token]
+    );
+    
+    // Update Firebase Auth user's email verification status
+    try {
+      const userRecord = await auth.getUserByEmail(tokenData.email);
+      if (!userRecord.emailVerified) {
+        await auth.updateUser(userRecord.uid, { emailVerified: true });
+      }
+    } catch (firebaseError: any) {
+      console.warn('⚠️ Could not update Firebase email verification (non-critical):', firebaseError.message);
+    }
+    
+    console.log(`✅ Email verified for ${tokenData.email}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Email verified successfully! You can now log in.',
+      email: tokenData.email
+    });
+  } catch (error: any) {
+    console.error('Email verification error:', error);
+    res.status(500).json({ error: error.message || 'Failed to verify email' });
+  }
+});
+
+// Resend verification email
+app.post('/api/auth/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    const normalizedEmail = email.toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    // Check if user exists and is not already verified
+    const userResult = await sharedPool.query(
+      'SELECT email, first_name, email_verified FROM users WHERE email = $1',
+      [normalizedEmail]
+    );
+    
+    if (userResult.rows.length === 0) {
+      // Don't reveal if email exists or not for security
+      return res.json({ 
+        success: true, 
+        message: 'If an account exists with this email, a verification link will be sent.' 
+      });
+    }
+    
+    const userData = userResult.rows[0];
+    
+    if (userData.email_verified) {
+      return res.status(400).json({ error: 'This email is already verified' });
+    }
+    
+    // Check for rate limiting - don't allow more than 3 tokens in the last hour
+    const recentTokens = await sharedPool.query(`
+      SELECT COUNT(*) as count
+      FROM email_verification_tokens
+      WHERE email = $1 AND created_at > NOW() - INTERVAL '1 hour'
+    `, [normalizedEmail]);
+    
+    if (parseInt(recentTokens.rows[0].count) >= 3) {
+      return res.status(429).json({ error: 'Too many verification emails requested. Please try again later.' });
+    }
+    
+    // Generate new verification token
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    
+    // Store new verification token
+    await sharedPool.query(`
+      INSERT INTO email_verification_tokens (email, token, created_at, expires_at)
+      VALUES ($1, $2, NOW(), NOW() + INTERVAL '24 hours')
+    `, [normalizedEmail, verificationToken]);
+    
+    // Send verification email
+    await sendVerificationEmail(
+      secretManagerClient,
+      serviceAccount.project_id,
+      normalizedEmail,
+      userData.first_name,
+      verificationToken
+    );
+    
+    console.log(`✅ Verification email resent to ${normalizedEmail}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Verification email sent! Please check your inbox.' 
+    });
+  } catch (error: any) {
+    console.error('Resend verification error:', error);
+    res.status(500).json({ error: error.message || 'Failed to send verification email' });
+  }
+});
+
+// Check email verification status (public endpoint for signup flow)
+app.get('/api/auth/verification-status', async (req, res) => {
+  try {
+    const { email } = req.query;
+    
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    
+    const normalizedEmail = email.toLowerCase();
+    const sharedPool = await getSharedPool();
+    
+    const result = await sharedPool.query(
+      'SELECT email_verified FROM users WHERE email = $1',
+      [normalizedEmail]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ 
+      verified: result.rows[0].email_verified 
+    });
+  } catch (error: any) {
+    console.error('Verification status error:', error);
+    res.status(500).json({ error: error.message || 'Failed to check verification status' });
   }
 });
 
