@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useOrg, Organization } from '@/contexts/OrgContext';
+import { useState, useEffect } from 'react';
+import { useOrg, Organization, OrgMember } from '@/contexts/OrgContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Building2, 
@@ -19,7 +20,11 @@ import {
   Trash2, 
   LogOut, 
   Send,
-  AlertCircle
+  AlertCircle,
+  Users,
+  UserMinus,
+  Loader2,
+  Mail
 } from 'lucide-react';
 
 export default function Organizations() {
@@ -42,12 +47,16 @@ export default function Organizations() {
   
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isInviteDialogOpen, setIsInviteDialogOpen] = useState(false);
+  const [isMembersDialogOpen, setIsMembersDialogOpen] = useState(false);
   const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
   const [newOrgName, setNewOrgName] = useState('');
   const [newOrgDescription, setNewOrgDescription] = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteMessage, setInviteMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [members, setMembers] = useState<OrgMember[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [removingMember, setRemovingMember] = useState<string | null>(null);
 
   const handleCreateOrg = async () => {
     if (!newOrgName.trim()) {
@@ -127,6 +136,52 @@ export default function Organizations() {
 
   const openInviteDialog = (org: Organization) => {
     setSelectedOrg(org);
+    setIsInviteDialogOpen(true);
+  };
+
+  const openMembersDialog = async (org: Organization) => {
+    setSelectedOrg(org);
+    setIsMembersDialogOpen(true);
+    setMembersLoading(true);
+    setMembers([]);
+    
+    try {
+      const orgMembers = await getOrgMembers(org.id);
+      setMembers(orgMembers);
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message || 'Failed to load members', variant: 'destructive' });
+    } finally {
+      setMembersLoading(false);
+    }
+  };
+
+  const handleRemoveMember = async (memberEmail: string) => {
+    if (!selectedOrg) return;
+    
+    const member = members.find(m => m.email === memberEmail);
+    if (member?.role === 'owner') {
+      toast({ title: 'Error', description: 'Cannot remove the organization owner', variant: 'destructive' });
+      return;
+    }
+    
+    if (!window.confirm(`Are you sure you want to remove ${member?.name || memberEmail} from this organization?`)) {
+      return;
+    }
+    
+    setRemovingMember(memberEmail);
+    try {
+      await removeMember(selectedOrg.id, memberEmail);
+      setMembers(prev => prev.filter(m => m.email !== memberEmail));
+      toast({ title: 'Success', description: `${member?.name || memberEmail} has been removed from the organization` });
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message || 'Failed to remove member', variant: 'destructive' });
+    } finally {
+      setRemovingMember(null);
+    }
+  };
+
+  const openInviteFromMembers = () => {
+    setIsMembersDialogOpen(false);
     setIsInviteDialogOpen(true);
   };
 
@@ -258,7 +313,11 @@ export default function Organizations() {
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {teamOrgs.map(org => (
-                <Card key={org.id} className="bg-gradient-card border-border shadow-card">
+                <Card 
+                  key={org.id} 
+                  className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:border-primary/30"
+                  onClick={() => openMembersDialog(org)}
+                >
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-3">
                       <Avatar className="h-10 w-10">
@@ -285,6 +344,12 @@ export default function Organizations() {
                               Member
                             </>
                           )}
+                          {org.memberCount !== undefined && (
+                            <span className="ml-2 flex items-center gap-1 text-xs">
+                              <Users className="h-3 w-3" />
+                              {org.memberCount}
+                            </span>
+                          )}
                         </CardDescription>
                       </div>
                     </div>
@@ -294,22 +359,16 @@ export default function Organizations() {
                       <p className="text-sm text-muted-foreground line-clamp-2">{org.description}</p>
                     </CardContent>
                   )}
-                  <CardFooter className="pt-0 flex gap-2">
+                  <CardFooter className="pt-0 flex gap-2" onClick={(e) => e.stopPropagation()}>
                     {currentOrg?.id !== org.id && (
                       <Button variant="outline" size="sm" onClick={() => switchOrg(org.id)}>
                         Switch
                       </Button>
                     )}
                     {org.isOwner && (
-                      <>
-                        <Button variant="outline" size="sm" onClick={() => openInviteDialog(org)}>
-                          <Send className="h-3 w-3 mr-1" />
-                          Invite
-                        </Button>
-                        <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleDeleteOrg(org)}>
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </>
+                      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleDeleteOrg(org)}>
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
                     )}
                     {!org.isOwner && (
                       <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleLeaveOrg(org)}>
@@ -363,6 +422,120 @@ export default function Organizations() {
             <Button onClick={handleInviteUser} disabled={isSubmitting}>
               {isSubmitting ? 'Sending...' : 'Send Invitation'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Members Dialog */}
+      <Dialog open={isMembersDialogOpen} onOpenChange={setIsMembersDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Users className="h-5 w-5" />
+              {selectedOrg?.name} Members
+            </DialogTitle>
+            <DialogDescription>
+              {selectedOrg?.isOwner 
+                ? 'View and manage organization members' 
+                : 'View organization members'}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="py-4">
+            {membersLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-muted-foreground">Loading members...</span>
+              </div>
+            ) : members.length === 0 ? (
+              <div className="text-center py-8">
+                <Users className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground">No members found</p>
+              </div>
+            ) : (
+              <ScrollArea className="max-h-[400px] pr-4">
+                <div className="space-y-3">
+                  {members.map((member) => (
+                    <div 
+                      key={member.email}
+                      className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
+                        member.role === 'owner' 
+                          ? 'bg-primary/5 border-primary/20' 
+                          : 'bg-card hover:bg-accent/50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-10 w-10">
+                          <AvatarFallback className={`text-sm ${
+                            member.role === 'owner' 
+                              ? 'bg-primary/15 text-primary' 
+                              : 'bg-primary/10'
+                          }`}>
+                            {member.firstName?.[0]?.toUpperCase() || member.email[0].toUpperCase()}
+                            {member.lastName?.[0]?.toUpperCase() || ''}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-sm truncate text-foreground">
+                              {member.name || member.email}
+                            </p>
+                            {member.role === 'owner' && (
+                              <Badge variant="secondary" className="shrink-0 text-xs bg-primary/10 text-primary border-0">
+                                <Crown className="h-3 w-3 mr-1" />
+                                Owner
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <Mail className="h-3 w-3" />
+                            <span className="truncate">{member.email}</span>
+                          </div>
+                          {member.jobTitle && (
+                            <p className="text-xs text-muted-foreground mt-0.5">{member.jobTitle}</p>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {selectedOrg?.isOwner && member.role !== 'owner' && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10 shrink-0"
+                          onClick={() => handleRemoveMember(member.email)}
+                          disabled={removingMember === member.email}
+                        >
+                          {removingMember === member.email ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <UserMinus className="h-4 w-4" />
+                          )}
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+          </div>
+          
+          <Separator />
+          
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <div className="flex-1 text-sm text-muted-foreground">
+              {members.length} member{members.length !== 1 ? 's' : ''}
+            </div>
+            <div className="flex gap-2">
+              {selectedOrg?.isOwner && (
+                <Button variant="outline" onClick={openInviteFromMembers}>
+                  <Send className="h-4 w-4 mr-2" />
+                  Invite Member
+                </Button>
+              )}
+              <Button variant="secondary" onClick={() => setIsMembersDialogOpen(false)}>
+                Close
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

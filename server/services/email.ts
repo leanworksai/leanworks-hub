@@ -56,17 +56,17 @@ async function getTransporter(
 
   const credentials = await getEmailCredentials(secretManagerClient, projectId);
 
-  // GoDaddy SMTP settings
+  // Microsoft 365 SMTP settings (for GoDaddy Microsoft 365 email)
   cachedTransporter = nodemailer.createTransport({
-    host: 'smtpout.secureserver.net',
-    port: 465,
-    secure: true, // SSL
+    host: 'smtp.office365.com',
+    port: 587,
+    secure: false, // STARTTLS
     auth: {
       user: credentials.email,
       pass: credentials.password,
     },
     tls: {
-      // Do not fail on invalid certificates (sometimes needed for GoDaddy)
+      ciphers: 'SSLv3',
       rejectUnauthorized: false,
     },
   });
@@ -191,17 +191,14 @@ function getFrontendUrl(): string {
     return process.env.FRONTEND_URL;
   }
   
-  // Auto-detect development environment
-  const isDev = process.env.NODE_ENV === 'development' || 
-                process.env.NODE_ENV !== 'production' ||
-                !process.env.NODE_ENV;
-  
-  if (isDev) {
+  // Only use localhost if explicitly in development mode
+  // (NODE_ENV is exactly 'development')
+  if (process.env.NODE_ENV === 'development') {
     // Vite dev server port (configured in vite.config.ts)
     return 'http://localhost:8080';
   }
   
-  // Production default
+  // Default to production URL (safer for GKE/production deployments)
   return 'https://leanworks.ai';
 }
 

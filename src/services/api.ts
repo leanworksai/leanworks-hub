@@ -305,6 +305,18 @@ export const usersService = {
     if (!response.ok) throw new Error('Failed to fetch users');
     return response.json();
   },
+
+  async deleteAccount(): Promise<{ success: boolean; message: string }> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/users/me` : `${API_BASE}/users/me`;
+    const response = await authenticatedFetch(url, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to delete account' }));
+      throw new Error(error.error || 'Failed to delete account');
+    }
+    return response.json();
+  },
 };
 
 // Teams Service

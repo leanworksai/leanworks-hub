@@ -808,14 +808,14 @@ app.post('/api/auth/resend-verification', async (req, res) => {
       return res.status(400).json({ error: 'This email is already verified' });
     }
     
-    // Check for rate limiting - don't allow more than 3 tokens in the last hour
+    // Check for rate limiting - don't allow more than 10 tokens in the last hour
     const recentTokens = await sharedPool.query(`
       SELECT COUNT(*) as count
       FROM email_verification_tokens
       WHERE email = $1 AND created_at > NOW() - INTERVAL '1 hour'
     `, [normalizedEmail]);
     
-    if (parseInt(recentTokens.rows[0].count) >= 3) {
+    if (parseInt(recentTokens.rows[0].count) >= 10) {
       return res.status(429).json({ error: 'Too many verification emails requested. Please try again later.' });
     }
     
@@ -1043,6 +1043,122 @@ app.get('/api/users/:email', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Delete user's own account
+app.delete('/api/users/me', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    console.log(`🗑️ [Backend] DELETE /api/users/me - Deleting account for: ${userEmail}`);
+    
+    const sharedPool = await getSharedPool();
+    
+    // 1. Check if user owns any team organizations (cannot delete if owner of team org)
+    const ownedTeamOrgs = await sharedPool.query(
+      `SELECT id, name, type FROM organizations WHERE owner_email = $1 AND type = 'team'`,
+      [userEmail]
+    );
+    
+    if (ownedTeamOrgs.rows.length > 0) {
+      console.log(`❌ [Backend] Cannot delete account - user owns ${ownedTeamOrgs.rows.length} team organization(s)`);
+      return res.status(400).json({ 
+        error: 'Cannot delete account while you own team organizations. Please transfer ownership or delete your organizations first.',
+        ownedOrganizations: ownedTeamOrgs.rows.map(org => ({ id: org.id, name: org.name }))
+      });
+    }
+    
+    // 2. Get user's personal workspace (will be deleted)
+    const personalWorkspace = await sharedPool.query(
+      `SELECT id, slug FROM organizations WHERE owner_email = $1 AND type = 'personal'`,
+      [userEmail]
+    );
+    
+    // 3. Get all organizations where user is a member (to clean up per-org data)
+    const memberOrgs = await sharedPool.query(
+      `SELECT o.id, o.slug FROM organizations o 
+       INNER JOIN org_members om ON o.id = om.org_id 
+       WHERE om.user_email = $1`,
+      [userEmail]
+    );
+    
+    console.log(`📋 [Backend] User is member of ${memberOrgs.rows.length} organization(s)`);
+    
+    // 4. Clean up per-org databases
+    for (const org of memberOrgs.rows) {
+      try {
+        console.log(`🧹 [Backend] Cleaning up user data from org: ${org.slug}`);
+        const orgPool = await getOrgPoolBySlug(org.slug);
+        
+        // Remove from team_members
+        await orgPool.query('DELETE FROM team_members WHERE user_email = $1', [userEmail]);
+        
+        // Remove from project_members
+        await orgPool.query('DELETE FROM project_members WHERE user_email = $1', [userEmail]);
+        
+        // Unassign from tasks (set assignee to null)
+        await orgPool.query(
+          'UPDATE tasks SET assignee_id = NULL, assignee_name = NULL, assignee_avatar = NULL WHERE assignee_id = $1', 
+          [userEmail]
+        );
+        
+        // Update task created_by to indicate deleted user
+        await orgPool.query(
+          `UPDATE tasks SET created_by = '[deleted user]' WHERE created_by = $1`,
+          [userEmail]
+        );
+        
+        // Delete notes owned by user
+        await orgPool.query('DELETE FROM notes WHERE owner_email = $1', [userEmail]);
+        
+        // Delete teams owned by user
+        await orgPool.query('DELETE FROM teams WHERE owner_email = $1', [userEmail]);
+        
+        // Delete projects owned by user
+        await orgPool.query('DELETE FROM projects WHERE owner_email = $1', [userEmail]);
+        
+        // Clean up team invitations
+        await orgPool.query('DELETE FROM team_invitations WHERE invitee_email = $1 OR inviter_email = $1', [userEmail]);
+        
+        // Clean up team join requests
+        await orgPool.query('DELETE FROM team_join_requests WHERE user_email = $1 OR owner_email = $1', [userEmail]);
+        
+        console.log(`✅ [Backend] Cleaned up org: ${org.slug}`);
+      } catch (orgError) {
+        console.error(`⚠️ [Backend] Error cleaning up org ${org.slug}:`, orgError);
+        // Continue with other orgs even if one fails
+      }
+    }
+    
+    // 5. Delete personal workspace if it exists (this will cascade delete org_members for that org)
+    if (personalWorkspace.rows.length > 0) {
+      const personalOrgId = personalWorkspace.rows[0].id;
+      const personalSlug = personalWorkspace.rows[0].slug;
+      
+      console.log(`🗑️ [Backend] Deleting personal workspace: ${personalSlug}`);
+      await sharedPool.query('DELETE FROM organizations WHERE id = $1', [personalOrgId]);
+    }
+    
+    // 6. Delete user from shared database (cascades to org_members, org_invitations, email_verification_tokens)
+    console.log(`🗑️ [Backend] Deleting user from shared database: ${userEmail}`);
+    await sharedPool.query('DELETE FROM users WHERE email = $1', [userEmail]);
+    
+    // 7. Delete from Firebase Auth
+    try {
+      console.log(`🗑️ [Backend] Deleting user from Firebase Auth: ${userEmail}`);
+      const userRecord = await auth.getUserByEmail(userEmail);
+      await auth.deleteUser(userRecord.uid);
+      console.log(`✅ [Backend] Deleted user from Firebase Auth`);
+    } catch (firebaseError: any) {
+      // Log but don't fail - user data is already deleted from database
+      console.warn(`⚠️ [Backend] Failed to delete Firebase user (may not exist):`, firebaseError.message);
+    }
+    
+    console.log(`✅ [Backend] Account deleted successfully for: ${userEmail}`);
+    res.json({ success: true, message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('❌ [Backend] Delete user account error:', error);
+    res.status(500).json({ error: (error as Error).message || 'Failed to delete account' });
   }
 });
 
