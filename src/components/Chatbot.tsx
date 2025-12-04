@@ -31,6 +31,24 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
 
+// Import reusable chat components
+import { 
+  ChatMessage as ChatMessageComponent,
+  ChatMessageList,
+  LikeButton,
+  CitedContextBadges,
+  type LikedByUser,
+  type Message as ChatMessageType,
+  type ChannelMessage as ChatChannelMessage,
+  type TeamMember as ChatTeamMember,
+} from "@/components/chat";
+import { 
+  useChatId, 
+  getDirectMessageChatId, 
+  getAIAssistantChatId, 
+  isAIAssistantChatId 
+} from "@/hooks/useChatId";
+
 interface Message {
   id: string;
   role: "user" | "assistant";
@@ -83,23 +101,7 @@ interface SearchResult {
 }
 
 
-// Generate a consistent chatId for direct messages between two users
-// This ensures both users see the same conversation regardless of who initiated it
-const getDirectMessageChatId = (userEmail: string, otherUserEmail: string): string => {
-  const emails = [userEmail.toLowerCase(), otherUserEmail.toLowerCase()].sort();
-  return `dm-${emails[0]}-${emails[1]}`;
-};
-
-// Generate a user-specific chatId for AI assistant conversations
-// This ensures each user has a private conversation with the AI
-const getAIAssistantChatId = (userEmail: string): string => {
-  return `ai-assistant-${userEmail.toLowerCase()}`;
-};
-
-// Check if a chatId is for an AI assistant conversation
-const isAIAssistantChatId = (chatId: string): boolean => {
-  return chatId.startsWith('ai-assistant-');
-};
+// Chat ID helper functions are now imported from @/hooks/useChatId
 
 export function Chatbot() {
   const { selectedProjects, clearSelection: clearSelectedProjects } = useSelectedProjects();
@@ -923,7 +925,7 @@ export function Chatbot() {
   }, [allDomainUsers]);
 
   // Helper function to get user names from like emails
-  const getLikedByUsers = useCallback((likes: string[] = []) => {
+  const getLikedByUsers = useCallback((likes: string[] = []): LikedByUser[] => {
     return likes.map(email => {
       const userInfo = getUserInfo(email);
       return {
@@ -934,16 +936,25 @@ export function Chatbot() {
     });
   }, [getUserInfo]);
   
-  // Check if selected member is a project channel
-  const isProjectChannel = selectedMember.startsWith("project-");
-  const selectedProjectId = isProjectChannel ? selectedMember.replace("project-", "") : null;
+  // Use the useChatId hook to determine chat type and IDs
+  const { 
+    chatId: resolvedChatId, 
+    isProjectChannel, 
+    isTeamChannel, 
+    isAIAssistant,
+    isDM,
+    selectedProjectId, 
+    selectedTeamId 
+  } = useChatId({
+    selectedMember,
+    userEmail: user?.email,
+    allTeamMembers,
+  });
+  
+  // Get the selected project/team based on the IDs
   const selectedProject = selectedProjectId 
     ? projects.find(p => p.name.toLowerCase().replace(/\s+/g, '-') === selectedProjectId)
     : null;
-  
-  // Check if selected member is a team channel
-  const isTeamChannel = selectedMember.startsWith("team-");
-  const selectedTeamId = isTeamChannel ? selectedMember.replace("team-", "") : null;
   const selectedTeam = selectedTeamId 
     ? userTeams.find(t => t.name.toLowerCase().replace(/\s+/g, '-') === selectedTeamId)
     : null;

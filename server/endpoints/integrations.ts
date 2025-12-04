@@ -6,14 +6,64 @@
 import express from 'express';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getFirestore } from 'firebase-admin/firestore';
-import { getOrgPool, getOrgPoolBySlug } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getOrgPoolBySlug, getSharedPool } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
 
-// Helper function to create secret name for domain and integration
-function getSecretName(domain: string, integrationId: string): string {
-  const sanitizedDomain = domain.toLowerCase().replace(/[^a-z0-9]/g, '');
+// Cache for org name lookups (org_id -> name, slug -> name)
+const orgNameCache = new Map<string, string>();
+const orgNameBySlugCache = new Map<string, string>();
+
+// Helper function to get org name from orgId
+async function getOrgNameById(orgId: string): Promise<string> {
+  // Check cache first
+  if (orgNameCache.has(orgId)) {
+    return orgNameCache.get(orgId)!;
+  }
+
+  // Query shared DB for org name
+  const sharedPool = await getSharedPool();
+  const result = await sharedPool.query(
+    'SELECT name FROM organizations WHERE id = $1',
+    [orgId]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error(`Organization not found: ${orgId}`);
+  }
+
+  const name = result.rows[0].name;
+  orgNameCache.set(orgId, name);
+  return name;
+}
+
+// Helper function to get org name from org slug
+async function getOrgNameBySlug(orgSlug: string): Promise<string> {
+  // Check cache first
+  if (orgNameBySlugCache.has(orgSlug)) {
+    return orgNameBySlugCache.get(orgSlug)!;
+  }
+
+  // Query shared DB for org name
+  const sharedPool = await getSharedPool();
+  const result = await sharedPool.query(
+    'SELECT name FROM organizations WHERE slug = $1',
+    [orgSlug]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error(`Organization not found: ${orgSlug}`);
+  }
+
+  const name = result.rows[0].name;
+  orgNameBySlugCache.set(orgSlug, name);
+  return name;
+}
+
+// Helper function to create secret name for org name and integration
+function getSecretName(orgName: string, integrationId: string): string {
+  const sanitizedOrgName = orgName.toLowerCase().replace(/[^a-z0-9]/g, '');
   const sanitizedIntegrationId = integrationId.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return `integrations-${sanitizedDomain}-${sanitizedIntegrationId}`;
+  return `integrations-${sanitizedOrgName}-${sanitizedIntegrationId}`;
 }
 
 // Helper function to save secret to GCP Secret Manager
@@ -193,8 +243,9 @@ export function setupIntegrationEndpoints(
           return res.status(400).json({ error: 'Unsupported integration type' });
       }
 
-      // Generate secret name
-      const secretName = getSecretName(domain, integrationId);
+      // Get org name and generate secret name
+      const orgName = await getOrgNameById(orgId);
+      const secretName = getSecretName(orgName, integrationId);
       
       // Save credentials to GCP Secret Manager
       await saveSecret(secretManagerClient, projectId, secretName, JSON.stringify(credentials));
@@ -255,7 +306,12 @@ export function setupIntegrationEndpoints(
         [integrationId]
       );
       const integration = result.rows[0] || null;
-      const secretName = integration?.secret_name || getSecretName(orgId, integrationId);
+      // If secret_name is not stored, generate it from org name
+      let secretName = integration?.secret_name;
+      if (!secretName) {
+        const orgName = await getOrgNameById(orgId);
+        secretName = getSecretName(orgName, integrationId);
+      }
 
       // Delete secret from GCP Secret Manager
       await deleteSecret(secretManagerClient, projectId, secretName);
@@ -304,9 +360,9 @@ export function setupIntegrationEndpoints(
         [installationId, (setup_action as string) || 'install']
       );
 
-      // Save basic installation data to Secret Manager
-      // Use orgSlug for secret naming (getSecretName will sanitize it)
-      const secretName = getSecretName(orgSlug, 'github');
+      // Get org name and save basic installation data to Secret Manager
+      const orgName = await getOrgNameBySlug(orgSlug);
+      const secretName = getSecretName(orgName, 'github');
       const basicInstallationData = {
         installationId,
         orgSlug,
