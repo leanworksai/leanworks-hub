@@ -4171,7 +4171,7 @@ export function Chatbot() {
             }
           }}
           className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto p-0",
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl hover:scale-110 hover:rotate-12 transition-all duration-300 relative pointer-events-auto p-0",
             isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
           )}
           size="icon"
