@@ -40,9 +40,19 @@ interface RichTextEditorProps {
   content: string;
   onChange: (content: string) => void;
   placeholder?: string;
+  title?: string;
+  onTitleChange?: (title: string) => void;
+  titlePlaceholder?: string;
 }
 
-export function RichTextEditor({ content, onChange, placeholder = 'Start writing...' }: RichTextEditorProps) {
+export function RichTextEditor({ 
+  content, 
+  onChange, 
+  placeholder = 'Start writing...',
+  title,
+  onTitleChange,
+  titlePlaceholder = 'Untitled'
+}: RichTextEditorProps) {
   const initialContent = content || '<p></p>';
   const contentRef = useRef<string>(initialContent);
   const isUpdatingRef = useRef<boolean>(false);
@@ -188,8 +198,20 @@ export function RichTextEditor({ content, onChange, placeholder = 'Start writing
 
   return (
     <div className="border rounded-lg">
+      {/* Title Input */}
+      {onTitleChange && (
+        <div className="px-3 sm:px-5 pt-4 pb-2">
+          <input
+            type="text"
+            placeholder={titlePlaceholder}
+            value={title || ''}
+            onChange={(e) => onTitleChange(e.target.value)}
+            className="w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-snug border-none bg-transparent outline-none placeholder:text-muted-foreground/50"
+          />
+        </div>
+      )}
       {/* Toolbar */}
-      <div className="border-b p-2 flex flex-wrap items-center gap-1">
+      <div className="border-y p-2 flex flex-wrap items-center gap-1">
         {/* Text Formatting */}
         <Button
           type="button"
@@ -402,7 +424,7 @@ export function RichTextEditor({ content, onChange, placeholder = 'Start writing
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[300px] max-h-[600px] overflow-y-auto px-3 sm:px-5 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0" 
+        className="min-h-[500px] overflow-y-auto px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px]" 
       />
     </div>
   );

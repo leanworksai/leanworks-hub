@@ -5,7 +5,6 @@ export interface Note {
   ownerEmail: string;
   projectId?: string | null;
   teamId?: string | null;
-  tags: string[];
   isPinned: boolean;
   createdAt: string;
   updatedAt: string;

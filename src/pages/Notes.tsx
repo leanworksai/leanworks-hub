@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,7 +17,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Pin, Trash2, Edit, Tag } from "lucide-react";
+import { Plus, MoreVertical, Pin, Trash2, Edit } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useNotes, useDeleteNote } from "@/hooks/useNotes";
 import { useToast } from "@/hooks/use-toast";
@@ -164,21 +163,6 @@ export default function Notes() {
                         className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
                         dangerouslySetInnerHTML={{ __html: truncateText(note.content, 150) }}
                       />
-                      {note.tags && note.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-3">
-                          {note.tags.slice(0, 3).map((tag, index) => (
-                            <Badge key={index} variant="secondary" className="text-xs">
-                              <Tag className="mr-1 h-3 w-3" />
-                              {tag}
-                            </Badge>
-                          ))}
-                          {note.tags.length > 3 && (
-                            <Badge variant="secondary" className="text-xs">
-                              +{note.tags.length - 3}
-                            </Badge>
-                          )}
-                        </div>
-                      )}
                     </CardContent>
                   </Card>
                 ))}
@@ -236,21 +220,6 @@ export default function Notes() {
                         className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
                         dangerouslySetInnerHTML={{ __html: truncateText(note.content, 150) }}
                       />
-                      {note.tags && note.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-3">
-                          {note.tags.slice(0, 3).map((tag, index) => (
-                            <Badge key={index} variant="secondary" className="text-xs">
-                              <Tag className="mr-1 h-3 w-3" />
-                              {tag}
-                            </Badge>
-                          ))}
-                          {note.tags.length > 3 && (
-                            <Badge variant="secondary" className="text-xs">
-                              +{note.tags.length - 3}
-                            </Badge>
-                          )}
-                        </div>
-                      )}
                     </CardContent>
                   </Card>
                 ))}
