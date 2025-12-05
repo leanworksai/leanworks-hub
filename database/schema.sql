@@ -1,7 +1,7 @@
 -- Leanworks Hub Per-Organization PostgreSQL Schema
 -- Database: org_{slug} (one database per organization)
--- Contains: teams, projects, tasks, updates, integrations, notes
--- NOTE: Users and demo_requests are in the shared database (shared)
+-- Contains: users, teams, projects, tasks, updates, integrations, notes
+-- NOTE: Global user accounts are in the shared database (shared)
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -10,9 +10,36 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- NOTES ON ARCHITECTURE
 -- ============================================================================
 -- This schema is for per-organization databases.
--- User data is stored in the shared database (shared).
--- Email references to users are NOT foreign keys since users are in a different DB.
+-- Global user accounts are stored in the shared database (shared).
+-- This org-level users table stores org-specific profile data.
+-- Email references link to the global user registry in the shared DB.
 -- The application layer is responsible for validating user membership.
+
+-- ============================================================================
+-- USERS TABLE (Organization-specific profiles)
+-- ============================================================================
+
+-- Users table - stores org-specific user profile data
+-- Links to global user registry in shared DB via email
+CREATE TABLE IF NOT EXISTS users (
+  email VARCHAR(255) PRIMARY KEY,
+  first_name VARCHAR(100) NOT NULL,
+  last_name VARCHAR(100) NOT NULL,
+  job_title VARCHAR(100),
+  responsibilities TEXT,
+  avatar VARCHAR(10),
+  timezone VARCHAR(100) DEFAULT 'America/Los_Angeles',
+  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'pending')),
+  role VARCHAR(50) DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+  joined_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  last_active_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_users_joined_at ON users(joined_at);
 
 -- ============================================================================
 -- TEAMS TABLES
@@ -326,6 +353,9 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Apply to all tables with updated_at
+DROP TRIGGER IF EXISTS update_users_updated_at ON users;
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 DROP TRIGGER IF EXISTS update_teams_updated_at ON teams;
 CREATE TRIGGER update_teams_updated_at BEFORE UPDATE ON teams FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -342,6 +372,7 @@ CREATE TRIGGER update_notes_updated_at BEFORE UPDATE ON notes FOR EACH ROW EXECU
 -- COMMENTS
 -- ============================================================================
 
+COMMENT ON TABLE users IS 'Organization-specific user profiles (links to global users in shared DB)';
 COMMENT ON TABLE teams IS 'Teams within this organization';
 COMMENT ON TABLE projects IS 'Projects within this organization';
 COMMENT ON TABLE tasks IS 'Tasks within this organization';
