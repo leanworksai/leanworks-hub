@@ -1,5 +1,6 @@
 import { getPool } from './config.js';
 import { QueryResult } from 'pg';
+import { getOrgPool } from './multi-tenant-pool.js';
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -82,51 +83,154 @@ export async function transaction<T>(callback: () => Promise<T>): Promise<T> {
 }
 
 // ============================================================================
-// USER QUERIES
+// USER QUERIES (Org-level users table)
 // ============================================================================
 
 export const userQueries = {
-  async getByEmail(email: string) {
-    return queryOne(
-      'SELECT email, first_name, last_name, job_title, responsibilities, domain, created_at FROM users WHERE email = $1',
+  /**
+   * Get a user by email from the org database
+   */
+  async getByEmail(orgId: string, email: string) {
+    const pool = await getOrgPool(orgId);
+    const result = await pool.query(
+      `SELECT email, first_name, last_name, job_title, responsibilities, 
+              avatar, timezone, status, role, joined_at, last_active_at, created_at
+       FROM users WHERE email = $1`,
       [email.toLowerCase()]
     );
+    return result.rows[0] || null;
   },
 
-  async getByDomain(domain: string) {
-    return queryMany(
-      'SELECT email, first_name, last_name, job_title, responsibilities, domain, created_at FROM users WHERE domain = $1 ORDER BY created_at DESC',
-      [domain]
+  /**
+   * Get all users in an organization
+   */
+  async getAll(orgId: string) {
+    const pool = await getOrgPool(orgId);
+    const result = await pool.query(
+      `SELECT email, first_name, last_name, job_title, responsibilities, 
+              avatar, timezone, status, role, joined_at, last_active_at, created_at
+       FROM users 
+       WHERE status != 'inactive'
+       ORDER BY 
+         CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+         created_at ASC`
     );
+    return result.rows;
   },
 
-  async create(userData: {
+  /**
+   * Create or update a user in the org database
+   */
+  async upsert(orgId: string, userData: {
     email: string;
-    passwordHash: string;
     firstName: string;
     lastName: string;
-    jobTitle: string;
+    jobTitle?: string;
     responsibilities?: string;
-    domain: string;
+    avatar?: string;
+    timezone?: string;
+    role?: string;
   }) {
-    return query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, job_title, responsibilities, domain)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+    const pool = await getOrgPool(orgId);
+    return pool.query(
+      `INSERT INTO users (email, first_name, last_name, job_title, responsibilities, avatar, timezone, role)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (email) DO UPDATE SET
-         password_hash = EXCLUDED.password_hash,
          first_name = EXCLUDED.first_name,
          last_name = EXCLUDED.last_name,
-         job_title = EXCLUDED.job_title,
-         responsibilities = EXCLUDED.responsibilities,
+         job_title = COALESCE(EXCLUDED.job_title, users.job_title),
+         responsibilities = COALESCE(EXCLUDED.responsibilities, users.responsibilities),
+         avatar = COALESCE(EXCLUDED.avatar, users.avatar),
+         timezone = COALESCE(EXCLUDED.timezone, users.timezone),
          updated_at = NOW()`,
-      [userData.email.toLowerCase(), userData.passwordHash, userData.firstName, userData.lastName, userData.jobTitle, userData.responsibilities || null, userData.domain]
+      [
+        userData.email.toLowerCase(),
+        userData.firstName,
+        userData.lastName,
+        userData.jobTitle || null,
+        userData.responsibilities || null,
+        userData.avatar || null,
+        userData.timezone || 'America/Los_Angeles',
+        userData.role || 'member'
+      ]
     );
   },
 
-  async updateLastLogin(email: string) {
-    return query(
-      'UPDATE users SET last_login = NOW() WHERE email = $1',
+  /**
+   * Update a user's profile in the org database
+   */
+  async update(orgId: string, email: string, updates: {
+    firstName?: string;
+    lastName?: string;
+    jobTitle?: string;
+    responsibilities?: string;
+    avatar?: string;
+    timezone?: string;
+    role?: string;
+    status?: string;
+  }) {
+    const pool = await getOrgPool(orgId);
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    const fieldMap: Record<string, string> = {
+      firstName: 'first_name',
+      lastName: 'last_name',
+      jobTitle: 'job_title',
+      responsibilities: 'responsibilities',
+      avatar: 'avatar',
+      timezone: 'timezone',
+      role: 'role',
+      status: 'status',
+    };
+
+    for (const [key, dbField] of Object.entries(fieldMap)) {
+      if ((updates as any)[key] !== undefined) {
+        setClauses.push(`${dbField} = $${paramIndex++}`);
+        values.push((updates as any)[key]);
+      }
+    }
+
+    if (setClauses.length === 0) return;
+
+    values.push(email.toLowerCase());
+    return pool.query(
+      `UPDATE users SET ${setClauses.join(', ')}, updated_at = NOW() WHERE email = $${paramIndex}`,
+      values
+    );
+  },
+
+  /**
+   * Update last active timestamp
+   */
+  async updateLastActive(orgId: string, email: string) {
+    const pool = await getOrgPool(orgId);
+    return pool.query(
+      'UPDATE users SET last_active_at = NOW() WHERE email = $1',
       [email.toLowerCase()]
+    );
+  },
+
+  /**
+   * Remove a user from an organization
+   */
+  async remove(orgId: string, email: string) {
+    const pool = await getOrgPool(orgId);
+    return pool.query(
+      'DELETE FROM users WHERE email = $1',
+      [email.toLowerCase()]
+    );
+  },
+
+  /**
+   * Set user status (active, inactive, pending)
+   */
+  async setStatus(orgId: string, email: string, status: 'active' | 'inactive' | 'pending') {
+    const pool = await getOrgPool(orgId);
+    return pool.query(
+      'UPDATE users SET status = $1, updated_at = NOW() WHERE email = $2',
+      [status, email.toLowerCase()]
     );
   },
 };

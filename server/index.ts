@@ -487,7 +487,14 @@ app.post('/api/auth/signup', async (req, res) => {
     `, [personalOrg.id, normalizedEmail]);
     
     // Initialize the org database (this auto-creates the DB and schema)
-    await getOrgPoolBySlug(personalSlug);
+    const orgPool = await getOrgPoolBySlug(personalSlug);
+    
+    // Add user to org-level users table
+    await orgPool.query(`
+      INSERT INTO users (email, first_name, last_name, job_title, role, joined_at)
+      VALUES ($1, $2, $3, $4, 'owner', NOW())
+      ON CONFLICT (email) DO NOTHING
+    `, [normalizedEmail, firstName, lastName, jobTitle]);
     
     console.log(`✅ Created personal workspace for ${normalizedEmail}: ${personalOrgName} (${personalSlug})`);
 
@@ -618,7 +625,14 @@ app.post('/api/auth/login', async (req, res) => {
       `, [newOrg.id, normalizedEmail]);
       
       // Initialize the org database
-      await getOrgPoolBySlug(personalSlug);
+      const orgPool = await getOrgPoolBySlug(personalSlug);
+      
+      // Add user to org-level users table
+      await orgPool.query(`
+        INSERT INTO users (email, first_name, last_name, job_title, role, joined_at)
+        VALUES ($1, $2, $3, $4, 'owner', NOW())
+        ON CONFLICT (email) DO NOTHING
+      `, [normalizedEmail, userData.first_name, userData.last_name, userData.job_title || null]);
       
       organizations.push({
         ...newOrg,
@@ -884,7 +898,7 @@ app.get('/api/users', authenticateUser, async (req, res) => {
     const userEmail = (req as any).userEmail;
     const orgId = req.headers['x-org-id'] as string;
     
-    // If org context is provided, return org members
+    // If org context is provided, return org members from org-specific users table
     // Otherwise, return all users the requesting user can see (from their orgs)
     if (orgId) {
       // Validate membership
@@ -893,16 +907,31 @@ app.get('/api/users', authenticateUser, async (req, res) => {
         return res.status(403).json({ error: 'Not a member of this organization' });
       }
       
-      // Get org members
-      const members = await getOrgMembers(orgId);
-      const transformed = members.map(member => ({
+      // Get org members from org-specific users table
+      const orgPool = await getOrgPool(orgId);
+      const result = await orgPool.query(`
+        SELECT email, first_name, last_name, job_title, responsibilities,
+               avatar, timezone, status, role, joined_at, last_active_at, created_at
+        FROM users 
+        WHERE status != 'inactive'
+        ORDER BY 
+          CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+          created_at ASC
+      `);
+      
+      const transformed = result.rows.map(member => ({
         email: member.email,
         firstName: member.first_name,
         lastName: member.last_name,
         name: `${member.first_name || ''} ${member.last_name || ''}`.trim() || member.email,
         jobTitle: member.job_title,
+        responsibilities: member.responsibilities,
+        avatar: member.avatar,
+        timezone: member.timezone,
+        status: member.status,
         role: member.role,
         joinedAt: member.joined_at,
+        lastActiveAt: member.last_active_at,
       }));
       
       res.json(transformed);
@@ -1241,7 +1270,21 @@ app.post('/api/orgs', authenticateUser, async (req, res) => {
     `, [org.id, userEmail]);
     
     // Initialize org database (this will create it since we already checked it doesn't exist)
-    await getOrgPoolBySlug(slug);
+    const orgPool = await getOrgPoolBySlug(slug);
+    
+    // Get user info from shared DB to add to org users table
+    const userResult = await sharedPool.query(
+      'SELECT first_name, last_name, job_title FROM users WHERE email = $1',
+      [userEmail]
+    );
+    const userData = userResult.rows[0] || {};
+    
+    // Add user to org-level users table
+    await orgPool.query(`
+      INSERT INTO users (email, first_name, last_name, job_title, role, joined_at)
+      VALUES ($1, $2, $3, $4, 'owner', NOW())
+      ON CONFLICT (email) DO NOTHING
+    `, [userEmail, userData.first_name || '', userData.last_name || '', userData.job_title || null]);
     
     console.log(`✅ Created organization ${name} (${slug}) with database ${dbName} for ${userEmail}`);
     
@@ -1541,6 +1584,20 @@ app.post('/api/orgs/invitations/:invitationId/accept', authenticateUser, async (
       VALUES ($1, $2, 'member', NOW())
       ON CONFLICT (org_id, user_email) DO NOTHING
     `, [invitation.org_id, userEmail]);
+    
+    // Get user info and add to org-level users table
+    const userResult = await sharedPool.query(
+      'SELECT first_name, last_name, job_title FROM users WHERE email = $1',
+      [userEmail]
+    );
+    const userData = userResult.rows[0] || {};
+    
+    const orgPool = await getOrgPool(invitation.org_id);
+    await orgPool.query(`
+      INSERT INTO users (email, first_name, last_name, job_title, role, joined_at)
+      VALUES ($1, $2, $3, $4, 'member', NOW())
+      ON CONFLICT (email) DO NOTHING
+    `, [userEmail, userData.first_name || '', userData.last_name || '', userData.job_title || null]);
     
     // Update invitation status
     await sharedPool.query(`
@@ -4498,6 +4555,7 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const requestBody = req.body;
+    const orgId = req.headers['x-org-id'] as string | undefined;
     
     // Determine the external AI service URL
     // In production, this should be the ask-api service URL
@@ -4526,6 +4584,16 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
     // Ensure user_id is set
     if (!requestBody.user_id) {
       requestBody.user_id = userEmail.toLowerCase();
+    }
+    
+    // Ensure org_slug is set from org context if not provided
+    if (!requestBody.org_slug && orgId) {
+      try {
+        const orgSlug = await getOrgSlugById(orgId);
+        requestBody.org_slug = orgSlug;
+      } catch (error) {
+        console.error('Failed to get org slug for generate-task:', error);
+      }
     }
     
     // Proxy the request to the AI service

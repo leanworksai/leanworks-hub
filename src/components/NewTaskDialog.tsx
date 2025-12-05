@@ -25,6 +25,7 @@ import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOrg } from "@/contexts/OrgContext";
 import type { Task } from "@/data/tasksData";
 import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
@@ -79,6 +80,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
   const { user } = useAuth();
+  const { currentOrg } = useOrg();
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
   const [selectedAssigneeId, setSelectedAssigneeId] = useState<string | null>(null);
@@ -258,6 +260,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       const requestBody: any = {
         task_name: currentTitle,
         user_id: user?.email?.toLowerCase() || '',
+        org_slug: currentOrg?.slug || currentOrg?.name || '',
         session_id: `generate-task-${Date.now()}`,
       };
 

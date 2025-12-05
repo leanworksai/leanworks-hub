@@ -214,13 +214,13 @@ export function setupMessageEndpoints(
       let finalMemberName = memberName || 'You';
       let finalMemberAvatar = memberAvatar || 'U';
       
-      if (!memberName || !memberAvatar) {
-        const userData = await userQueries.getByEmail(userEmail);
+      if ((!memberName || !memberAvatar) && orgId) {
+        const userData = await userQueries.getByEmail(orgId, userEmail);
         if (userData) {
           const firstName = userData.first_name || '';
           const lastName = userData.last_name || '';
           finalMemberName = `${firstName} ${lastName}`.trim() || userEmail;
-          finalMemberAvatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() 
+          finalMemberAvatar = userData.avatar || `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() 
             || userEmail.charAt(0).toUpperCase();
         }
       }

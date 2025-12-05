@@ -3085,6 +3085,7 @@ export function Chatbot() {
         headers,
         body: JSON.stringify({
           user_id: user.email.toLowerCase(),
+          org_slug: currentOrg?.slug || currentOrg?.name || '',
           query: query,
           session_id: chatId,
           cited_context: citedContext || undefined,
@@ -3221,6 +3222,7 @@ export function Chatbot() {
         headers,
         body: JSON.stringify({
           user_id: user.email.toLowerCase(),
+          org_slug: currentOrg?.slug || currentOrg?.name || '',
           query: userMessage,
           session_id: chatId, // Use chatId as session_id for conversation continuity
           cited_context: citedContext || undefined,
