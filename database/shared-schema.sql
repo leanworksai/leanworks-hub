@@ -20,6 +20,13 @@ CREATE TABLE IF NOT EXISTS users (
   timezone VARCHAR(100) DEFAULT 'America/Los_Angeles',
   responsibilities TEXT,
   email_verified BOOLEAN DEFAULT FALSE,
+  -- Subscription fields
+  subscription_plan VARCHAR(20) DEFAULT 'free' CHECK (subscription_plan IN ('free', 'standard', 'pro')),
+  stripe_customer_id VARCHAR(255),
+  stripe_subscription_id VARCHAR(255),
+  ai_daily_usage INTEGER DEFAULT 0,
+  ai_usage_reset_date DATE DEFAULT CURRENT_DATE,
+  trial_ends_at TIMESTAMP,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   last_login TIMESTAMP,
   updated_at TIMESTAMP DEFAULT NOW()
@@ -27,6 +34,9 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
 CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified);
+CREATE INDEX IF NOT EXISTS idx_users_subscription_plan ON users(subscription_plan);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_customer_id ON users(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_subscription_id ON users(stripe_subscription_id);
 
 -- ============================================================================
 -- ORGANIZATIONS TABLE
