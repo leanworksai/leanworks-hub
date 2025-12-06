@@ -69,6 +69,8 @@
     "emoji-picker-react": "^4.15.2",
     "firebase": "^12.5.0",
     "input-otp": "^1.4.2",
+    "livekit-client": "^2.5.3",
+    "livekit-server-sdk": "^2.5.3",
     "lucide-react": "^0.462.0",
     "multer": "^2.0.2",
     "next-themes": "^0.3.0",

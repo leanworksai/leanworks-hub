@@ -4,17 +4,18 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogOverlay } from 
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, X } from 'lucide-react';
-import { CallStatus } from '@/hooks/useWebRTC';
+import { CallStatus, ParticipantInfo } from '@/hooks/useLiveKit';
 import { useWebRTCContext } from '@/contexts/WebRTCContext';
 import { callSignalingService, type CallSignal } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase-client';
+import { getCurrentOrgSlug } from '@/services/api';
 
 interface VoiceCallButtonProps {
   chatId: string;
-  otherUserEmail: string;
+  otherUserEmail?: string; // Optional for group calls
   otherUserName?: string;
   otherUserAvatar?: string;
   className?: string;
@@ -22,10 +23,12 @@ interface VoiceCallButtonProps {
   externalCallId?: string | null; // Call ID from parent component (for ending calls)
   onEndCall?: () => void | Promise<void>; // End call handler from parent component
   onMuteStateChange?: (isMuted: boolean, toggleMute: () => void) => void; // Callback to share mute state and function
+  isGroupCall?: boolean; // Whether this is a group call (project/team channel)
+  groupMembers?: Array<{ email: string; name?: string; avatar?: string }>; // Members for group calls
 }
 
 /**
- * Button to initiate a voice call in a DM chat
+ * Button to initiate a voice call in a DM chat or group call (project/team channel)
  */
 export function VoiceCallButton({
   chatId,
@@ -37,6 +40,8 @@ export function VoiceCallButton({
   externalCallId,
   onEndCall,
   onMuteStateChange,
+  isGroupCall = false,
+  groupMembers = [],
 }: VoiceCallButtonProps) {
   const { user, loading: authLoading } = useAuth();
   const [isCalling, setIsCalling] = useState(false);
@@ -52,16 +57,13 @@ export function VoiceCallButton({
     startCall,
     answerCall,
     endCall,
-    createOffer,
-    setAnswer,
-    addICECandidate,
-    peerConnection,
-    getPeerConnection,
     error,
     isMuted,
     toggleMute,
     currentCallId,
     setCurrentCallId,
+    participants,
+    participantCount,
   } = useWebRTCContext();
 
   // Sync local callIdRef with context
@@ -91,28 +93,7 @@ export function VoiceCallButton({
     }
   }, [callStatus, setCurrentCallId]);
 
-  // Listen for ICE candidates and send them via Firestore
-  useEffect(() => {
-    // Use getPeerConnection() to get the current peer connection
-    const currentPc = getPeerConnection ? getPeerConnection() : peerConnection;
-    if (!currentPc || !callIdRef.current) return;
-
-    const handleICECandidate = async (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate && callIdRef.current) {
-        try {
-          await callSignalingService.sendICECandidate(callIdRef.current, event.candidate.toJSON());
-        } catch (err) {
-          console.error('Error sending ICE candidate:', err);
-        }
-      }
-    };
-
-    currentPc.addEventListener('icecandidate', handleICECandidate);
-
-    return () => {
-      currentPc.removeEventListener('icecandidate', handleICECandidate);
-    };
-  }, [peerConnection, chatId, getPeerConnection]);
+  // LiveKit handles signaling internally, no need for ICE candidate handling
 
   // Set up BroadcastChannel for multi-tab detection
   useEffect(() => {
@@ -229,67 +210,7 @@ export function VoiceCallButton({
             return;
           }
 
-          // Only process offer/answer/ICE candidates if call is still active
-          // Handle offer
-          if (signal.offer && signal.callerEmail.toLowerCase() !== user.email?.toLowerCase()) {
-            // Received offer - handled in IncomingCallDialog
-          }
-
-          // Handle answer - only if call is still active
-          // IMPORTANT: Don't check peerConnection here - it's a stale closure value!
-          // Use getPeerConnection() to get the current value, or let setAnswer handle null
-          if (signal.answer && signal.callerEmail.toLowerCase() === user.email?.toLowerCase() && 
-              callIdRef.current) {
-            // Check if we have a peer connection using the getter function (avoids stale closure)
-            const currentPc = getPeerConnection ? getPeerConnection() : null;
-            if (!currentPc) {
-              console.warn('⚠️ VoiceCall: Received answer but peer connection not ready, will retry');
-              // Don't mark as processed - will retry on next signal update
-              return;
-            }
-            
-            // Call was answered - only process if we haven't processed this answer yet
-            const answerKey = `${signal.callId}-${JSON.stringify(signal.answer).substring(0, 50)}`;
-            if (processedAnswerRef.current !== answerKey) {
-              processedAnswerRef.current = answerKey;
-              console.log('📞 VoiceCall: Processing answer from callee', { 
-                callId: signal.callId,
-                hasAnswer: !!signal.answer,
-                pcState: currentPc.connectionState,
-                signalingState: currentPc.signalingState,
-              });
-              setAnswer(signal.answer).catch((err) => {
-                // If setting answer fails (e.g., already set or peer connection closed), reset the processed flag
-                if (err.message?.includes('stable') || err.message?.includes('already') || 
-                    err.message?.includes('not initialized') || err.message?.includes('closed')) {
-                  // Answer was already set or connection closed, this is fine
-                  console.log('Answer already processed or connection closed, ignoring');
-                } else {
-                  console.error('Error setting answer:', err);
-                  processedAnswerRef.current = null; // Reset on error to allow retry
-                }
-              });
-            }
-          }
-
-          // Handle ICE candidates
-          // Use getPeerConnection() to avoid stale closure issue
-          // addICECandidate will queue candidates if peer connection isn't ready
-          if (signal.iceCandidates && signal.iceCandidates.length > 0) {
-            const currentPc = getPeerConnection ? getPeerConnection() : null;
-            if (currentPc) {
-              signal.iceCandidates.forEach((candidateStr) => {
-                try {
-                  const candidate = typeof candidateStr === 'string' ? JSON.parse(candidateStr) : candidateStr;
-                  addICECandidate(candidate).catch((err) => {
-                    console.warn('Error adding ICE candidate from signal:', err);
-                  });
-                } catch (err) {
-                  console.error('Error parsing ICE candidate:', err);
-                }
-              });
-            }
-          }
+          // LiveKit handles all signaling internally - we only track call status here
         } else {
           // No signal from Firestore - but don't immediately end the call
           // Check if we're actually in an active call first
@@ -328,7 +249,7 @@ export function VoiceCallButton({
         unsubscribeRef.current();
       }
     };
-  }, [chatId, user?.email, authLoading, setAnswer, addICECandidate, endCall, callStatus, getPeerConnection]);
+  }, [chatId, user?.email, authLoading, endCall, callStatus]);
 
   // Check if Firestore is available and user is authenticated before allowing calls
   // But don't disable if we're already in a call (allow ending the call)
@@ -454,123 +375,89 @@ export function VoiceCallButton({
       setIsCalling(true);
       console.log('Calling startCall()...');
       
-      // First, start the call (this gets media and initializes peer connection)
-      await startCall();
-      console.log('startCall() completed');
+      // Generate room name from chatId (LiveKit uses room names instead of call IDs)
+      const roomName = `call-${chatId}`;
+      const participantName = user.name || user.email;
       
-      // Immediately check the ref right after startCall returns
-      if (getPeerConnection) {
-        const immediateCheck = getPeerConnection();
-        console.error('🔍 Immediate check after startCall()', {
-          hasPc: !!immediateCheck,
-          connectionState: immediateCheck?.connectionState,
-        });
-      }
+      // Start LiveKit call (connects to room and publishes audio)
+      await startCall(roomName, participantName);
+      console.log('LiveKit call started', { roomName, isGroupCall });
       
-      // Give the peer connection a moment to fully initialize
-      // This helps ensure all internal state is ready
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Verify peer connection is available before proceeding (use getter for current value)
-      // Always use getPeerConnection() to get the current ref value, not the stale snapshot
-      if (!getPeerConnection) {
-        console.error('getPeerConnection function is not available');
-        throw new Error('WebRTC hook is not properly initialized. Please refresh the page.');
-      }
-      
-      let pc = getPeerConnection();
-      console.log('Checking peer connection...', { 
-        hasPc: !!pc, 
-        hasGetter: !!getPeerConnection,
-        connectionState: pc?.connectionState,
-        signalingState: pc?.signalingState,
-      });
-      
-      if (!pc) {
-        console.warn('Peer connection is null after startCall, retrying...');
-        // Try waiting a bit more in case there's a timing issue
-        await new Promise(resolve => setTimeout(resolve, 200));
-        pc = getPeerConnection();
-        if (!pc) {
-          console.error('Peer connection is still null after retry');
-          throw new Error('Peer connection not initialized. Please try again.');
-        }
-        console.log('Peer connection found after retry');
-      }
-      
-      // Verify peer connection is in a valid state
-      if (pc.connectionState === 'closed' || pc.connectionState === 'failed') {
-        console.error('Peer connection is in invalid state', {
-          connectionState: pc.connectionState,
-          signalingState: pc.signalingState,
-        });
-        throw new Error('Peer connection is not ready. Please try again.');
-      }
-      
-      console.log('Peer connection verified');
-      
-      // Verify tracks are added
-      const senders = pc.getSenders();
-      console.log('Checking senders...', {
-        sendersCount: senders.length,
-        sendersWithTracks: senders.filter(s => s.track !== null).length,
-      });
-      
-      if (senders.length === 0) {
-        console.warn('No senders found after startCall - waiting a bit more...');
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const retrySenders = pc.getSenders();
-        if (retrySenders.length === 0) {
-          throw new Error('No audio tracks found. Please check your microphone permissions and try again.');
-        }
-      }
-      
-      // Create the offer - tracks should be ready now
-      console.log('Creating offer...', {
-        peerConnectionState: pc.connectionState,
-        signalingState: pc.signalingState,
-        iceConnectionState: pc.iceConnectionState,
-        sendersCount: senders.length,
-      });
-      
-      let offer: RTCSessionDescriptionInit | null;
-      try {
-        offer = await createOffer();
-        console.log('Offer created', { hasOffer: !!offer, offerType: offer?.type });
-      } catch (offerError) {
-        console.error('Error creating offer:', offerError);
-        throw offerError;
-      }
-      if (!offer) {
-        console.error('Offer is null');
-        throw new Error('Failed to create offer. The peer connection may not be ready. Please try again.');
-      }
-      
-      // Create call offer using Firestore
-      console.log('Creating call offer in Firestore...', { chatId, callerEmail: user.email, calleeEmail: otherUserEmail });
+      // Create call record in Firestore for tracking (optional, for UI state)
       let callId: string;
       try {
-        callId = await callSignalingService.createCallOffer(
+        // Use a simple call ID format
+        callId = `${chatId}-${Date.now()}`;
+        
+        // Optionally create a call document in Firestore for status tracking
+        // This is not required for LiveKit but helps with UI state management
+        const orgSlug = getCurrentOrgSlug();
+        const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+        const callData: any = {
+          callId,
           chatId,
-          user.email,
-          otherUserEmail,
-          offer
-        );
-        console.log('Call offer created successfully', { callId });
+          roomName,
+          callerEmail: user.email,
+          status: 'ringing',
+          createdAt: new Date(),
+          isGroupCall,
+        };
+        
+        // For 1:1 calls, include calleeEmail
+        if (!isGroupCall && otherUserEmail) {
+          callData.calleeEmail = otherUserEmail;
+        }
+        
+        // For group calls, include all member emails
+        if (isGroupCall && groupMembers.length > 0) {
+          callData.participantEmails = groupMembers.map(m => m.email).filter(Boolean);
+        }
+        
+        // Note: We're not using Firestore for signaling anymore, just for call metadata
+        // The actual signaling is handled by LiveKit
+        if (db) {
+          const { doc, setDoc } = await import('firebase/firestore');
+          const callRef = doc(db, callsPath, callId);
+          await setDoc(callRef, callData);
+          
+          // For group calls, notify all members about the call
+          if (isGroupCall && groupMembers.length > 0) {
+            // Create call invitations for each member
+            const invitationsPath = `orgs/${orgSlug || 'default'}/callInvitations`;
+            const { collection, addDoc } = await import('firebase/firestore');
+            const invitationsRef = collection(db, invitationsPath);
+            
+            // Create invitations for all members except the caller
+            const invitationPromises = groupMembers
+              .filter(m => m.email && m.email.toLowerCase() !== user.email.toLowerCase())
+              .map(member => 
+                addDoc(invitationsRef, {
+                  callId,
+                  chatId,
+                  roomName,
+                  callerEmail: user.email,
+                  participantEmail: member.email,
+                  status: 'pending',
+                  createdAt: new Date(),
+                })
+              );
+            
+            await Promise.all(invitationPromises);
+            console.log('Group call invitations created', { callId, participantCount: groupMembers.length });
+          }
+        }
+        
+        console.log('Call record created', { callId, roomName, isGroupCall });
       } catch (createError) {
-        console.error('Failed to create call offer', createError);
-        throw createError;
+        console.error('Failed to create call record', createError);
+        // Continue anyway - LiveKit call is already started
       }
+      
       callIdRef.current = callId;
       setCurrentCallId(callId); // Update shared context
       isCreatingCallRef.current = false; // Call creation is complete
-      
-      // Ensure isCalling stays true after creating the call
-      // The signal subscription will update it when the signal arrives
       setIsCalling(true);
-      console.log('Call setup complete', { callId, isCalling: true });
-
-      // ICE candidates will be sent automatically via the useEffect hook
+      console.log('Call setup complete', { callId, roomName, isCalling: true });
     } catch (err) {
       console.error('❌ VoiceCall: Error starting call:', err);
       isCreatingCallRef.current = false; // Call creation failed
@@ -683,16 +570,23 @@ export function VoiceCallButton({
   // Show end call button during any active call state
   if (isInCall) {
     return (
-      <Button
-        variant="destructive"
-        size="sm"
-        onClick={handleEndCall}
-        className={className}
-        title="End call"
-      >
-        <PhoneOff className="h-4 w-4 mr-2" />
-        {displayStatus === 'ringing' ? 'Cancel' : 'End Call'}
-      </Button>
+      <div className="flex items-center gap-2">
+        {isGroupCall && participantCount > 1 && (
+          <span className="text-xs text-muted-foreground">
+            {participantCount} {participantCount === 1 ? 'participant' : 'participants'}
+          </span>
+        )}
+        <Button
+          variant="destructive"
+          size="sm"
+          onClick={handleEndCall}
+          className={className}
+          title="End call"
+        >
+          <PhoneOff className="h-4 w-4 mr-2" />
+          {displayStatus === 'ringing' ? 'Cancel' : 'End Call'}
+        </Button>
+      </div>
     );
   }
 
@@ -757,55 +651,12 @@ export function IncomingCallDialog({
   const {
     answerCall,
     endCall,
-    createOffer,
-    addICECandidate,
-    peerConnection,
-    getPeerConnection,
     isMuted,
     toggleMute,
     callStatus,
   } = useWebRTCContext();
 
-  useEffect(() => {
-    // Handle ICE candidates from the signal
-    // Use getPeerConnection() to avoid stale closure issue
-    const currentPc = getPeerConnection ? getPeerConnection() : peerConnection;
-    if (callSignal.iceCandidates && callSignal.iceCandidates.length > 0 && currentPc) {
-      callSignal.iceCandidates.forEach((candidateStr) => {
-        try {
-          const candidate = typeof candidateStr === 'string' ? JSON.parse(candidateStr) : candidateStr;
-          // addICECandidate will queue candidates if peer connection isn't ready
-          addICECandidate(candidate).catch((err) => {
-            console.warn('Error adding ICE candidate from signal:', err);
-          });
-        } catch (err) {
-          console.error('Error parsing ICE candidate:', err);
-        }
-      });
-    }
-  }, [callSignal.iceCandidates, addICECandidate, peerConnection, getPeerConnection]);
-
-  // Listen for ICE candidates and send them via Firestore
-  useEffect(() => {
-    const currentPc = getPeerConnection ? getPeerConnection() : peerConnection;
-    if (!currentPc || !callIdRef.current) return;
-
-    const handleICECandidate = async (event: RTCPeerConnectionIceEvent) => {
-      if (event.candidate && callIdRef.current) {
-        try {
-          await callSignalingService.sendICECandidate(callIdRef.current, event.candidate.toJSON());
-        } catch (err) {
-          console.error('Error sending ICE candidate:', err);
-        }
-      }
-    };
-
-    currentPc.addEventListener('icecandidate', handleICECandidate);
-
-    return () => {
-      currentPc.removeEventListener('icecandidate', handleICECandidate);
-    };
-  }, [peerConnection, chatId, getPeerConnection]);
+  // LiveKit handles signaling internally, no ICE candidate handling needed
 
   // Share mute state and toggle function with parent when call is active
   useEffect(() => {
@@ -820,8 +671,8 @@ export function IncomingCallDialog({
   }, [callStatus, isMuted, toggleMute, onMuteStateChange]);
 
   const handleAccept = async () => {
-    if (!callSignal.offer) {
-      console.error('No offer found in call signal');
+    if (!callSignal) {
+      console.error('No call signal found');
       return;
     }
 
@@ -856,38 +707,37 @@ export function IncomingCallDialog({
         hasOffer: !!callSignal.offer,
       });
       
-      // Answer the call (this will set remote description and create answer)
-      // answerCall now returns the answer it creates
-      const answer = await answerCall(callSignal.offer);
-      console.log('📞 IncomingCallDialog: answerCall completed', {
-        hasAnswer: !!answer,
-        answerType: answer?.type,
-        callIdRef: callIdRef.current,
+      // Get room name from call signal or generate from chatId
+      const roomName = callSignal.roomName || `call-${callSignal.chatId}`;
+      const participantName = user?.name || user?.email || 'User';
+      
+      // Answer the call by connecting to LiveKit room
+      await answerCall(roomName, participantName);
+      console.log('📞 IncomingCallDialog: LiveKit call answered', {
+        roomName,
+        callId: callSignal.callId,
       });
       
-      // Send the answer via Firestore
-      if (answer && callIdRef.current) {
-        console.log('📞 IncomingCallDialog: Sending answer to Firestore...', {
-          callId: callIdRef.current,
-          answerType: answer.type,
-        });
+      // Update call status in Firestore (optional, for UI state)
+      if (callSignal.callId && db) {
         try {
-          await callSignalingService.sendCallAnswer(callIdRef.current, answer);
-          console.log('✅ IncomingCallDialog: Answer sent to Firestore successfully');
-        } catch (signalingError) {
-          console.error('❌ IncomingCallDialog: Error sending call answer:', signalingError);
-          // Don't reject the call if signaling fails - the WebRTC connection might still work
-          // Just log the error and continue
+          const orgSlug = getCurrentOrgSlug();
+          const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+          const { doc, updateDoc } = await import('firebase/firestore');
+          const callRef = doc(db, callsPath, callSignal.callId);
+          await updateDoc(callRef, {
+            status: 'active',
+          });
+          console.log('✅ IncomingCallDialog: Call status updated in Firestore');
+        } catch (updateError) {
+          console.error('❌ IncomingCallDialog: Error updating call status:', updateError);
+          // Continue anyway - LiveKit call is already connected
         }
-      } else if (!answer) {
-        console.error('❌ IncomingCallDialog: Failed to create answer');
-        setIsAnswering(false);
-        return;
-      } else if (!callIdRef.current) {
-        console.error('❌ IncomingCallDialog: No callId ref to send answer to!', {
-          signalCallId: callSignal.callId,
-        });
       }
+      
+      // Set call ID ref
+      callIdRef.current = callSignal.callId;
+      setCurrentCallId(callSignal.callId);
 
       console.log('✅ IncomingCallDialog: handleAccept completing, calling onAccept()');
       onAccept();

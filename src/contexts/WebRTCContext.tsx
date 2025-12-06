@@ -1,7 +1,7 @@
 import { createContext, useContext, useRef, useState, useCallback, useEffect, ReactNode } from 'react';
-import { useWebRTC, CallStatus, UseWebRTCReturn } from '@/hooks/useWebRTC';
+import { useLiveKit, CallStatus, UseLiveKitReturn } from '@/hooks/useLiveKit';
 
-interface WebRTCContextValue extends UseWebRTCReturn {
+interface WebRTCContextValue extends UseLiveKitReturn {
   // Additional context-specific methods if needed
   currentCallId: string | null;
   setCurrentCallId: (callId: string | null) => void;
@@ -17,8 +17,8 @@ export function WebRTCProvider({ children }: { children: ReactNode }) {
   const [currentCallId, setCurrentCallIdState] = useState<string | null>(null);
   const callIdRef = useRef<string | null>(null);
   
-  // Single shared WebRTC instance
-  const webrtc = useWebRTC(
+  // Single shared LiveKit instance
+  const webrtc = useLiveKit(
     (status) => {
       // Handle status changes globally
       if (status === 'ended' || status === 'error') {

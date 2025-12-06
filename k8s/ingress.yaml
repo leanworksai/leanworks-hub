@@ -56,6 +56,14 @@ spec:
             name: ask-api
             port:
               number: 80
+      # LiveKit WebSocket endpoint (must come before catch-all)
+      - path: /livekit
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-service
+            port:
+              number: 7880
       # All other paths (including leanworks-hub /api/* routes) go to frontend
       - path: /
         pathType: Prefix
@@ -105,6 +113,14 @@ spec:
             name: ask-api
             port:
               number: 80
+      # LiveKit WebSocket endpoint (must come before catch-all)
+      - path: /livekit
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-service
+            port:
+              number: 7880
       # All other paths (including leanworks-hub /api/* routes) go to frontend
       - path: /
         pathType: Prefix

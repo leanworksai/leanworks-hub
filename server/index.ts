@@ -34,6 +34,7 @@ import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
+import { setupLiveKitEndpoints } from './endpoints/livekit.js';
 import { sendVerificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
@@ -4742,6 +4743,12 @@ setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 // ============================================================================
 
 setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
+
+// ============================================================================
+// LIVEKIT ENDPOINTS (LiveKit SFU token generation)
+// ============================================================================
+
+setupLiveKitEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)

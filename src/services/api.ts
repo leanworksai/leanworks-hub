@@ -829,6 +829,37 @@ export const updateSummariesService = {
   },
 };
 
+// LiveKit Service
+export interface LiveKitTokenResponse {
+  token: string;
+  url: string;
+}
+
+export const liveKitService = {
+  async getToken(roomName: string, participantName?: string): Promise<LiveKitTokenResponse> {
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('Authentication required');
+    }
+
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/livekit/token` 
+      : `${API_BASE}/livekit/token`;
+
+    const params = new URLSearchParams({
+      roomName,
+      ...(participantName && { participantName }),
+    });
+
+    const response = await authenticatedFetch(`${url}?${params}`);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to get LiveKit token' }));
+      throw new Error(error.error || 'Failed to get LiveKit token');
+    }
+    return response.json();
+  },
+};
+
 // Call Signaling Service
 export interface CallSignal {
   callId: string;
@@ -841,6 +872,7 @@ export interface CallSignal {
   iceCandidates?: RTCIceCandidateInit[];
   createdAt: Date | string;
   endedAt?: Date | string;
+  roomName?: string; // LiveKit room name
 }
 
 export type CallSignalListener = (signal: CallSignal | null) => void;

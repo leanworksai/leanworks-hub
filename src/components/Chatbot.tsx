@@ -2489,9 +2489,11 @@ export function Chatbot() {
         }
       }
 
-      // Only listen for calls in DM chats (not AI assistant, project, or team channels)
+      // Listen for calls in DM chats and group calls (project/team channels)
       const isDM = chatId.startsWith('dm-');
-      if (!isDM) {
+      const isProjectOrTeam = chatId.startsWith('project-') || chatId.startsWith('team-');
+      
+      if (!isDM && !isProjectOrTeam) {
         setIncomingCallSignal(null);
         return;
       }
@@ -4493,50 +4495,115 @@ export function Chatbot() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {/* Show call button only for DM chats */}
-                {!isProjectChannel && !isTeamChannel && selectedMember !== "ai-assistant" && currentMember.id !== "ai-assistant" && (
+                {/* Show call button for DM chats and group calls (project/team channels) */}
+                {selectedMember !== "ai-assistant" && currentMember.id !== "ai-assistant" && (
                   <>
                     {(() => {
-                      // Get the other user's email for DM chats
-                      let otherUserEmail = '';
-                      let otherUserName = currentMember.name;
-                      let otherUserAvatar = currentMember.avatar;
+                      // Handle DM chats (1:1 calls)
+                      if (!isProjectChannel && !isTeamChannel) {
+                        // Get the other user's email for DM chats
+                        let otherUserEmail = '';
+                        let otherUserName = currentMember.name;
+                        let otherUserAvatar = currentMember.avatar;
 
-                      if (selectedMember.includes('@')) {
-                        otherUserEmail = selectedMember;
-                        const otherUser = allDomainUsers.find(u => u.email === selectedMember);
-                        if (otherUser) {
-                          otherUserName = `${otherUser.firstName || ''} ${otherUser.lastName || ''}`.trim() || otherUser.email;
-                          otherUserAvatar = `${otherUser.firstName?.charAt(0) || ''}${otherUser.lastName?.charAt(0) || ''}`.toUpperCase() || otherUser.email.charAt(0).toUpperCase();
+                        if (selectedMember.includes('@')) {
+                          otherUserEmail = selectedMember;
+                          const otherUser = allDomainUsers.find(u => u.email === selectedMember);
+                          if (otherUser) {
+                            otherUserName = `${otherUser.firstName || ''} ${otherUser.lastName || ''}`.trim() || otherUser.email;
+                            otherUserAvatar = `${otherUser.firstName?.charAt(0) || ''}${otherUser.lastName?.charAt(0) || ''}`.toUpperCase() || otherUser.email.charAt(0).toUpperCase();
+                          }
+                        } else {
+                          const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+                          if (selectedMemberData?.email) {
+                            otherUserEmail = selectedMemberData.email;
+                            otherUserName = selectedMemberData.name;
+                            otherUserAvatar = selectedMemberData.avatar;
+                          }
                         }
-                      } else {
-                        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
-                        if (selectedMemberData?.email) {
-                          otherUserEmail = selectedMemberData.email;
-                          otherUserName = selectedMemberData.name;
-                          otherUserAvatar = selectedMemberData.avatar;
-                        }
+
+                        if (!otherUserEmail || !user?.email) return null;
+
+                        const chatId = getDirectMessageChatId(user.email, otherUserEmail);
+                        
+                        return (
+                          <VoiceCallButton
+                            chatId={chatId}
+                            otherUserEmail={otherUserEmail}
+                            otherUserName={otherUserName}
+                            otherUserAvatar={otherUserAvatar}
+                            externalCallStatus={displayCallStatus}
+                            externalCallId={currentCallId}
+                            onEndCall={handleEndCall}
+                            onMuteStateChange={(muted, toggle) => {
+                              setActiveCallMuted(muted);
+                              setActiveCallToggleMute(() => toggle);
+                            }}
+                          />
+                        );
                       }
-
-                      if (!otherUserEmail || !user?.email) return null;
-
-                      const chatId = getDirectMessageChatId(user.email, otherUserEmail);
                       
-                      return (
-                        <VoiceCallButton
-                          chatId={chatId}
-                          otherUserEmail={otherUserEmail}
-                          otherUserName={otherUserName}
-                          otherUserAvatar={otherUserAvatar}
-                          externalCallStatus={displayCallStatus}
-                          externalCallId={currentCallId}
-                          onEndCall={handleEndCall}
-                          onMuteStateChange={(muted, toggle) => {
-                            setActiveCallMuted(muted);
-                            setActiveCallToggleMute(() => toggle);
-                          }}
-                        />
-                      );
+                      // Handle group calls (project/team channels)
+                      if (isProjectChannel || isTeamChannel) {
+                        if (!user?.email) return null;
+                        
+                        const chatId = selectedMember; // For project/team, chatId is the selectedMember itself
+                        let groupMembers: Array<{ email: string; name?: string; avatar?: string }> = [];
+                        
+                        if (isProjectChannel && selectedProject) {
+                          // Get project members
+                          groupMembers = (selectedProject.members || []).map((member: any) => ({
+                            email: member.email || member.user_email || '',
+                            name: member.name || member.email || '',
+                            avatar: member.avatar || '',
+                          })).filter((m: any) => m.email);
+                        } else if (isTeamChannel && selectedTeam) {
+                          // Get team members
+                          const teamMembers = selectedTeam.members || [];
+                          groupMembers = Array.isArray(teamMembers)
+                            ? teamMembers.map((member: any) => ({
+                                email: member.email || member.user_email || '',
+                                name: member.name || member.email || '',
+                                avatar: member.avatar || '',
+                              })).filter((m: any) => m.email)
+                            : [];
+                        }
+                        
+                        // Ensure current user is included
+                        const currentUserInMembers = groupMembers.some(m => m.email.toLowerCase() === user.email.toLowerCase());
+                        if (!currentUserInMembers && user.email) {
+                          // Find user in allDomainUsers to get name
+                          const currentUserData = allDomainUsers.find(u => u.email === user.email);
+                          const userName = currentUserData 
+                            ? `${currentUserData.firstName || ''} ${currentUserData.lastName || ''}`.trim() || user.email
+                            : user.email;
+                          const userAvatar = currentUserData && currentUserData.firstName && currentUserData.lastName
+                            ? `${currentUserData.firstName.charAt(0)}${currentUserData.lastName.charAt(0)}`.toUpperCase()
+                            : user.email.charAt(0).toUpperCase();
+                          groupMembers.push({
+                            email: user.email,
+                            name: userName,
+                            avatar: userAvatar,
+                          });
+                        }
+                        
+                        return (
+                          <VoiceCallButton
+                            chatId={chatId}
+                            isGroupCall={true}
+                            groupMembers={groupMembers}
+                            externalCallStatus={displayCallStatus}
+                            externalCallId={currentCallId}
+                            onEndCall={handleEndCall}
+                            onMuteStateChange={(muted, toggle) => {
+                              setActiveCallMuted(muted);
+                              setActiveCallToggleMute(() => toggle);
+                            }}
+                          />
+                        );
+                      }
+                      
+                      return null;
                     })()}
                     {/* Show mute button during active call (end call is handled by VoiceCallButton) */}
                     {(displayCallStatus === 'active' || displayCallStatus === 'connecting') && (
