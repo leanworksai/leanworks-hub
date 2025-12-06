@@ -24,9 +24,8 @@ const PLANS = [
       'Messaging',
       'Notes',
       'Voice chat (30 mins limit)',
-      'LeanWorks AI (7-day trial, 5 times/day)',
     ],
-    aiFeatures: true,
+    aiFeatures: false,
     icon: Sparkles,
     highlight: false,
   },
@@ -82,6 +81,8 @@ export default function Subscription() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const [switchLoading, setSwitchLoading] = useState<string | null>(null);
+  const [downgradeLoading, setDowngradeLoading] = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
 
   useEffect(() => {
@@ -155,6 +156,50 @@ export default function Subscription() {
       });
     } finally {
       setPortalLoading(false);
+    }
+  };
+
+  const handleSwitchPlan = async (plan: 'standard' | 'pro') => {
+    try {
+      setSwitchLoading(plan);
+      await subscriptionService.switchPlan(plan);
+      toast({
+        title: 'Plan switched!',
+        description: `You are now on the ${plan.charAt(0).toUpperCase() + plan.slice(1)} plan.`,
+      });
+      // Reload status to show new plan
+      loadStatus();
+    } catch (err: any) {
+      console.error('Failed to switch plan:', err);
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to switch plan',
+        variant: 'destructive',
+      });
+    } finally {
+      setSwitchLoading(null);
+    }
+  };
+
+  const handleDowngradeToFree = async () => {
+    try {
+      setDowngradeLoading(true);
+      const result = await subscriptionService.downgradeToFree();
+      toast({
+        title: 'Downgraded to Free',
+        description: result.message || 'You are now on the free plan.',
+      });
+      // Reload status to show new plan
+      loadStatus();
+    } catch (err: any) {
+      console.error('Failed to downgrade to free:', err);
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to downgrade to free plan',
+        variant: 'destructive',
+      });
+    } finally {
+      setDowngradeLoading(false);
     }
   };
 
@@ -247,6 +292,11 @@ export default function Subscription() {
                     Trial: {status.trialDaysRemaining} day{status.trialDaysRemaining !== 1 ? 's' : ''} remaining
                   </span>
                 )}
+                {status?.stripeSubscriptionId && (
+                  <span className="text-muted-foreground text-xs ml-2">
+                    Active subscription
+                  </span>
+                )}
               </CardDescription>
             </div>
           </div>
@@ -284,10 +334,15 @@ export default function Subscription() {
         {PLANS.map((plan) => {
           const Icon = plan.icon;
           const isCurrentPlan = currentPlan === plan.id;
-          const canUpgrade = plan.id !== 'free' && currentPlan !== plan.id && 
-            (plan.id === 'pro' || (plan.id === 'standard' && currentPlan === 'free'));
-          const canDowngrade = plan.id !== 'free' && currentPlan !== plan.id && 
-            (plan.id === 'standard' && currentPlan === 'pro');
+          const hasActiveSubscription = !!status?.stripeSubscriptionId;
+          
+          // Determine what action is available for this plan
+          const isPaidPlan = plan.id === 'standard' || plan.id === 'pro';
+          const isOnPaidPlan = currentPlan === 'standard' || currentPlan === 'pro';
+          const isUpgradeFromFree = isPaidPlan && currentPlan === 'free';
+          const isSwitchBetweenPaid = isPaidPlan && isOnPaidPlan && currentPlan !== plan.id;
+          const isUpgrade = plan.id === 'pro' && currentPlan === 'standard';
+          const isDowngrade = plan.id === 'standard' && currentPlan === 'pro';
 
           return (
             <Card 
@@ -335,13 +390,39 @@ export default function Subscription() {
                 </ul>
                 
                 {plan.id === 'free' ? (
-                  <Button 
-                    variant="outline" 
-                    className="w-full" 
-                    disabled
-                  >
-                    {isCurrentPlan ? 'Current Plan' : 'Free Forever'}
-                  </Button>
+                  isCurrentPlan ? (
+                    <Button 
+                      variant="outline" 
+                      className="w-full" 
+                      disabled
+                    >
+                      Current Plan
+                    </Button>
+                  ) : isOnPaidPlan ? (
+                    <Button 
+                      variant="outline" 
+                      className="w-full"
+                      onClick={handleDowngradeToFree}
+                      disabled={downgradeLoading}
+                    >
+                      {downgradeLoading ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Downgrading...
+                        </>
+                      ) : (
+                        'Switch to Free'
+                      )}
+                    </Button>
+                  ) : (
+                    <Button 
+                      variant="outline" 
+                      className="w-full" 
+                      disabled
+                    >
+                      Free Forever
+                    </Button>
+                  )
                 ) : isCurrentPlan ? (
                   <Button 
                     variant="outline" 
@@ -350,7 +431,8 @@ export default function Subscription() {
                   >
                     Current Plan
                   </Button>
-                ) : canUpgrade ? (
+                ) : isUpgradeFromFree ? (
+                  // Upgrading from free tier - create new subscription via checkout
                   <Button 
                     className={cn(
                       "w-full",
@@ -368,22 +450,54 @@ export default function Subscription() {
                       `Upgrade to ${plan.name}`
                     )}
                   </Button>
-                ) : canDowngrade ? (
+                ) : isSwitchBetweenPaid ? (
+                  // Switching between paid plans (standard ↔ pro)
+                  // If they have an active subscription, use switch API, otherwise use checkout
                   <Button 
-                    variant="outline" 
-                    className="w-full"
-                    onClick={handleManageSubscription}
-                    disabled={portalLoading}
+                    className={cn(
+                      "w-full",
+                      isUpgrade && "bg-primary hover:bg-primary/90",
+                      isDowngrade && "bg-muted hover:bg-muted/80"
+                    )}
+                    variant={isDowngrade ? "outline" : "default"}
+                    onClick={() => {
+                      if (hasActiveSubscription) {
+                        handleSwitchPlan(plan.id as 'standard' | 'pro');
+                      } else {
+                        handleUpgrade(plan.id as 'standard' | 'pro');
+                      }
+                    }}
+                    disabled={switchLoading === plan.id || checkoutLoading === plan.id}
                   >
-                    Manage Plan
+                    {(switchLoading === plan.id || checkoutLoading === plan.id) ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        {hasActiveSubscription ? 'Switching...' : 'Loading...'}
+                      </>
+                    ) : isUpgrade ? (
+                      `Upgrade to ${plan.name}`
+                    ) : (
+                      `Switch to ${plan.name}`
+                    )}
                   </Button>
                 ) : (
+                  // Fallback: should not reach here, but show upgrade option
                   <Button 
-                    variant="outline" 
-                    className="w-full" 
-                    disabled
+                    className={cn(
+                      "w-full",
+                      plan.highlight && "bg-primary hover:bg-primary/90"
+                    )}
+                    onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
+                    disabled={checkoutLoading === plan.id}
                   >
-                    Contact Sales
+                    {checkoutLoading === plan.id ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      `Upgrade to ${plan.name}`
+                    )}
                   </Button>
                 )}
               </CardContent>

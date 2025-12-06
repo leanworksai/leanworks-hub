@@ -25,6 +25,8 @@ import { useUsers } from "@/hooks/useUsers";
 import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrg } from "@/contexts/OrgContext";
+import { useSubscription } from "@/hooks/useSubscription";
+import { useToast } from "@/hooks/use-toast";
 import { db, auth } from "@/lib/firebase-client";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -112,6 +114,8 @@ export function Chatbot() {
   const { data: allDomainUsers = [] } = useUsers();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
+  const { isFreePlan } = useSubscription();
+  const { toast } = useToast();
   
   // Calculate current user's full profile data once (has firstName/lastName)
   // AuthContext user only has email, not firstName/lastName
@@ -1045,8 +1049,10 @@ export function Chatbot() {
   const getMentionableUsers = useMemo(() => {
     const mentionable: TeamMember[] = [];
     
-    // Always add lean (AI assistant)
-    mentionable.push({ id: "lean", name: "lean", role: "AI Project Manager", avatar: "AI" });
+    // Add lean (AI assistant) only for paid plans
+    if (!isFreePlan) {
+      mentionable.push({ id: "lean", name: "lean", role: "AI Project Manager", avatar: "AI" });
+    }
     
     // Add channel-specific members
     if (isProjectChannel && selectedProject) {
@@ -3442,7 +3448,27 @@ export function Chatbot() {
     // Allow sending if there's text OR images
     if ((!input.trim() && selectedImages.length === 0) || isLoading || !user || isSendingMessage) return;
 
+    // Block AI assistant chat for free tier
+    if (selectedMember === "ai-assistant" && isFreePlan) {
+      toast({
+        title: "Upgrade Required",
+        description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
+        variant: "default",
+      });
+      return;
+    }
+
     const messageContent = input.trim();
+
+    // Block @lean mentions in team/group channels for free tier users
+    if (isFreePlan && (isProjectChannel || isTeamChannel) && isLeanMentioned(messageContent)) {
+      toast({
+        title: "Upgrade Required",
+        description: "Mentioning Lean in team/group channels is available on Standard and Pro plans. Upgrade to unlock this feature.",
+        variant: "default",
+      });
+      return;
+    }
     setInput("");
     setIsSendingMessage(true);
     setUploadingImages(true);
@@ -3587,8 +3613,8 @@ export function Chatbot() {
         
         setIsSendingMessage(false);
 
-        // Check if lean is mentioned and generate AI response
-        if (isLeanMentioned(messageContent)) {
+        // Check if lean is mentioned and generate AI response (skip for free tier)
+        if (isLeanMentioned(messageContent) && !isFreePlan) {
           const query = extractQueryFromMessage(messageContent);
           if (query) {
             // Generate AI response asynchronously (don't block UI)
@@ -4245,11 +4271,21 @@ export function Chatbot() {
                     </div>
                     <button
                       onClick={() => {
+                        if (isFreePlan) {
+                          toast({
+                            title: "Upgrade Required",
+                            description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
+                            variant: "default",
+                          });
+                          return;
+                        }
                         setSelectedMember("ai-assistant");
                         setMemberSearchQuery("");
                       }}
+                      disabled={isFreePlan}
                       className={cn(
                         "w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors relative",
+                        isFreePlan && "opacity-50 cursor-not-allowed",
                         selectedMember === "ai-assistant"
                           ? "bg-primary text-primary-foreground"
                           : (unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0

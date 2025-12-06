@@ -32,7 +32,9 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { useToast } from "@/hooks/use-toast";
+import { useSubscription } from "@/hooks/useSubscription";
 import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
+import { cn } from "@/lib/utils";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
@@ -47,6 +49,7 @@ export default function Projects() {
   const { data: updateSummaries = {}, isLoading: isLoadingSummaries } = useUpdateSummaries();
   const deleteProject = useDeleteProject();
   const { toast } = useToast();
+  const { isFreePlan } = useSubscription();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   const [hoveredProject, setHoveredProject] = useState<string | null>(null); // Stores project ID
@@ -165,9 +168,18 @@ export default function Projects() {
                           </p>
                         )}
                       </div>
-                      <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                        {updateSummaries[project.id].updateSummary}
-                      </p>
+                      <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                        <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                          {updateSummaries[project.id].updateSummary}
+                        </p>
+                        {isFreePlan && (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                              Upgrade to view progress summary
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </PopoverContent>
                 </Popover>

@@ -29,7 +29,8 @@ import { useOrg } from "@/contexts/OrgContext";
 import type { Task } from "@/data/tasksData";
 import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
-import { Check, ChevronsUpDown, Sparkles } from "lucide-react";
+import { useSubscription } from "@/hooks/useSubscription";
+import { Check, ChevronsUpDown, Sparkles, Lock } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 import { getAuthToken } from "@/services/api";
 
@@ -81,6 +82,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   const { data: users = [] } = useUsers();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
+  const { isFreePlan } = useSubscription();
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
   const [selectedAssigneeId, setSelectedAssigneeId] = useState<string | null>(null);
@@ -129,6 +131,21 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   // Memoize the projects array to prevent infinite loops
   const projectsMemo = useMemo(() => projects, [projects.map(p => p.name).join(',')]);
 
+  // Memoize users array to prevent infinite loops - use a stable key based on user emails
+  const usersKey = useMemo(() => users.map(u => u.email).sort().join(','), [users]);
+  const usersMemo = useMemo(() => users, [usersKey]);
+
+  // Memoize the org members conversion to prevent recreating on every render
+  const orgMembersAsProjectMembers = useMemo(() => {
+    return usersMemo.map(user => ({
+      id: user.email.toLowerCase(),
+      email: user.email,
+      name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
+      role: user.jobTitle || 'Member',
+      avatar: `${(user.firstName || '').charAt(0)}${(user.lastName || '').charAt(0)}`.toUpperCase() || user.email.charAt(0).toUpperCase(),
+    }));
+  }, [usersMemo]);
+
   // Load project members when project is selected, or use all org users when no project is selected
   useEffect(() => {
     if (selectedProjectId && projectsMemo.length > 0) {
@@ -146,17 +163,9 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       }
     } else {
       // No project selected - use all org users
-      // Convert org users to ProjectMember format
-      const orgMembersAsProjectMembers: ProjectMember[] = users.map(user => ({
-        id: user.email.toLowerCase(),
-        email: user.email,
-        name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email,
-        role: user.jobTitle || 'Member',
-        avatar: `${(user.firstName || '').charAt(0)}${(user.lastName || '').charAt(0)}`.toUpperCase() || user.email.charAt(0).toUpperCase(),
-      }));
       setProjectMembers(orgMembersAsProjectMembers);
     }
-  }, [selectedProjectId, projectsMemo, users]);
+  }, [selectedProjectId, projectsMemo, orgMembersAsProjectMembers]);
 
   // Reset assignee when project changes (but not during AI generation)
   useEffect(() => {
@@ -576,12 +585,31 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
                       type="button"
                       variant="outline"
                       size="sm"
-                      onClick={generateAITaskDetails}
-                      disabled={isGeneratingAI || !field.value || field.value.trim().length === 0}
+                      onClick={() => {
+                        if (isFreePlan) {
+                          toast({
+                            title: "Upgrade Required",
+                            description: "AI features are available on Standard and Pro plans. Upgrade to unlock this feature.",
+                            variant: "default",
+                          });
+                        } else {
+                          generateAITaskDetails();
+                        }
+                      }}
+                      disabled={isGeneratingAI || !field.value || field.value.trim().length === 0 || isFreePlan}
                       className="h-8"
                     >
-                      <Sparkles className="h-3 w-3 mr-1.5" />
-                      {isGeneratingAI ? "Generating..." : "Draft with AI"}
+                      {isFreePlan ? (
+                        <>
+                          <Lock className="h-3 w-3 mr-1.5" />
+                          Draft with AI
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3 w-3 mr-1.5" />
+                          {isGeneratingAI ? "Generating..." : "Draft with AI"}
+                        </>
+                      )}
                     </Button>
                   </div>
                   <FormControl>

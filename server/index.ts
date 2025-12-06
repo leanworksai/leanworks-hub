@@ -4919,7 +4919,7 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
     const plan = user.subscription_plan || 'free';
     
     if (plan === 'free') {
-      aiUsageLimit = isTrialActive ? 5 : 0; // 5 per day during trial, 0 after
+      aiUsageLimit = 0; // No AI access on free plan
     } else if (plan === 'standard') {
       aiUsageLimit = 20; // 20 per day
     }
@@ -5039,6 +5039,174 @@ app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
   }
 });
 
+// Switch subscription plan (upgrade or downgrade between paid plans)
+app.post('/api/subscription/switch', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    const { plan } = req.body;
+    
+    if (!plan || !['standard', 'pro'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid plan. Must be "standard" or "pro"' });
+    }
+    
+    const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
+    if (!priceId) {
+      return res.status(400).json({ error: `Price ID not configured for ${plan} plan` });
+    }
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_customer_id, stripe_subscription_id, subscription_plan FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No active subscription found. Please subscribe first.' });
+    }
+    
+    const currentPlan = userResult.rows[0].subscription_plan;
+    if (currentPlan === plan) {
+      return res.status(400).json({ error: `You are already on the ${plan} plan` });
+    }
+    
+    // Get the subscription to find the current subscription item
+    const subscription = await stripeClient.subscriptions.retrieve(
+      userResult.rows[0].stripe_subscription_id
+    );
+    
+    if (!subscription.items.data[0]) {
+      return res.status(400).json({ error: 'Invalid subscription state' });
+    }
+    
+    // Update the subscription with the new price
+    const updatedSubscription = await stripeClient.subscriptions.update(
+      userResult.rows[0].stripe_subscription_id,
+      {
+        items: [{
+          id: subscription.items.data[0].id,
+          price: priceId,
+        }],
+        proration_behavior: 'create_prorations', // Prorate the change
+      }
+    );
+    
+    // Update the database
+    await sharedPool.query(
+      'UPDATE users SET subscription_plan = $1 WHERE email = $2',
+      [plan, userEmail]
+    );
+    
+    console.log(`✅ Plan switched: ${userEmail} ${currentPlan} -> ${plan}`);
+    
+    res.json({ 
+      success: true, 
+      plan,
+      message: `Successfully switched to ${plan} plan`,
+    });
+  } catch (error) {
+    console.error('Switch plan error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Cancel subscription (revert to free plan)
+app.post('/api/subscription/cancel', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_subscription_id, subscription_plan FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No active subscription to cancel' });
+    }
+    
+    // Cancel the subscription immediately and downgrade to free
+    await stripeClient.subscriptions.cancel(userResult.rows[0].stripe_subscription_id);
+    
+    // Update database to free plan
+    await sharedPool.query(
+      'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+      ['free', userEmail]
+    );
+    
+    console.log(`✅ Subscription canceled and downgraded to free: ${userEmail}`);
+    
+    res.json({ 
+      success: true,
+      plan: 'free',
+      message: 'Subscription canceled. You have been downgraded to the free plan.',
+    });
+  } catch (error) {
+    console.error('Cancel subscription error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Downgrade to free plan (alias for cancel)
+app.post('/api/subscription/downgrade-to-free', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_subscription_id, subscription_plan FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_subscription_id) {
+      // Already on free or no subscription, just update database
+      await sharedPool.query(
+        'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+        ['free', userEmail]
+      );
+      return res.json({ 
+        success: true,
+        plan: 'free',
+        message: 'You are now on the free plan.',
+      });
+    }
+    
+    // Cancel the subscription immediately and downgrade to free
+    await stripeClient.subscriptions.cancel(userResult.rows[0].stripe_subscription_id);
+    
+    // Update database to free plan
+    await sharedPool.query(
+      'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+      ['free', userEmail]
+    );
+    
+    console.log(`✅ Downgraded to free: ${userEmail}`);
+    
+    res.json({ 
+      success: true,
+      plan: 'free',
+      message: 'You have been downgraded to the free plan.',
+    });
+  } catch (error) {
+    console.error('Downgrade to free error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
 // Stripe webhook handler
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
@@ -5047,16 +5215,36 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
       return res.status(503).json({ error: 'Payment system not configured' });
     }
     
+    // Always prioritize env var for webhook secret (Stripe CLI uses different secret each time)
+    // Refresh secrets to get latest, but env var takes precedence
+    const secrets = await getStripeSecretsFromSecretManager();
+    const currentWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || secrets?.webhookSecret || stripeWebhookSecret;
+    
     const sig = req.headers['stripe-signature'];
-    if (!sig || !stripeWebhookSecret) {
+    if (!sig || !currentWebhookSecret) {
+      console.error('Webhook error: Missing signature or webhook secret', {
+        hasSig: !!sig,
+        hasSecret: !!currentWebhookSecret,
+        secretLength: currentWebhookSecret?.length || 0,
+        usingEnvVar: !!process.env.STRIPE_WEBHOOK_SECRET,
+      });
       return res.status(400).json({ error: 'Missing signature or webhook secret' });
     }
     
     let event: Stripe.Event;
     try {
-      event = stripeClient.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
+      event = stripeClient.webhooks.constructEvent(req.body, sig, currentWebhookSecret);
     } catch (err: any) {
       console.error('Webhook signature verification failed:', err.message);
+      console.error('Debug info:', {
+        signaturePresent: !!sig,
+        webhookSecretPresent: !!currentWebhookSecret,
+        webhookSecretPrefix: currentWebhookSecret?.substring(0, 10) || 'none',
+        usingEnvVar: !!process.env.STRIPE_WEBHOOK_SECRET,
+        bodyType: typeof req.body,
+        bodyLength: req.body?.length || 0,
+      });
+      console.error('💡 Tip: If using Stripe CLI, check the webhook secret it printed and update STRIPE_WEBHOOK_SECRET in .env');
       return res.status(400).json({ error: 'Invalid signature' });
     }
     
@@ -5182,7 +5370,7 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
     
     let limit: number | null = null;
     if (plan === 'free') {
-      limit = isTrialActive ? 5 : 0;
+      limit = 0; // No AI access on free plan
     } else if (plan === 'standard') {
       limit = 20;
     }

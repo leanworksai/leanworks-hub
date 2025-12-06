@@ -6,7 +6,7 @@
 
 import express from 'express';
 import { userQueries } from '../../database/queries.js';
-import { getOrgPool, getOrgSlugById } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getOrgSlugById, getSharedPool } from '../../database/multi-tenant-pool.js';
 
 /**
  * Check if a user has access to a project (either as a member or owner)
@@ -48,6 +48,35 @@ async function isTeamMember(orgId: string, userEmail: string, teamId: string): P
     console.error('Error checking team access:', error);
     return false;
   }
+}
+
+/**
+ * Check if user is on free plan
+ */
+async function isFreePlanUser(userEmail: string): Promise<boolean> {
+  try {
+    const sharedPool = await getSharedPool();
+    const result = await sharedPool.query(
+      'SELECT subscription_plan FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    if (result.rows.length === 0) {
+      return true; // Default to free if user not found
+    }
+    const plan = result.rows[0].subscription_plan || 'free';
+    return plan === 'free';
+  } catch (error) {
+    console.error('Error checking subscription plan:', error);
+    return true; // Default to free on error
+  }
+}
+
+/**
+ * Check if message contains @lean mention
+ */
+function containsLeanMention(content: string): boolean {
+  const mentionRegex = /@lean\b/i;
+  return mentionRegex.test(content);
 }
 
 export function setupMessageEndpoints(
@@ -207,6 +236,20 @@ export function setupMessageEndpoints(
         const isMember = await isTeamMember(orgId, userEmail, actualTeamId);
         if (!isMember) {
           return res.status(403).json({ error: 'Access denied: You must be a team member or owner to post messages' });
+        }
+      }
+
+      // Check if this is a team or project channel message
+      const isTeamChannel = actualTeamId !== null;
+      const isProjectChannel = actualProjectId !== null;
+
+      // Block @lean mentions in team/group channels for free tier users
+      if ((isTeamChannel || isProjectChannel) && containsLeanMention(content)) {
+        const isFree = await isFreePlanUser(userEmail);
+        if (isFree) {
+          return res.status(403).json({ 
+            error: 'Mentioning Lean in team/group channels requires a paid subscription. Please upgrade to Standard or Pro plan.' 
+          });
         }
       }
 

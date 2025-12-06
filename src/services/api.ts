@@ -1747,6 +1747,49 @@ export const subscriptionService = {
     return response.json();
   },
 
+  async switchPlan(plan: 'standard' | 'pro'): Promise<{ success: boolean; plan: string }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/switch` 
+      : `${API_BASE}/subscription/switch`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ plan }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to switch plan' }));
+      throw new Error(error.error || 'Failed to switch plan');
+    }
+    return response.json();
+  },
+
+  async cancelSubscription(): Promise<{ success: boolean }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/cancel` 
+      : `${API_BASE}/subscription/cancel`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to cancel subscription' }));
+      throw new Error(error.error || 'Failed to cancel subscription');
+    }
+    return response.json();
+  },
+
+  async downgradeToFree(): Promise<{ success: boolean; plan: string; message: string }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/downgrade-to-free` 
+      : `${API_BASE}/subscription/downgrade-to-free`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to downgrade to free plan' }));
+      throw new Error(error.error || 'Failed to downgrade to free plan');
+    }
+    return response.json();
+  },
+
   async incrementAiUsage(): Promise<{ success: boolean; usage: number; limit: number | null; remaining: number | null }> {
     const url = import.meta.env.DEV 
       ? `${API_BASE}/api/subscription/ai-usage` 
