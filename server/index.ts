@@ -33,6 +33,7 @@ import {
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
+import { setupTurnEndpoints } from './endpoints/turn.js';
 import { sendVerificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
@@ -4658,6 +4659,12 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 
 setupCallEndpoints(app, authenticateUser, db);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
+
+// ============================================================================
+// TURN SERVER ENDPOINTS (Twilio TURN credentials)
+// ============================================================================
+
+setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
