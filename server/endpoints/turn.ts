@@ -152,7 +152,7 @@ export function setupTurnEndpoints(
           return { urls };
         }
         
-        if (Array.isArray(urls) && urls.every(u => u.startsWith('stun:'))) {
+        if (Array.isArray(urls) && urls.every(u => typeof u === 'string' && u.startsWith('stun:'))) {
           return { urls };
         }
 
