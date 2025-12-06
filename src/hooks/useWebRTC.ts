@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
-import { getRTCConfiguration } from '@/lib/webrtc-config';
+import { getRTCConfiguration, getRTCConfigurationSync } from '@/lib/webrtc-config';
+import { getAuthToken } from '@/services/api';
 
 export type CallStatus = 'idle' | 'ringing' | 'connecting' | 'active' | 'ended' | 'error';
 
@@ -231,8 +232,8 @@ export function useWebRTC(
     }
   }, [onStatusChange, callStatus]);
 
-  // Initialize peer connection
-  const initializePeerConnection = useCallback(() => {
+  // Initialize peer connection (async to fetch TURN credentials)
+  const initializePeerConnection = useCallback(async (): Promise<RTCPeerConnection> => {
     // Don't close existing connection if we're in the middle of a call
     // Only close if we're explicitly re-initializing
     const existingPc = peerConnectionRef.current;
@@ -254,7 +255,25 @@ export function useWebRTC(
       }
     }
 
-    const pc = new RTCPeerConnection(getRTCConfiguration());
+    // Fetch TURN credentials from backend (with auth token)
+    // Falls back to STUN-only if TURN is unavailable
+    let rtcConfig;
+    try {
+      const authToken = await getAuthToken();
+      rtcConfig = await getRTCConfiguration(authToken || undefined);
+      console.log('✅ RTC configuration loaded', {
+        iceServersCount: rtcConfig.iceServers.length,
+        hasTurn: rtcConfig.iceServers.some(s => {
+          const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+          return urls.some(u => u?.startsWith('turn:') || u?.startsWith('turns:'));
+        }),
+      });
+    } catch (configError) {
+      console.warn('⚠️ Failed to fetch TURN credentials, using STUN-only:', configError);
+      rtcConfig = getRTCConfigurationSync();
+    }
+
+    const pc = new RTCPeerConnection(rtcConfig);
     // Set the ref immediately so it's available - CRITICAL: This must happen synchronously
     peerConnectionRef.current = pc;
 
@@ -920,11 +939,11 @@ export function useWebRTC(
         peerConnectionRef.current = null;
       }
 
-      // Initialize new peer connection
+      // Initialize new peer connection (async to fetch TURN credentials)
       if (import.meta.env.DEV) {
         console.log('🔵 About to call initializePeerConnection()');
       }
-      const pc = initializePeerConnection();
+      const pc = await initializePeerConnection();
       
       if (import.meta.env.DEV) {
         console.log('🔵 initializePeerConnection() returned', {
@@ -1547,8 +1566,8 @@ export function useWebRTC(
       // Clear processed ICE candidates for new call
       processedIceCandidates.current.clear();
 
-      // Initialize peer connection
-      const pc = initializePeerConnection();
+      // Initialize peer connection (async to fetch TURN credentials)
+      const pc = await initializePeerConnection();
 
       // Add local stream tracks
       // CRITICAL: Check track state BEFORE adding to catch any issues early
@@ -2324,7 +2343,9 @@ if (typeof window !== 'undefined') {
     try {
       // Step 1: Test RTC Configuration
       const { getRTCConfiguration } = await import('@/lib/webrtc-config');
-      const config = getRTCConfiguration();
+      const { getAuthToken } = await import('@/services/api');
+      const authToken = await getAuthToken();
+      const config = await getRTCConfiguration(authToken || undefined);
       console.log('✅ Step 1: RTC Configuration loaded', {
         iceServers: config.iceServers.length,
         hasTURN: config.iceServers.some(s => {
