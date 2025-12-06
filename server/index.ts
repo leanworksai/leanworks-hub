@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import Stripe from 'stripe';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
@@ -87,6 +88,100 @@ const secretManagerClient = new SecretManagerServiceClient({
   projectId: serviceAccount.project_id,
 });
 
+// ============================================================================
+// STRIPE INITIALIZATION (from Secret Manager)
+// ============================================================================
+
+// Cache for Stripe secrets
+let cachedStripeSecrets: {
+  secretKey: string;
+  webhookSecret: string;
+  priceStandard: string;
+  pricePro: string;
+} | null = null;
+let stripeSecretsCacheTime: number = 0;
+const STRIPE_SECRETS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Lazy-initialized Stripe instance
+let stripe: Stripe | null = null;
+let stripeWebhookSecret: string = '';
+let STRIPE_PRICE_IDS: { standard: string; pro: string } = { standard: '', pro: '' };
+
+async function getStripeSecretsFromSecretManager(): Promise<typeof cachedStripeSecrets> {
+  // Return cached secrets if still valid
+  if (cachedStripeSecrets && Date.now() - stripeSecretsCacheTime < STRIPE_SECRETS_CACHE_TTL) {
+    return cachedStripeSecrets;
+  }
+
+  const projectId = serviceAccount.project_id;
+  
+  try {
+    // Fetch all Stripe secrets in parallel
+    const [secretKeyResult, webhookSecretResult, priceStandardResult, priceProResult] = await Promise.all([
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-secret-key/versions/latest` 
+      }),
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-webhook-secret/versions/latest` 
+      }),
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-price-standard/versions/latest` 
+      }),
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-price-pro/versions/latest` 
+      }),
+    ]);
+
+    cachedStripeSecrets = {
+      secretKey: secretKeyResult[0].payload?.data?.toString()?.trim() || '',
+      // Allow env var override for webhook secret (useful for Stripe CLI local testing)
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || webhookSecretResult[0].payload?.data?.toString()?.trim() || '',
+      priceStandard: priceStandardResult[0].payload?.data?.toString()?.trim() || '',
+      pricePro: priceProResult[0].payload?.data?.toString()?.trim() || '',
+    };
+    stripeSecretsCacheTime = Date.now();
+    console.log('✅ Stripe secrets fetched from Secret Manager');
+    if (process.env.STRIPE_WEBHOOK_SECRET) {
+      console.log('ℹ️  Using STRIPE_WEBHOOK_SECRET from environment (Stripe CLI mode)');
+    }
+    return cachedStripeSecrets;
+  } catch (error) {
+    console.error('❌ Failed to fetch Stripe secrets from Secret Manager:', error);
+    // Fallback to environment variables for local development
+    cachedStripeSecrets = {
+      secretKey: process.env.STRIPE_SECRET_KEY || '',
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+      priceStandard: process.env.STRIPE_PRICE_STANDARD || '',
+      pricePro: process.env.STRIPE_PRICE_PRO || '',
+    };
+    console.log('⚠️ Using fallback Stripe secrets from environment variables');
+    return cachedStripeSecrets;
+  }
+}
+
+// Initialize Stripe lazily
+async function getStripe(): Promise<Stripe | null> {
+  if (stripe) return stripe;
+  
+  const secrets = await getStripeSecretsFromSecretManager();
+  if (!secrets?.secretKey) {
+    console.log('⚠️ Stripe not initialized - secret key not available');
+    return null;
+  }
+  
+  stripe = new Stripe(secrets.secretKey, { apiVersion: '2024-11-20.acacia' });
+  stripeWebhookSecret = secrets.webhookSecret;
+  STRIPE_PRICE_IDS = {
+    standard: secrets.priceStandard,
+    pro: secrets.pricePro,
+  };
+  console.log('✅ Stripe initialized');
+  return stripe;
+}
+
+// Initialize Stripe on startup
+getStripe().catch(err => console.error('Stripe initialization error:', err));
+
 const app = express();
 const PORT = 3001;
 
@@ -124,9 +219,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// JSON parsing middleware (except for GitHub webhook and image uploads)
+// JSON parsing middleware (except for GitHub webhook, Stripe webhook, and image uploads)
 app.use((req, res, next) => {
-  if (req.path === '/api/integrations/github/webhooks' || req.path.startsWith('/api/images/')) {
+  if (req.path === '/api/integrations/github/webhooks' || 
+      req.path === '/api/webhooks/stripe' || 
+      req.path.startsWith('/api/images/')) {
     next();
   } else {
     express.json()(req, res, next);
@@ -4768,6 +4865,546 @@ app.get('/api/updates/task/:taskId', authenticateUser, requireOrgMembership, asy
     res.json(updates);
   } catch (error) {
     console.error('Get updates by task error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// SUBSCRIPTION ENDPOINTS (Stripe Integration)
+// ============================================================================
+
+// Get subscription status
+app.get('/api/subscription/status', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const sharedPool = await getSharedPool();
+    
+    const result = await sharedPool.query(`
+      SELECT 
+        subscription_plan,
+        stripe_customer_id,
+        stripe_subscription_id,
+        ai_daily_usage,
+        ai_usage_reset_date,
+        trial_ends_at,
+        created_at
+      FROM users WHERE email = $1
+    `, [userEmail]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = result.rows[0];
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Reset daily usage if it's a new day
+    let aiDailyUsage = user.ai_daily_usage || 0;
+    if (user.ai_usage_reset_date !== today) {
+      aiDailyUsage = 0;
+      await sharedPool.query(`
+        UPDATE users SET ai_daily_usage = 0, ai_usage_reset_date = $1 WHERE email = $2
+      `, [today, userEmail]);
+    }
+    
+    // Calculate trial status
+    const trialEndsAt = user.trial_ends_at ? new Date(user.trial_ends_at) : null;
+    const isTrialActive = trialEndsAt && trialEndsAt > new Date();
+    const trialDaysRemaining = trialEndsAt 
+      ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+      : 0;
+    
+    // Calculate AI usage limits based on plan
+    let aiUsageLimit: number | null = null; // null means unlimited
+    const plan = user.subscription_plan || 'free';
+    
+    if (plan === 'free') {
+      aiUsageLimit = 0; // No AI access on free plan
+    } else if (plan === 'standard') {
+      aiUsageLimit = 20; // 20 per day
+    }
+    // Pro plan has unlimited (null)
+    
+    res.json({
+      plan,
+      stripeCustomerId: user.stripe_customer_id,
+      stripeSubscriptionId: user.stripe_subscription_id,
+      aiDailyUsage,
+      aiUsageLimit,
+      aiUsageRemaining: aiUsageLimit !== null ? Math.max(0, aiUsageLimit - aiDailyUsage) : null,
+      trialEndsAt: user.trial_ends_at,
+      isTrialActive,
+      trialDaysRemaining,
+      memberSince: user.created_at,
+    });
+  } catch (error) {
+    console.error('Get subscription status error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Create Stripe checkout session
+app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    const { plan, successUrl, cancelUrl } = req.body;
+    
+    if (!plan || !['standard', 'pro'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid plan. Must be "standard" or "pro"' });
+    }
+    
+    const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
+    if (!priceId) {
+      return res.status(400).json({ error: `Price ID not configured for ${plan} plan` });
+    }
+    
+    const sharedPool = await getSharedPool();
+    
+    // Get or create Stripe customer
+    let customerId: string;
+    const userResult = await sharedPool.query(
+      'SELECT stripe_customer_id, first_name, last_name FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (userResult.rows[0]?.stripe_customer_id) {
+      customerId = userResult.rows[0].stripe_customer_id;
+    } else {
+      const customer = await stripeClient.customers.create({
+        email: userEmail,
+        name: `${userResult.rows[0]?.first_name || ''} ${userResult.rows[0]?.last_name || ''}`.trim() || undefined,
+        metadata: { userEmail },
+      });
+      customerId = customer.id;
+      
+      // Save customer ID
+      await sharedPool.query(
+        'UPDATE users SET stripe_customer_id = $1 WHERE email = $2',
+        [customerId, userEmail]
+      );
+    }
+    
+    // Create checkout session
+    const session = await stripeClient.checkout.sessions.create({
+      customer: customerId,
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: successUrl || `${req.headers.origin}/subscription?success=true`,
+      cancel_url: cancelUrl || `${req.headers.origin}/subscription?canceled=true`,
+      metadata: { userEmail, plan },
+    });
+    
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Create checkout session error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Create Stripe customer portal session
+app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    const { returnUrl } = req.body;
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_customer_id FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_customer_id) {
+      return res.status(400).json({ error: 'No subscription found' });
+    }
+    
+    const session = await stripeClient.billingPortal.sessions.create({
+      customer: userResult.rows[0].stripe_customer_id,
+      return_url: returnUrl || `${req.headers.origin}/subscription`,
+    });
+    
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Create portal session error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Switch subscription plan (upgrade or downgrade between paid plans)
+app.post('/api/subscription/switch', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    const { plan } = req.body;
+    
+    if (!plan || !['standard', 'pro'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid plan. Must be "standard" or "pro"' });
+    }
+    
+    const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
+    if (!priceId) {
+      return res.status(400).json({ error: `Price ID not configured for ${plan} plan` });
+    }
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_customer_id, stripe_subscription_id, subscription_plan FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No active subscription found. Please subscribe first.' });
+    }
+    
+    const currentPlan = userResult.rows[0].subscription_plan;
+    if (currentPlan === plan) {
+      return res.status(400).json({ error: `You are already on the ${plan} plan` });
+    }
+    
+    // Get the subscription to find the current subscription item
+    const subscription = await stripeClient.subscriptions.retrieve(
+      userResult.rows[0].stripe_subscription_id
+    );
+    
+    if (!subscription.items.data[0]) {
+      return res.status(400).json({ error: 'Invalid subscription state' });
+    }
+    
+    // Update the subscription with the new price
+    const updatedSubscription = await stripeClient.subscriptions.update(
+      userResult.rows[0].stripe_subscription_id,
+      {
+        items: [{
+          id: subscription.items.data[0].id,
+          price: priceId,
+        }],
+        proration_behavior: 'create_prorations', // Prorate the change
+      }
+    );
+    
+    // Update the database
+    await sharedPool.query(
+      'UPDATE users SET subscription_plan = $1 WHERE email = $2',
+      [plan, userEmail]
+    );
+    
+    console.log(`✅ Plan switched: ${userEmail} ${currentPlan} -> ${plan}`);
+    
+    res.json({ 
+      success: true, 
+      plan,
+      message: `Successfully switched to ${plan} plan`,
+    });
+  } catch (error) {
+    console.error('Switch plan error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Cancel subscription (revert to free plan)
+app.post('/api/subscription/cancel', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_subscription_id, subscription_plan FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_subscription_id) {
+      return res.status(400).json({ error: 'No active subscription to cancel' });
+    }
+    
+    // Cancel the subscription immediately and downgrade to free
+    await stripeClient.subscriptions.cancel(userResult.rows[0].stripe_subscription_id);
+    
+    // Update database to free plan
+    await sharedPool.query(
+      'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+      ['free', userEmail]
+    );
+    
+    console.log(`✅ Subscription canceled and downgraded to free: ${userEmail}`);
+    
+    res.json({ 
+      success: true,
+      plan: 'free',
+      message: 'Subscription canceled. You have been downgraded to the free plan.',
+    });
+  } catch (error) {
+    console.error('Cancel subscription error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Downgrade to free plan (alias for cancel)
+app.post('/api/subscription/downgrade-to-free', authenticateUser, async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    const userEmail = (req as any).userEmail;
+    
+    const sharedPool = await getSharedPool();
+    const userResult = await sharedPool.query(
+      'SELECT stripe_subscription_id, subscription_plan FROM users WHERE email = $1',
+      [userEmail]
+    );
+    
+    if (!userResult.rows[0]?.stripe_subscription_id) {
+      // Already on free or no subscription, just update database
+      await sharedPool.query(
+        'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+        ['free', userEmail]
+      );
+      return res.json({ 
+        success: true,
+        plan: 'free',
+        message: 'You are now on the free plan.',
+      });
+    }
+    
+    // Cancel the subscription immediately and downgrade to free
+    await stripeClient.subscriptions.cancel(userResult.rows[0].stripe_subscription_id);
+    
+    // Update database to free plan
+    await sharedPool.query(
+      'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+      ['free', userEmail]
+    );
+    
+    console.log(`✅ Downgraded to free: ${userEmail}`);
+    
+    res.json({ 
+      success: true,
+      plan: 'free',
+      message: 'You have been downgraded to the free plan.',
+    });
+  } catch (error) {
+    console.error('Downgrade to free error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Stripe webhook handler
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
+      return res.status(503).json({ error: 'Payment system not configured' });
+    }
+    
+    // Always prioritize env var for webhook secret (Stripe CLI uses different secret each time)
+    // Refresh secrets to get latest, but env var takes precedence
+    const secrets = await getStripeSecretsFromSecretManager();
+    const currentWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || secrets?.webhookSecret || stripeWebhookSecret;
+    
+    const sig = req.headers['stripe-signature'];
+    if (!sig || !currentWebhookSecret) {
+      console.error('Webhook error: Missing signature or webhook secret', {
+        hasSig: !!sig,
+        hasSecret: !!currentWebhookSecret,
+        secretLength: currentWebhookSecret?.length || 0,
+        usingEnvVar: !!process.env.STRIPE_WEBHOOK_SECRET,
+      });
+      return res.status(400).json({ error: 'Missing signature or webhook secret' });
+    }
+    
+    let event: Stripe.Event;
+    try {
+      event = stripeClient.webhooks.constructEvent(req.body, sig, currentWebhookSecret);
+    } catch (err: any) {
+      console.error('Webhook signature verification failed:', err.message);
+      console.error('Debug info:', {
+        signaturePresent: !!sig,
+        webhookSecretPresent: !!currentWebhookSecret,
+        webhookSecretPrefix: currentWebhookSecret?.substring(0, 10) || 'none',
+        usingEnvVar: !!process.env.STRIPE_WEBHOOK_SECRET,
+        bodyType: typeof req.body,
+        bodyLength: req.body?.length || 0,
+      });
+      console.error('💡 Tip: If using Stripe CLI, check the webhook secret it printed and update STRIPE_WEBHOOK_SECRET in .env');
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+    
+    console.log('📦 Stripe webhook received:', event.type);
+    
+    const sharedPool = await getSharedPool();
+    
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        const userEmail = session.metadata?.userEmail;
+        const plan = session.metadata?.plan;
+        
+        if (userEmail && plan) {
+          await sharedPool.query(`
+            UPDATE users 
+            SET subscription_plan = $1, 
+                stripe_subscription_id = $2,
+                trial_ends_at = NULL
+            WHERE email = $3
+          `, [plan, session.subscription, userEmail]);
+          console.log(`✅ Subscription activated: ${userEmail} -> ${plan}`);
+        }
+        break;
+      }
+      
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object as Stripe.Subscription;
+        const customerId = subscription.customer as string;
+        
+        // Get user by customer ID
+        const userResult = await sharedPool.query(
+          'SELECT email FROM users WHERE stripe_customer_id = $1',
+          [customerId]
+        );
+        
+        if (userResult.rows.length > 0) {
+          const userEmail = userResult.rows[0].email;
+          
+          // Determine plan from price
+          let plan = 'free';
+          const priceId = subscription.items.data[0]?.price?.id;
+          if (priceId === STRIPE_PRICE_IDS.pro) {
+            plan = 'pro';
+          } else if (priceId === STRIPE_PRICE_IDS.standard) {
+            plan = 'standard';
+          }
+          
+          await sharedPool.query(`
+            UPDATE users 
+            SET subscription_plan = $1, 
+                stripe_subscription_id = $2
+            WHERE email = $3
+          `, [plan, subscription.id, userEmail]);
+          console.log(`✅ Subscription updated: ${userEmail} -> ${plan}`);
+        }
+        break;
+      }
+      
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object as Stripe.Subscription;
+        const customerId = subscription.customer as string;
+        
+        // Get user by customer ID
+        const userResult = await sharedPool.query(
+          'SELECT email FROM users WHERE stripe_customer_id = $1',
+          [customerId]
+        );
+        
+        if (userResult.rows.length > 0) {
+          const userEmail = userResult.rows[0].email;
+          await sharedPool.query(`
+            UPDATE users 
+            SET subscription_plan = 'free', 
+                stripe_subscription_id = NULL
+            WHERE email = $1
+          `, [userEmail]);
+          console.log(`✅ Subscription canceled: ${userEmail} -> free`);
+        }
+        break;
+      }
+      
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
+    }
+    
+    res.json({ received: true });
+  } catch (error) {
+    console.error('Stripe webhook error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Increment AI usage (called when user uses AI features)
+app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const sharedPool = await getSharedPool();
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Get current usage and plan
+    const result = await sharedPool.query(`
+      SELECT subscription_plan, ai_daily_usage, ai_usage_reset_date, trial_ends_at
+      FROM users WHERE email = $1
+    `, [userEmail]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    const user = result.rows[0];
+    const plan = user.subscription_plan || 'free';
+    let currentUsage = user.ai_daily_usage || 0;
+    
+    // Reset if new day
+    if (user.ai_usage_reset_date !== today) {
+      currentUsage = 0;
+    }
+    
+    // Check limits
+    const trialEndsAt = user.trial_ends_at ? new Date(user.trial_ends_at) : null;
+    const isTrialActive = trialEndsAt && trialEndsAt > new Date();
+    
+    let limit: number | null = null;
+    if (plan === 'free') {
+      limit = 0; // No AI access on free plan
+    } else if (plan === 'standard') {
+      limit = 20;
+    }
+    // Pro is unlimited
+    
+    if (limit !== null && currentUsage >= limit) {
+      return res.status(429).json({ 
+        error: 'AI usage limit reached',
+        limit,
+        usage: currentUsage,
+        plan,
+        isTrialActive,
+      });
+    }
+    
+    // Increment usage
+    await sharedPool.query(`
+      UPDATE users 
+      SET ai_daily_usage = CASE 
+        WHEN ai_usage_reset_date = $1 THEN ai_daily_usage + 1 
+        ELSE 1 
+      END,
+      ai_usage_reset_date = $1
+      WHERE email = $2
+    `, [today, userEmail]);
+    
+    res.json({ 
+      success: true, 
+      usage: currentUsage + 1,
+      limit,
+      remaining: limit !== null ? Math.max(0, limit - currentUsage - 1) : null,
+    });
+  } catch (error) {
+    console.error('Increment AI usage error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });

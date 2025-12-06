@@ -22,6 +22,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
+import { useSubscription } from "@/hooks/useSubscription";
+import { cn } from "@/lib/utils";
 import { TaskTooltip } from "@/components/TaskTooltip";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { TaskDetailDialog } from "@/components/TaskDetailDialog";
@@ -95,6 +97,7 @@ export default function ProjectDetail() {
   const addMember = useAddProjectMember();
   const removeMember = useRemoveProjectMember();
   const { toast } = useToast();
+  const { isFreePlan } = useSubscription();
   
   // Fetch project by ID
   // Backend already handles access control - if user doesn't have access, it returns 403
@@ -494,11 +497,16 @@ export default function ProjectDetail() {
                     <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 data-[state=open]:rotate-180" />
                   </div>
                 </div>
-                <div className="w-full bg-secondary rounded-full h-2">
+                <div className={cn("w-full bg-secondary rounded-full h-2 relative", isFreePlan && "blur-sm")}>
                   <div 
                     className="bg-primary h-2 rounded-full transition-all"
                     style={{ width: `${(project.tasks.filter(t => t.status === "completed").length / project.tasks.length) * 100}%` }}
                   />
+                  {isFreePlan && (
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-xs text-muted-foreground">Upgrade to view progress</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </CollapsibleTrigger>

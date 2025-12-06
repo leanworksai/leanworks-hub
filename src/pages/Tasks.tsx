@@ -60,7 +60,9 @@ import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserProjects } from "@/hooks/useProjects";
+import { useSubscription } from "@/hooks/useSubscription";
 import { format, parse } from "date-fns";
+import { cn } from "@/lib/utils";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -145,6 +147,7 @@ export default function Tasks() {
   const { toast } = useToast();
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
+  const { isFreePlan } = useSubscription();
   const teamMembers = getAllTeamMembers(projects);
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
@@ -405,9 +408,18 @@ export default function Tasks() {
                                 </p>
                               )}
                             </div>
-                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                              {latestUpdate.update}
-                            </p>
+                            <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                {latestUpdate.update}
+                              </p>
+                              {isFreePlan && (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                                    Upgrade to view progress update
+                                  </span>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         )}
                         

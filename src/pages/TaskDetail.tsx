@@ -63,10 +63,12 @@ import { useTask, useUpdateTask, useDeleteTask } from "@/hooks/useTasks";
 import { useToast } from "@/hooks/use-toast";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUsers } from "@/hooks/useUsers";
+import { useSubscription } from "@/hooks/useSubscription";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { format, parse } from "date-fns";
 import { useState, useEffect } from "react";
+import { cn } from "@/lib/utils";
 
 const getInitials = (name: string): string => {
   return name
@@ -215,6 +217,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const { data: task, isLoading } = useTask(taskId || '');
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
+  const { isFreePlan } = useSubscription();
   
   // Check if user has access to the task
   const hasAccess = task ? (() => {
@@ -941,11 +944,14 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                     {getActivities().map((activity) => (
                       <div 
                         key={activity.id} 
-                        className={`border-l-2 pl-4 pb-4 last:pb-0 relative ${
-                          activity.type === "update" 
-                            ? "border-primary/30" 
-                            : "border-muted-foreground/20"
-                        }`}
+                        className={cn(
+                          `border-l-2 pl-4 pb-4 last:pb-0 relative ${
+                            activity.type === "update" 
+                              ? "border-primary/30" 
+                              : "border-muted-foreground/20"
+                          }`,
+                          isFreePlan && activity.type === "update" && "blur-sm pointer-events-none"
+                        )}
                       >
                         <div className={`absolute -left-2 top-0 h-4 w-4 rounded-full bg-background border-2 ${
                           activity.type === "update"

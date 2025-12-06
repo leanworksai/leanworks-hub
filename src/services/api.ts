@@ -1684,3 +1684,124 @@ export const updatesService = {
   },
 };
 
+// Subscription Service
+export interface SubscriptionStatus {
+  plan: 'free' | 'standard' | 'pro';
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  aiDailyUsage: number;
+  aiUsageLimit: number | null; // null means unlimited
+  aiUsageRemaining: number | null; // null means unlimited
+  trialEndsAt: string | null;
+  isTrialActive: boolean;
+  trialDaysRemaining: number;
+  memberSince: string;
+}
+
+export const subscriptionService = {
+  async getStatus(): Promise<SubscriptionStatus> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/status` 
+      : `${API_BASE}/subscription/status`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to get subscription status' }));
+      throw new Error(error.error || 'Failed to get subscription status');
+    }
+    return response.json();
+  },
+
+  async createCheckoutSession(plan: 'standard' | 'pro'): Promise<{ url: string }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/checkout` 
+      : `${API_BASE}/subscription/checkout`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ 
+        plan,
+        successUrl: `${window.location.origin}/subscription?success=true`,
+        cancelUrl: `${window.location.origin}/subscription?canceled=true`,
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to create checkout session' }));
+      throw new Error(error.error || 'Failed to create checkout session');
+    }
+    return response.json();
+  },
+
+  async createPortalSession(): Promise<{ url: string }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/portal` 
+      : `${API_BASE}/subscription/portal`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ 
+        returnUrl: `${window.location.origin}/subscription`,
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to create portal session' }));
+      throw new Error(error.error || 'Failed to create portal session');
+    }
+    return response.json();
+  },
+
+  async switchPlan(plan: 'standard' | 'pro'): Promise<{ success: boolean; plan: string }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/switch` 
+      : `${API_BASE}/subscription/switch`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ plan }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to switch plan' }));
+      throw new Error(error.error || 'Failed to switch plan');
+    }
+    return response.json();
+  },
+
+  async cancelSubscription(): Promise<{ success: boolean }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/cancel` 
+      : `${API_BASE}/subscription/cancel`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to cancel subscription' }));
+      throw new Error(error.error || 'Failed to cancel subscription');
+    }
+    return response.json();
+  },
+
+  async downgradeToFree(): Promise<{ success: boolean; plan: string; message: string }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/downgrade-to-free` 
+      : `${API_BASE}/subscription/downgrade-to-free`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to downgrade to free plan' }));
+      throw new Error(error.error || 'Failed to downgrade to free plan');
+    }
+    return response.json();
+  },
+
+  async incrementAiUsage(): Promise<{ success: boolean; usage: number; limit: number | null; remaining: number | null }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/subscription/ai-usage` 
+      : `${API_BASE}/subscription/ai-usage`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'AI usage limit reached' }));
+      throw new Error(error.error || 'Failed to increment AI usage');
+    }
+    return response.json();
+  },
+};
+

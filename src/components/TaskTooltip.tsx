@@ -7,11 +7,14 @@ import {
 } from "@/components/ui/popover";
 import { Sparkles } from "lucide-react";
 import { useUpdatesByTaskId } from "@/hooks/useUpdates";
+import { useSubscription } from "@/hooks/useSubscription";
+import { cn } from "@/lib/utils";
 
 // TaskTooltip component to show updates and reason
 export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason?: string }) {
   const [isHovered, setIsHovered] = useState(false);
   const { data: updates = [], isLoading } = useUpdatesByTaskId(isHovered ? taskId : null);
+  const { isFreePlan } = useSubscription();
   
   // Only show tooltip if there's a reason (updates will be fetched on hover)
   if (!taskReason) {
@@ -60,9 +63,18 @@ export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason
                   </p>
                 )}
               </div>
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                {latestUpdate.update}
-              </p>
+              <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                  {latestUpdate.update}
+                </p>
+                {isFreePlan && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                      Upgrade to view progress update
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
           
