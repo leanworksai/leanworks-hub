@@ -559,10 +559,10 @@ app.post('/api/auth/signup', async (req, res) => {
     // Hash password for PostgreSQL
     const passwordHash = await bcrypt.hash(password, 10);
     
-    // Store user in shared database
+    // Store user in shared database with 7-day free trial for standard plan
     await sharedPool.query(`
-      INSERT INTO users (email, password_hash, first_name, last_name, job_title, timezone, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      INSERT INTO users (email, password_hash, first_name, last_name, job_title, timezone, subscription_plan, trial_ends_at, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, 'standard', NOW() + INTERVAL '7 days', NOW())
     `, [normalizedEmail, passwordHash, firstName, lastName, jobTitle || '', timezone]);
     
     // Auto-create personal workspace for the user
@@ -4914,9 +4914,21 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
       : 0;
     
+    // If trial has expired and user has no Stripe subscription, downgrade to free
+    let plan = user.subscription_plan || 'free';
+    if (!isTrialActive && trialEndsAt && !user.stripe_subscription_id && plan !== 'free') {
+      // Trial expired and no active subscription - downgrade to free
+      await sharedPool.query(`
+        UPDATE users 
+        SET subscription_plan = 'free', trial_ends_at = NULL
+        WHERE email = $1
+      `, [userEmail]);
+      plan = 'free';
+      console.log(`✅ Auto-downgraded ${userEmail} to free plan after trial expiration`);
+    }
+    
     // Calculate AI usage limits based on plan
     let aiUsageLimit: number | null = null; // null means unlimited
-    const plan = user.subscription_plan || 'free';
     
     if (plan === 'free') {
       aiUsageLimit = 0; // No AI access on free plan
@@ -5347,7 +5359,7 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
     
     // Get current usage and plan
     const result = await sharedPool.query(`
-      SELECT subscription_plan, ai_daily_usage, ai_usage_reset_date, trial_ends_at
+      SELECT subscription_plan, ai_daily_usage, ai_usage_reset_date, trial_ends_at, stripe_subscription_id
       FROM users WHERE email = $1
     `, [userEmail]);
     
@@ -5356,7 +5368,7 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
     }
     
     const user = result.rows[0];
-    const plan = user.subscription_plan || 'free';
+    let plan = user.subscription_plan || 'free';
     let currentUsage = user.ai_daily_usage || 0;
     
     // Reset if new day
@@ -5367,6 +5379,18 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
     // Check limits
     const trialEndsAt = user.trial_ends_at ? new Date(user.trial_ends_at) : null;
     const isTrialActive = trialEndsAt && trialEndsAt > new Date();
+    
+    // If trial has expired and user has no Stripe subscription, downgrade to free
+    if (!isTrialActive && trialEndsAt && !user.stripe_subscription_id && plan !== 'free') {
+      // Trial expired and no active subscription - downgrade to free
+      await sharedPool.query(`
+        UPDATE users 
+        SET subscription_plan = 'free', trial_ends_at = NULL
+        WHERE email = $1
+      `, [userEmail]);
+      plan = 'free';
+      console.log(`✅ Auto-downgraded ${userEmail} to free plan after trial expiration`);
+    }
     
     let limit: number | null = null;
     if (plan === 'free') {
