@@ -88,22 +88,99 @@ const secretManagerClient = new SecretManagerServiceClient({
   projectId: serviceAccount.project_id,
 });
 
-// Initialize Stripe
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY || '';
-const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || '';
-const stripe = stripeSecretKey ? new Stripe(stripeSecretKey, { apiVersion: '2024-11-20.acacia' }) : null;
+// ============================================================================
+// STRIPE INITIALIZATION (from Secret Manager)
+// ============================================================================
 
-if (stripe) {
-  console.log('✅ Stripe initialized');
-} else {
-  console.log('⚠️  Stripe not initialized - STRIPE_SECRET_KEY not set');
+// Cache for Stripe secrets
+let cachedStripeSecrets: {
+  secretKey: string;
+  webhookSecret: string;
+  priceStandard: string;
+  pricePro: string;
+} | null = null;
+let stripeSecretsCacheTime: number = 0;
+const STRIPE_SECRETS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Lazy-initialized Stripe instance
+let stripe: Stripe | null = null;
+let stripeWebhookSecret: string = '';
+let STRIPE_PRICE_IDS: { standard: string; pro: string } = { standard: '', pro: '' };
+
+async function getStripeSecretsFromSecretManager(): Promise<typeof cachedStripeSecrets> {
+  // Return cached secrets if still valid
+  if (cachedStripeSecrets && Date.now() - stripeSecretsCacheTime < STRIPE_SECRETS_CACHE_TTL) {
+    return cachedStripeSecrets;
+  }
+
+  const projectId = serviceAccount.project_id;
+  
+  try {
+    // Fetch all Stripe secrets in parallel
+    const [secretKeyResult, webhookSecretResult, priceStandardResult, priceProResult] = await Promise.all([
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-secret-key/versions/latest` 
+      }),
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-webhook-secret/versions/latest` 
+      }),
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-price-standard/versions/latest` 
+      }),
+      secretManagerClient.accessSecretVersion({ 
+        name: `projects/${projectId}/secrets/stripe-price-pro/versions/latest` 
+      }),
+    ]);
+
+    cachedStripeSecrets = {
+      secretKey: secretKeyResult[0].payload?.data?.toString()?.trim() || '',
+      // Allow env var override for webhook secret (useful for Stripe CLI local testing)
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || webhookSecretResult[0].payload?.data?.toString()?.trim() || '',
+      priceStandard: priceStandardResult[0].payload?.data?.toString()?.trim() || '',
+      pricePro: priceProResult[0].payload?.data?.toString()?.trim() || '',
+    };
+    stripeSecretsCacheTime = Date.now();
+    console.log('✅ Stripe secrets fetched from Secret Manager');
+    if (process.env.STRIPE_WEBHOOK_SECRET) {
+      console.log('ℹ️  Using STRIPE_WEBHOOK_SECRET from environment (Stripe CLI mode)');
+    }
+    return cachedStripeSecrets;
+  } catch (error) {
+    console.error('❌ Failed to fetch Stripe secrets from Secret Manager:', error);
+    // Fallback to environment variables for local development
+    cachedStripeSecrets = {
+      secretKey: process.env.STRIPE_SECRET_KEY || '',
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+      priceStandard: process.env.STRIPE_PRICE_STANDARD || '',
+      pricePro: process.env.STRIPE_PRICE_PRO || '',
+    };
+    console.log('⚠️ Using fallback Stripe secrets from environment variables');
+    return cachedStripeSecrets;
+  }
 }
 
-// Stripe Price IDs (set these in your environment or update after creating products in Stripe)
-const STRIPE_PRICE_IDS = {
-  standard: process.env.STRIPE_PRICE_STANDARD || '',
-  pro: process.env.STRIPE_PRICE_PRO || '',
-};
+// Initialize Stripe lazily
+async function getStripe(): Promise<Stripe | null> {
+  if (stripe) return stripe;
+  
+  const secrets = await getStripeSecretsFromSecretManager();
+  if (!secrets?.secretKey) {
+    console.log('⚠️ Stripe not initialized - secret key not available');
+    return null;
+  }
+  
+  stripe = new Stripe(secrets.secretKey, { apiVersion: '2024-11-20.acacia' });
+  stripeWebhookSecret = secrets.webhookSecret;
+  STRIPE_PRICE_IDS = {
+    standard: secrets.priceStandard,
+    pro: secrets.pricePro,
+  };
+  console.log('✅ Stripe initialized');
+  return stripe;
+}
+
+// Initialize Stripe on startup
+getStripe().catch(err => console.error('Stripe initialization error:', err));
 
 const app = express();
 const PORT = 3001;
@@ -4844,7 +4921,7 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
     if (plan === 'free') {
       aiUsageLimit = isTrialActive ? 5 : 0; // 5 per day during trial, 0 after
     } else if (plan === 'standard') {
-      aiUsageLimit = 5; // 5 per day
+      aiUsageLimit = 20; // 20 per day
     }
     // Pro plan has unlimited (null)
     
@@ -4869,7 +4946,8 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
 // Create Stripe checkout session
 app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
   try {
-    if (!stripe) {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
       return res.status(503).json({ error: 'Payment system not configured' });
     }
     
@@ -4897,7 +4975,7 @@ app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
     if (userResult.rows[0]?.stripe_customer_id) {
       customerId = userResult.rows[0].stripe_customer_id;
     } else {
-      const customer = await stripe.customers.create({
+      const customer = await stripeClient.customers.create({
         email: userEmail,
         name: `${userResult.rows[0]?.first_name || ''} ${userResult.rows[0]?.last_name || ''}`.trim() || undefined,
         metadata: { userEmail },
@@ -4912,7 +4990,7 @@ app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
     }
     
     // Create checkout session
-    const session = await stripe.checkout.sessions.create({
+    const session = await stripeClient.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
@@ -4931,7 +5009,8 @@ app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
 // Create Stripe customer portal session
 app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
   try {
-    if (!stripe) {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
       return res.status(503).json({ error: 'Payment system not configured' });
     }
     
@@ -4948,7 +5027,7 @@ app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'No subscription found' });
     }
     
-    const session = await stripe.billingPortal.sessions.create({
+    const session = await stripeClient.billingPortal.sessions.create({
       customer: userResult.rows[0].stripe_customer_id,
       return_url: returnUrl || `${req.headers.origin}/subscription`,
     });
@@ -4963,7 +5042,8 @@ app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
 // Stripe webhook handler
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    if (!stripe) {
+    const stripeClient = await getStripe();
+    if (!stripeClient) {
       return res.status(503).json({ error: 'Payment system not configured' });
     }
     
@@ -4974,7 +5054,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
     
     let event: Stripe.Event;
     try {
-      event = stripe.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
+      event = stripeClient.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
     } catch (err: any) {
       console.error('Webhook signature verification failed:', err.message);
       return res.status(400).json({ error: 'Invalid signature' });
@@ -5104,7 +5184,7 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
     if (plan === 'free') {
       limit = isTrialActive ? 5 : 0;
     } else if (plan === 'standard') {
-      limit = 5;
+      limit = 20;
     }
     // Pro is unlimited
     

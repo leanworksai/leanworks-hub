@@ -4,10 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev:proxy\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev": "concurrently \"npm run dev:proxy\" \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:stripe\"",
     "dev:client": "vite",
     "dev:server": "NODE_ENV=development tsx --watch server/index.ts",
     "dev:proxy": "cloud-sql-proxy --credentials-file=./gcp_credential.json leanworks-474204:us-west1:leanworks-prod --port=5432",
+    "dev:stripe": "stripe listen --forward-to localhost:3001/api/webhooks/stripe",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
