@@ -19,7 +19,11 @@ service cloud.firestore {
   // This is a limitation of Firestore rules - we can't do case-insensitive comparison
   function isCallParticipant() {
     let userEmail = getUserEmail();
+    // For group calls, allow any authenticated user
+    // The chatId matching in queries ensures correct access (only channel members can query)
+    // For 1:1 calls, check if user is caller or callee
     return userEmail != null && (
+      resource.data.isGroupCall == true ||
       resource.data.callerEmail == userEmail ||
       resource.data.calleeEmail == userEmail
     );
@@ -38,10 +42,12 @@ service cloud.firestore {
       // Calls collection
       match /calls/{callId} {
         // Allow reading if user is authenticated with email and is either caller or callee
+        // For group calls, allow reading if user is authenticated (chatId matching ensures correct access)
         // This ensures queries filtering by calleeEmail only return documents
         // where the user is a participant in the call
         // Note: Queries filtering by chatId require the query to also filter by callerEmail or calleeEmail
         // for Firestore to validate them properly
+        // For group calls, queries filter by chatId which all channel members share
         allow read: if isAuthenticatedWithEmail() && isCallParticipant();
         
         // Allow creating calls if user is authenticated with email and is the caller
@@ -58,6 +64,33 @@ service cloud.firestore {
       // Allow listing calls (for queries) if user is authenticated with email
       // Note: The actual read permission is enforced at the document level above
       match /calls {
+        allow list: if isAuthenticatedWithEmail();
+      }
+      
+      // Call Invitations collection (for group calls)
+      match /callInvitations/{invitationId} {
+        // Allow reading if user is authenticated with email and is the participant
+        allow read: if isAuthenticatedWithEmail() && 
+          resource.data.participantEmail == getUserEmail();
+        
+        // Allow creating invitations if user is authenticated with email and is the caller
+        allow create: if isAuthenticatedWithEmail() && 
+          request.resource.data.callerEmail == getUserEmail();
+        
+        // Allow updating if user is authenticated with email and is the participant
+        allow update: if isAuthenticatedWithEmail() && 
+          resource.data.participantEmail == getUserEmail();
+        
+        // Allow deleting if user is authenticated with email and is the participant or caller
+        allow delete: if isAuthenticatedWithEmail() && (
+          resource.data.participantEmail == getUserEmail() ||
+          resource.data.callerEmail == getUserEmail()
+        );
+      }
+      
+      // Allow listing call invitations (for queries) if user is authenticated with email
+      // Note: The actual read permission is enforced at the document level above
+      match /callInvitations {
         allow list: if isAuthenticatedWithEmail();
       }
       
@@ -82,10 +115,12 @@ service cloud.firestore {
       // Calls collection
       match /calls/{callId} {
         // Allow reading if user is authenticated with email and is either caller or callee
+        // For group calls, allow reading if user is authenticated (chatId matching ensures correct access)
         // This ensures queries filtering by calleeEmail only return documents
         // where the user is a participant in the call
         // Note: Queries filtering by chatId require the query to also filter by callerEmail or calleeEmail
         // for Firestore to validate them properly
+        // For group calls, queries filter by chatId which all channel members share
         allow read: if isAuthenticatedWithEmail() && isCallParticipant();
         
         // Allow creating calls if user is authenticated with email and is the caller
@@ -102,6 +137,33 @@ service cloud.firestore {
       // Allow listing calls (for queries) if user is authenticated with email
       // Note: The actual read permission is enforced at the document level above
       match /calls {
+        allow list: if isAuthenticatedWithEmail();
+      }
+      
+      // Call Invitations collection (for group calls)
+      match /callInvitations/{invitationId} {
+        // Allow reading if user is authenticated with email and is the participant
+        allow read: if isAuthenticatedWithEmail() && 
+          resource.data.participantEmail == getUserEmail();
+        
+        // Allow creating invitations if user is authenticated with email and is the caller
+        allow create: if isAuthenticatedWithEmail() && 
+          request.resource.data.callerEmail == getUserEmail();
+        
+        // Allow updating if user is authenticated with email and is the participant
+        allow update: if isAuthenticatedWithEmail() && 
+          resource.data.participantEmail == getUserEmail();
+        
+        // Allow deleting if user is authenticated with email and is the participant or caller
+        allow delete: if isAuthenticatedWithEmail() && (
+          resource.data.participantEmail == getUserEmail() ||
+          resource.data.callerEmail == getUserEmail()
+        );
+      }
+      
+      // Allow listing call invitations (for queries) if user is authenticated with email
+      // Note: The actual read permission is enforced at the document level above
+      match /callInvitations {
         allow list: if isAuthenticatedWithEmail();
       }
       

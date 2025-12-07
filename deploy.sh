@@ -136,6 +136,8 @@ docker push "$IMAGE_NAME:latest"
 echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/backend-config.yaml
 kubectl apply -f k8s/cloud-sql-proxy.yaml
+kubectl apply -f k8s/serviceaccount.yaml
+kubectl apply -f k8s/livekit-deployment.yaml
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/ingress.yaml
 
@@ -147,15 +149,48 @@ kubectl set image deployment/leanworks-hub leanworks-hub="$FULL_IMAGE_NAME" -n d
 echo -e "${YELLOW}Forcing deployment rollout...${NC}"
 kubectl rollout restart deployment/leanworks-hub
 
-# Wait for deployment to be ready
-echo -e "${YELLOW}Waiting for deployment to be ready...${NC}"
+# Wait for deployments to be ready
+echo -e "${YELLOW}Waiting for LiveKit deployment to be ready...${NC}"
+if kubectl wait --for=condition=available --timeout=300s deployment/livekit-server 2>/dev/null; then
+    echo -e "${GREEN}✅ LiveKit deployment is ready${NC}"
+else
+    echo -e "${YELLOW}⚠️  LiveKit deployment may still be starting...${NC}"
+    kubectl get pods -l app=livekit-server
+fi
+
+echo -e "${YELLOW}Waiting for backend deployment to be ready...${NC}"
 kubectl rollout status deployment/leanworks-hub
+
+# Get LiveKit LoadBalancer IP and update backend if available
+echo -e "${YELLOW}Checking LiveKit LoadBalancer IP...${NC}"
+EXTERNAL_IP=$(kubectl get svc livekit-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+if [ -n "$EXTERNAL_IP" ]; then
+    echo -e "${GREEN}✅ LiveKit LoadBalancer IP: ${EXTERNAL_IP}${NC}"
+    LIVEKIT_URL="ws://${EXTERNAL_IP}:7880"
+    echo -e "${YELLOW}Updating backend deployment with LiveKit URL...${NC}"
+    if kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null; then
+        echo -e "${GREEN}✅ Backend LIVEKIT_URL updated to: ${LIVEKIT_URL}${NC}"
+        kubectl rollout status deployment/leanworks-hub --timeout=120s || echo -e "${YELLOW}⚠️  Rollout may still be in progress${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL. You may need to update it manually.${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️  LiveKit LoadBalancer IP not available yet.${NC}"
+    echo -e "${YELLOW}   The LoadBalancer may take a few minutes to provision.${NC}"
+    echo -e "${YELLOW}   Run this later to get the IP and update the backend:${NC}"
+    echo "   ./scripts/get-livekit-ip.sh"
+fi
 
 # Get service information
 echo -e "${GREEN}Deployment completed successfully!${NC}"
 echo -e "${YELLOW}Service information:${NC}"
 kubectl get service leanworks-hub-service
+echo ""
+echo -e "${YELLOW}LiveKit service information:${NC}"
+kubectl get service livekit-service livekit-service-udp livekit-service-rtc-tcp 2>/dev/null || echo "LiveKit services may still be provisioning..."
 
-echo -e "${GREEN}To get the external IP, run:${NC}"
+echo -e "${GREEN}To get the external IPs, run:${NC}"
 echo "kubectl get service leanworks-hub-service"
+echo "kubectl get service livekit-service"
 

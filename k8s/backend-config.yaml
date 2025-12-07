@@ -15,4 +15,6 @@ spec:
   timeoutSec: 120  # Increased for image uploads (10MB can take time)
   connectionDraining:
     drainingTimeoutSec: 60
+  # Note: GKE Ingress automatically handles WebSocket upgrades
+  # No additional configuration needed for WebSocket support
 

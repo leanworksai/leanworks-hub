@@ -43,6 +43,15 @@ spec:
           value: "postgres"
         - name: DB_REGION
           value: "us-west1"
+        - name: LIVEKIT_URL
+          # Production: Use subdomain with SSL via ingress
+          # The ingress routes livekit.leanworks.ai directly to LiveKit service
+          # This handles TLS termination and WebSocket upgrades
+          value: "wss://livekit.leanworks.ai"
+          # Alternative: Use LoadBalancer IP directly (requires TLS on LiveKit or will fail)
+          # value: "wss://136.117.244.184:7881"
+          # For local development, use:
+          # value: "ws://localhost:7880"
         livenessProbe:
           httpGet:
             path: /api/health

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { db, auth } from '@/lib/firebase-client';
-import { callSignalingService, type CallSignal } from '@/services/api';
+import { callSignalingService, type CallSignal, getCurrentOrgSlug } from '@/services/api';
 import { IncomingCallDialog } from './VoiceCall';
 import { useUsers } from '@/hooks/useUsers';
 import { useWebRTCContext } from '@/contexts/WebRTCContext';
@@ -16,6 +16,7 @@ export function GlobalCallListener() {
   const [incomingCallSignal, setIncomingCallSignal] = useState<CallSignal | null>(null);
   const lastCallIdRef = useRef<string | null>(null);
   const unsubscribeFnRef = useRef<(() => void) | null>(null);
+  const invitationUnsubscribeRef = useRef<(() => void) | null>(null);
   const processedCallIdsRef = useRef<Set<string>>(new Set());
   const {
     endCall: endWebRTCCall,
@@ -115,8 +116,15 @@ export function GlobalCallListener() {
               return;
             }
 
-            // Verify offer exists and is valid
-            if (!signal.offer || signal.status !== 'ringing') {
+            // Verify call signal is valid (with LiveKit, we check for roomName instead of offer)
+            if (signal.status !== 'ringing') {
+              processedCallIdsRef.current.add(callId);
+              return;
+            }
+            
+            // Ensure we have a room name (either from signal or we'll generate from chatId)
+            if (!signal.roomName && !signal.chatId) {
+              console.warn('📞 GlobalCallListener: Call signal missing roomName and chatId', { callId });
               processedCallIdsRef.current.add(callId);
               return;
             }
@@ -133,25 +141,130 @@ export function GlobalCallListener() {
         );
       };
 
+      // Setup listener for group call invitations
+      const setupInvitationListener = () => {
+        if (!isActive || !db) return;
+
+        // Clean up previous subscription if any
+        if (invitationUnsubscribeRef.current) {
+          invitationUnsubscribeRef.current();
+          invitationUnsubscribeRef.current = null;
+        }
+
+        const userEmail = (auth?.currentUser?.email || user?.email || '').toLowerCase();
+        if (!userEmail) {
+          console.warn('⚠️ GlobalCallListener: No user email available for invitation listener');
+          return;
+        }
+
+        console.log('📞 GlobalCallListener: Setting up group call invitation listener', { userEmail });
+
+        (async () => {
+          try {
+            const firestore = await import('firebase/firestore');
+            const { collection, onSnapshot, query, where, orderBy, limit, Timestamp } = firestore;
+            
+            const orgSlug = getCurrentOrgSlug();
+            if (!orgSlug) {
+              console.warn('📞 GlobalCallListener: No orgSlug for invitation listener');
+              return;
+            }
+
+            const invitationsRef = collection(db, `orgs/${orgSlug}/callInvitations`);
+            
+            // Calculate cutoff time (5 minutes ago)
+            const cutoffTime = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
+
+            const q = query(
+              invitationsRef,
+              where('participantEmail', '==', userEmail),
+              where('status', '==', 'pending'),
+              where('createdAt', '>', cutoffTime),
+              orderBy('createdAt', 'desc'),
+              limit(10)
+            );
+
+            invitationUnsubscribeRef.current = onSnapshot(
+              q,
+              (snapshot) => {
+                if (!isActive) return;
+
+                snapshot.docChanges().forEach((change) => {
+                  if (change.type === 'added') {
+                    const invitationData = change.doc.data();
+                    const invitationId = change.doc.id;
+
+                    // Skip if already processed
+                    if (processedCallIdsRef.current.has(invitationData.callId)) {
+                      return;
+                    }
+
+                    // Skip if already in a call
+                    if (callStatus !== 'idle') {
+                      console.log('Already in a call, skipping invitation', { invitationId, callId: invitationData.callId });
+                      return;
+                    }
+
+                    console.log('📞 GlobalCallListener: New group call invitation!', {
+                      invitationId,
+                      callId: invitationData.callId,
+                      callerEmail: invitationData.callerEmail,
+                      roomName: invitationData.roomName,
+                    });
+
+                    // Convert invitation to CallSignal format
+                    const callSignal: CallSignal = {
+                      callId: invitationData.callId,
+                      chatId: invitationData.chatId,
+                      callerEmail: invitationData.callerEmail,
+                      calleeEmail: userEmail,
+                      status: 'ringing',
+                      roomName: invitationData.roomName,
+                      createdAt: invitationData.createdAt?.toDate?.() || new Date(),
+                    };
+
+                    processedCallIdsRef.current.add(invitationData.callId);
+                    lastCallIdRef.current = invitationData.callId;
+                    setIncomingCallSignal(callSignal);
+                  }
+                });
+              },
+              (error) => {
+                console.error('❌ GlobalCallListener: Error in invitation listener', error);
+              }
+            );
+          } catch (err) {
+            console.error('❌ GlobalCallListener: Failed to setup invitation listener', err);
+          }
+        })();
+      };
+
       // Initial setup
       setupListener();
+      setupInvitationListener();
 
       // Health check: periodically verify the listener is working
       // This helps recover from network disconnections or auth token refreshes
       healthCheckInterval = setInterval(() => {
         if (!isActive) return;
         
-        // If auth state changed (e.g., token refresh), re-establish listener
-        if (auth?.currentUser?.email && !unsubscribeFnRef.current) {
-          console.log('📞 GlobalCallListener: Health check - re-establishing listener');
-          setupListener();
+        // If auth state changed (e.g., token refresh), re-establish listeners
+        if (auth?.currentUser?.email) {
+          if (!unsubscribeFnRef.current) {
+            console.log('📞 GlobalCallListener: Health check - re-establishing call listener');
+            setupListener();
+          }
+          if (!invitationUnsubscribeRef.current) {
+            console.log('📞 GlobalCallListener: Health check - re-establishing invitation listener');
+            setupInvitationListener();
+          }
         }
       }, 30000); // Check every 30 seconds
     };
 
     checkAuthAndSetup();
 
-    // Cleanup function for Firestore listener
+    // Cleanup function for Firestore listeners
     return () => {
       isActive = false;
       if (healthCheckInterval) {
@@ -161,6 +274,10 @@ export function GlobalCallListener() {
       if (unsubscribeFnRef.current) {
         unsubscribeFnRef.current();
         unsubscribeFnRef.current = null;
+      }
+      if (invitationUnsubscribeRef.current) {
+        invitationUnsubscribeRef.current();
+        invitationUnsubscribeRef.current = null;
       }
     };
   }, [user?.email, authLoading, callStatus]);
