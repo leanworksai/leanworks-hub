@@ -44,15 +44,14 @@ spec:
         - name: DB_REGION
           value: "us-west1"
         - name: LIVEKIT_URL
-          # After deploying LiveKit, get the LoadBalancer IP with:
-          # kubectl get svc livekit-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-          # Then update this value to: wss://<ip>:7880 or wss://livekit.leanworks.ai (if using domain)
-          # For development, you can use the internal service URL:
-          value: "ws://livekit-service.default.svc.cluster.local:7880"
-          # For production, replace with LoadBalancer external IP or domain:
-          # value: "wss://<loadbalancer-ip>:7880"
-          # Or with domain and SSL:
-          # value: "wss://livekit.leanworks.ai"
+          # Production: Use subdomain with SSL via ingress
+          # The ingress routes livekit.leanworks.ai directly to LiveKit service
+          # This handles TLS termination and WebSocket upgrades
+          value: "wss://livekit.leanworks.ai"
+          # Alternative: Use LoadBalancer IP directly (requires TLS on LiveKit or will fail)
+          # value: "wss://136.117.244.184:7881"
+          # For local development, use:
+          # value: "ws://localhost:7880"
         livenessProbe:
           httpGet:
             path: /api/health

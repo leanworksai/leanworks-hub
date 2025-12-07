@@ -14,6 +14,7 @@ spec:
       labels:
         app: livekit-server
     spec:
+      serviceAccountName: leanworks-hub-sa  # Use same service account with Secret Manager access
       containers:
       - name: livekit-server
         image: livekit/livekit-server:latest
@@ -37,25 +38,6 @@ spec:
         - containerPort: 50000
           name: rtc-tcp
           protocol: TCP
-        env:
-        # LiveKit API credentials (from Secret Manager via Kubernetes Secret)
-        # LiveKit uses LIVEKIT_KEY and LIVEKIT_SECRET as separate environment variables
-        - name: LIVEKIT_KEY
-          valueFrom:
-            secretKeyRef:
-              name: livekit-secrets
-              key: api-key
-        - name: LIVEKIT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: livekit-secrets
-              key: api-secret
-        - name: LIVEKIT_REDIS
-          valueFrom:
-            secretKeyRef:
-              name: livekit-secrets
-              key: redis-url
-              optional: true
         resources:
           requests:
             memory: "256Mi"
@@ -82,15 +64,33 @@ spec:
         volumeMounts:
         - name: livekit-config
           mountPath: /etc/livekit
-      # Use an init container to generate config with keys from secrets
+      # Use an init container to fetch secrets from GCP Secret Manager and generate config
       initContainers:
-      - name: config-generator
-        image: busybox:latest
+      - name: secret-fetcher
+        image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
         command: ['sh', '-c']
         args:
         - |
-          API_KEY=$(cat /secrets/api-key)
-          API_SECRET=$(cat /secrets/api-secret)
+          set -e
+          echo "📥 Fetching LiveKit credentials from GCP Secret Manager..."
+          
+          # Fetch API Key from Secret Manager
+          API_KEY=$(gcloud secrets versions access latest --secret=livekit-api-key --project=leanworks-474204)
+          if [ -z "$API_KEY" ]; then
+            echo "❌ Error: Failed to fetch livekit-api-key"
+            exit 1
+          fi
+          echo "✅ API key fetched (length: ${#API_KEY})"
+          
+          # Fetch API Secret from Secret Manager
+          API_SECRET=$(gcloud secrets versions access latest --secret=livekit-api-secret --project=leanworks-474204)
+          if [ -z "$API_SECRET" ]; then
+            echo "❌ Error: Failed to fetch livekit-api-secret"
+            exit 1
+          fi
+          echo "✅ API secret fetched (length: ${#API_SECRET})"
+          
+          # Generate LiveKit config file
           mkdir -p /etc/livekit
           cat > /etc/livekit/livekit.yaml <<EOF
           port: 7880
@@ -106,18 +106,26 @@ spec:
           development: false
           log_level: info
           EOF
+          
+          echo "✅ LiveKit config generated at /etc/livekit/livekit.yaml"
+          cat /etc/livekit/livekit.yaml | sed 's/: .*$/: ***/'  # Show config with secrets masked
         volumeMounts:
         - name: livekit-config
           mountPath: /etc/livekit
-        - name: livekit-secrets-volume
-          mountPath: /secrets
+        # Mount GCP credentials for Secret Manager access
+        - name: gcp-credentials
+          mountPath: /secrets/gcp_credential.json
+          subPath: gcp_credential.json
           readOnly: true
+        env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /secrets/gcp_credential.json
       volumes:
       - name: livekit-config
         emptyDir: {}
-      - name: livekit-secrets-volume
+      - name: gcp-credentials
         secret:
-          secretName: livekit-secrets
+          secretName: gcp-credentials
 
 ---
 # TCP Service for HTTP/WebSocket (signaling)
@@ -202,13 +210,9 @@ data:
     log_level: info
 
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: livekit-secrets
-type: Opaque
-stringData:
-  api-key: "devkey"  # Replace with actual key from Secret Manager
-  api-secret: "secret"  # Replace with actual secret from Secret Manager
-  redis-url: ""  # Optional: Redis connection string if using Redis
+# Note: LiveKit credentials are now fetched directly from GCP Secret Manager
+# via the init container. No Kubernetes Secret is needed.
+# The secrets are stored in GCP Secret Manager:
+#   - livekit-api-key
+#   - livekit-api-secret
 

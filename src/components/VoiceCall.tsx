@@ -6,8 +6,9 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, X } from 'lucide-react';
 import { CallStatus, ParticipantInfo } from '@/hooks/useLiveKit';
 import { useWebRTCContext } from '@/contexts/WebRTCContext';
-import { callSignalingService, type CallSignal } from '@/services/api';
+import { callSignalingService, type CallSignal, messagesService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
+import { useUsers } from '@/hooks/useUsers';
 import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase-client';
@@ -44,6 +45,7 @@ export function VoiceCallButton({
   groupMembers = [],
 }: VoiceCallButtonProps) {
   const { user, loading: authLoading } = useAuth();
+  const { data: allDomainUsers = [] } = useUsers();
   const [isCalling, setIsCalling] = useState(false);
   const [callSignal, setCallSignal] = useState<CallSignal | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -79,17 +81,26 @@ export function VoiceCallButton({
     if ((callStatus === 'ended' || callStatus === 'error') && callIdRef.current) {
       setIsCalling(false);
       setCallSignal(null); // Clear call signal state
+      isCreatingCallRef.current = false; // Reset creating call flag
       if (callIdRef.current) {
         const callIdToEnd = callIdRef.current;
         callSignalingService.endCall(callIdToEnd).catch(console.error);
         callIdRef.current = null;
         setCurrentCallId(null);
       }
-    } else if (callStatus === 'idle' && isCreatingCallRef.current) {
-      // Don't reset isCalling if we're in the middle of creating a call
-    } else if (callStatus === 'idle' && callIdRef.current) {
-      // Status went to idle but we have a call ID - might be a temporary reset
-      // Don't clear isCalling if we have a call ID
+      // Notify other tabs that call has ended
+      if (broadcastChannelRef.current) {
+        broadcastChannelRef.current.postMessage('call-ended');
+      }
+    } else if (callStatus === 'idle') {
+      // When call status is idle, make sure we're not in a call state
+      if (!isCreatingCallRef.current && !callIdRef.current) {
+        setIsCalling(false);
+        // Notify other tabs that call has ended
+        if (broadcastChannelRef.current) {
+          broadcastChannelRef.current.postMessage('call-ended');
+        }
+      }
     }
   }, [callStatus, setCurrentCallId]);
 
@@ -107,15 +118,21 @@ export function VoiceCallButton({
     // Listen for check messages from other tabs
     const handleMessage = (event: MessageEvent) => {
       if (event.data === 'check-call') {
-        // If we're in a call, respond that we're active
-        if (isCalling || callStatus !== 'idle') {
+        // Only respond if we're actually in an active call (not just idle with stale state)
+        if (callStatus === 'active' || callStatus === 'connecting' || (isCalling && callStatus !== 'idle')) {
           channel.postMessage('call-active');
+        } else {
+          // Respond that we're not in a call
+          channel.postMessage('call-ended');
         }
       } else if (event.data === 'call-active') {
-        // Another tab is starting a call - we should be aware but not block if we're already in a call
+        // Another tab is in a call
         if (!isCalling && callStatus === 'idle') {
-          console.warn('Another tab is attempting to start a call');
+          console.warn('Another tab is in a call');
         }
+      } else if (event.data === 'call-ended') {
+        // Another tab ended a call - we can ignore this, just for awareness
+        console.log('Another tab ended a call');
       }
     };
 
@@ -165,15 +182,30 @@ export function VoiceCallButton({
         setCallSignal(signal);
         
         if (signal) {
+          const isGroupCall = signal.isGroupCall || chatId.startsWith('project-') || chatId.startsWith('team-');
+          const isCallee = signal.calleeEmail?.toLowerCase() === user.email?.toLowerCase();
+          const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+          
+          // For group calls, check if user is in participantEmails
+          let isGroupCallParticipant = false;
+          if (isGroupCall && signal.participantEmails) {
+            isGroupCallParticipant = signal.participantEmails.some(
+              (email: string) => email?.toLowerCase() === user.email?.toLowerCase()
+            );
+          }
+          
           // Handle incoming call
-          if (signal.status === 'ringing' && signal.calleeEmail.toLowerCase() === user.email?.toLowerCase()) {
+          if (signal.status === 'ringing' && isCallee && !isGroupCall) {
             setIsCalling(true);
             callIdRef.current = signal.callId;
           } else if (signal.status === 'active') {
-            setIsCalling(true);
-            callIdRef.current = signal.callId;
-          } else if (signal.status === 'ringing' && signal.callerEmail.toLowerCase() === user.email?.toLowerCase()) {
-            // Outgoing call (we're the caller)
+            // Active call - user is either caller, callee, or group call participant
+            if (isCaller || isCallee || isGroupCallParticipant) {
+              setIsCalling(true);
+              callIdRef.current = signal.callId;
+            }
+          } else if (signal.status === 'ringing' && (isCaller || isGroupCallParticipant)) {
+            // Outgoing call (we're the caller) or group call participant
             setIsCalling(true);
             callIdRef.current = signal.callId;
           } else if (signal.status === 'ended') {
@@ -287,18 +319,21 @@ export function VoiceCallButton({
         
         const timeout = setTimeout(() => {
           checkChannel.close();
-        }, 100); // Reduced from 300ms to match reduced wait time
+        }, 100);
         
         const handleMessage = (event: MessageEvent) => {
           if (event.data === 'call-active') {
             hasActiveCall = true;
+          } else if (event.data === 'call-ended') {
+            // Another tab confirmed no call - we can proceed
+            hasActiveCall = false;
           }
         };
         
         checkChannel.addEventListener('message', handleMessage);
         checkChannel.postMessage('check-call');
         
-        // Wait for responses from other tabs (reduced from 200ms to 50ms for faster startup)
+        // Wait for responses from other tabs
         await new Promise(resolve => setTimeout(resolve, 50));
         
         clearTimeout(timeout);
@@ -397,20 +432,23 @@ export function VoiceCallButton({
           callId,
           chatId,
           roomName,
-          callerEmail: user.email,
+          callerEmail: user.email?.toLowerCase(), // Ensure lowercase for Firestore rules
           status: 'ringing',
           createdAt: new Date(),
           isGroupCall,
         };
         
-        // For 1:1 calls, include calleeEmail
+        // For 1:1 calls, include calleeEmail (required for security rules)
         if (!isGroupCall && otherUserEmail) {
-          callData.calleeEmail = otherUserEmail;
+          callData.calleeEmail = otherUserEmail.toLowerCase(); // Ensure lowercase
         }
         
-        // For group calls, include all member emails
+        // For group calls, include all member emails and set calleeEmail to chatId
+        // This allows all channel members to see the call (security rules check participantEmails)
         if (isGroupCall && groupMembers.length > 0) {
-          callData.participantEmails = groupMembers.map(m => m.email).filter(Boolean);
+          callData.participantEmails = groupMembers.map(m => m.email?.toLowerCase()).filter(Boolean);
+          // Set calleeEmail to chatId so all members can see it (security rules will check participantEmails)
+          callData.calleeEmail = chatId; // Use chatId as a placeholder for group calls
         }
         
         // Note: We're not using Firestore for signaling anymore, just for call metadata
@@ -420,30 +458,44 @@ export function VoiceCallButton({
           const callRef = doc(db, callsPath, callId);
           await setDoc(callRef, callData);
           
-          // For group calls, notify all members about the call
-          if (isGroupCall && groupMembers.length > 0) {
-            // Create call invitations for each member
-            const invitationsPath = `orgs/${orgSlug || 'default'}/callInvitations`;
-            const { collection, addDoc } = await import('firebase/firestore');
-            const invitationsRef = collection(db, invitationsPath);
-            
-            // Create invitations for all members except the caller
-            const invitationPromises = groupMembers
-              .filter(m => m.email && m.email.toLowerCase() !== user.email.toLowerCase())
-              .map(member => 
-                addDoc(invitationsRef, {
-                  callId,
-                  chatId,
-                  roomName,
-                  callerEmail: user.email,
-                  participantEmail: member.email,
-                  status: 'pending',
-                  createdAt: new Date(),
-                })
-              );
-            
-            await Promise.all(invitationPromises);
-            console.log('Group call invitations created', { callId, participantCount: groupMembers.length });
+          // For group calls, create a message in the channel to notify members
+          if (isGroupCall) {
+            try {
+              // Get user's display name from allDomainUsers
+              const currentUserData = allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase());
+              const firstName = currentUserData?.firstName || '';
+              const lastName = currentUserData?.lastName || '';
+              const callerName = `${firstName} ${lastName}`.trim() || user?.email || 'Someone';
+              const callerInitials = firstName && lastName
+                ? `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase()
+                : user?.email?.charAt(0).toUpperCase() || 'U';
+              
+              // Determine projectId or teamId from chatId
+              let projectId: string | undefined;
+              let teamId: string | undefined;
+              if (chatId.startsWith('project-')) {
+                projectId = chatId.replace('project-', '');
+              } else if (chatId.startsWith('team-')) {
+                teamId = chatId.replace('team-', '');
+              }
+              
+              // Create a message in the channel announcing the call
+              // Include callId and roomName in the content so we can detect it later
+              await messagesService.create({
+                chatId,
+                role: 'user',
+                content: `📞 ${callerName} started a voice call. [CALL:${callId}:${roomName}]`,
+                projectId,
+                teamId,
+                memberName: callerName,
+                memberAvatar: callerInitials,
+              });
+              
+              console.log('Group call message created in channel', { callId, roomName, participantCount: groupMembers.length });
+            } catch (messageError) {
+              console.error('Failed to create group call message:', messageError);
+              // Continue anyway - call is already started
+            }
           }
         }
         
@@ -494,6 +546,9 @@ export function VoiceCallButton({
 
   const handleEndCall = async () => {
     try {
+      // Check if user is the call creator
+      const isCallCreator = callSignal?.callerEmail.toLowerCase() === user?.email?.toLowerCase();
+      
       // If parent provided an end call handler, use it (it has access to the callId)
       if (onEndCall) {
         await onEndCall();
@@ -507,13 +562,21 @@ export function VoiceCallButton({
       // Otherwise, use the local callIdRef
       const callIdToUse = externalCallId || callIdRef.current;
       
-      // Update signaling service to notify the other user
+      // For group calls: only end the call for everyone if user is the creator
+      // Otherwise, just leave the call (don't update Firestore status)
       if (callIdToUse) {
-        try {
-          await callSignalingService.endCall(callIdToUse);
-        } catch (err) {
-          console.error('Error ending call:', err);
-          // Continue with cleanup even if update fails
+        if (isGroupCall && !isCallCreator) {
+          // Attendee leaving - just disconnect, don't end the call for everyone
+          console.log('Attendee leaving group call', { callId: callIdToUse });
+          // Don't call callSignalingService.endCall() - just disconnect locally
+        } else {
+          // Creator ending call or 1:1 call - end it for everyone
+          try {
+            await callSignalingService.endCall(callIdToUse);
+          } catch (err) {
+            console.error('Error ending call:', err);
+            // Continue with cleanup even if update fails
+          }
         }
         if (!externalCallId) {
           callIdRef.current = null;
@@ -527,7 +590,7 @@ export function VoiceCallButton({
       processedAnswerRef.current = null; // Reset processed answer tracking
       setCallSignal(null); // Clear call signal state
       
-      console.log('Call ended successfully');
+      console.log('Call ended/left successfully');
     } catch (err) {
       console.error('Error ending call:', err);
       // Still clean up local resources even if there's an error
@@ -569,6 +632,22 @@ export function VoiceCallButton({
 
   // Show end call button during any active call state
   if (isInCall) {
+    // Check if user is the call creator
+    // For group calls, only the creator (caller) can end the call for everyone
+    // Other participants can only leave
+    const isCallCreator = callSignal?.callerEmail?.toLowerCase() === user?.email?.toLowerCase();
+    
+    // For group calls: if we have callSignal and user is not the creator, show "Leave"
+    // If callSignal is not available yet, default to "End Call" (will be corrected when signal arrives)
+    const showLeaveButton = isGroupCall && callSignal && !isCallCreator;
+    
+    const buttonText = showLeaveButton
+      ? 'Leave' 
+      : (displayStatus === 'ringing' ? 'Cancel' : 'End Call');
+    const buttonTitle = showLeaveButton
+      ? 'Leave the call' 
+      : 'End call for everyone';
+    
     return (
       <div className="flex items-center gap-2">
         {isGroupCall && participantCount > 1 && (
@@ -581,10 +660,10 @@ export function VoiceCallButton({
           size="sm"
           onClick={handleEndCall}
           className={className}
-          title="End call"
+          title={buttonTitle}
         >
           <PhoneOff className="h-4 w-4 mr-2" />
-          {displayStatus === 'ringing' ? 'Cancel' : 'End Call'}
+          {buttonText}
         </Button>
       </div>
     );
@@ -602,6 +681,43 @@ export function VoiceCallButton({
       >
         <Phone className="h-4 w-4 mr-2" />
         Call
+      </Button>
+    );
+  }
+
+  // For group calls, show "Join Call" button if there's an active call we're not in
+  const showJoinButton = isGroupCall && callSignal && 
+    (callSignal.status === 'ringing' || callSignal.status === 'active') &&
+    callStatus === 'idle' &&
+    !isCalling &&
+    callSignal.callerEmail.toLowerCase() !== user?.email?.toLowerCase();
+
+  if (showJoinButton) {
+    return (
+      <Button
+        variant="default"
+        size="sm"
+        onClick={async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!callSignal?.roomName) return;
+          
+          try {
+            setIsCalling(true);
+            const participantName = user?.name || user?.email || 'User';
+            await answerCall(callSignal.roomName, participantName);
+            callIdRef.current = callSignal.callId;
+            setCurrentCallId(callSignal.callId);
+            console.log('Joined group call', { callId: callSignal.callId, roomName: callSignal.roomName });
+          } catch (err) {
+            console.error('Error joining group call:', err);
+            setIsCalling(false);
+          }
+        }}
+        className={className}
+      >
+        <Phone className="h-4 w-4 mr-2" />
+        Join Call
       </Button>
     );
   }
@@ -646,6 +762,7 @@ export function IncomingCallDialog({
   onReject,
   onMuteStateChange,
 }: IncomingCallDialogProps) {
+  const { user } = useAuth();
   const [isAnswering, setIsAnswering] = useState(false);
   const callIdRef = useRef<string | null>(callSignal.callId);
   const {
@@ -654,6 +771,7 @@ export function IncomingCallDialog({
     isMuted,
     toggleMute,
     callStatus,
+    setCurrentCallId,
   } = useWebRTCContext();
 
   // LiveKit handles signaling internally, no ICE candidate handling needed
@@ -734,6 +852,31 @@ export function IncomingCallDialog({
           // Continue anyway - LiveKit call is already connected
         }
       }
+
+      // Update invitation status if this is a group call invitation
+      if (callSignal.callId && db && user?.email) {
+        try {
+          const orgSlug = getCurrentOrgSlug();
+          const invitationsPath = `orgs/${orgSlug || 'default'}/callInvitations`;
+          const { collection, query, where, getDocs, updateDoc, doc } = await import('firebase/firestore');
+          const invitationsRef = collection(db, invitationsPath);
+          const q = query(
+            invitationsRef,
+            where('callId', '==', callSignal.callId),
+            where('participantEmail', '==', user.email.toLowerCase())
+          );
+          const snapshot = await getDocs(q);
+          snapshot.forEach(async (invitationDoc) => {
+            await updateDoc(doc(db, invitationsPath, invitationDoc.id), {
+              status: 'accepted',
+            });
+          });
+          console.log('✅ IncomingCallDialog: Invitation status updated to accepted');
+        } catch (invitationError) {
+          console.error('❌ IncomingCallDialog: Error updating invitation status:', invitationError);
+          // Continue anyway - LiveKit call is already connected
+        }
+      }
       
       // Set call ID ref
       callIdRef.current = callSignal.callId;
@@ -741,8 +884,16 @@ export function IncomingCallDialog({
 
       console.log('✅ IncomingCallDialog: handleAccept completing, calling onAccept()');
       onAccept();
-    } catch (err) {
+    } catch (err: any) {
       console.error('❌ IncomingCallDialog: Error answering call:', err);
+      setIsAnswering(false);
+      
+      // Show user-friendly error message
+      const errorMessage = err.message || 'Failed to accept call. Please try again.';
+      alert(`Error accepting call: ${errorMessage}`);
+      
+      // Don't call onAccept if there was an error
+      // The dialog will remain open so user can try again
       setIsAnswering(false);
       
       // Clean up resources on error

@@ -2532,35 +2532,59 @@ export function Chatbot() {
             // Handle status updates for both caller and receiver
             // Only set currentCallId when we're actually starting/joining a call, not from 'ended' signals
             if (signal.status === 'ringing') {
-              const isCallee = signal.calleeEmail.toLowerCase() === user.email?.toLowerCase();
+              const isCallee = signal.calleeEmail?.toLowerCase() === user.email?.toLowerCase();
               const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+              const isGroupCall = signal.isGroupCall || chatId.startsWith('project-') || chatId.startsWith('team-');
+              
+              // For group calls, check if user is in participantEmails
+              let isGroupCallParticipant = false;
+              if (isGroupCall && signal.participantEmails) {
+                isGroupCallParticipant = signal.participantEmails.some(
+                  (email: string) => email?.toLowerCase() === user.email?.toLowerCase()
+                );
+              }
               
               // Set currentCallId only when we're actually in a call (ringing or active)
-              if (isCallee || isCaller) {
+              if (isCallee || isCaller || isGroupCallParticipant) {
                 setCurrentCallId(signal.callId);
               }
               
-              if (isCallee) {
-                // Incoming call for this user
+              if (isCallee && !isGroupCall) {
+                // Incoming 1:1 call for this user - show incoming call dialog
                 setIncomingCallSignal(signal);
                 setCallStatusFromSignal('ringing');
               } else if (isCaller) {
                 // Outgoing call (we're the caller)
+                setCallStatusFromSignal('ringing');
+              } else if (isGroupCallParticipant && !isCaller) {
+                // Group call - show in channel (not as incoming dialog)
+                // The call button will show "Join Call" instead
                 setCallStatusFromSignal('ringing');
               } else {
                 console.warn('⚠️ Call signal mismatch:', {
                   signalCallee: signal.calleeEmail,
                   signalCaller: signal.callerEmail,
                   currentUser: user.email,
+                  isGroupCall,
                 });
                 setCallStatusFromSignal('ringing');
               }
             } else if (signal.status === 'active') {
               // Call is active - both users should see this
               // Set currentCallId if we're part of this call
-              const isCallee = signal.calleeEmail.toLowerCase() === user.email?.toLowerCase();
+              const isCallee = signal.calleeEmail?.toLowerCase() === user.email?.toLowerCase();
               const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
-              if (isCallee || isCaller) {
+              const isGroupCall = signal.isGroupCall || chatId.startsWith('project-') || chatId.startsWith('team-');
+              
+              // For group calls, check if user is in participantEmails
+              let isGroupCallParticipant = false;
+              if (isGroupCall && signal.participantEmails) {
+                isGroupCallParticipant = signal.participantEmails.some(
+                  (email: string) => email?.toLowerCase() === user.email?.toLowerCase()
+                );
+              }
+              
+              if (isCallee || isCaller || isGroupCallParticipant) {
                 setCurrentCallId(signal.callId);
               }
               setIncomingCallSignal(null); // Clear incoming call signal if it was set
@@ -4501,46 +4525,46 @@ export function Chatbot() {
                     {(() => {
                       // Handle DM chats (1:1 calls)
                       if (!isProjectChannel && !isTeamChannel) {
-                        // Get the other user's email for DM chats
-                        let otherUserEmail = '';
-                        let otherUserName = currentMember.name;
-                        let otherUserAvatar = currentMember.avatar;
+                      // Get the other user's email for DM chats
+                      let otherUserEmail = '';
+                      let otherUserName = currentMember.name;
+                      let otherUserAvatar = currentMember.avatar;
 
-                        if (selectedMember.includes('@')) {
-                          otherUserEmail = selectedMember;
-                          const otherUser = allDomainUsers.find(u => u.email === selectedMember);
-                          if (otherUser) {
-                            otherUserName = `${otherUser.firstName || ''} ${otherUser.lastName || ''}`.trim() || otherUser.email;
-                            otherUserAvatar = `${otherUser.firstName?.charAt(0) || ''}${otherUser.lastName?.charAt(0) || ''}`.toUpperCase() || otherUser.email.charAt(0).toUpperCase();
-                          }
-                        } else {
-                          const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
-                          if (selectedMemberData?.email) {
-                            otherUserEmail = selectedMemberData.email;
-                            otherUserName = selectedMemberData.name;
-                            otherUserAvatar = selectedMemberData.avatar;
-                          }
+                      if (selectedMember.includes('@')) {
+                        otherUserEmail = selectedMember;
+                        const otherUser = allDomainUsers.find(u => u.email === selectedMember);
+                        if (otherUser) {
+                          otherUserName = `${otherUser.firstName || ''} ${otherUser.lastName || ''}`.trim() || otherUser.email;
+                          otherUserAvatar = `${otherUser.firstName?.charAt(0) || ''}${otherUser.lastName?.charAt(0) || ''}`.toUpperCase() || otherUser.email.charAt(0).toUpperCase();
                         }
+                      } else {
+                        const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
+                        if (selectedMemberData?.email) {
+                          otherUserEmail = selectedMemberData.email;
+                          otherUserName = selectedMemberData.name;
+                          otherUserAvatar = selectedMemberData.avatar;
+                        }
+                      }
 
-                        if (!otherUserEmail || !user?.email) return null;
+                      if (!otherUserEmail || !user?.email) return null;
 
-                        const chatId = getDirectMessageChatId(user.email, otherUserEmail);
-                        
-                        return (
-                          <VoiceCallButton
-                            chatId={chatId}
-                            otherUserEmail={otherUserEmail}
-                            otherUserName={otherUserName}
-                            otherUserAvatar={otherUserAvatar}
-                            externalCallStatus={displayCallStatus}
-                            externalCallId={currentCallId}
-                            onEndCall={handleEndCall}
-                            onMuteStateChange={(muted, toggle) => {
-                              setActiveCallMuted(muted);
-                              setActiveCallToggleMute(() => toggle);
-                            }}
-                          />
-                        );
+                      const chatId = getDirectMessageChatId(user.email, otherUserEmail);
+                      
+                      return (
+                        <VoiceCallButton
+                          chatId={chatId}
+                          otherUserEmail={otherUserEmail}
+                          otherUserName={otherUserName}
+                          otherUserAvatar={otherUserAvatar}
+                          externalCallStatus={displayCallStatus}
+                          externalCallId={currentCallId}
+                          onEndCall={handleEndCall}
+                          onMuteStateChange={(muted, toggle) => {
+                            setActiveCallMuted(muted);
+                            setActiveCallToggleMute(() => toggle);
+                          }}
+                        />
+                      );
                       }
                       
                       // Handle group calls (project/team channels)

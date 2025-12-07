@@ -873,6 +873,8 @@ export interface CallSignal {
   createdAt: Date | string;
   endedAt?: Date | string;
   roomName?: string; // LiveKit room name
+  isGroupCall?: boolean; // Whether this is a group call
+  participantEmails?: string[]; // All participants for group calls
 }
 
 export type CallSignalListener = (signal: CallSignal | null) => void;
@@ -1036,6 +1038,9 @@ export const callSignalingService = {
             iceCandidates: data.iceCandidates || [],
             createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || Date.now()),
             endedAt: data.endedAt?.toDate ? data.endedAt.toDate() : (data.endedAt ? new Date(data.endedAt) : undefined),
+            roomName: data.roomName,
+            isGroupCall: data.isGroupCall || false,
+            participantEmails: data.participantEmails || [],
           };
 
           if (import.meta.env.DEV) {

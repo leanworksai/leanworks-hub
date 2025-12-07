@@ -1,9 +1,16 @@
-import { User } from "lucide-react";
+import React from "react";
+import { User, Phone } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { cn, getAvatarColor } from "@/lib/utils";
 import { LikeButton } from "./LikeButton";
 import { CitedContextBadges } from "./CitedContextBadges";
 import { Message, ChannelMessage, LikedByUser, CitedContext } from "./types";
+import { useWebRTCContext } from "@/contexts/WebRTCContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { callSignalingService, type CallSignal } from "@/services/api";
+import { db } from "@/lib/firebase-client";
+import { getCurrentOrgSlug } from "@/services/api";
 
 // Render message content with highlighted mentions and clickable links
 function renderMessageContent(content: string): (string | JSX.Element)[] | string {
@@ -95,6 +102,122 @@ function renderMessageContent(content: string): (string | JSX.Element)[] | strin
   }
   
   return parts.length > 0 ? parts : content;
+}
+
+// Component to render "Join Call" button for call notification messages
+function CallJoinButton({ callId, roomName }: { callId: string; roomName: string }) {
+  const { answerCall, callStatus, setCurrentCallId, currentCallId } = useWebRTCContext();
+  const { user } = useAuth();
+  const [isJoining, setIsJoining] = React.useState(false);
+  const [callStatusFromFirestore, setCallStatusFromFirestore] = React.useState<'ringing' | 'active' | 'ended' | null>(null);
+
+  // Subscribe to call status from Firestore
+  React.useEffect(() => {
+    if (!callId || !db || !user?.email) return;
+
+    const checkCallStatus = async () => {
+      try {
+        const { doc, getDoc, onSnapshot } = await import('firebase/firestore');
+        const orgSlug = getCurrentOrgSlug();
+        if (!orgSlug) return;
+
+        const callRef = doc(db, `orgs/${orgSlug}/calls`, callId);
+        
+        // Check immediately
+        const callDoc = await getDoc(callRef);
+        if (callDoc.exists()) {
+          const data = callDoc.data();
+          setCallStatusFromFirestore(data.status || 'ringing');
+        } else {
+          // Call document doesn't exist, assume ended
+          setCallStatusFromFirestore('ended');
+        }
+
+        // Subscribe to real-time updates
+        const unsubscribe = onSnapshot(callRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            setCallStatusFromFirestore(data.status || 'ringing');
+          } else {
+            // Call document doesn't exist, assume ended
+            setCallStatusFromFirestore('ended');
+          }
+        }, (error) => {
+          console.error('Error subscribing to call status:', error);
+        });
+
+        return unsubscribe;
+      } catch (err) {
+        console.error('Error checking call status:', err);
+        return () => {}; // Return empty cleanup function
+      }
+    };
+
+    let unsubscribe: (() => void) | undefined;
+    checkCallStatus().then((unsub) => {
+      unsubscribe = unsub;
+    });
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [callId, user?.email]);
+
+  const handleJoinCall = async () => {
+    if (callStatus !== 'idle') {
+      return; // Already in a call
+    }
+
+    try {
+      setIsJoining(true);
+      const participantName = user?.email || 'User';
+      await answerCall(roomName, participantName);
+      // Set the call ID so the button updates to "Leave"
+      setCurrentCallId(callId);
+      console.log('Joined call from message', { callId, roomName });
+    } catch (err) {
+      console.error('Error joining call from message:', err);
+      alert('Failed to join call. Please try again.');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
+  // Check if call has ended
+  const isCallEnded = callStatusFromFirestore === 'ended';
+  
+  // Check if user is already in this call
+  const isInCall = callStatus !== 'idle' && callStatus !== 'ended' && currentCallId === callId;
+  
+  if (isCallEnded) {
+    return (
+      <div className="mt-2 text-xs text-muted-foreground italic">
+        Call ended
+      </div>
+    );
+  }
+
+  if (isInCall) {
+    return (
+      <div className="mt-2 text-xs text-muted-foreground">
+        You're in this call
+      </div>
+    );
+  }
+
+  return (
+    <Button
+      size="sm"
+      onClick={handleJoinCall}
+      disabled={isJoining}
+      className="mt-2"
+    >
+      <Phone className="h-4 w-4 mr-2" />
+      {isJoining ? 'Joining...' : 'Join Call'}
+    </Button>
+  );
 }
 
 export interface ChatMessageProps {
@@ -221,12 +344,33 @@ export function ChatMessage({
           )}
           
           {/* Message content */}
-          <p 
-            className="text-sm whitespace-pre-wrap font-medium text-foreground break-words"
-            style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-          >
-            {renderMessageContent(message.content)}
-          </p>
+          {(() => {
+            // Check if this is a call notification message
+            const callMatch = message.content.match(/\[CALL:([^:]+):([^\]]+)\]/);
+            if (callMatch) {
+              const [, callId, roomName] = callMatch;
+              const displayContent = message.content.replace(/\[CALL:[^\]]+\]/, '').trim();
+              return (
+                <div className="space-y-2">
+                  <p 
+                    className="text-sm whitespace-pre-wrap font-medium text-foreground break-words"
+                    style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                  >
+                    {renderMessageContent(displayContent)}
+                  </p>
+                  <CallJoinButton callId={callId} roomName={roomName} />
+                </div>
+              );
+            }
+            return (
+              <p 
+                className="text-sm whitespace-pre-wrap font-medium text-foreground break-words"
+                style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+              >
+                {renderMessageContent(message.content)}
+              </p>
+            );
+          })()}
           
           {/* Images */}
           {message.imageUrls && message.imageUrls.length > 0 && (

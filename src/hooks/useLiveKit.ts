@@ -82,6 +82,7 @@ export function useLiveKit(
   const roomRef = useRef<Room | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const isMutedRef = useRef(false);
   const participantsRef = useRef<Map<string, ParticipantInfo>>(new Map());
   const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map()); // Track streams per participant
@@ -93,6 +94,78 @@ export function useLiveKit(
       onStatusChange(status);
     }
   }, [onStatusChange]);
+
+  // Create and manage remote audio element for playback
+  useEffect(() => {
+    // Create audio element if it doesn't exist
+    if (!remoteAudioRef.current) {
+      const audio = document.createElement('audio');
+      audio.autoplay = true;
+      audio.setAttribute('playsinline', 'true'); // Required for Safari/iOS
+      audio.setAttribute('crossorigin', 'anonymous');
+      audio.style.display = 'none';
+      audio.style.position = 'fixed';
+      audio.style.top = '0';
+      audio.style.left = '0';
+      audio.style.width = '0';
+      audio.style.height = '0';
+      audio.style.opacity = '0';
+      audio.style.pointerEvents = 'none';
+      document.body.appendChild(audio);
+      remoteAudioRef.current = audio;
+
+      // Add event listeners for debugging
+      audio.addEventListener('play', () => {
+        console.log('🎵 Remote audio element started playing');
+      });
+      audio.addEventListener('playing', () => {
+        console.log('🎵 Remote audio element is playing');
+      });
+      audio.addEventListener('error', (e) => {
+        console.error('❌ Remote audio element error:', e, {
+          error: audio.error,
+          networkState: audio.networkState,
+          readyState: audio.readyState,
+        });
+      });
+    }
+
+    // Update audio element when remote stream changes
+    if (remoteStream && remoteAudioRef.current) {
+      const audio = remoteAudioRef.current;
+      const audioTracks = remoteStream.getAudioTracks();
+      
+      console.log('🎵 Updating remote audio element', {
+        streamId: remoteStream.id,
+        trackCount: audioTracks.length,
+        tracks: audioTracks.map(t => ({ id: t.id, enabled: t.enabled, muted: t.muted, readyState: t.readyState })),
+      });
+
+      audio.srcObject = remoteStream;
+
+      // Try to play the audio
+      audio.play().then(() => {
+        console.log('✅ Remote audio playback started');
+      }).catch((err) => {
+        console.error('❌ Failed to play remote audio:', err);
+        // On some browsers, autoplay might be blocked - user interaction is required
+        console.warn('⚠️ Audio autoplay blocked. User interaction may be required.');
+      });
+    } else if (!remoteStream && remoteAudioRef.current) {
+      // Clear the audio element when stream is removed
+      remoteAudioRef.current.srcObject = null;
+      console.log('🎵 Remote audio element cleared');
+    }
+
+    // Cleanup on unmount
+    return () => {
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = null;
+        remoteAudioRef.current.remove();
+        remoteAudioRef.current = null;
+      }
+    };
+  }, [remoteStream]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -108,6 +181,11 @@ export function useLiveKit(
       if (remoteStreamRef.current) {
         remoteStreamRef.current.getTracks().forEach(track => track.stop());
         remoteStreamRef.current = null;
+      }
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = null;
+        remoteAudioRef.current.remove();
+        remoteAudioRef.current = null;
       }
     };
   }, []);
@@ -148,6 +226,18 @@ export function useLiveKit(
 
       // Get LiveKit token
       const { token, url } = await fetchLiveKitToken(roomName, participantName);
+      
+      // Validate token is a string
+      if (typeof token !== 'string') {
+        throw new Error(`Invalid token type: expected string, got ${typeof token}. Token: ${JSON.stringify(token)}`);
+      }
+      
+      // Validate URL
+      if (!url || typeof url !== 'string') {
+        throw new Error(`Invalid URL: expected string, got ${typeof url}. URL: ${JSON.stringify(url)}`);
+      }
+      
+      console.log('📞 Connecting to LiveKit:', { url, tokenLength: token.length, tokenPreview: token.substring(0, 20) + '...' });
 
       // Create room
       const room = new Room();
