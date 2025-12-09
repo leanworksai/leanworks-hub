@@ -92,6 +92,9 @@ spec:
           
           # Generate LiveKit config file
           mkdir -p /etc/livekit
+          # Get webhook URL from environment or use default
+          WEBHOOK_URL=\${WEBHOOK_URL:-https://api.leanworks.ai/api/livekit/webhook}
+          
           cat > /etc/livekit/livekit.yaml <<EOF
           port: 7880
           bind_addresses:
@@ -105,6 +108,10 @@ spec:
             ${API_KEY}: ${API_SECRET}
           development: false
           log_level: info
+          webhook:
+            api_key: ${API_KEY}
+            urls:
+              - ${WEBHOOK_URL}
           EOF
           
           echo "✅ LiveKit config generated at /etc/livekit/livekit.yaml"

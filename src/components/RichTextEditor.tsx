@@ -101,6 +101,9 @@ export function RichTextEditor({
       if (!isUpdatingRef.current) {
         const html = editor.getHTML();
         contentRef.current = html;
+        // Update lastContentPropRef to match what the user just typed
+        // This prevents the useEffect from triggering an update when content prop changes
+        lastContentPropRef.current = html;
         onChange(html);
       }
     },
@@ -108,7 +111,19 @@ export function RichTextEditor({
       editorInitializedRef.current = true;
       const initialHtml = editor.getHTML();
       contentRef.current = initialHtml;
-      lastContentPropRef.current = content || '';
+      // Initialize with the actual content prop, not the editor's initial HTML
+      const normalizedContent = content || '<p></p>';
+      lastContentPropRef.current = normalizedContent;
+      // Always set content from prop if it's different (handles case where content loads after mount)
+      if (normalizedContent !== initialHtml) {
+        // Use setTimeout to ensure editor is fully ready
+        setTimeout(() => {
+          if (!editor.isDestroyed) {
+            editor.commands.setContent(normalizedContent, false);
+            contentRef.current = normalizedContent;
+          }
+        }, 0);
+      }
     },
     editorProps: {
       attributes: {
@@ -142,33 +157,47 @@ export function RichTextEditor({
   });
 
   // Update editor content when the content prop changes
+  // Only update when loading a new note, not during user editing
   useEffect(() => {
     if (!editor || !editorInitializedRef.current) {
       return;
     }
 
     const normalizedContent = content || '<p></p>';
-    const currentEditorContent = editor.getHTML();
-
-    const contentPropChanged = normalizedContent !== lastContentPropRef.current;
-    const needsUpdate =
-      contentPropChanged || (normalizedContent !== currentEditorContent && normalizedContent !== '<p></p>');
-
-    if (!needsUpdate) {
+    
+    // Skip if content prop hasn't changed from what we last processed
+    if (normalizedContent === lastContentPropRef.current) {
       return;
     }
 
+    // Get current editor content to compare
+    const currentEditorContent = editor.getHTML();
+
+    // If the editor content already matches the new content prop, 
+    // this change came from user typing (onChange was called), so don't update
+    // Updating would reset cursor position and cause it to jump
+    if (currentEditorContent === normalizedContent || 
+        currentEditorContent.trim() === normalizedContent.trim()) {
+      // Just update the ref to prevent unnecessary updates
+      lastContentPropRef.current = normalizedContent;
+      contentRef.current = normalizedContent;
+      return;
+    }
+
+    // Only update if content is significantly different (e.g., loading a new note from database)
+    // This prevents cursor jumps during typing
     isUpdatingRef.current = true;
     lastContentPropRef.current = normalizedContent;
 
     try {
+      // Use a timeout to ensure editor is ready and to batch updates
       const timeoutId = setTimeout(() => {
         if (editor && !editor.isDestroyed) {
           editor.commands.setContent(normalizedContent, false);
           contentRef.current = normalizedContent;
         }
         isUpdatingRef.current = false;
-      }, 50);
+      }, 100);
 
       return () => clearTimeout(timeoutId);
     } catch {

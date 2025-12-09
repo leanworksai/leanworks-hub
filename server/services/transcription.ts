@@ -137,6 +137,7 @@ export async function startTranscriptionSession(
         // Set up event handlers
         transcriber.on('open', ({ id }: { id: string }) => {
           console.log(`✅ Transcription session opened for ${email}, ID: ${id}`);
+          console.log(`   Call: ${callId}, Room: ${roomName}`);
         });
 
         transcriber.on('turn', (turn: any) => {
@@ -147,15 +148,32 @@ export async function startTranscriptionSession(
             }
             session.transcripts.get(email)!.push(turn.transcript);
             console.log(`📝 Transcript for ${email}: ${turn.transcript}`);
+            console.log(`   Call: ${callId}, Total turns: ${session.transcripts.get(email)!.length}`);
+          } else {
+            console.log(`⚠️ Empty turn received for ${email}`);
+          }
+        });
+        
+        transcriber.on('transcript', (transcript: any) => {
+          // Also log partial transcripts if available
+          if (transcript.text && transcript.text.trim()) {
+            console.log(`📄 Partial transcript for ${email}: ${transcript.text.substring(0, 100)}...`);
+          } else {
+            console.log(`⚠️ Empty transcript received for ${email}`);
           }
         });
 
         transcriber.on('error', (error: any) => {
           console.error(`❌ Transcription error for ${email}:`, error.message || error);
+          console.error(`   Error details:`, error);
+          if (error.stack) {
+            console.error(`   Stack:`, error.stack);
+          }
         });
 
         transcriber.on('close', (code: number, reason: string) => {
           console.log(`🔌 Transcription connection closed for ${email}: ${code} - ${reason}`);
+          console.log(`   Call: ${callId}`);
         });
 
         // Connect the transcriber
@@ -177,7 +195,12 @@ export async function startTranscriptionSession(
         // the Node.js Readable stream to a Web ReadableStream and use pipeTo
         if (typeof Readable.toWeb === 'function') {
           // Node.js 16.5.0+ has Readable.toWeb
-          Readable.toWeb(audioStream).pipeTo(transcriber.stream());
+          const webStream = Readable.toWeb(audioStream);
+          webStream.pipeTo(transcriber.stream()).catch((error: any) => {
+            console.error(`❌ Error piping audio stream to transcriber for ${email}:`, error);
+            console.error(`   Error details:`, error.message || error);
+          });
+          console.log(`✅ Audio stream piped to transcriber for ${email}`);
         } else {
           // Fallback: create a simple pass-through approach
           // For older Node.js versions, we might need a different approach
@@ -187,6 +210,7 @@ export async function startTranscriptionSession(
         // Store transcriber and audio stream for this participant
         session.transcribers.set(email, transcriber);
         session.audioStreams.set(email, audioStream);
+        console.log(`✅ Transcriber and audio stream stored for ${email}`);
       } catch (error: any) {
         console.error(`❌ Error creating transcriber for ${email}:`, error.message || error);
         // Continue with other participants even if one fails
@@ -195,6 +219,9 @@ export async function startTranscriptionSession(
 
     activeSessions.set(callId, session);
     console.log(`✅ Transcription session started for call ${callId} with ${participants.length} participants`);
+    
+    // Notify that transcription is now active (for egress to start for existing tracks)
+    // This will be handled by the webhook system when it detects transcription is active
   } catch (error) {
     console.error('❌ Error starting transcription session:', error);
     throw error;
@@ -212,6 +239,10 @@ export function processAudioChunk(
   const session = activeSessions.get(callId);
   if (!session || !session.isActive) {
     console.warn(`⚠️ No active transcription session for call ${callId}`);
+    console.warn(`   Active sessions: ${Array.from(activeSessions.keys()).join(', ')}`);
+    if (session) {
+      console.warn(`   Session exists but isActive=${session.isActive}`);
+    }
     return;
   }
 
@@ -222,14 +253,32 @@ export function processAudioChunk(
   
   if (audioStream) {
     try {
+      // Check if stream is still readable
+      if (audioStream.destroyed || audioStream.readableEnded) {
+        console.error(`❌ Audio stream is destroyed or ended for ${email} in call ${callId}`);
+        return;
+      }
+      
       // Push audio chunk to the readable stream
       // This will be piped to the transcriber's stream
-      audioStream.push(audioChunk);
+      const pushed = audioStream.push(audioChunk);
+      if (!pushed) {
+        console.warn(`⚠️ Audio stream backpressure for ${email} - stream is full`);
+      }
+      
+      // Log periodically to confirm audio is being processed
+      if (Math.random() < 0.01) { // Log ~1% of chunks to avoid spam
+        console.log(`🎵 Audio chunk processed for ${email}: ${audioChunk.length} bytes (call: ${callId})`);
+        console.log(`   Stream readable: ${audioStream.readable}, destroyed: ${audioStream.destroyed}`);
+      }
     } catch (error: any) {
       console.error(`❌ Error sending audio chunk for ${email}:`, error.message || error);
+      console.error(`   Stack:`, error.stack);
     }
   } else {
     console.warn(`⚠️ No audio stream available for participant ${email} in call ${callId}`);
+    console.warn(`   Available participants: ${Array.from(session.audioStreams.keys()).join(', ')}`);
+    console.warn(`   Session participants: ${Array.from(session.participants.keys()).join(', ')}`);
   }
 }
 
@@ -274,13 +323,23 @@ export async function finalizeTranscriptionSession(
     
     if (fullTranscript.trim()) {
       finalTranscripts.set(email, fullTranscript);
+      console.log(`📝 Final transcript for ${email}: ${fullTranscript.substring(0, 100)}${fullTranscript.length > 100 ? '...' : ''}`);
+    } else {
+      console.log(`⚠️ No transcript generated for ${email} (empty or no audio received)`);
     }
+  }
+
+  if (finalTranscripts.size === 0) {
+    console.warn(`⚠️ No transcripts generated for call ${callId}. This usually means:`);
+    console.warn(`   1. No audio was received (egress not working)`);
+    console.warn(`   2. Audio format was incorrect`);
+    console.warn(`   3. AssemblyAI didn't detect any speech`);
   }
 
   // Clean up session
   activeSessions.delete(callId);
 
-  console.log(`✅ Transcription finalized for call ${callId}`);
+  console.log(`✅ Transcription finalized for call ${callId} - ${finalTranscripts.size} participant(s) with transcripts`);
   return finalTranscripts;
 }
 
@@ -348,4 +407,26 @@ export function stopTranscriptionSession(callId: string): void {
 export function isTranscriptionActive(callId: string): boolean {
   const session = activeSessions.get(callId);
   return session?.isActive || false;
+}
+
+/**
+ * Find active transcription session by roomName
+ * Returns the callId if transcription is active for that room
+ */
+export function findActiveTranscriptionByRoom(roomName: string): string | null {
+  for (const [callId, session] of activeSessions.entries()) {
+    if (session.isActive && session.roomName === roomName) {
+      return callId;
+    }
+  }
+  return null;
+}
+
+/**
+ * Get transcription session data by callId
+ * Returns the session if it exists and is active
+ */
+export function getTranscriptionSession(callId: string): TranscriptionSession | null {
+  const session = activeSessions.get(callId);
+  return session?.isActive ? session : null;
 }

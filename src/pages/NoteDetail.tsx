@@ -26,9 +26,10 @@ export default function NoteDetail() {
   // Load note data when editing
   useEffect(() => {
     if (note && !isNew) {
-      setTitle(note.title);
-      setContent(note.content || "");
-      setIsPinned(note.isPinned);
+      setTitle(note.title || "");
+      // Preserve content even if it's empty string, only default to empty if it's null/undefined
+      setContent(note.content !== null && note.content !== undefined ? note.content : "");
+      setIsPinned(note.isPinned || false);
     } else if (isNew) {
       // Reset form for new note
       setTitle("");
@@ -145,7 +146,7 @@ export default function NoteDetail() {
         </div>
       </div>
 
-      {(!isNew && isLoading && !content) ? (
+      {(!isNew && isLoading && !note) ? (
         <div className="min-h-[500px] border rounded-lg flex items-center justify-center">
           <p className="text-muted-foreground">Loading content...</p>
         </div>

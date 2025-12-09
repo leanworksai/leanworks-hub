@@ -34,7 +34,8 @@ import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
-import { setupLiveKitEndpoints } from './endpoints/livekit.js';
+import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
+import http from 'http';
 import { sendVerificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
@@ -4748,7 +4749,7 @@ setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.pr
 // LIVEKIT ENDPOINTS (LiveKit SFU token generation)
 // ============================================================================
 
-setupLiveKitEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
+setupLiveKitEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id, db);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
@@ -5472,9 +5473,16 @@ app.use((req, res, next) => {
 // START SERVER
 // ============================================================================
 
-app.listen(PORT, '0.0.0.0', () => {
+// Create HTTP server (needed for WebSocket support)
+const server = http.createServer(app);
+
+// Set up WebSocket server for LiveKit audio streaming
+setupLiveKitWebSocketServer(server);
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`✅ Health check available at http://0.0.0.0:${PORT}/api/health`);
+  console.log(`✅ WebSocket server available at ws://0.0.0.0:${PORT}/api/livekit/audio-ws`);
 });
 
 

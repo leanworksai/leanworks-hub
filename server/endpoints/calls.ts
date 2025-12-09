@@ -726,6 +726,10 @@ export function setupCallEndpoints(
         transcriptionEnabled: true,
       });
 
+      console.log(`✅ Transcription started for call ${callId}`);
+      console.log(`📝 Note: Egress will start automatically via webhooks when audio tracks are published`);
+      console.log(`   If tracks were published before transcription started, webhook retry will handle them`);
+
       res.json({ success: true, message: 'Transcription started' });
     } catch (error: any) {
       console.error('Start transcription error:', error);

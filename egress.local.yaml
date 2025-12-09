@@ -1,0 +1,12 @@
+# LiveKit Egress Service Configuration for Local Development
+# Based on official LiveKit egress config format
+# https://github.com/livekit/egress
+
+log_level: debug
+api_key: devkey
+api_secret: devsecret
+ws_url: ws://host.docker.internal:7880
+insecure: true
+redis:
+  address: host.docker.internal:6379
+

@@ -24,7 +24,9 @@ export const useNote = (noteId: string) => {
     queryKey: ['notes', noteId, currentOrg?.id],
     queryFn: () => notesService.getById(noteId),
     enabled: !loading && !orgLoading && !!user && !!currentOrg && !!noteId, // Only fetch when user is authenticated and noteId is provided
-    staleTime: 1000 * 60 * 5,
+    staleTime: 0, // Always refetch to ensure fresh data
+    refetchOnMount: true, // Always refetch when component mounts
+    refetchOnWindowFocus: false, // Don't refetch on window focus to avoid unnecessary requests
   });
 };
 
@@ -50,6 +52,8 @@ export const useUpdateNote = () => {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['notes'] });
       queryClient.invalidateQueries({ queryKey: ['notes', variables.noteId] });
+      // Refetch the specific note to ensure fresh data
+      queryClient.refetchQueries({ queryKey: ['notes', variables.noteId] });
     },
   });
 };

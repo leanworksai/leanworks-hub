@@ -1283,11 +1283,14 @@ export const callSignalingService = {
                   return;
                 }
 
-                // Verify offer exists and is valid
-                if (!data.offer || data.status !== 'ringing') {
-                  console.log('📞 subscribeToIncomingOffers: Call missing offer or wrong status', {
+                // Verify call has either an offer (WebRTC) or roomName (LiveKit) and is ringing
+                const hasOffer = !!data.offer;
+                const hasRoomName = !!data.roomName;
+                if ((!hasOffer && !hasRoomName) || data.status !== 'ringing') {
+                  console.log('📞 subscribeToIncomingOffers: Call missing offer/roomName or wrong status', {
                     callId,
-                    hasOffer: !!data.offer,
+                    hasOffer,
+                    hasRoomName,
                     status: data.status,
                   });
                   return;
@@ -1332,6 +1335,9 @@ export const callSignalingService = {
                   iceCandidates: data.iceCandidates || [],
                   createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || Date.now()),
                   endedAt: data.endedAt?.toDate ? data.endedAt.toDate() : (data.endedAt ? new Date(data.endedAt) : undefined),
+                  roomName: data.roomName,
+                  isGroupCall: data.isGroupCall || false,
+                  participantEmails: data.participantEmails || [],
                 };
 
                 callback(signal);
@@ -1661,6 +1667,46 @@ export const callSignalingService = {
     await updateDoc(callRef, {
       iceCandidates: arrayUnion(JSON.stringify(candidate)),
     });
+  },
+
+  /**
+   * Start transcription for an active call
+   */
+  async startTranscription(callId: string): Promise<void> {
+    if (!auth?.currentUser?.email) {
+      throw new Error('User not authenticated');
+    }
+
+    const idToken = await getAuthToken();
+    if (!idToken) {
+      throw new Error('Failed to get auth token');
+    }
+
+    const apiUrl = import.meta.env.DEV
+      ? `${API_BASE}/api/calls/${callId}/start-transcription`
+      : `${API_BASE}/calls/${callId}/start-transcription`;
+
+    const currentOrgId = getCurrentOrgId();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`,
+    };
+    
+    if (currentOrgId) {
+      headers['X-Org-Id'] = currentOrgId;
+    }
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to start transcription: ${response.statusText}`);
+    }
+
+    console.log('✅ Transcription started for call', { callId });
   },
 
   /**
