@@ -18,7 +18,8 @@
     "migrate:team-owners": "tsx scripts/migrate-team-owners.ts",
     "db:init": "tsx database/init-schema.ts",
     "migrate:postgres": "tsx database/migrate-multi-tenant.ts",
-    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts"
+    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts",
+    "test:transcription": "tsx scripts/test-transcription.ts"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^6.1.1",
@@ -60,6 +61,7 @@
     "@tiptap/starter-kit": "^2.1.13",
     "@types/multer": "^2.0.0",
     "@types/nodemailer": "^7.0.3",
+    "assemblyai": "^4.19.0",
     "bcrypt": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -4735,7 +4735,7 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 // CALL ENDPOINTS (Firestore - Optional, can also use Firestore directly)
 // ============================================================================
 
-setupCallEndpoints(app, authenticateUser, db);
+setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 
 // ============================================================================

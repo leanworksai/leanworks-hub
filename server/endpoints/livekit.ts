@@ -4,8 +4,10 @@
  */
 
 import express from 'express';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, EgressClient, EgressInfo, StreamOutput } from 'livekit-server-sdk';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { startTranscriptionSession, processAudioChunk } from '../services/transcription.js';
+import { processLiveKitAudio } from '../services/audio-processor.js';
 
 // Cache for LiveKit credentials (from Secret Manager)
 let cachedLiveKitCredentials: { apiKey: string; apiSecret: string } | null = null;
@@ -227,6 +229,82 @@ export function setupLiveKitEndpoints(
         message: isDevelopment ? errorMessage : 'Voice calls may not work. Please try again later.',
         ...(isDevelopment && { stack: errorStack }),
       });
+    }
+  });
+
+  // POST /api/livekit/webhook - Handle LiveKit webhooks (egress, room events, etc.)
+  app.post('/api/livekit/webhook', express.raw({ type: 'application/json', limit: '10mb' }), async (req, res) => {
+    try {
+      const event = req.body;
+      
+      // Handle different webhook event types
+      if (event.event === 'egress_started' || event.event === 'egress_updated') {
+        console.log('📹 LiveKit egress event:', event.event, event.egressInfo);
+        // Egress started/updated - audio is being captured
+        // We can use this to track egress status
+      } else if (event.event === 'room_started') {
+        console.log('📞 LiveKit room started:', event.room);
+        // Room started - could trigger transcription if needed
+      } else if (event.event === 'participant_joined') {
+        console.log('👤 Participant joined:', event.participant);
+        // Participant joined - update transcription session if needed
+      } else if (event.event === 'track_published') {
+        console.log('🎵 Track published:', event.track);
+        // Track published - audio track available
+      } else if (event.event === 'egress_ended') {
+        console.log('📹 LiveKit egress ended:', event.egressInfo);
+        // Egress ended - transcription should be finalized
+      }
+
+      // Always respond 200 to acknowledge webhook
+      res.status(200).json({ received: true });
+    } catch (error: any) {
+      console.error('❌ Error handling LiveKit webhook:', error);
+      // Still return 200 to prevent retries for malformed requests
+      res.status(200).json({ received: true, error: error.message });
+    }
+  });
+
+  // POST /api/livekit/audio - Receive audio chunks from LiveKit egress
+  // This endpoint receives audio data from LiveKit egress service
+  app.post('/api/livekit/audio', express.raw({ type: 'application/octet-stream', limit: '10mb' }), async (req, res) => {
+    try {
+      const { callId, participantEmail } = req.query;
+      
+      if (!callId || !participantEmail) {
+        return res.status(400).json({ error: 'callId and participantEmail are required' });
+      }
+
+      if (!req.body || req.body.length === 0) {
+        return res.status(400).json({ error: 'Audio data is required' });
+      }
+
+      // Process audio chunk
+      const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
+      processLiveKitAudio(callId as string, participantEmail as string, audioBuffer);
+
+      res.status(200).json({ received: true });
+    } catch (error: any) {
+      console.error('❌ Error processing audio chunk:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST /api/livekit/start-transcription - Start transcription for a call
+  app.post('/api/livekit/start-transcription', authenticateUser, async (req, res) => {
+    try {
+      const { callId, roomName, participants } = req.body;
+
+      if (!callId || !roomName || !participants || !Array.isArray(participants)) {
+        return res.status(400).json({ error: 'callId, roomName, and participants array are required' });
+      }
+
+      await startTranscriptionSession(callId, roomName, participants, secretManagerClient, projectId);
+      
+      res.json({ success: true, message: 'Transcription started' });
+    } catch (error: any) {
+      console.error('❌ Error starting transcription:', error);
+      res.status(500).json({ error: error.message });
     }
   });
 

@@ -412,7 +412,7 @@ export function VoiceCallButton({
       
       // Generate room name from chatId (LiveKit uses room names instead of call IDs)
       const roomName = `call-${chatId}`;
-      const participantName = user.name || user.email;
+      const participantName = user?.email || 'User';
       
       // Start LiveKit call (connects to room and publishes audio)
       await startCall(roomName, participantName);
@@ -704,7 +704,7 @@ export function VoiceCallButton({
           
           try {
             setIsCalling(true);
-            const participantName = user?.name || user?.email || 'User';
+            const participantName = user?.email || 'User';
             await answerCall(callSignal.roomName, participantName);
             callIdRef.current = callSignal.callId;
             setCurrentCallId(callSignal.callId);
@@ -827,7 +827,7 @@ export function IncomingCallDialog({
       
       // Get room name from call signal or generate from chatId
       const roomName = callSignal.roomName || `call-${callSignal.chatId}`;
-      const participantName = user?.name || user?.email || 'User';
+      const participantName = user?.email || 'User';
       
       // Answer the call by connecting to LiveKit room
       await answerCall(roomName, participantName);
@@ -946,7 +946,7 @@ export function IncomingCallDialog({
         <DialogOverlay className="bg-transparent" />
         <DialogPrimitive.Content
           className={cn(
-            "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg sm:max-w-md"
+            "fixed left-[50%] top-[50%] z-[9999] grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg sm:max-w-md"
           )}
         >
           <DialogHeader>
