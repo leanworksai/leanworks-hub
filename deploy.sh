@@ -167,10 +167,13 @@ EXTERNAL_IP=$(kubectl get svc livekit-service -o jsonpath='{.status.loadBalancer
 
 if [ -n "$EXTERNAL_IP" ]; then
     echo -e "${GREEN}✅ LiveKit LoadBalancer IP: ${EXTERNAL_IP}${NC}"
-    LIVEKIT_URL="ws://${EXTERNAL_IP}:7880"
+    # Use secure domain URL with SSL (required for HTTPS pages)
+    # The ingress routes livekit.leanworks.ai to the LiveKit service
+    LIVEKIT_URL="wss://livekit.leanworks.ai"
     echo -e "${YELLOW}Updating backend deployment with LiveKit URL...${NC}"
     if kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null; then
         echo -e "${GREEN}✅ Backend LIVEKIT_URL updated to: ${LIVEKIT_URL}${NC}"
+        echo -e "${GREEN}   (Using secure domain instead of IP for HTTPS compatibility)${NC}"
         kubectl rollout status deployment/leanworks-hub --timeout=120s || echo -e "${YELLOW}⚠️  Rollout may still be in progress${NC}"
     else
         echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL. You may need to update it manually.${NC}"
@@ -178,8 +181,10 @@ if [ -n "$EXTERNAL_IP" ]; then
 else
     echo -e "${YELLOW}⚠️  LiveKit LoadBalancer IP not available yet.${NC}"
     echo -e "${YELLOW}   The LoadBalancer may take a few minutes to provision.${NC}"
-    echo -e "${YELLOW}   Run this later to get the IP and update the backend:${NC}"
-    echo "   ./scripts/get-livekit-ip.sh"
+    echo -e "${YELLOW}   Using secure domain URL: wss://livekit.leanworks.ai${NC}"
+    # Still set the secure URL even if IP is not available
+    LIVEKIT_URL="wss://livekit.leanworks.ai"
+    kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null || echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL${NC}"
 fi
 
 # Get service information
