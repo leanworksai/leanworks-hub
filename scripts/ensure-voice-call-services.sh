@@ -76,9 +76,10 @@ start_livekit() {
     return 1
   fi
   
-  # Start LiveKit server in detached mode
+  # Start LiveKit server in detached mode with host network access
   docker run -d \
     --name livekit-server \
+    --add-host=host.docker.internal:host-gateway \
     -p 7880:7880 \
     -p 50000-50010:50000-50010/udp \
     -p 50000-50010:50000-50010/tcp \

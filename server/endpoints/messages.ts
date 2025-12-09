@@ -52,23 +52,10 @@ async function isTeamMember(orgId: string, userEmail: string, teamId: string): P
 
 /**
  * Check if user is on free plan
+ * HARD CODED: Always returns false (everyone is on standard tier)
  */
 async function isFreePlanUser(userEmail: string): Promise<boolean> {
-  try {
-    const sharedPool = await getSharedPool();
-    const result = await sharedPool.query(
-      'SELECT subscription_plan FROM users WHERE email = $1',
-      [userEmail.toLowerCase()]
-    );
-    if (result.rows.length === 0) {
-      return true; // Default to free if user not found
-    }
-    const plan = result.rows[0].subscription_plan || 'free';
-    return plan === 'free';
-  } catch (error) {
-    console.error('Error checking subscription plan:', error);
-    return true; // Default to free on error
-  }
+  return false; // Everyone is on standard tier
 }
 
 /**

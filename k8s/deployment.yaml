@@ -52,6 +52,14 @@ spec:
           # value: "wss://136.117.244.184:7881"
           # For local development, use:
           # value: "ws://localhost:7880"
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "leanworks-474204"
+        - name: PUBSUB_AUDIO_CHUNKS_TOPIC
+          value: "audio-chunks"
+        - name: PUBSUB_CALL_EVENTS_TOPIC
+          value: "call-events"
+        - name: AUDIO_STORAGE_BUCKET
+          value: "leanworks-prod"
         livenessProbe:
           httpGet:
             path: /api/health

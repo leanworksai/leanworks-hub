@@ -35,6 +35,7 @@ import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
+import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail } from './services/email.js';
 
@@ -4751,7 +4752,7 @@ setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.pr
 // LIVEKIT ENDPOINTS (LiveKit SFU token generation)
 // ============================================================================
 
-setupLiveKitEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id, db);
+setupLiveKitEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
@@ -4924,28 +4925,11 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
       : 0;
     
-    // If trial has expired and user has no Stripe subscription, downgrade to free
-    let plan = user.subscription_plan || 'free';
-    if (!isTrialActive && trialEndsAt && !user.stripe_subscription_id && plan !== 'free') {
-      // Trial expired and no active subscription - downgrade to free
-      await sharedPool.query(`
-        UPDATE users 
-        SET subscription_plan = 'free', trial_ends_at = NULL
-        WHERE email = $1
-      `, [userEmail]);
-      plan = 'free';
-      console.log(`✅ Auto-downgraded ${userEmail} to free plan after trial expiration`);
-    }
+    // HARD CODED: Everyone is on standard tier
+    const plan = 'standard';
     
-    // Calculate AI usage limits based on plan
-    let aiUsageLimit: number | null = null; // null means unlimited
-    
-    if (plan === 'free') {
-      aiUsageLimit = 0; // No AI access on free plan
-    } else if (plan === 'standard') {
-      aiUsageLimit = 20; // 20 per day
-    }
-    // Pro plan has unlimited (null)
+    // Calculate AI usage limits based on plan (standard = 20 per day)
+    const aiUsageLimit: number = 20; // 20 per day for standard plan
     
     res.json({
       plan,
@@ -4953,7 +4937,7 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       stripeSubscriptionId: user.stripe_subscription_id,
       aiDailyUsage,
       aiUsageLimit,
-      aiUsageRemaining: aiUsageLimit !== null ? Math.max(0, aiUsageLimit - aiDailyUsage) : null,
+      aiUsageRemaining: Math.max(0, aiUsageLimit - aiDailyUsage),
       trialEndsAt: user.trial_ends_at,
       isTrialActive,
       trialDaysRemaining,
@@ -5480,6 +5464,8 @@ const server = http.createServer(app);
 
 // Set up WebSocket server for LiveKit audio streaming
 setupLiveKitWebSocketServer(server);
+// Initialize audio recorder with Firestore for org-slug lookup
+setFirestoreDb(db);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server started on port ${PORT}`);

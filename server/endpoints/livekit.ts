@@ -5,11 +5,13 @@
 
 import express from 'express';
 import { WebSocketServer } from 'ws';
-import { AccessToken, RoomServiceClient, EgressClient, EgressInfo, StreamOutput, ParticipantEgressOptions, TrackEgressOptions } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, EgressClient, EgressInfo, StreamOutput, ParticipantEgressOptions } from 'livekit-server-sdk';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { FirebaseFirestore } from 'firebase-admin/firestore';
-import { startTranscriptionSession, processAudioChunk, isTranscriptionActive, findActiveTranscriptionByRoom, getTranscriptionSession } from '../services/transcription.js';
-import { processLiveKitAudio } from '../services/audio-processor.js';
+import { Firestore } from 'firebase-admin/firestore';
+// Note: Transcription functions are deprecated in async architecture
+// Transcription sessions are now managed in PostgreSQL by the transcription worker
+import { resample48kHzTo16kHz } from '../services/audio-processor.js';
+import { recordChunk, cleanupParticipantBuffer } from '../services/audio-recorder.js';
 
 // Cache for LiveKit credentials (from Secret Manager)
 let cachedLiveKitCredentials: { apiKey: string; apiSecret: string } | null = null;
@@ -129,9 +131,9 @@ async function generateLiveKitToken(
 export function setupLiveKitEndpoints(
   app: express.Application,
   authenticateUser: express.RequestHandler,
+  db: Firestore,
   secretManagerClient: SecretManagerServiceClient,
-  projectId: string,
-  db?: FirebaseFirestore.Firestore
+  projectId: string
 ) {
   // GET /api/livekit/token - Get LiveKit access token
   app.get('/api/livekit/token', authenticateUser, async (req, res) => {
@@ -252,8 +254,11 @@ export function setupLiveKitEndpoints(
   }), async (req, res) => {
     try {
       // Log raw request for debugging
-      console.log('📡 LiveKit webhook received - Raw body:', JSON.stringify(req.body, null, 2));
-      console.log('📡 LiveKit webhook headers:', req.headers);
+      console.log('📡 LiveKit webhook received!');
+      console.log('📡 LiveKit webhook - Method:', req.method);
+      console.log('📡 LiveKit webhook - URL:', req.url);
+      console.log('📡 LiveKit webhook - Headers:', JSON.stringify(req.headers, null, 2));
+      console.log('📡 LiveKit webhook - Body:', JSON.stringify(req.body, null, 2));
       
       const event = req.body;
       const eventType = event?.event || 'unknown';
@@ -272,86 +277,9 @@ export function setupLiveKitEndpoints(
         callId: string,
         callData: any
       ) => {
-        // Check if transcription is active for this call OR for this room
-        // (transcription might have started for a different callId in the same room)
-        const activeTranscriptionCallId = findActiveTranscriptionByRoom(roomName);
-        const isActiveForCall = isTranscriptionActive(callId);
-        const isActiveForRoom = activeTranscriptionCallId !== null;
+        // In async architecture, transcription is handled by the worker
+        // We just need to start egress and the worker will process audio chunks
         
-        if (!isActiveForCall && !isActiveForRoom) {
-          console.log('📝 Transcription not active yet for call:', callId, 'or room:', roomName, '- will retry in 3 seconds...');
-          setTimeout(async () => {
-            const retryActiveCallId = findActiveTranscriptionByRoom(roomName);
-            const retryIsActiveForCall = isTranscriptionActive(callId);
-            const retryIsActiveForRoom = retryActiveCallId !== null;
-            
-            if (retryIsActiveForCall || retryIsActiveForRoom) {
-              // Use the correct callId if transcription is active for the room
-              const correctCallId = retryActiveCallId || callId;
-              const correctCallData = retryActiveCallId && retryActiveCallId !== callId
-                ? {
-                    callId: retryActiveCallId,
-                    roomName: roomName,
-                    status: 'active',
-                    participantEmails: getTranscriptionSession(retryActiveCallId) 
-                      ? Array.from(getTranscriptionSession(retryActiveCallId)!.participants.keys())
-                      : callData.participantEmails || [],
-                  }
-                : callData;
-              
-              console.log('📝 Transcription is now active, starting egress...');
-              console.log(`   Using callId: ${correctCallId} (original: ${callId})`);
-              await doStartEgress(roomName, participantIdentity, trackSid, correctCallId, correctCallData);
-            } else {
-              console.log('📝 Transcription still not active after retry for call:', callId, 'or room:', roomName);
-              setTimeout(async () => {
-                const finalActiveCallId = findActiveTranscriptionByRoom(roomName);
-                const finalIsActiveForCall = isTranscriptionActive(callId);
-                const finalIsActiveForRoom = finalActiveCallId !== null;
-                
-                if (finalIsActiveForCall || finalIsActiveForRoom) {
-                  const correctCallId = finalActiveCallId || callId;
-                  const correctCallData = finalActiveCallId && finalActiveCallId !== callId
-                    ? {
-                        callId: finalActiveCallId,
-                        roomName: roomName,
-                        status: 'active',
-                        participantEmails: getTranscriptionSession(finalActiveCallId) 
-                          ? Array.from(getTranscriptionSession(finalActiveCallId)!.participants.keys())
-                          : callData.participantEmails || [],
-                      }
-                    : callData;
-                  
-                  console.log('📝 Transcription is now active (second retry), starting egress...');
-                  console.log(`   Using callId: ${correctCallId} (original: ${callId})`);
-                  await doStartEgress(roomName, participantIdentity, trackSid, correctCallId, correctCallData);
-                } else {
-                  console.log('📝 Transcription never became active for call:', callId, 'or room:', roomName);
-                }
-              }, 3000);
-            }
-          }, 3000);
-          return;
-        }
-        
-        // If transcription is active for the room but not for this callId, use the correct callId
-        if (activeTranscriptionCallId && activeTranscriptionCallId !== callId) {
-          console.log(`📝 Transcription is active for room ${roomName} with different callId: ${activeTranscriptionCallId} (was using: ${callId})`);
-          const transcriptionSession = getTranscriptionSession(activeTranscriptionCallId);
-          const participantEmails = transcriptionSession 
-            ? Array.from(transcriptionSession.participants.keys())
-            : callData.participantEmails || [];
-          
-          callId = activeTranscriptionCallId;
-          callData = {
-            callId: activeTranscriptionCallId,
-            roomName: roomName,
-            status: 'active',
-            participantEmails: participantEmails,
-          };
-          console.log(`✅ Using correct callId: ${callId} for egress`);
-        }
-
         // Get participant email from identity (identity is usually the email)
         const participantEmail = participantIdentity.toLowerCase();
         
@@ -428,13 +356,33 @@ export function setupLiveKitEndpoints(
           // Look up call document by roomName using collection group query
           // This searches across all orgs/calls collections
           // Accept both 'ringing' and 'active' statuses (call might still be ringing when track is published)
-          const callsQuery = db.collectionGroup('calls')
-            .where('roomName', '==', roomName)
-            .limit(10); // Get multiple to filter by status in memory
-          
           let snapshot;
           try {
-            snapshot = await callsQuery.get();
+            // Try query with orderBy first (requires composite index: roomName + createdAt)
+            let callsQuery = db.collectionGroup('calls')
+              .where('roomName', '==', roomName);
+            
+            try {
+              // Try to use orderBy if composite index exists
+              callsQuery = callsQuery.orderBy('createdAt', 'desc').limit(20);
+              snapshot = await callsQuery.get();
+            } catch (orderByError: any) {
+              // If orderBy fails (no composite index), query without orderBy and sort in memory
+              console.log('⚠️ Composite index (roomName + createdAt) not available, sorting in memory');
+              callsQuery = callsQuery.limit(50); // Get more documents to ensure we find the current call
+              snapshot = await callsQuery.get();
+              
+              // Sort in memory by createdAt descending
+              if (snapshot.docs.length > 0) {
+                const docsArray = Array.from(snapshot.docs);
+                const sorted = docsArray.sort((a, b) => {
+                  const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
+                  const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
+                  return bTime - aTime; // Most recent first
+                });
+                snapshot = { docs: sorted, empty: sorted.length === 0 } as any;
+              }
+            }
           } catch (queryError: any) {
             // Handle missing index error (code 9 = FAILED_PRECONDITION)
             if (queryError.code === 9 || queryError.code === 'FAILED_PRECONDITION') {
@@ -474,45 +422,7 @@ export function setupLiveKitEndpoints(
             });
           }
           
-          // First, check if there's an active transcription session for this room
-          // If so, use that callId - even if the Firestore document isn't found yet
-          const activeTranscriptionCallId = findActiveTranscriptionByRoom(roomName);
-          if (activeTranscriptionCallId) {
-            console.log(`📝 Found active transcription session for room ${roomName} with callId: ${activeTranscriptionCallId}`);
-            // Try to find the call document that matches the transcription session's callId
-            let foundMatchingDoc = false;
-            for (const doc of snapshot.docs) {
-              if (doc.id === activeTranscriptionCallId) {
-                callData = doc.data();
-                callId = doc.id;
-                foundMatchingDoc = true;
-                console.log(`✅ Found call document matching active transcription: ${callId} with status: ${callData.status}`);
-                break;
-              }
-            }
-            
-            // If we found an active transcription session but no matching Firestore doc,
-            // use the transcription callId anyway (the doc might not be created/indexed yet)
-            if (!foundMatchingDoc) {
-              callId = activeTranscriptionCallId;
-              // Get participant info from the transcription session
-              const transcriptionSession = getTranscriptionSession(activeTranscriptionCallId);
-              const participantEmails = transcriptionSession 
-                ? Array.from(transcriptionSession.participants.keys())
-                : [];
-              
-              callData = {
-                callId: activeTranscriptionCallId,
-                roomName: roomName,
-                status: 'active', // Assume active since transcription is running
-                participantEmails: participantEmails,
-              };
-              console.log(`✅ Using transcription session callId ${callId} (Firestore document not found yet, but transcription is active)`);
-              console.log(`   Participants from transcription session: ${participantEmails.join(', ')}`);
-            }
-          }
-          
-          // If no transcription match found, try to find a call with 'ringing' or 'active' status
+          // Try to find a call with 'ringing' or 'active' status
           if (!callId) {
             for (const doc of snapshot.docs) {
               const data = doc.data();
@@ -525,8 +435,26 @@ export function setupLiveKitEndpoints(
             }
           }
           
-          // Don't use ended calls as fallback - only wait for transcription or active calls
-          // If no active/ringing call found, wait for transcription to start or retry
+          // If still no call found, use the most recent call document (even if status is not active)
+          // This handles cases where the call document exists but status hasn't been updated yet
+          // We sort by createdAt descending to get the most recent one
+          if (!callId && snapshot.docs.length > 0) {
+            const sortedDocs = snapshot.docs.sort((a, b) => {
+              const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.getTime?.() || 0;
+              const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.getTime?.() || 0;
+              return bTime - aTime; // Most recent first
+            });
+            const mostRecentDoc = sortedDocs[0];
+            const mostRecentData = mostRecentDoc.data();
+            // Only use if status is not 'ended' (to avoid using old calls)
+            if (mostRecentData.status !== 'ended') {
+              callData = mostRecentData;
+              callId = mostRecentDoc.id;
+              console.log(`✅ Using most recent call document: ${callId} with status: ${mostRecentData.status}`);
+            }
+          }
+          
+          // If still no call found, wait for transcription to start or retry
           // This prevents using old ended calls which would cause transcription mismatch
           
           if (!callId || !callData) {
@@ -537,36 +465,28 @@ export function setupLiveKitEndpoints(
               try {
                 console.log('🔄 Retrying call lookup for room:', roomName);
                 
-                // First, check if transcription session has started (it might have started by now)
-                const retryTranscriptionCallId = findActiveTranscriptionByRoom(roomName);
-                if (retryTranscriptionCallId) {
-                  console.log(`   ✅ Found active transcription session on retry with callId: ${retryTranscriptionCallId}`);
-                  // Use transcription session callId directly
-                  const transcriptionSession = getTranscriptionSession(retryTranscriptionCallId);
-                  const participantEmails = transcriptionSession 
-                    ? Array.from(transcriptionSession.participants.keys())
-                    : [];
-                  
-                  const transcriptionCallData = {
-                    callId: retryTranscriptionCallId,
-                    roomName: roomName,
-                    status: 'active',
-                    participantEmails: participantEmails,
-                  };
-                  
-                  console.log(`   Using transcription session callId ${retryTranscriptionCallId}`);
-                  console.log(`   Participants from transcription: ${participantEmails.join(', ')}`);
-                  
-                  // Continue with egress using transcription session data
-                  await doStartEgress(roomName, participantIdentity, trackSid, retryTranscriptionCallId, transcriptionCallData);
-                  return;
+                // Try Firestore query again with orderBy
+                let retryQuery = db.collectionGroup('calls')
+                  .where('roomName', '==', roomName);
+                
+                try {
+                  retryQuery = retryQuery.orderBy('createdAt', 'desc').limit(20);
+                } catch (orderByError: any) {
+                  retryQuery = retryQuery.limit(50); // Get more if orderBy not available
                 }
                 
-                // If no transcription session, try Firestore query
-                const retryQuery = db.collectionGroup('calls')
-                  .where('roomName', '==', roomName)
-                  .limit(10);
                 const retrySnapshot = await retryQuery.get();
+                
+                // Sort in memory if needed
+                if (retrySnapshot.docs.length > 0) {
+                  const docsArray = Array.from(retrySnapshot.docs);
+                  const sorted = docsArray.sort((a, b) => {
+                    const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
+                    const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
+                    return bTime - aTime; // Most recent first
+                  });
+                  retrySnapshot = { docs: sorted, empty: sorted.length === 0 } as any;
+                }
                 console.log(`   Retry found ${retrySnapshot.docs.length} document(s) in Firestore`);
                 
                 // First try to find active/ringing call
@@ -583,35 +503,32 @@ export function setupLiveKitEndpoints(
                   }
                 }
                 
-                // Don't use ended calls - only wait for transcription or active calls
-                // If no active/ringing call found, wait a bit more for transcription to start
+                // If no active/ringing call found, use the most recent call document as fallback
+                if (!foundCall && retrySnapshot.docs.length > 0) {
+                  const sortedDocs = retrySnapshot.docs.sort((a, b) => {
+                    const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.getTime?.() || 0;
+                    const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.getTime?.() || 0;
+                    return bTime - aTime; // Most recent first
+                  });
+                  const mostRecentDoc = sortedDocs[0];
+                  const mostRecentData = mostRecentDoc.data();
+                  if (mostRecentData.status !== 'ended') {
+                    console.log(`   ✅ Using most recent call document on retry: ${mostRecentDoc.id} with status: ${mostRecentData.status}`);
+                    callData = mostRecentData;
+                    callId = mostRecentDoc.id;
+                    foundCall = true;
+                  }
+                }
+                
                 if (!foundCall) {
-                  console.log('   No active/ringing call found, waiting for transcription session...');
-                  // Wait a bit more and check transcription again
-                  setTimeout(async () => {
-                    const finalTranscriptionCallId = findActiveTranscriptionByRoom(roomName);
-                    if (finalTranscriptionCallId) {
-                      console.log(`   ✅ Found active transcription session on final retry with callId: ${finalTranscriptionCallId}`);
-                      const transcriptionSession = getTranscriptionSession(finalTranscriptionCallId);
-                      const participantEmails = transcriptionSession 
-                        ? Array.from(transcriptionSession.participants.keys())
-                        : [];
-                      
-                      const transcriptionCallData = {
-                        callId: finalTranscriptionCallId,
-                        roomName: roomName,
-                        status: 'active',
-                        participantEmails: participantEmails,
-                      };
-                      
-                      await doStartEgress(roomName, participantIdentity, trackSid, finalTranscriptionCallId, transcriptionCallData);
-                    } else {
-                      console.log('   ⚠️ Still no transcription session found - egress will not start');
-                      console.log('   This usually means transcription has not started yet for this call');
-                    }
-                  }, 3000);
+                  console.log('   ⚠️ No suitable call found - egress will not start');
+                  console.log('   This usually means the call document has not been created yet or transcription has not started');
                   return;
                 }
+                
+                // Recursively call this function with the found call
+                await startEgressForParticipant(roomName, participantIdentity, trackSid);
+                return;
                 
                 console.log('📝 Call still not found after retry for room:', roomName);
                 console.log('   This might mean:');
@@ -647,6 +564,13 @@ export function setupLiveKitEndpoints(
       } else if (eventType === 'participant_left') {
         console.log('👋 Participant left:', event.participant?.identity, 'from room:', event.room?.name, 'reason:', event.participant?.disconnectReason);
       } else if (eventType === 'track_published') {
+        console.log('🎵 track_published webhook received:', {
+          roomName: event.room?.name,
+          participantIdentity: event.participant?.identity,
+          trackSid: event.track?.sid,
+          trackType: event.track?.type,
+          trackName: event.track?.name
+        });
         const track = event.track;
         const roomName = event.room?.name;
         const participantIdentity = event.participant?.identity;
@@ -669,6 +593,70 @@ export function setupLiveKitEndpoints(
         
         // Start egress for audio tracks when transcription is active
         if (isAudio && roomName && participantIdentity && trackSid) {
+          // First, try to auto-start transcription if not already started
+          try {
+            const callSnapshot = await db.collectionGroup('calls')
+              .where('roomName', '==', roomName)
+              .where('status', 'in', ['active', 'ringing'])
+              .limit(1)
+              .get();
+            
+            if (!callSnapshot.empty) {
+              const callDoc = callSnapshot.docs[0];
+              const callData = callDoc.data();
+              const callId = callDoc.id;
+              
+              // Extract orgSlug from path: orgs/{orgSlug}/calls/{callId}
+              const pathParts = callDoc.ref.path.split('/');
+              if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
+                const orgSlug = pathParts[1];
+                
+                // Get orgId from shared database
+                try {
+                  const { getOrgIdBySlug } = await import('../database/multi-tenant-pool.js');
+                  const orgId = await getOrgIdBySlug(orgSlug);
+                  
+                  // Check if transcription is enabled but not started
+                  if (callData.transcriptionEnabled && !callData.transcriptionStarted && orgId) {
+                    const participants: Array<{ email: string; name?: string }> = [];
+                    if (callData.callerEmail) {
+                      participants.push({ email: callData.callerEmail });
+                    }
+                    if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+                      participants.push({ email: callData.calleeEmail });
+                    }
+                    if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+                      for (const email of callData.participantEmails) {
+                        if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+                          participants.push({ email });
+                        }
+                      }
+                    }
+                    
+                    if (participants.length > 0) {
+                      const { publishCallEvent } = await import('../services/pubsub-events.js');
+                      await publishCallEvent('transcription_started', {
+                        callId,
+                        roomName,
+                        participants,
+                        orgId,
+                      });
+                      console.log(`✅ Auto-started transcription for call ${callId} via track_published webhook`);
+                      
+                      // Mark transcription as started in Firestore
+                      await callDoc.ref.update({ transcriptionStarted: true });
+                    }
+                  }
+                } catch (orgError: any) {
+                  console.warn('⚠️ Could not get orgId for auto-starting transcription:', orgError.message);
+                }
+              }
+            }
+          } catch (autoStartError: any) {
+            console.warn('⚠️ Could not auto-start transcription:', autoStartError.message);
+            // Continue to start egress anyway
+          }
+          
           console.log('🎵 Starting egress for audio track...');
           await startEgressForParticipant(roomName, participantIdentity, trackSid);
         } else {
@@ -706,9 +694,10 @@ export function setupLiveKitEndpoints(
         return res.status(400).json({ error: 'Audio data is required' });
       }
 
-      // Process audio chunk
+      // Process audio chunk - resample and record
       const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
-      processLiveKitAudio(callId as string, participantEmail as string, audioBuffer);
+      const resampledAudio = resample48kHzTo16kHz(audioBuffer);
+      await recordChunk(callId as string, participantEmail as string, resampledAudio);
 
       res.status(200).json({ received: true });
     } catch (error: any) {
@@ -726,7 +715,9 @@ export function setupLiveKitEndpoints(
         return res.status(400).json({ error: 'callId, roomName, and participants array are required' });
       }
 
-      await startTranscriptionSession(callId, roomName, participants, secretManagerClient, projectId);
+      // Transcription is now handled asynchronously by the worker
+      // This endpoint is kept for backward compatibility but does nothing
+      console.log('⚠️ Direct transcription start is deprecated. Use /api/calls/:chatId/start-transcription instead.');
       
       res.json({ success: true, message: 'Transcription started' });
     } catch (error: any) {
@@ -784,7 +775,7 @@ export function setupLiveKitWebSocketServer(server: any): void {
     let lastLogTime = Date.now();
     
     // Handle binary audio data from LiveKit egress
-    ws.on('message', (data: Buffer) => {
+    ws.on('message', async (data: Buffer) => {
       try {
         // LiveKit egress sends audio data as binary messages
         if (Buffer.isBuffer(data)) {
@@ -797,8 +788,11 @@ export function setupLiveKitWebSocketServer(server: any): void {
             lastLogTime = now;
           }
           
-          // Forward audio chunk to transcription service
-          processLiveKitAudio(callId, participantEmail, data);
+          // Resample from 48kHz to 16kHz (LiveKit sends 48kHz, but we store/process at 16kHz)
+          const resampledAudio = resample48kHzTo16kHz(data);
+          
+          // Record audio chunk (non-blocking: saves to Cloud Storage and publishes to Pub/Sub)
+          await recordChunk(callId, participantEmail, resampledAudio);
         } else {
           console.warn('⚠️ Received non-binary message from LiveKit egress:', typeof data);
         }
@@ -817,6 +811,11 @@ export function setupLiveKitWebSocketServer(server: any): void {
         reason: reason.toString(),
         callId,
         totalChunks: audioChunkCount
+      });
+      
+      // Clean up audio buffer for this participant
+      cleanupParticipantBuffer(callId, participantEmail).catch((error) => {
+        console.error(`❌ Error in cleanupParticipantBuffer:`, error);
       });
     });
   });

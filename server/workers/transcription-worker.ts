@@ -1,0 +1,814 @@
+/**
+ * Transcription Worker
+ * Subscribes to Pub/Sub topics and processes audio chunks asynchronously
+ */
+
+import { PubSub } from '@google-cloud/pubsub';
+import { Storage } from '@google-cloud/storage';
+import { AssemblyAI } from 'assemblyai';
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { readFileSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { Readable } from 'stream';
+import { getOrgPool, getUserInfoBatch } from '../../database/multi-tenant-pool.js';
+import crypto from 'crypto';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Initialize clients
+let pubsubClient: PubSub | null = null;
+let storageClient: Storage | null = null;
+let assemblyAIClient: AssemblyAI | null = null;
+let secretManagerClient: SecretManagerServiceClient | null = null;
+
+// Active transcription sessions (in-memory for worker, but also persisted to DB)
+interface TranscriptionSession {
+  callId: string;
+  roomName: string;
+  participants: Map<string, { email: string; name?: string }>;
+  transcribers: Map<string, any>; // AssemblyAI StreamingTranscriber per participant
+  audioStreams: Map<string, Readable>; // Readable streams for piping audio to transcribers
+  transcripts: Map<string, string[]>; // Transcripts per participant
+  startTime: Date;
+  orgId?: string;
+  processedSegments: Map<string, Set<number>>; // Track processed segments per participant (email -> Set<segmentIndex>)
+  lastProcessedBytes: Map<string, number>; // Track last processed byte position per participant (email -> bytes)
+}
+
+const activeSessions = new Map<string, TranscriptionSession>();
+const pendingChunks = new Map<string, Array<{ message: any; data: any }>>(); // Queue chunks that arrive before session is ready
+
+// Get project ID
+function getProjectId(): string {
+  const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+  if (existsSync(serviceAccountPath)) {
+    const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+    return serviceAccount.project_id;
+  }
+  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '';
+}
+
+// Initialize clients
+function getPubSubClient(): PubSub {
+  if (!pubsubClient) {
+    const projectId = getProjectId();
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    if (existsSync(serviceAccountPath)) {
+      pubsubClient = new PubSub({
+        projectId,
+        keyFilename: serviceAccountPath,
+      });
+    } else {
+      pubsubClient = new PubSub({ projectId });
+    }
+  }
+  return pubsubClient;
+}
+
+function getStorageClient(): Storage {
+  if (!storageClient) {
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    if (existsSync(serviceAccountPath)) {
+      storageClient = new Storage({
+        keyFilename: serviceAccountPath,
+      });
+    } else {
+      storageClient = new Storage();
+    }
+  }
+  return storageClient;
+}
+
+async function getAssemblyAIClient(): Promise<AssemblyAI> {
+  if (assemblyAIClient) {
+    return assemblyAIClient;
+  }
+
+  const projectId = getProjectId();
+  if (!secretManagerClient) {
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    if (existsSync(serviceAccountPath)) {
+      secretManagerClient = new SecretManagerServiceClient({
+        keyFilename: serviceAccountPath,
+      });
+    } else {
+      secretManagerClient = new SecretManagerServiceClient();
+    }
+  }
+
+  // Get API key from Secret Manager
+  const secretName = `projects/${projectId}/secrets/assemblyai-api-key/versions/latest`;
+  const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
+  const apiKey = version.payload?.data?.toString()?.trim() || '';
+
+  if (!apiKey) {
+    throw new Error('AssemblyAI API key not found in Secret Manager');
+  }
+
+  assemblyAIClient = new AssemblyAI({ apiKey });
+  return assemblyAIClient;
+}
+
+// Load transcription session from database
+async function loadSessionFromDB(callId: string, orgId?: string): Promise<TranscriptionSession | null> {
+  if (!orgId) {
+    console.warn(`⚠️ Cannot load session from DB without orgId for call ${callId}`);
+    return null;
+  }
+
+  try {
+    const pool = await getOrgPool(orgId);
+    const result = await pool.query(
+      'SELECT * FROM transcription_sessions WHERE call_id = $1',
+      [callId]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    const row = result.rows[0];
+    const participants = new Map<string, { email: string; name?: string }>();
+    const participantsData = Array.isArray(row.participants) ? row.participants : JSON.parse(row.participants || '[]');
+    
+    for (const p of participantsData) {
+      participants.set(p.email.toLowerCase(), p);
+    }
+
+    const session: TranscriptionSession = {
+      callId: row.call_id,
+      roomName: row.room_name,
+      participants,
+      transcribers: new Map(),
+      audioStreams: new Map(),
+      transcripts: new Map(),
+      startTime: row.started_at,
+      orgId,
+      processedSegments: new Map(), // Track processed segments per participant
+      lastProcessedBytes: new Map(), // Track last processed byte position per participant
+    };
+
+    // Load transcripts from DB
+    const transcriptsData = row.transcripts ? (typeof row.transcripts === 'string' ? JSON.parse(row.transcripts) : row.transcripts) : {};
+    for (const [email, transcriptArray] of Object.entries(transcriptsData)) {
+      session.transcripts.set(email.toLowerCase(), transcriptArray as string[]);
+    }
+
+    return session;
+  } catch (error: any) {
+    console.error(`❌ Error loading session from DB for call ${callId}:`, error);
+    return null;
+  }
+}
+
+// Save transcription session to database
+async function saveSessionToDB(session: TranscriptionSession): Promise<void> {
+  if (!session.orgId) {
+    console.warn(`⚠️ Cannot save session to DB without orgId for call ${session.callId}`);
+    return;
+  }
+
+  try {
+    const pool = await getOrgPool(session.orgId);
+    const participantsArray = Array.from(session.participants.values());
+    const transcriptsObj: Record<string, string[]> = {};
+    for (const [email, transcripts] of session.transcripts.entries()) {
+      transcriptsObj[email] = transcripts;
+    }
+
+    await pool.query(`
+      INSERT INTO transcription_sessions (call_id, room_name, participants, status, started_at, transcripts, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      ON CONFLICT (call_id) DO UPDATE SET
+        participants = EXCLUDED.participants,
+        status = EXCLUDED.status,
+        transcripts = EXCLUDED.transcripts,
+        updated_at = NOW()
+    `, [
+      session.callId,
+      session.roomName,
+      JSON.stringify(participantsArray),
+      'active',
+      session.startTime,
+      JSON.stringify(transcriptsObj),
+    ]);
+  } catch (error: any) {
+    console.error(`❌ Error saving session to DB for call ${session.callId}:`, error);
+  }
+}
+
+// Start transcription session
+async function startTranscriptionSession(
+  callId: string,
+  roomName: string,
+  participants: Array<{ email: string; name?: string }>,
+  orgId?: string
+): Promise<void> {
+  // Check if session already exists
+  let session = activeSessions.get(callId);
+  if (!session && orgId) {
+    session = await loadSessionFromDB(callId, orgId);
+    if (session) {
+      activeSessions.set(callId, session);
+    }
+  }
+
+  if (session) {
+    console.log(`📝 Transcription session already exists for call ${callId}`);
+    return;
+  }
+
+  const assemblyAI = await getAssemblyAIClient();
+
+  session = {
+    callId,
+    roomName,
+    participants: new Map(participants.map(p => [p.email.toLowerCase(), p])),
+    transcribers: new Map(),
+    audioStreams: new Map(),
+    transcripts: new Map(),
+    startTime: new Date(),
+    orgId,
+    processedSegments: new Map(), // Track processed segments per participant
+    lastProcessedBytes: new Map(), // Track last processed byte position per participant
+  };
+
+  // Create streaming transcriber for each participant
+  for (const participant of participants) {
+    const email = participant.email.toLowerCase();
+    
+    try {
+      const transcriber = assemblyAI.streaming.transcriber({
+        sampleRate: 16000, // 16kHz
+        formatTurns: true,
+      });
+
+      let transcriberReady = false;
+      const transcriberReadyPromise = new Promise<void>((resolve) => {
+        const openHandler = ({ id }: { id: string }) => {
+          transcriberReady = true;
+          console.log(`✅ Transcription session opened for ${email}, ID: ${id}`);
+          resolve();
+        };
+        transcriber.on('open', openHandler);
+      });
+
+      transcriber.on('turn', (turn: any) => {
+        if (turn.transcript && turn.transcript.trim()) {
+          if (!session!.transcripts.has(email)) {
+            session!.transcripts.set(email, []);
+          }
+          session!.transcripts.get(email)!.push(turn.transcript);
+          console.log(`📝 Transcript for ${email}: ${turn.transcript}`);
+          
+          // Save to DB periodically
+          saveSessionToDB(session!).catch(console.error);
+        }
+      });
+
+      transcriber.on('error', (error: any) => {
+        console.error(`❌ Transcription error for ${email}:`, error);
+      });
+
+      transcriber.on('close', (code: number, reason: string) => {
+        console.log(`🔌 Transcription connection closed for ${email}: ${code} - ${reason}`);
+      });
+
+      const audioStream = new Readable({
+        read() {},
+        objectMode: false,
+        highWaterMark: 64 * 1024,
+      });
+
+      // Connect transcriber (non-blocking)
+      transcriber.connect().catch((error: any) => {
+        console.error(`❌ Error connecting transcriber for ${email}:`, error);
+      });
+
+      // Wait for transcriber to be ready in background
+      transcriberReadyPromise.then(() => {
+        console.log(`✅ Transcriber ready for ${email}`);
+      }).catch(console.error);
+
+      // Pipe audio stream to transcriber
+      if (typeof Readable.toWeb === 'function') {
+        const webStream = Readable.toWeb(audioStream);
+        const transcriberStream = transcriber.stream();
+        const writer = transcriberStream.getWriter();
+        const reader = webStream.getReader();
+
+        (async () => {
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                await writer.close();
+                break;
+              }
+              if (value && transcriberReady) {
+                await writer.write(value);
+              }
+            }
+          } catch (error: any) {
+            console.error(`❌ Error piping audio to transcriber for ${email}:`, error);
+            try {
+              await writer.abort();
+            } catch {}
+          } finally {
+            reader.releaseLock();
+          }
+        })();
+      }
+
+      session.transcribers.set(email, transcriber);
+      session.audioStreams.set(email, audioStream);
+    } catch (error: any) {
+      console.error(`❌ Error setting up transcriber for ${email}:`, error);
+    }
+  }
+
+  activeSessions.set(callId, session);
+  await saveSessionToDB(session);
+  console.log(`✅ Transcription session started for call ${callId} with ${participants.length} participants`);
+  
+  // Process any pending chunks that arrived before session was created
+  const pending = pendingChunks.get(callId);
+  if (pending && pending.length > 0) {
+    console.log(`📦 Processing ${pending.length} pending chunks for call ${callId}`);
+    for (const { message, data } of pending) {
+      // Process chunk asynchronously (don't await to avoid blocking)
+      processAudioChunk(message).catch((error: any) => {
+        console.error(`❌ Error processing pending chunk:`, error);
+        message.nack();
+      });
+    }
+    pendingChunks.delete(callId);
+  }
+}
+
+// Process audio chunk from Pub/Sub
+async function processAudioChunk(message: any): Promise<void> {
+  let data: any;
+  try {
+    // Pub/Sub messages can have json property or need to parse data
+    if (message.json) {
+      data = message.json;
+    } else if (message.data) {
+      data = JSON.parse(message.data.toString());
+    } else {
+      console.error('❌ Message has no json or data property:', message);
+      message.nack();
+      return;
+    }
+  } catch (error: any) {
+    console.error('❌ Error parsing message:', error);
+    message.nack();
+    return;
+  }
+  
+  const { callId, participantEmail, storageUrl, chunkIndex, segmentIndex, orgId, isFinal } = data;
+  const segmentIdx = segmentIndex !== undefined ? segmentIndex : chunkIndex; // Support both field names
+
+  console.log(`🎤 Processing audio chunk for ${participantEmail} in call ${callId} (segment ${segmentIdx}${isFinal ? ', final' : ''})`);
+
+  // Get session
+  let session = activeSessions.get(callId);
+  if (!session) {
+    // Try to load from DB if orgId is available
+    if (data.orgId) {
+      session = await loadSessionFromDB(callId, data.orgId);
+      if (session) {
+        activeSessions.set(callId, session);
+        console.log(`📝 Loaded transcription session from DB for call ${callId}`);
+      }
+    }
+    
+    // If still no session, queue the chunk for later processing
+    if (!session) {
+      const segmentIdx = data.segmentIndex !== undefined ? data.segmentIndex : chunkIndex;
+      console.warn(`⚠️ No active session for call ${callId}, queuing segment ${segmentIdx} for later`);
+      if (!pendingChunks.has(callId)) {
+        pendingChunks.set(callId, []);
+      }
+      pendingChunks.get(callId)!.push({ message, data });
+      // Don't ack or nack - we'll process it when session is ready
+      return;
+    }
+  }
+
+  const email = participantEmail.toLowerCase();
+  const audioStream = session.audioStreams.get(email);
+  
+  if (!audioStream) {
+    console.warn(`⚠️ No audio stream for ${email} in call ${callId}`);
+    message.nack();
+    return;
+  }
+
+  try {
+    // Check if this segment has already been processed (deduplication)
+    if (!session.processedSegments.has(email)) {
+      session.processedSegments.set(email, new Set());
+    }
+    const processedSegments = session.processedSegments.get(email)!;
+    
+    if (processedSegments.has(segmentIdx)) {
+      console.log(`⏭️ Skipping duplicate segment ${segmentIdx} for ${email} (already processed)`);
+      message.ack(); // Ack to remove from queue, but don't process again
+      return;
+    }
+    
+    // Download audio from Cloud Storage
+    const storage = getStorageClient();
+    const [bucketName, ...pathParts] = storageUrl.replace('gs://', '').split('/');
+    const filePath = pathParts.join('/');
+    const file = storage.bucket(bucketName).file(filePath);
+    
+    // For streaming uploads, only download new data (bytes we haven't processed yet)
+    const lastProcessedByte = session.lastProcessedBytes.get(email) || 0;
+    
+    try {
+      // Get file metadata to check current size
+      const [metadata] = await file.getMetadata();
+      const currentSize = parseInt(metadata.size || '0', 10);
+      
+      if (currentSize <= lastProcessedByte) {
+        // No new data, skip this segment
+        console.log(`⏭️ No new data for segment ${segmentIdx} (file size: ${currentSize}, last processed: ${lastProcessedByte})`);
+        message.ack();
+        return;
+      }
+      
+      // Download only the new portion of the file
+      const [audioBuffer] = await file.download({
+        start: lastProcessedByte,
+        end: isFinal ? undefined : currentSize, // Download up to current size, or all if final
+      });
+      
+      // Push to audio stream only if we have new data
+      if (audioBuffer.length > 0) {
+        audioStream.push(audioBuffer);
+        session.lastProcessedBytes.set(email, lastProcessedByte + audioBuffer.length);
+        console.log(`📥 Downloaded ${audioBuffer.length} new bytes for ${email} (total processed: ${lastProcessedByte + audioBuffer.length}/${currentSize})`);
+      }
+      
+      // Mark segment as processed
+      processedSegments.add(segmentIdx);
+      
+      // Mark chunk as processed in DB
+      if (session.orgId) {
+        const pool = await getOrgPool(session.orgId);
+        await pool.query(`
+          INSERT INTO transcription_chunks (call_id, participant_email, chunk_index, storage_url, processed_at)
+          VALUES ($1, $2, $3, $4, NOW())
+          ON CONFLICT DO NOTHING
+        `, [callId, email, segmentIdx, storageUrl]);
+      }
+
+      message.ack();
+      console.log(`✅ Processed audio segment ${segmentIdx} for ${email}${isFinal ? ' (final)' : ''}`);
+    } catch (metadataError: any) {
+      // If metadata fetch fails, try downloading the entire file (fallback)
+      console.warn(`⚠️ Could not get file metadata, downloading entire file:`, metadataError.message);
+      const [audioBuffer] = await file.download();
+      
+      if (audioBuffer.length > 0) {
+        // Only push if we haven't processed this exact size before
+        const lastSize = session.lastProcessedBytes.get(email) || 0;
+        if (audioBuffer.length > lastSize) {
+          const newData = audioBuffer.slice(lastSize);
+          audioStream.push(newData);
+          session.lastProcessedBytes.set(email, audioBuffer.length);
+        }
+      }
+      
+      processedSegments.add(segmentIdx);
+      
+      if (session.orgId) {
+        const pool = await getOrgPool(session.orgId);
+        await pool.query(`
+          INSERT INTO transcription_chunks (call_id, participant_email, chunk_index, storage_url, processed_at)
+          VALUES ($1, $2, $3, $4, NOW())
+          ON CONFLICT DO NOTHING
+        `, [callId, email, segmentIdx, storageUrl]);
+      }
+      
+      message.ack();
+      console.log(`✅ Processed audio segment ${segmentIdx} for ${email} (fallback mode)${isFinal ? ' (final)' : ''}`);
+    }
+  } catch (error: any) {
+    // If file doesn't exist yet (streaming in progress), that's okay - we'll retry later
+    if (error.code === 404) {
+      console.log(`⏳ File not ready yet for segment ${segmentIdx}, will retry later`);
+      message.nack(); // Nack to retry later
+    } else {
+      console.error(`❌ Error processing audio segment for ${email}:`, error);
+      message.nack();
+    }
+  }
+}
+
+// Handle call ended event
+async function handleCallEnded(message: any): Promise<void> {
+  let data: any;
+  try {
+    if (message.json) {
+      data = message.json;
+    } else if (message.data) {
+      data = JSON.parse(message.data.toString());
+    } else {
+      console.error('❌ Message has no json or data property:', message);
+      message.nack();
+      return;
+    }
+  } catch (error: any) {
+    console.error('❌ Error parsing message:', error);
+    message.nack();
+    return;
+  }
+  
+  const { callId, chatId, participants, orgId } = data;
+
+  console.log(`🔚 Handling call ended for ${callId}`);
+
+  // Get session
+  let session = activeSessions.get(callId);
+  if (!session && orgId) {
+    session = await loadSessionFromDB(callId, orgId);
+  }
+
+  if (!session) {
+    console.warn(`⚠️ No session found for call ${callId}`);
+    message.ack();
+    return;
+  }
+
+  // Close all transcribers
+  for (const [email, transcriber] of session.transcribers.entries()) {
+    try {
+      await transcriber.close();
+    } catch (error: any) {
+      console.error(`❌ Error closing transcriber for ${email}:`, error);
+    }
+  }
+
+  // Close all audio streams
+  for (const [email, stream] of session.audioStreams.entries()) {
+    try {
+      stream.push(null); // End stream
+    } catch (error: any) {
+      console.error(`❌ Error closing audio stream for ${email}:`, error);
+    }
+  }
+
+  // Wait a bit for final transcripts
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  // Update session status in DB
+  if (session.orgId) {
+    try {
+      const pool = await getOrgPool(session.orgId);
+      const transcriptsObj: Record<string, string[]> = {};
+      for (const [email, transcripts] of session.transcripts.entries()) {
+        transcriptsObj[email] = transcripts;
+      }
+
+      await pool.query(`
+        UPDATE transcription_sessions
+        SET status = 'completed', completed_at = NOW(), transcripts = $1, updated_at = NOW()
+        WHERE call_id = $2
+      `, [JSON.stringify(transcriptsObj), callId]);
+
+      // Create notes for each participant
+      if (participants && participants.length > 0) {
+        const userInfoMap = await getUserInfoBatch(participants.map(p => p.email));
+        const participantsWithNames = participants.map(p => {
+          const info = userInfoMap.get(p.email.toLowerCase());
+          return {
+            email: p.email,
+            name: info?.name || p.email,
+          };
+        });
+
+        // Format transcript
+        const formattedTranscript = formatTranscriptWithSpeakers(session.transcripts, new Map(
+          participantsWithNames.map(p => [p.email.toLowerCase(), p])
+        ));
+
+        // Determine projectId or teamId from chatId
+        let projectId: string | null = null;
+        let teamId: string | null = null;
+        if (chatId) {
+          if (chatId.startsWith('project-')) {
+            projectId = chatId.replace('project-', '');
+          } else if (chatId.startsWith('team-')) {
+            teamId = chatId.replace('team-', '');
+          }
+        }
+
+        const callDate = session.startTime;
+        const callDateStr = callDate.toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
+        // Create note for each participant
+        for (const participant of participantsWithNames) {
+          try {
+            const noteId = crypto.randomBytes(16).toString('hex');
+            const noteTitle = `Meeting Notes - ${callDateStr}`;
+            const noteContent = `
+              <div>
+                <h2>Voice Call Transcript</h2>
+                <p><strong>Date:</strong> ${callDateStr}</p>
+                <p><strong>Participants:</strong> ${participantsWithNames.map(p => p.name).join(', ')}</p>
+                <hr>
+                <div>
+                  ${formattedTranscript}
+                </div>
+              </div>
+            `;
+
+            await pool.query(`
+              INSERT INTO notes (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+            `, [
+              noteId,
+              noteTitle,
+              noteContent,
+              participant.email.toLowerCase(),
+              projectId,
+              teamId,
+              JSON.stringify(['meeting', 'transcript']),
+              false
+            ]);
+
+            console.log(`✅ Created meeting note for ${participant.email}`);
+          } catch (noteError: any) {
+            console.error(`❌ Error creating note for ${participant.email}:`, noteError);
+          }
+        }
+      }
+    } catch (error: any) {
+      console.error(`❌ Error finalizing session for call ${callId}:`, error);
+    }
+  }
+
+  // Remove from active sessions
+  activeSessions.delete(callId);
+  message.ack();
+  console.log(`✅ Call ended processing complete for ${callId}`);
+}
+
+// Format transcript with speaker labels
+function formatTranscriptWithSpeakers(
+  transcripts: Map<string, string[]>,
+  participantMap: Map<string, { email: string; name: string }>
+): string {
+  const parts: string[] = [];
+  
+  // Combine all transcripts with timestamps (simplified - in production you'd want actual timestamps)
+  const allTurns: Array<{ speaker: string; text: string; index: number }> = [];
+  
+  for (const [email, transcriptArray] of transcripts.entries()) {
+    const participant = participantMap.get(email);
+    const speakerName = participant?.name || email;
+    
+    transcriptArray.forEach((text, index) => {
+      allTurns.push({ speaker: speakerName, text, index });
+    });
+  }
+  
+  // Sort by index (simplified - in production you'd want actual timestamps)
+  allTurns.sort((a, b) => a.index - b.index);
+  
+  // Format as HTML
+  for (const turn of allTurns) {
+    parts.push(`<p><strong>${turn.speaker}:</strong> ${turn.text}</p>`);
+  }
+  
+  return parts.join('\n');
+}
+
+// Handle transcription started event
+async function handleTranscriptionStarted(message: any): Promise<void> {
+  let data: any;
+  try {
+    if (message.json) {
+      data = message.json;
+    } else if (message.data) {
+      data = JSON.parse(message.data.toString());
+    } else {
+      console.error('❌ Message has no json or data property:', message);
+      message.nack();
+      return;
+    }
+  } catch (error: any) {
+    console.error('❌ Error parsing message:', error);
+    message.nack();
+    return;
+  }
+  
+  const { callId, roomName, participants, orgId } = data;
+
+  console.log(`📝 Handling transcription started for call ${callId}`);
+
+  try {
+    await startTranscriptionSession(callId, roomName, participants || [], orgId);
+    message.ack();
+  } catch (error: any) {
+    console.error(`❌ Error starting transcription session:`, error);
+    message.nack();
+  }
+}
+
+// Main worker function
+export async function startWorker(): Promise<void> {
+  console.log('🚀 Starting transcription worker...');
+
+  const pubsub = getPubSubClient();
+  const audioChunksTopic = process.env.PUBSUB_AUDIO_CHUNKS_TOPIC || 'audio-chunks';
+  const callEventsTopic = process.env.PUBSUB_CALL_EVENTS_TOPIC || 'call-events';
+  const audioChunksSub = process.env.PUBSUB_AUDIO_CHUNKS_SUBSCRIPTION || 'transcription-workers';
+  const callEventsSub = process.env.PUBSUB_CALL_EVENTS_SUBSCRIPTION || 'transcription-workers-call-events';
+
+  // Get or create topics
+  const audioChunksTopicObj = pubsub.topic(audioChunksTopic);
+  const [audioTopicExists] = await audioChunksTopicObj.exists();
+  if (!audioTopicExists) {
+    console.warn(`⚠️ Topic ${audioChunksTopic} does not exist. Creating...`);
+    await pubsub.createTopic(audioChunksTopic);
+  }
+
+  const callEventsTopicObj = pubsub.topic(callEventsTopic);
+  const [callTopicExists] = await callEventsTopicObj.exists();
+  if (!callTopicExists) {
+    console.warn(`⚠️ Topic ${callEventsTopic} does not exist. Creating...`);
+    await pubsub.createTopic(callEventsTopic);
+  }
+
+  // Get or create subscriptions
+  let audioChunksSubscription = pubsub.subscription(audioChunksSub);
+  const [audioSubExists] = await audioChunksSubscription.exists();
+  if (!audioSubExists) {
+    console.warn(`⚠️ Subscription ${audioChunksSub} does not exist. Creating...`);
+    await pubsub.createSubscription(audioChunksTopic, audioChunksSub, {
+      ackDeadlineSeconds: 60,
+      messageRetentionDuration: { seconds: 7 * 24 * 60 * 60 }, // 7 days
+    });
+    audioChunksSubscription = pubsub.subscription(audioChunksSub);
+  }
+
+  let callEventsSubscription = pubsub.subscription(callEventsSub);
+  const [callSubExists] = await callEventsSubscription.exists();
+  if (!callSubExists) {
+    console.warn(`⚠️ Subscription ${callEventsSub} does not exist. Creating...`);
+    await pubsub.createSubscription(callEventsTopic, callEventsSub, {
+      ackDeadlineSeconds: 60,
+      messageRetentionDuration: { seconds: 7 * 24 * 60 * 60 }, // 7 days
+    });
+    callEventsSubscription = pubsub.subscription(callEventsSub);
+  }
+
+  // Subscribe to audio chunks
+  audioChunksSubscription.on('message', processAudioChunk);
+  console.log(`✅ Subscribed to ${audioChunksSub} for topic ${audioChunksTopic}`);
+
+  // Subscribe to call events
+  callEventsSubscription.on('message', (message: any) => {
+    let data: any;
+    try {
+      if (message.json) {
+        data = message.json;
+      } else if (message.data) {
+        data = JSON.parse(message.data.toString());
+      } else {
+        console.error('❌ Message has no json or data property:', message);
+        message.nack();
+        return;
+      }
+    } catch (error: any) {
+      console.error('❌ Error parsing message:', error);
+      message.nack();
+      return;
+    }
+    
+    if (data.event === 'transcription_started') {
+      handleTranscriptionStarted(message);
+    } else if (data.event === 'call_ended') {
+      handleCallEnded(message);
+    } else {
+      console.warn(`⚠️ Unknown call event: ${data?.event || 'unknown'}`);
+      message.ack();
+    }
+  });
+  console.log(`✅ Subscribed to ${callEventsSub} for topic ${callEventsTopic}`);
+
+  console.log('✅ Transcription worker started and listening for messages');
+}
+

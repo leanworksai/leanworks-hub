@@ -7,8 +7,9 @@
 import express from 'express';
 import crypto from 'crypto';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getOrgSlugById, getOrgPool, getUserInfoBatch } from '../../database/multi-tenant-pool.js';
-import { finalizeTranscriptionSession, formatTranscriptWithSpeakers, isTranscriptionActive } from '../services/transcription.js';
+import { getOrgSlugById, getOrgPool } from '../../database/multi-tenant-pool.js';
+import { publishCallEvent } from '../services/pubsub-events.js';
+import { flushCallBuffers } from '../services/audio-recorder.js';
 
 export function setupCallEndpoints(
   app: express.Application,
@@ -273,9 +274,15 @@ export function setupCallEndpoints(
           }
 
           if (participants.length > 0) {
-            const { startTranscriptionSession } = await import('../services/transcription.js');
-            await startTranscriptionSession(callId, callData.roomName, participants, secretManagerClient, projectId);
-            console.log(`✅ Transcription started for call ${callId}`);
+            // Publish transcription_started event to Pub/Sub (async processing)
+            await publishCallEvent('transcription_started', {
+              callId,
+              chatId,
+              roomName: callData.roomName,
+              participants,
+              orgId,
+            });
+            console.log(`✅ Transcription started event published for call ${callId}`);
             
             // Note: LiveKit egress needs to be configured on the LiveKit server
             // For now, transcription will work if egress is manually started or configured via webhooks
@@ -407,134 +414,47 @@ export function setupCallEndpoints(
         endedAt: new Date(),
       });
 
-      // Finalize transcription if active and create notes
+      // Flush any remaining audio buffers
       try {
-        if (isTranscriptionActive(callId)) {
-          console.log(`📝 Finalizing transcription for call ${callId}`);
-          
-          // Get participants from call data
-          const participants: Array<{ email: string; name?: string }> = [];
-          
-          // Add caller
-          if (callData?.callerEmail) {
-            participants.push({ email: callData.callerEmail });
-          }
-          
-          // Add callee
-          if (callData?.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
-            participants.push({ email: callData.calleeEmail });
-          }
-          
-          // Add group call participants if available
-          if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
-            for (const email of callData.participantEmails) {
-              if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
-                participants.push({ email });
-              }
-            }
-          }
+        await flushCallBuffers(callId);
+      } catch (flushError: any) {
+        console.warn('⚠️ Error flushing audio buffers:', flushError.message);
+      }
 
-          // Get user names for participants
-          const participantEmails = participants.map(p => p.email);
-          const userInfoMap = await getUserInfoBatch(participantEmails);
-          
-          // Update participants with names
-          const participantsWithNames = participants.map(p => {
-            const info = userInfoMap.get(p.email.toLowerCase());
-            return {
-              email: p.email,
-              name: info?.name || p.email,
-            };
-          });
-
-          // Create participant map for transcript formatting
-          const participantMap = new Map(
-            participantsWithNames.map(p => [p.email.toLowerCase(), p])
-          );
-
-          // Finalize transcription
-          const transcripts = await finalizeTranscriptionSession(callId);
-          
-          if (transcripts.size > 0) {
-            // Format transcript with speaker labels
-            const formattedTranscript = formatTranscriptWithSpeakers(transcripts, participantMap);
-            
-            // Create notes for each participant
-            const pool = await getOrgPool(orgId);
-            const callDate = callData?.createdAt?.toDate 
-              ? callData.createdAt.toDate() 
-              : new Date();
-            const callDateStr = callDate.toLocaleDateString('en-US', { 
-              year: 'numeric', 
-              month: 'long', 
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit'
-            });
-
-            // Determine projectId or teamId from chatId
-            let projectId: string | null = null;
-            let teamId: string | null = null;
-            if (callData?.chatId) {
-              if (callData.chatId.startsWith('project-')) {
-                projectId = callData.chatId.replace('project-', '');
-              } else if (callData.chatId.startsWith('team-')) {
-                teamId = callData.chatId.replace('team-', '');
-              }
-            }
-
-            // Create note for each participant
-            for (const participant of participantsWithNames) {
-              try {
-                const noteId = crypto.randomBytes(16).toString('hex');
-                const noteTitle = `Meeting Notes - ${callDateStr}`;
-                
-                // Create HTML content with transcript
-                const noteContent = `
-                  <div>
-                    <h2>Voice Call Transcript</h2>
-                    <p><strong>Date:</strong> ${callDateStr}</p>
-                    <p><strong>Participants:</strong> ${participantsWithNames.map(p => p.name).join(', ')}</p>
-                    <hr>
-                    <div>
-                      ${formattedTranscript}
-                    </div>
-                  </div>
-                `;
-
-                await pool.query(`
-                  INSERT INTO notes (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
-                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-                `, [
-                  noteId,
-                  noteTitle,
-                  noteContent,
-                  participant.email.toLowerCase(),
-                  projectId,
-                  teamId,
-                  JSON.stringify(['meeting', 'transcript']),
-                  false
-                ]);
-
-                console.log(`✅ Created meeting note for ${participant.email}`);
-              } catch (noteError) {
-                console.error(`❌ Error creating note for ${participant.email}:`, noteError);
-                // Continue with other participants even if one fails
-              }
-            }
-
-            // Update call document with transcription status
-            await callRef.update({
-              transcriptReady: true,
-              participantTranscripts: Object.fromEntries(transcripts),
-            });
-          } else {
-            console.log(`⚠️ No transcripts available for call ${callId}`);
+      // Get participants for the call_ended event
+      const participants: Array<{ email: string; name?: string }> = [];
+      if (callData?.callerEmail) {
+        participants.push({ email: callData.callerEmail });
+      }
+      if (callData?.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+        participants.push({ email: callData.calleeEmail });
+      }
+      if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+        for (const email of callData.participantEmails) {
+          if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+            participants.push({ email });
           }
         }
-      } catch (transcriptionError) {
-        console.error('❌ Error finalizing transcription:', transcriptionError);
-        // Don't fail the call end if transcription fails
+      }
+
+      // Publish call_ended event to Pub/Sub for async transcription finalization
+      // The transcription worker will handle finalization and note creation
+      if (orgId && participants.length > 0) {
+        try {
+          await publishCallEvent('call_ended', {
+            callId,
+            chatId,
+            participants,
+            orgId,
+          });
+          console.log(`✅ Published 'call_ended' event for call ${callId}`);
+          console.log(`📝 Transcription will be finalized by worker asynchronously`);
+        } catch (pubsubError: any) {
+          console.error('❌ Error publishing call_ended event:', pubsubError);
+          // Don't fail the call end if Pub/Sub fails
+        }
+      } else {
+        console.warn('⚠️ Cannot publish call_ended event: orgId or participants missing');
       }
 
       res.json({ success: true });
@@ -691,9 +611,22 @@ export function setupCallEndpoints(
       }
 
       // Check if transcription is already active
-      const { isTranscriptionActive } = await import('../services/transcription.js');
-      if (isTranscriptionActive(callId)) {
-        return res.json({ success: true, message: 'Transcription already active' });
+      // In async architecture, check if transcription session exists in database
+      // Note: transcription_sessions are stored in org databases, not shared
+      if (orgId) {
+        try {
+          const pool = await getOrgPool(orgId);
+          const result = await pool.query(
+            'SELECT status FROM transcription_sessions WHERE call_id = $1 AND status IN ($2, $3)',
+            [callId, 'active', 'processing']
+          );
+          if (result.rows.length > 0) {
+            return res.json({ success: true, message: 'Transcription already active' });
+          }
+        } catch (error: any) {
+          console.warn(`⚠️ Error checking transcription status:`, error.message);
+          // Continue with starting transcription
+        }
       }
 
       // Get participants
@@ -717,16 +650,21 @@ export function setupCallEndpoints(
         return res.status(400).json({ error: 'Room name is required for transcription' });
       }
 
-      // Start transcription
-      const { startTranscriptionSession } = await import('../services/transcription.js');
-      await startTranscriptionSession(callId, callData.roomName, participants, secretManagerClient, projectId);
+      // Publish transcription_started event to Pub/Sub (async processing)
+      await publishCallEvent('transcription_started', {
+        callId,
+        chatId: req.params.chatId,
+        roomName: callData.roomName,
+        participants,
+        orgId,
+      });
 
       // Update call document
       await callRef.update({
         transcriptionEnabled: true,
       });
 
-      console.log(`✅ Transcription started for call ${callId}`);
+      console.log(`✅ Transcription started event published for call ${callId}`);
       console.log(`📝 Note: Egress will start automatically via webhooks when audio tracks are published`);
       console.log(`   If tracks were published before transcription started, webhook retry will handle them`);
 
