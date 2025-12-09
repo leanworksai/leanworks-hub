@@ -4306,11 +4306,13 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       }
     }
     
-    // Sort by timestamp in memory (descending)
+    // Sort by timestamp in memory (ascending)
     docs.sort((a, b) => {
-      const aTime = a.data().timestamp || 0;
-      const bTime = b.data().timestamp || 0;
-      return bTime - aTime; // Descending
+      const aTime = a.data().timestamp?.toDate?.()?.getTime() || 
+                    (typeof a.data().timestamp === 'number' ? a.data().timestamp : 0);
+      const bTime = b.data().timestamp?.toDate?.()?.getTime() || 
+                    (typeof b.data().timestamp === 'number' ? b.data().timestamp : 0);
+      return aTime - bTime; // Ascending
     });
     
     // Filter by afterTimestamp if provided
