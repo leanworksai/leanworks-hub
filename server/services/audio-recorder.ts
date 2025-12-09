@@ -43,6 +43,7 @@ interface StreamingSession {
 }
 
 const streamingSessions = new Map<string, StreamingSession>();
+const sessionCreationLocks = new Map<string, Promise<StreamingSession>>(); // Track in-progress session creations to prevent duplicates
 const orgSlugCache = new Map<string, string>(); // Cache org-slug by callId
 const orgIdCache = new Map<string, string>(); // Cache orgId by callId
 
@@ -60,13 +61,24 @@ function getProjectId(): string {
 function getStorageClient(): Storage {
   if (!storageClient) {
     const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    const retryOptions = {
+      autoRetry: true,
+      maxRetries: 8, // Increased from 5 to 8 for better stability
+      retryDelayMultiplier: 2,
+      totalTimeout: 900000, // 15 minutes total timeout (increased for stability)
+      maxRetryDelay: 120000, // Max 2 minutes between retries (increased for stability)
+    };
+    
     if (existsSync(serviceAccountPath)) {
       storageClient = new Storage({
         keyFilename: serviceAccountPath,
+        retryOptions,
       });
     } else {
       // Use default credentials (for GKE with Workload Identity)
-      storageClient = new Storage();
+      storageClient = new Storage({
+        retryOptions,
+      });
     }
   }
   return storageClient;
@@ -189,6 +201,7 @@ async function createStreamingSession(
   
   const writeStream = file.createWriteStream({
     resumable: true, // Use resumable uploads for reliability
+    timeout: 600000, // 10 minutes timeout per request (increased for stability)
     metadata: {
       contentType: 'audio/pcm',
       metadata: {
@@ -225,8 +238,15 @@ async function createStreamingSession(
                        (error.code >= 500 && error.code < 600);
     
     if (isRetryable) {
-      console.warn(`⚠️ Retryable error in stream for ${participantEmail}: ${error.code || error.message}`);
-      // Resumable streams handle retries automatically
+      // For 408 timeout errors, check if retry limit was exceeded
+      if (error.code === 408 && error.message?.includes('Retry limit exceeded')) {
+        console.error(`❌ GCS upload session expired for ${participantEmail} (408 timeout, retry limit exceeded). This usually means the upload took too long or had too many gaps.`);
+        // The GCS client has already exhausted retries, so this is a non-recoverable error
+        // The stream will be closed, and we'll need to handle this at a higher level
+      } else {
+        console.warn(`⚠️ Retryable error in stream for ${participantEmail}: ${error.code || error.message}`);
+        // Resumable streams handle retries automatically
+      }
     } else {
       console.error(`❌ Non-retryable error in stream for ${participantEmail}:`, error);
     }
@@ -291,13 +311,68 @@ export async function recordChunk(
     if (session && (session.writeStream.destroyed || session.writeStream.writableEnded)) {
       console.warn(`⚠️ Stream closed for ${participantEmail}, removing session and creating new one`);
       streamingSessions.delete(sessionKey);
+      sessionCreationLocks.delete(sessionKey); // Also clear any lock
       session = null;
     }
     
     if (!session) {
-      session = await createStreamingSession(callId, participantEmail, orgSlug);
-      streamingSessions.set(sessionKey, session);
-      console.log(`📡 Created streaming session for ${participantEmail} in call ${callId}`);
+      // Check if session creation is already in progress (prevent duplicate creation)
+      if (sessionCreationLocks.has(sessionKey)) {
+        // Wait for the existing creation to complete
+        try {
+          session = await sessionCreationLocks.get(sessionKey)!;
+          // Verify the session is still valid after waiting
+          if (session && (session.writeStream.destroyed || session.writeStream.writableEnded)) {
+            // Session was created but is already closed, create a new one
+            streamingSessions.delete(sessionKey);
+            sessionCreationLocks.delete(sessionKey);
+            session = null;
+          } else if (session) {
+            // Session is valid, use it
+            console.log(`📡 Reusing streaming session for ${participantEmail} in call ${callId} (waited for creation)`);
+          }
+        } catch (error: any) {
+          // Creation failed, clear lock and try again
+          console.warn(`⚠️ Session creation failed, retrying:`, error.message);
+          sessionCreationLocks.delete(sessionKey);
+          session = null;
+        }
+      }
+      
+      // If still no session, create a new one with a lock
+      if (!session) {
+        // Create a lock promise to prevent concurrent creation
+        const creationPromise = createStreamingSession(callId, participantEmail, orgSlug)
+          .then((newSession) => {
+            // Check if another session was created while we were creating this one
+            const existing = streamingSessions.get(sessionKey);
+            if (existing && existing !== newSession) {
+              // Duplicate detected - close the new one and use the existing
+              console.warn(`⚠️ Duplicate session detected for ${participantEmail}, closing new session and using existing`);
+              newSession.writeStream.destroy();
+              sessionCreationLocks.delete(sessionKey);
+              return existing;
+            }
+            
+            // Store the session
+            streamingSessions.set(sessionKey, newSession);
+            sessionCreationLocks.delete(sessionKey); // Clear lock when done
+            console.log(`📡 Created streaming session for ${participantEmail} in call ${callId}`);
+            return newSession;
+          })
+          .catch((error: any) => {
+            // Clear lock on error
+            sessionCreationLocks.delete(sessionKey);
+            console.error(`❌ Error creating streaming session for ${participantEmail}:`, error);
+            throw error;
+          });
+        
+        // Store the lock promise
+        sessionCreationLocks.set(sessionKey, creationPromise);
+        
+        // Wait for creation to complete
+        session = await creationPromise;
+      }
     }
     
     // Check if stream is still writable before writing
@@ -313,6 +388,7 @@ export async function recordChunk(
         if ((error as any).code === 'ERR_STREAM_WRITE_AFTER_END') {
           console.warn(`⚠️ Stream already closed for ${participantEmail}, removing session`);
           streamingSessions.delete(sessionKey);
+          sessionCreationLocks.delete(sessionKey); // Clean up any lock
           return;
         }
         
@@ -416,6 +492,7 @@ export async function cleanupParticipantBuffer(callId: string, participantEmail:
   if (session) {
     await closeStreamingSession(sessionKey, session);
     streamingSessions.delete(sessionKey);
+    sessionCreationLocks.delete(sessionKey); // Clean up any lock
   }
 }
 
@@ -437,9 +514,10 @@ export async function flushCallBuffers(callId: string): Promise<void> {
     sessionsToClose.map(([key, session]) => closeStreamingSession(key, session))
   );
   
-  // Clean up sessions
+  // Clean up sessions and locks
   for (const [key] of sessionsToClose) {
     streamingSessions.delete(key);
+    sessionCreationLocks.delete(key); // Clean up any locks
   }
   
   console.log(`✅ Flushed ${sessionsToClose.length} streaming session(s) for call ${callId}`);
