@@ -611,44 +611,64 @@ export function setupLiveKitEndpoints(
               if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
                 const orgSlug = pathParts[1];
                 
-                // Get orgId from shared database
-                try {
-                  const { getOrgIdBySlug } = await import('../database/multi-tenant-pool.js');
-                  const orgId = await getOrgIdBySlug(orgSlug);
-                  
-                  // Check if transcription is enabled but not started
-                  if (callData.transcriptionEnabled && !callData.transcriptionStarted && orgId) {
-                    const participants: Array<{ email: string; name?: string }> = [];
-                    if (callData.callerEmail) {
-                      participants.push({ email: callData.callerEmail });
+                // Get orgId - first check if it's already in callData, then try to get from orgSlug
+                let orgId: string | undefined = callData.orgId || callData.organizationId;
+                
+                // If orgId not in callData, try to get it from orgSlug using multi-tenant-pool
+                if (!orgId && orgSlug) {
+                  try {
+                    // Try to import and get orgId from orgSlug
+                    const multiTenantPool = await import('../database/multi-tenant-pool.js').catch(() => null);
+                    if (multiTenantPool?.getOrgIdBySlug) {
+                      orgId = await multiTenantPool.getOrgIdBySlug(orgSlug);
+                      console.log(`✅ Retrieved orgId ${orgId} from orgSlug ${orgSlug} for call ${callId}`);
+                    } else {
+                      console.warn(`⚠️ multi-tenant-pool module not available, using orgSlug ${orgSlug} without orgId`);
                     }
-                    if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
-                      participants.push({ email: callData.calleeEmail });
-                    }
-                    if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
-                      for (const email of callData.participantEmails) {
-                        if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
-                          participants.push({ email });
-                        }
+                  } catch (orgError: any) {
+                    console.warn(`⚠️ Could not get orgId from orgSlug ${orgSlug} for auto-starting transcription:`, orgError.message);
+                    // Continue with orgSlug - transcription worker can work with orgSlug
+                  }
+                }
+                
+                // Log what we have
+                if (orgId) {
+                  console.log(`📝 Using orgId ${orgId} for transcription (orgSlug: ${orgSlug})`);
+                } else {
+                  console.log(`📝 Using orgSlug ${orgSlug} for transcription (no orgId available)`);
+                }
+                
+                // Check if transcription is enabled but not started
+                // Note: We continue even if orgId is undefined - the worker can handle it
+                if (callData.transcriptionEnabled && !callData.transcriptionStarted) {
+                  const participants: Array<{ email: string; name?: string }> = [];
+                  if (callData.callerEmail) {
+                    participants.push({ email: callData.callerEmail });
+                  }
+                  if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+                    participants.push({ email: callData.calleeEmail });
+                  }
+                  if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+                    for (const email of callData.participantEmails) {
+                      if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+                        participants.push({ email });
                       }
                     }
-                    
-                    if (participants.length > 0) {
-                      const { publishCallEvent } = await import('../services/pubsub-events.js');
-                      await publishCallEvent('transcription_started', {
-                        callId,
-                        roomName,
-                        participants,
-                        orgId,
-                      });
-                      console.log(`✅ Auto-started transcription for call ${callId} via track_published webhook`);
-                      
-                      // Mark transcription as started in Firestore
-                      await callDoc.ref.update({ transcriptionStarted: true });
-                    }
                   }
-                } catch (orgError: any) {
-                  console.warn('⚠️ Could not get orgId for auto-starting transcription:', orgError.message);
+                  
+                  if (participants.length > 0) {
+                    const { publishCallEvent } = await import('../services/pubsub-events.js');
+                    await publishCallEvent('transcription_started', {
+                      callId,
+                      roomName,
+                      participants,
+                      orgId, // Can be undefined - worker will handle it
+                    });
+                    console.log(`✅ Auto-started transcription for call ${callId} via track_published webhook${orgId ? ` (orgId: ${orgId})` : ' (no orgId)'}`);
+                    
+                    // Mark transcription as started in Firestore
+                    await callDoc.ref.update({ transcriptionStarted: true });
+                  }
                 }
               }
             }

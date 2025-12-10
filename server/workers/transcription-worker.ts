@@ -36,6 +36,8 @@ interface TranscriptionSession {
   processedSegments: Map<string, Set<number>>; // Track processed segments per participant (email -> Set<segmentIndex>)
   lastProcessedBytes: Map<string, number>; // Track last processed byte position per participant (email -> bytes)
   finalChunksReceived: Set<string>; // Track which participants have received final chunks (email -> true)
+  transcriberReady: Map<string, boolean>; // Track which transcribers are actually connected and ready
+  transcriberReadyTime: Map<string, number>; // Track when transcribers were last confirmed ready (timestamp)
 }
 
 const activeSessions = new Map<string, TranscriptionSession>();
@@ -50,8 +52,9 @@ const transcriptionSessionLocks = new Map<string, Promise<void>>();
 // Use 30KB to ensure we stay well under the 1000ms limit
 const MAX_CHUNK_SIZE = 30 * 1024; // 30KB chunks (ensures <1000ms at 16kHz)
 // At 16kHz PCM, 30KB ≈ 937ms of audio
-// Send chunks at ~1x real-time speed (slightly faster for buffering, but not 8x)
-const CHUNK_INTERVAL_MS = 900; // Send 30KB chunks every 900ms (~1.04x real-time)
+// Send chunks faster than real-time but with backpressure handling
+// 50ms delay allows ~18x real-time max, but backpressure will naturally throttle
+const CHUNK_INTERVAL_MS = 50; // Send 30KB chunks every 50ms (allows faster transmission, backpressure handles throttling)
 
 /**
  * Push audio buffer to stream in chunks to meet AssemblyAI's requirements:
@@ -64,11 +67,20 @@ async function pushAudioInChunks(stream: Readable, audioBuffer: Buffer): Promise
   let offset = 0;
   while (offset < audioBuffer.length) {
     const chunk = audioBuffer.slice(offset, Math.min(offset + MAX_CHUNK_SIZE, audioBuffer.length));
-    stream.push(chunk);
+    
+    // Push chunk and check for backpressure
+    const canPush = stream.push(chunk);
     offset += MAX_CHUNK_SIZE;
     
-    // Rate limit: wait before sending next chunk to avoid exceeding AssemblyAI's rate limit
-    // Only wait if there's more data to send
+    // If stream is backpressured, wait for drain event
+    if (!canPush) {
+      await new Promise<void>((resolve) => {
+        stream.once('drain', resolve);
+      });
+    }
+    
+    // Small delay to prevent tight loops and allow stream processing
+    // This is much faster than 900ms, allowing near real-time transmission
     if (offset < audioBuffer.length) {
       await new Promise(resolve => setTimeout(resolve, CHUNK_INTERVAL_MS));
     }
@@ -232,6 +244,8 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
       processedSegments, // Restored from DB
       lastProcessedBytes, // Estimated from GCS file sizes
       finalChunksReceived: new Set(), // Initialize empty - will be populated as final chunks arrive
+      transcriberReady: new Map(), // Will be set when transcribers connect
+      transcriberReadyTime: new Map(), // Will be set when transcribers connect
     };
 
     // Load transcripts from DB
@@ -297,28 +311,138 @@ async function setupTranscriberForParticipant(
     const transcriber = assemblyAI.streaming.transcriber({
       sampleRate: 16000, // 16kHz
       formatTurns: true,
+      formatText: true, // Enable punctuation and capitalization for better readability
+      // Turn detection: 'aggressive' ends turns quickly, 'balanced' is natural, 'conservative' holds longer
+      // Using 'balanced' for natural sentence completion
     });
 
     let transcriberReady = false;
-    const transcriberReadyPromise = new Promise<void>((resolve) => {
+    const transcriberReadyPromise = new Promise<void>((resolve, reject) => {
+      // Set a timeout to detect if transcriber never connects
+      const timeout = setTimeout(() => {
+        if (!transcriberReady) {
+          console.error(`❌ Transcriber connection timeout for ${email} after 30 seconds`);
+          reject(new Error('Transcriber connection timeout'));
+        }
+      }, 30000); // 30 second timeout
+      
       const openHandler = ({ id }: { id: string }) => {
+        clearTimeout(timeout);
         transcriberReady = true;
+        // Mark transcriber as ready in session
+        if (!session.transcriberReady) {
+          session.transcriberReady = new Map();
+        }
+        session.transcriberReady.set(email, true);
+        if (!session.transcriberReadyTime) {
+          session.transcriberReadyTime = new Map();
+        }
+        session.transcriberReadyTime.set(email, Date.now());
         console.log(`✅ Transcription session opened for ${email}, ID: ${id}`);
         resolve();
       };
+      
+      const errorHandler = (error: any) => {
+        clearTimeout(timeout);
+        // Mark transcriber as not ready in session
+        if (!session.transcriberReady) {
+          session.transcriberReady = new Map();
+        }
+        session.transcriberReady.set(email, false);
+        console.error(`❌ Transcriber connection error for ${email}:`, error);
+        reject(error);
+      };
+      
       transcriber.on('open', openHandler);
+      transcriber.on('error', errorHandler);
     });
 
     transcriber.on('turn', (turn: any) => {
       if (turn.transcript && turn.transcript.trim()) {
-        if (!session.transcripts.has(email)) {
-          session.transcripts.set(email, []);
-        }
-        session.transcripts.get(email)!.push(turn.transcript);
-        console.log(`📝 Transcript for ${email}: ${turn.transcript}`);
+        const existingTranscripts = session.transcripts.get(email) || [];
+        const transcriptText = turn.transcript.trim();
         
-        // Save to DB periodically
-        saveSessionToDB(session).catch(console.error);
+        // Filter out partial/interim transcripts - only capture final ones
+        // AssemblyAI's turn event has 'end_of_turn' property for final transcripts
+        const isFinal = turn.end_of_turn === true;
+        
+        // Helper function to normalize text for comparison (remove punctuation, lowercase)
+        const normalizeText = (text: string): string => {
+          return text.toLowerCase()
+            .replace(/[.,!?;:]/g, '') // Remove punctuation
+            .trim();
+        };
+        
+        // For final transcripts, always check for duplicates but be less aggressive
+        // For partial transcripts, only filter very short ones
+        if (isFinal) {
+          // Final transcripts - check for duplicates but accept all final transcripts
+          const lastTranscript = existingTranscripts[existingTranscripts.length - 1];
+          if (lastTranscript) {
+            const normalizedLast = normalizeText(lastTranscript);
+            const normalizedCurrent = normalizeText(transcriptText);
+            
+            // Skip if normalized versions are identical (handles "three" vs "Three.")
+            if (normalizedLast === normalizedCurrent) {
+              console.log(`⏭️ Skipping duplicate final transcript for ${email}: "${transcriptText}" (same as "${lastTranscript}")`);
+              return; // Skip exact duplicates (case/punctuation variations)
+            }
+            
+            // Only replace if the last one is clearly a substring (refinement)
+            // Be conservative - only if the last one is significantly shorter and contained
+            if (normalizedLast.length < normalizedCurrent.length && 
+                normalizedCurrent.startsWith(normalizedLast) &&
+                normalizedLast.length > 0 &&
+                (normalizedCurrent.length - normalizedLast.length) > 2) {
+              // Replace the last transcript with the more complete version
+              existingTranscripts[existingTranscripts.length - 1] = transcriptText;
+              console.log(`📝 Updated transcript for ${email}: "${transcriptText}" (refined from "${lastTranscript}")`);
+              saveSessionToDB(session).catch(console.error);
+              return; // Don't add as new transcript, we just updated the last one
+            }
+          }
+          
+          // Always add final transcripts (they're complete sentences)
+          if (!session.transcripts.has(email)) {
+            session.transcripts.set(email, []);
+          }
+          session.transcripts.get(email)!.push(transcriptText);
+          console.log(`📝 Transcript for ${email}: ${transcriptText} (final)`);
+          
+          // Save to DB periodically
+          saveSessionToDB(session).catch(console.error);
+        } else {
+          // Partial/interim transcripts - only filter very short fragments
+          // Skip very short fragments that are likely partial/interim (less than 3 characters)
+          if (transcriptText.length < 3) {
+            return; // Skip partial short fragments
+          }
+          
+          // For partials, only add if they're substantial and different from the last one
+          const lastTranscript = existingTranscripts[existingTranscripts.length - 1];
+          if (lastTranscript) {
+            const normalizedLast = normalizeText(lastTranscript);
+            const normalizedCurrent = normalizeText(transcriptText);
+            
+            // Skip if it's a duplicate or substring of the last one
+            if (normalizedLast === normalizedCurrent || 
+                (normalizedCurrent.length < normalizedLast.length && normalizedLast.includes(normalizedCurrent))) {
+              return; // Skip partial duplicates
+            }
+          }
+          
+          // Only add substantial partials (5+ characters)
+          if (transcriptText.length >= 5) {
+            if (!session.transcripts.has(email)) {
+              session.transcripts.set(email, []);
+            }
+            session.transcripts.get(email)!.push(transcriptText);
+            console.log(`📝 Transcript for ${email}: ${transcriptText} (partial)`);
+            
+            // Save to DB periodically
+            saveSessionToDB(session).catch(console.error);
+          }
+        }
       }
     });
 
@@ -336,15 +460,36 @@ async function setupTranscriberForParticipant(
       highWaterMark: 64 * 1024,
     });
 
-    // Connect transcriber (non-blocking)
-    transcriber.connect().catch((error: any) => {
-      console.error(`❌ Error connecting transcriber for ${email}:`, error);
-    });
+    // Connect transcriber and wait for it to be ready
+    console.log(`🔌 Connecting transcriber for ${email}...`);
+    
+    // Start connection (non-blocking)
+    transcriber.connect()
+      .then(() => {
+        console.log(`✅ Transcriber.connect() completed for ${email} (waiting for 'open' event)`);
+      })
+      .catch((error: any) => {
+        console.error(`❌ Error connecting transcriber for ${email}:`, error);
+        // Mark as not ready on connection error
+        if (!session.transcriberReady) {
+          session.transcriberReady = new Map();
+        }
+        session.transcriberReady.set(email, false);
+      });
 
-    // Wait for transcriber to be ready in background
-    transcriberReadyPromise.then(() => {
-      console.log(`✅ Transcriber ready for ${email}`);
-    }).catch(console.error);
+    // Wait for transcriber to be ready in background (don't block, but track status)
+    transcriberReadyPromise
+      .then(() => {
+        console.log(`✅ Transcriber ready for ${email}`);
+      })
+      .catch((error: any) => {
+        console.error(`❌ Transcriber failed to become ready for ${email}:`, error);
+        // Ensure it's marked as not ready on failure
+        if (!session.transcriberReady) {
+          session.transcriberReady = new Map();
+        }
+        session.transcriberReady.set(email, false);
+      });
 
     // Pipe audio stream to transcriber
     if (typeof Readable.toWeb === 'function') {
@@ -420,8 +565,69 @@ async function startTranscriptionSession(
     }
   }
 
+  // If session exists and wasn't loaded from DB, check if transcribers need to be created or recreated
   if (session && !sessionLoadedFromDB) {
     console.log(`📝 Transcription session already exists for call ${callId}`);
+    
+    // Initialize transcriberReady map if it doesn't exist (for sessions created before this change)
+    if (!session.transcriberReady) {
+      session.transcriberReady = new Map();
+    }
+    if (!session.transcriberReadyTime) {
+      session.transcriberReadyTime = new Map();
+    }
+    
+    // Check if transcribers exist AND are ready for all participants
+    // Also verify they were confirmed ready recently (within last 5 minutes)
+    const MAX_READY_AGE_MS = 5 * 60 * 1000; // 5 minutes
+    const missingOrNotReadyTranscribers: Array<{ email: string; name?: string }> = [];
+    for (const participant of participants) {
+      const email = participant.email.toLowerCase();
+      const hasTranscriber = session.transcribers.has(email) && session.audioStreams.has(email);
+      const isReady = session.transcriberReady?.get(email) === true;
+      const readyTime = session.transcriberReadyTime?.get(email) || 0;
+      const readyAge = Date.now() - readyTime;
+      const isRecentlyReady = isReady && readyAge < MAX_READY_AGE_MS;
+      
+      console.log(`🔍 Checking transcriber for ${email}: hasTranscriber=${hasTranscriber}, isReady=${isReady}, readyAge=${Math.round(readyAge/1000)}s`);
+      
+      if (!hasTranscriber || !isRecentlyReady) {
+        missingOrNotReadyTranscribers.push(participant);
+        if (hasTranscriber && !isRecentlyReady) {
+          console.log(`⚠️ Transcriber exists for ${email} but is not ready or ready status is stale (age: ${Math.round(readyAge/1000)}s), will recreate`);
+          // Clean up old transcriber
+          const oldTranscriber = session.transcribers.get(email);
+          if (oldTranscriber) {
+            try {
+              oldTranscriber.close?.();
+            } catch {}
+            session.transcribers.delete(email);
+            session.audioStreams.delete(email);
+            if (session.transcriberReady) {
+              session.transcriberReady.delete(email);
+            }
+            if (session.transcriberReadyTime) {
+              session.transcriberReadyTime.delete(email);
+            }
+          }
+        } else if (!hasTranscriber) {
+          console.log(`⚠️ No transcriber found for ${email}, will create`);
+        }
+      }
+    }
+    
+    // If all transcribers exist and are ready, return early
+    if (missingOrNotReadyTranscribers.length === 0) {
+      console.log(`📝 All transcribers already exist and are ready for call ${callId}`);
+      return;
+    }
+    
+    // Otherwise, create missing or recreate not-ready transcribers
+    console.log(`📝 Creating/recreating ${missingOrNotReadyTranscribers.length} transcriber(s) for call ${callId}`);
+    const assemblyAI = await getAssemblyAIClient();
+    for (const participant of missingOrNotReadyTranscribers) {
+      await setupTranscriberForParticipant(session, participant, assemblyAI);
+    }
     return;
   }
 
@@ -442,6 +648,8 @@ async function startTranscriptionSession(
       processedSegments: new Map(), // Track processed segments per participant
       lastProcessedBytes: new Map(), // Track last processed byte position per participant
       finalChunksReceived: new Set(), // Track which participants have received final chunks
+      transcriberReady: new Map(), // Track which transcribers are actually connected and ready
+      transcriberReadyTime: new Map(), // Track when transcribers were last confirmed ready
     };
   } else {
     // Session loaded from DB - ensure participants match
@@ -459,10 +667,29 @@ async function startTranscriptionSession(
   for (const participant of Array.from(session.participants.values())) {
     const email = participant.email.toLowerCase();
     
-    // If transcriber already exists (shouldn't happen for DB-loaded sessions, but check anyway)
-    if (session.transcribers.has(email) && session.audioStreams.has(email)) {
-      console.log(`📝 Transcriber already exists for ${email}, skipping recreation`);
+    // If transcriber already exists AND is ready (shouldn't happen for DB-loaded sessions, but check anyway)
+    const hasTranscriber = session.transcribers.has(email) && session.audioStreams.has(email);
+    const isReady = session.transcriberReady?.get(email) === true;
+    
+    if (hasTranscriber && isReady) {
+      console.log(`📝 Transcriber already exists and is ready for ${email}, skipping recreation`);
       continue;
+    }
+    
+    // If transcriber exists but isn't ready, clean it up first
+    if (hasTranscriber && !isReady) {
+      console.log(`⚠️ Transcriber exists for ${email} but is not ready, cleaning up before recreation`);
+      const oldTranscriber = session.transcribers.get(email);
+      if (oldTranscriber) {
+        try {
+          oldTranscriber.close?.();
+        } catch {}
+        session.transcribers.delete(email);
+        session.audioStreams.delete(email);
+        if (session.transcriberReady) {
+          session.transcriberReady.delete(email);
+        }
+      }
     }
     
     await setupTranscriberForParticipant(session, participant, assemblyAI);
@@ -527,16 +754,33 @@ async function processAudioChunk(message: any): Promise<void> {
       }
     }
     
-    // If still no session, queue the chunk for later processing
+    // If still no session, auto-start transcription session
     if (!session) {
-      const segmentIdx = data.segmentIndex !== undefined ? data.segmentIndex : chunkIndex;
-      console.warn(`⚠️ No active session for call ${callId}, queuing segment ${segmentIdx} for later`);
-      if (!pendingChunks.has(callId)) {
-        pendingChunks.set(callId, []);
+      console.log(`📝 No transcription session found for call ${callId}, auto-starting...`);
+      try {
+        // Extract participants from the audio chunk data or use a default
+        // We need at least the current participant
+        const participants = [{ email: participantEmail }];
+        
+        // Try to get orgId from the data or use undefined
+        const orgId = data.orgId;
+        
+        // Auto-start the session
+        await startTranscriptionSession(callId, data.roomName || callId, participants, orgId);
+        
+        // Get the newly created session
+        session = activeSessions.get(callId);
+        if (!session) {
+          console.error(`❌ Failed to create transcription session for call ${callId}`);
+          message.nack();
+          return;
+        }
+        console.log(`✅ Auto-started transcription session for call ${callId}`);
+      } catch (error: any) {
+        console.error(`❌ Error auto-starting transcription session:`, error);
+        message.nack();
+        return;
       }
-      pendingChunks.get(callId)!.push({ message, data });
-      // Don't ack or nack - we'll process it when session is ready
-      return;
     }
   }
 
@@ -561,6 +805,10 @@ async function processAudioChunk(message: any): Promise<void> {
       message.ack(); // Ack to remove from queue, but don't process again
       return;
     }
+    
+    // Mark segment as processing BEFORE async download to prevent concurrent processing
+    // This prevents the same segment from being processed multiple times concurrently
+    processedSegments.add(segmentIdx);
     
     // Download audio from Cloud Storage
     const storage = getStorageClient();
@@ -606,8 +854,7 @@ async function processAudioChunk(message: any): Promise<void> {
         console.log(`📥 Downloaded ${audioBuffer.length} new bytes for ${email} (total processed: ${lastProcessedByte + audioBuffer.length}/${currentSize}, chunked into ${Math.ceil(audioBuffer.length / MAX_CHUNK_SIZE)} pieces)`);
       }
       
-      // Mark segment as processed
-      processedSegments.add(segmentIdx);
+      // Segment already marked as processed above (before async download)
       
       // Mark chunk as processed in DB
       if (session.orgId) {
@@ -648,7 +895,7 @@ async function processAudioChunk(message: any): Promise<void> {
         }
       }
       
-      processedSegments.add(segmentIdx);
+      // Segment already marked as processed above (before async download)
       
       if (session.orgId) {
         const pool = await getOrgPool(session.orgId);
