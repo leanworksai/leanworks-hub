@@ -1283,11 +1283,14 @@ export const callSignalingService = {
                   return;
                 }
 
-                // Verify offer exists and is valid
-                if (!data.offer || data.status !== 'ringing') {
-                  console.log('📞 subscribeToIncomingOffers: Call missing offer or wrong status', {
+                // Verify call has either an offer (WebRTC) or roomName (LiveKit) and is ringing
+                const hasOffer = !!data.offer;
+                const hasRoomName = !!data.roomName;
+                if ((!hasOffer && !hasRoomName) || data.status !== 'ringing') {
+                  console.log('📞 subscribeToIncomingOffers: Call missing offer/roomName or wrong status', {
                     callId,
-                    hasOffer: !!data.offer,
+                    hasOffer,
+                    hasRoomName,
                     status: data.status,
                   });
                   return;
@@ -1332,6 +1335,9 @@ export const callSignalingService = {
                   iceCandidates: data.iceCandidates || [],
                   createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || Date.now()),
                   endedAt: data.endedAt?.toDate ? data.endedAt.toDate() : (data.endedAt ? new Date(data.endedAt) : undefined),
+                  roomName: data.roomName,
+                  isGroupCall: data.isGroupCall || false,
+                  participantEmails: data.participantEmails || [],
                 };
 
                 callback(signal);
@@ -1664,7 +1670,48 @@ export const callSignalingService = {
   },
 
   /**
+   * Start transcription for an active call
+   */
+  async startTranscription(callId: string): Promise<void> {
+    if (!auth?.currentUser?.email) {
+      throw new Error('User not authenticated');
+    }
+
+    const idToken = await getAuthToken();
+    if (!idToken) {
+      throw new Error('Failed to get auth token');
+    }
+
+    const apiUrl = import.meta.env.DEV
+      ? `${API_BASE}/api/calls/${callId}/start-transcription`
+      : `${API_BASE}/calls/${callId}/start-transcription`;
+
+    const currentOrgId = getCurrentOrgId();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${idToken}`,
+    };
+    
+    if (currentOrgId) {
+      headers['X-Org-Id'] = currentOrgId;
+    }
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to start transcription: ${response.statusText}`);
+    }
+
+    console.log('✅ Transcription started for call', { callId });
+  },
+
+  /**
    * End call
+   * This calls the backend endpoint which finalizes transcription and creates notes
    */
   async endCall(callId: string): Promise<void> {
     if (!db) {
@@ -1675,22 +1722,63 @@ export const callSignalingService = {
       throw new Error('User not authenticated');
     }
 
-    const { doc, updateDoc, serverTimestamp, getDoc } = await import('firebase/firestore');
+    const { doc, getDoc } = await import('firebase/firestore');
     const orgSlug = getCurrentOrgSlug();
     const callRef = doc(db, `orgs/${orgSlug || 'default'}/calls`, callId);
 
     try {
-      // First verify the document exists
+      // First get the call document to retrieve chatId
       const callDoc = await getDoc(callRef);
       if (!callDoc.exists()) {
         throw new Error(`Call document not found: ${callId}`);
       }
 
-      // Update the call document
+      const callData = callDoc.data();
+      const chatId = callData?.chatId;
+
+      if (!chatId) {
+        console.warn('⚠️ Call document missing chatId, falling back to direct Firestore update');
+        // Fallback: update Firestore directly if chatId is missing
+        const { updateDoc, serverTimestamp } = await import('firebase/firestore');
       await updateDoc(callRef, {
         status: 'ended',
         endedAt: serverTimestamp(),
       });
+        return;
+      }
+
+      // Call the backend endpoint which handles transcription finalization and note creation
+      const idToken = await getAuthToken();
+      if (!idToken) {
+        throw new Error('Failed to get auth token');
+      }
+
+      const apiUrl = import.meta.env.DEV
+        ? `${API_BASE}/api/calls/${chatId}/end`
+        : `${API_BASE}/calls/${chatId}/end`;
+
+      const currentOrgId = getCurrentOrgId();
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${idToken}`,
+      };
+      
+      if (currentOrgId) {
+        headers['X-Org-Id'] = currentOrgId;
+      }
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ callId }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Failed to end call: ${response.statusText}`);
+      }
+
+      console.log('✅ Call ended successfully, transcription will be finalized and notes created');
     } catch (error: any) {
       console.error('Failed to end call:', error);
       throw error;

@@ -298,7 +298,8 @@ export function GlobalCallListener() {
 
   return (
     <>
-      {incomingCallSignal && incomingCallSignal.status === 'ringing' && (
+      {/* Only show dialog for group calls - 1:1 calls use "Join Call" button in chat UI */}
+      {incomingCallSignal && incomingCallSignal.status === 'ringing' && incomingCallSignal.isGroupCall && (
         <IncomingCallDialog
           callSignal={incomingCallSignal}
           chatId={incomingCallSignal.chatId}

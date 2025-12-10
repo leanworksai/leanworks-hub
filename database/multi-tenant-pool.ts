@@ -49,7 +49,9 @@ const SHARED_DB_NAME = 'shared';
 
 // Cache for connection pools
 const orgPools = new Map<string, Pool>();
+const poolCreationPromises = new Map<string, Promise<Pool>>(); // Track in-progress pool creations
 let sharedPool: Pool | null = null;
+let sharedPoolPromise: Promise<Pool> | null = null; // Track in-progress shared pool creation
 let cachedPassword: string | null = null;
 
 // Cache for org slug lookups (org_id -> slug)
@@ -268,14 +270,26 @@ export async function getSharedPool(): Promise<Pool> {
     return sharedPool;
   }
 
-  console.log(`🔌 Creating connection pool for shared database: ${SHARED_DB_NAME}`);
-  sharedPool = await createPool(SHARED_DB_NAME);
-  
-  // Initialize shared schema
-  await initializeSchemaForDatabase(sharedPool, SHARED_DB_NAME, 'shared-schema.sql');
-  
-  console.log(`✅ Shared database pool created`);
-  return sharedPool;
+  // If pool creation is in progress, wait for it
+  if (sharedPoolPromise) {
+    return sharedPoolPromise;
+  }
+
+  // Start pool creation and track the promise
+  sharedPoolPromise = (async () => {
+    console.log(`🔌 Creating connection pool for shared database: ${SHARED_DB_NAME}`);
+    const pool = await createPool(SHARED_DB_NAME);
+    
+    // Initialize shared schema
+    await initializeSchemaForDatabase(pool, SHARED_DB_NAME, 'shared-schema.sql');
+    
+    sharedPool = pool;
+    sharedPoolPromise = null; // Clear promise once done
+    console.log(`✅ Shared database pool created`);
+    return pool;
+  })();
+
+  return sharedPoolPromise;
 }
 
 // ============================================================================
@@ -308,6 +322,28 @@ export async function getOrgSlugById(orgId: string): Promise<string> {
 }
 
 /**
+ * Get org ID from org slug (reverse lookup)
+ */
+export async function getOrgIdBySlug(orgSlug: string): Promise<string> {
+  // Check reverse cache first (if we have one)
+  // For now, we'll query the database
+  const shared = await getSharedPool();
+  const result = await shared.query(
+    'SELECT id FROM organizations WHERE slug = $1',
+    [orgSlug]
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error(`Organization not found: ${orgSlug}`);
+  }
+
+  const orgId = result.rows[0].id;
+  // Cache the reverse mapping
+  orgSlugCache.set(orgId, orgSlug);
+  return orgId;
+}
+
+/**
  * Get or create connection pool for an organization's database
  * @param orgId - Organization UUID
  */
@@ -321,18 +357,30 @@ export async function getOrgPool(orgId: string): Promise<Pool> {
     return orgPools.get(dbName)!;
   }
 
-  console.log(`🔌 Creating connection pool for org database: ${dbName} (org: ${orgId})`);
-  
-  const pool = await createPool(dbName);
-  
-  // Initialize org schema
-  await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
-  
-  // Cache the pool
-  orgPools.set(dbName, pool);
-  console.log(`✅ Connection pool created for org: ${orgId} (db: ${dbName})`);
+  // If pool creation is in progress, wait for it
+  if (poolCreationPromises.has(dbName)) {
+    return poolCreationPromises.get(dbName)!;
+  }
 
-  return pool;
+  // Start pool creation and track the promise
+  const creationPromise = (async () => {
+    console.log(`🔌 Creating connection pool for org database: ${dbName} (org: ${orgId})`);
+    
+    const pool = await createPool(dbName);
+    
+    // Initialize org schema
+    await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
+    
+    // Cache the pool
+    orgPools.set(dbName, pool);
+    poolCreationPromises.delete(dbName); // Clear promise once done
+    console.log(`✅ Connection pool created for org: ${orgId} (db: ${dbName})`);
+
+    return pool;
+  })();
+
+  poolCreationPromises.set(dbName, creationPromise);
+  return creationPromise;
 }
 
 /**
@@ -346,18 +394,30 @@ export async function getOrgPoolBySlug(slug: string): Promise<Pool> {
     return orgPools.get(dbName)!;
   }
 
-  console.log(`🔌 Creating connection pool for org database: ${dbName}`);
-  
-  const pool = await createPool(dbName);
-  
-  // Initialize org schema
-  await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
-  
-  // Cache the pool
-  orgPools.set(dbName, pool);
-  console.log(`✅ Connection pool created for org database: ${dbName}`);
+  // If pool creation is in progress, wait for it
+  if (poolCreationPromises.has(dbName)) {
+    return poolCreationPromises.get(dbName)!;
+  }
 
-  return pool;
+  // Start pool creation and track the promise
+  const creationPromise = (async () => {
+    console.log(`🔌 Creating connection pool for org database: ${dbName}`);
+    
+    const pool = await createPool(dbName);
+    
+    // Initialize org schema
+    await initializeSchemaForDatabase(pool, dbName, 'schema.sql');
+    
+    // Cache the pool
+    orgPools.set(dbName, pool);
+    poolCreationPromises.delete(dbName); // Clear promise once done
+    console.log(`✅ Connection pool created for org database: ${dbName}`);
+
+    return pool;
+  })();
+
+  poolCreationPromises.set(dbName, creationPromise);
+  return creationPromise;
 }
 
 // ============================================================================

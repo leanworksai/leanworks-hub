@@ -4,11 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev:proxy\" \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:stripe\"",
+    "dev": "concurrently \"npm run dev:proxy\" \"npm run dev:voice-services\" \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:stripe\" \"npm run dev:transcription-worker\"",
     "dev:client": "vite",
     "dev:server": "NODE_ENV=development tsx --watch server/index.ts",
     "dev:proxy": "cloud-sql-proxy --credentials-file=./gcp_credential.json leanworks-474204:us-west1:leanworks-prod --port=5432",
+    "dev:voice-services": "./scripts/ensure-voice-call-services.sh",
     "dev:stripe": "stripe listen --forward-to localhost:3001/api/webhooks/stripe",
+    "dev:transcription-worker": "NODE_ENV=development tsx --watch server/workers/index.ts",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
@@ -18,11 +20,16 @@
     "migrate:team-owners": "tsx scripts/migrate-team-owners.ts",
     "db:init": "tsx database/init-schema.ts",
     "migrate:postgres": "tsx database/migrate-multi-tenant.ts",
-    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts"
+    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts",
+    "test:transcription": "tsx scripts/test-transcription.ts"
   },
   "dependencies": {
+    "@alexanderolsen/libsamplerate-js": "^2.1.2",
+    "@google-cloud/pubsub": "^4.0.0",
     "@google-cloud/secret-manager": "^6.1.1",
+    "@google-cloud/storage": "^7.0.0",
     "@hookform/resolvers": "^3.10.0",
+    "@purinton/resampler": "^1.0.4",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",
     "@radix-ui/react-aspect-ratio": "^1.1.7",
@@ -60,6 +67,8 @@
     "@tiptap/starter-kit": "^2.1.13",
     "@types/multer": "^2.0.0",
     "@types/nodemailer": "^7.0.3",
+    "@types/ws": "^8.18.1",
+    "assemblyai": "^4.19.0",
     "bcrypt": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -90,6 +99,7 @@
     "tailwindcss-animate": "^1.0.7",
     "uuid": "^13.0.0",
     "vaul": "^0.9.9",
+    "ws": "^8.18.3",
     "zod": "^3.25.76"
   },
   "devDependencies": {

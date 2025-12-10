@@ -10,4 +10,11 @@ keys:
   devkey: devsecret
 development: true
 log_level: debug
+webhook:
+  api_key: devkey
+  urls:
+    - http://host.docker.internal:3001/api/livekit/webhook
+# Redis configuration for egress service
+redis:
+  address: host.docker.internal:6379
 

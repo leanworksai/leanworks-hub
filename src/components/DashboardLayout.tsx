@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown, CreditCard } from "lucide-react";
+import { Bell, Search, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -488,10 +488,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       <User className="mr-2 h-4 w-4" />
                       <span>Profile</span>
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => navigate('/subscription')}>
+                    {/* Subscription menu item hidden - everyone is on standard tier */}
+                    {/* <DropdownMenuItem onClick={() => navigate('/subscription')}>
                       <CreditCard className="mr-2 h-4 w-4" />
                       <span>Subscription</span>
-                    </DropdownMenuItem>
+                    </DropdownMenuItem> */}
                     <DropdownMenuItem onClick={() => navigate('/settings')}>
                       <Settings className="mr-2 h-4 w-4" />
                       <span>Settings</span>

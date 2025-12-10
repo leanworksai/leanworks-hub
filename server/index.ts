@@ -34,7 +34,9 @@ import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
-import { setupLiveKitEndpoints } from './endpoints/livekit.js';
+import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
+import { setFirestoreDb } from './services/audio-recorder.js';
+import http from 'http';
 import { sendVerificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
@@ -4305,11 +4307,13 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       }
     }
     
-    // Sort by timestamp in memory (descending)
+    // Sort by timestamp in memory (ascending)
     docs.sort((a, b) => {
-      const aTime = a.data().timestamp || 0;
-      const bTime = b.data().timestamp || 0;
-      return bTime - aTime; // Descending
+      const aTime = a.data().timestamp?.toDate?.()?.getTime() || 
+                    (typeof a.data().timestamp === 'number' ? a.data().timestamp : 0);
+      const bTime = b.data().timestamp?.toDate?.()?.getTime() || 
+                    (typeof b.data().timestamp === 'number' ? b.data().timestamp : 0);
+      return aTime - bTime; // Ascending
     });
     
     // Filter by afterTimestamp if provided
@@ -4657,8 +4661,6 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
     const orgId = req.headers['x-org-id'] as string | undefined;
     
     // Determine the external AI service URL
-    // In production, this should be the ask-api service URL
-    // In local dev, it's http://0.0.0.0:8081
     const isLocalDev = process.env.NODE_ENV !== 'production';
     const aiServiceBase = isLocalDev 
       ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
@@ -4671,13 +4673,32 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
       'Content-Type': 'application/json',
     };
     
-    // Get API key for authentication
-    try {
-      const apiKey = await getApiKeyFromSecretManager();
-      headers['X-API-Key'] = apiKey;
-    } catch (error) {
-      console.error('Failed to get API key, request may fail:', error);
-      // Continue anyway - the AI service might handle auth differently
+    // Use Bearer token for production, API key for local testing
+    if (isLocalDev) {
+      // Local testing: use API key
+      try {
+        const apiKey = await getApiKeyFromSecretManager();
+        headers['X-API-Key'] = apiKey;
+      } catch (error) {
+        console.error('Failed to get API key, request may fail:', error);
+        // Continue anyway - the AI service might handle auth differently
+      }
+    } else {
+      // Production (GKE): use Bearer token
+      // Get the Bearer token from the incoming request
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        headers['Authorization'] = authHeader;
+      } else {
+        // Fallback to API key if Bearer token not available
+        console.warn(`⚠️ No Bearer token in request, falling back to API key for ${userEmail}`);
+        try {
+          const apiKey = await getApiKeyFromSecretManager();
+          headers['X-API-Key'] = apiKey;
+        } catch (error) {
+          console.error('Failed to get API key, request may fail:', error);
+        }
+      }
     }
     
     // Ensure user_id is set
@@ -4735,7 +4756,7 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 // CALL ENDPOINTS (Firestore - Optional, can also use Firestore directly)
 // ============================================================================
 
-setupCallEndpoints(app, authenticateUser, db);
+setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 
 // ============================================================================
@@ -4748,7 +4769,7 @@ setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.pr
 // LIVEKIT ENDPOINTS (LiveKit SFU token generation)
 // ============================================================================
 
-setupLiveKitEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
+setupLiveKitEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
@@ -4921,28 +4942,11 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
       : 0;
     
-    // If trial has expired and user has no Stripe subscription, downgrade to free
-    let plan = user.subscription_plan || 'free';
-    if (!isTrialActive && trialEndsAt && !user.stripe_subscription_id && plan !== 'free') {
-      // Trial expired and no active subscription - downgrade to free
-      await sharedPool.query(`
-        UPDATE users 
-        SET subscription_plan = 'free', trial_ends_at = NULL
-        WHERE email = $1
-      `, [userEmail]);
-      plan = 'free';
-      console.log(`✅ Auto-downgraded ${userEmail} to free plan after trial expiration`);
-    }
+    // HARD CODED: Everyone is on standard tier
+    const plan = 'standard';
     
-    // Calculate AI usage limits based on plan
-    let aiUsageLimit: number | null = null; // null means unlimited
-    
-    if (plan === 'free') {
-      aiUsageLimit = 0; // No AI access on free plan
-    } else if (plan === 'standard') {
-      aiUsageLimit = 20; // 20 per day
-    }
-    // Pro plan has unlimited (null)
+    // Calculate AI usage limits based on plan (standard = 20 per day)
+    const aiUsageLimit: number = 20; // 20 per day for standard plan
     
     res.json({
       plan,
@@ -4950,7 +4954,7 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       stripeSubscriptionId: user.stripe_subscription_id,
       aiDailyUsage,
       aiUsageLimit,
-      aiUsageRemaining: aiUsageLimit !== null ? Math.max(0, aiUsageLimit - aiDailyUsage) : null,
+      aiUsageRemaining: Math.max(0, aiUsageLimit - aiDailyUsage),
       trialEndsAt: user.trial_ends_at,
       isTrialActive,
       trialDaysRemaining,
@@ -5472,9 +5476,18 @@ app.use((req, res, next) => {
 // START SERVER
 // ============================================================================
 
-app.listen(PORT, '0.0.0.0', () => {
+// Create HTTP server (needed for WebSocket support)
+const server = http.createServer(app);
+
+// Set up WebSocket server for LiveKit audio streaming
+setupLiveKitWebSocketServer(server);
+// Initialize audio recorder with Firestore for org-slug lookup
+setFirestoreDb(db);
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server started on port ${PORT}`);
   console.log(`✅ Health check available at http://0.0.0.0:${PORT}/api/health`);
+  console.log(`✅ WebSocket server available at ws://0.0.0.0:${PORT}/api/livekit/audio-ws`);
 });
 
 

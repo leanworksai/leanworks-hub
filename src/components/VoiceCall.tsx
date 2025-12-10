@@ -166,46 +166,56 @@ export function VoiceCallButton({
 
     // Use Firestore real-time listeners for call signaling
     try {
-      console.log('📞 VoiceCallButton: Setting up signal subscription for chatId:', chatId);
+      // Only log subscription setup in dev mode to reduce noise
+      if (import.meta.env.DEV) {
+        console.log('📞 VoiceCallButton: Setting up signal subscription for chatId:', chatId);
+      }
       unsubscribeRef.current = callSignalingService.subscribeToCallSignals(chatId, (signal) => {
-        // Log all signal updates to debug
-        console.log('📞 VoiceCallButton: Signal received', {
-          hasSignal: !!signal,
-          status: signal?.status,
-          hasAnswer: !!signal?.answer,
-          callId: signal?.callId,
-          callerEmail: signal?.callerEmail,
-          currentUser: user?.email,
-          callIdRef: callIdRef.current,
-        });
+        // Only log signal updates in dev mode and when status changes significantly
+        if (import.meta.env.DEV && signal && (
+          !callSignal || 
+          callSignal.status !== signal.status || 
+          callSignal.callId !== signal.callId
+        )) {
+          console.log('📞 VoiceCallButton: Signal received', {
+            hasSignal: !!signal,
+            status: signal?.status,
+            callId: signal?.callId,
+            callerEmail: signal?.callerEmail,
+          });
+        }
         
         setCallSignal(signal);
         
         if (signal) {
           const isGroupCall = signal.isGroupCall || chatId.startsWith('project-') || chatId.startsWith('team-');
-          const isCallee = signal.calleeEmail?.toLowerCase() === user.email?.toLowerCase();
-          const isCaller = signal.callerEmail.toLowerCase() === user.email?.toLowerCase();
+          const userEmail = user.email?.toLowerCase();
           
-          // For group calls, check if user is in participantEmails
-          let isGroupCallParticipant = false;
-          if (isGroupCall && signal.participantEmails) {
-            isGroupCallParticipant = signal.participantEmails.some(
-              (email: string) => email?.toLowerCase() === user.email?.toLowerCase()
-            );
-          }
+          // Unified approach: check if user is a participant using participantEmails
+          // This works for both 1:1 and group calls
+          const isParticipant = signal.participantEmails?.some(
+            (email: string) => email?.toLowerCase() === userEmail
+          ) || false;
+          
+          // Also check legacy fields for backwards compatibility
+          const isCaller = signal.callerEmail?.toLowerCase() === userEmail;
+          const isCallee = signal.calleeEmail?.toLowerCase() === userEmail;
+          const isInCall = isParticipant || isCaller || isCallee;
           
           // Handle incoming call
-          if (signal.status === 'ringing' && isCallee && !isGroupCall) {
+          // For participants receiving a ringing call, don't set isCalling yet
+          // They should only see the join button, not the call controls
+          // isCalling will be set to true after they join the room
+          if (signal.status === 'ringing' && isInCall && !isCaller) {
+            // Don't set isCalling here - participant hasn't joined yet
+            // Just store the call ID for reference
+            callIdRef.current = signal.callId;
+          } else if (signal.status === 'active' && isInCall) {
+            // Active call - user is a participant (caller, callee, or group participant)
             setIsCalling(true);
             callIdRef.current = signal.callId;
-          } else if (signal.status === 'active') {
-            // Active call - user is either caller, callee, or group call participant
-            if (isCaller || isCallee || isGroupCallParticipant) {
-              setIsCalling(true);
-              callIdRef.current = signal.callId;
-            }
-          } else if (signal.status === 'ringing' && (isCaller || isGroupCallParticipant)) {
-            // Outgoing call (we're the caller) or group call participant
+          } else if (signal.status === 'ringing' && isCaller) {
+            // Outgoing call (we're the caller)
             setIsCalling(true);
             callIdRef.current = signal.callId;
           } else if (signal.status === 'ended') {
@@ -279,9 +289,10 @@ export function VoiceCallButton({
     return () => {
       if (unsubscribeRef.current) {
         unsubscribeRef.current();
+        unsubscribeRef.current = null;
       }
     };
-  }, [chatId, user?.email, authLoading, endCall, callStatus]);
+  }, [chatId, user?.email, authLoading]);
 
   // Check if Firestore is available and user is authenticated before allowing calls
   // But don't disable if we're already in a call (allow ending the call)
@@ -407,27 +418,31 @@ export function VoiceCallButton({
 
     try {
       isCreatingCallRef.current = true; // Mark that we're creating a call
-      setIsCalling(true);
-      console.log('Calling startCall()...');
       
       // Generate room name from chatId (LiveKit uses room names instead of call IDs)
       const roomName = `call-${chatId}`;
-      const participantName = user.name || user.email;
+      const participantName = user?.email || 'User';
       
-      // Start LiveKit call (connects to room and publishes audio)
-      await startCall(roomName, participantName);
-      console.log('LiveKit call started', { roomName, isGroupCall });
-      
-      // Create call record in Firestore for tracking (optional, for UI state)
+      // Create call record in Firestore FIRST (before connecting to LiveKit)
+      // This ensures the room exists in Firestore before participants try to join
       let callId: string;
       try {
         // Use a simple call ID format
         callId = `${chatId}-${Date.now()}`;
         
-        // Optionally create a call document in Firestore for status tracking
-        // This is not required for LiveKit but helps with UI state management
         const orgSlug = getCurrentOrgSlug();
         const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+        // Unified approach: always use participantEmails for both 1:1 and group calls
+        // For 1:1 calls: participantEmails = [caller, callee]
+        // For group calls: participantEmails = all members
+        const participantEmails: string[] = [];
+        if (isGroupCall && groupMembers.length > 0) {
+          participantEmails.push(...groupMembers.map(m => m.email?.toLowerCase()).filter(Boolean));
+        } else if (!isGroupCall && otherUserEmail) {
+          // 1:1 call: add both caller and callee
+          participantEmails.push(user.email?.toLowerCase() || '', otherUserEmail.toLowerCase());
+        }
+        
         const callData: any = {
           callId,
           chatId,
@@ -436,30 +451,27 @@ export function VoiceCallButton({
           status: 'ringing',
           createdAt: new Date(),
           isGroupCall,
+          participantEmails: participantEmails.filter(Boolean), // Remove any empty strings
         };
         
         // For 1:1 calls, include calleeEmail (required for security rules)
         if (!isGroupCall && otherUserEmail) {
           callData.calleeEmail = otherUserEmail.toLowerCase(); // Ensure lowercase
+        } else if (isGroupCall) {
+          // For group calls, set calleeEmail to chatId so all members can see it
+          // Security rules will check participantEmails
+          callData.calleeEmail = chatId;
         }
         
-        // For group calls, include all member emails and set calleeEmail to chatId
-        // This allows all channel members to see the call (security rules check participantEmails)
-        if (isGroupCall && groupMembers.length > 0) {
-          callData.participantEmails = groupMembers.map(m => m.email?.toLowerCase()).filter(Boolean);
-          // Set calleeEmail to chatId so all members can see it (security rules will check participantEmails)
-          callData.calleeEmail = chatId; // Use chatId as a placeholder for group calls
-        }
-        
-        // Note: We're not using Firestore for signaling anymore, just for call metadata
-        // The actual signaling is handled by LiveKit
+        // Create call document in Firestore BEFORE connecting to LiveKit
+        // This ensures the room is "created" in Firestore first, similar to group calls
         if (db) {
           const { doc, setDoc } = await import('firebase/firestore');
           const callRef = doc(db, callsPath, callId);
           await setDoc(callRef, callData);
+          console.log('Call record created in Firestore', { callId, roomName, isGroupCall });
           
-          // For group calls, create a message in the channel to notify members
-          if (isGroupCall) {
+          // Create a message in the chat (for both 1:1 and group calls) to notify participants
             try {
               // Get user's display name from allDomainUsers
               const currentUserData = allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase());
@@ -470,7 +482,7 @@ export function VoiceCallButton({
                 ? `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase()
                 : user?.email?.charAt(0).toUpperCase() || 'U';
               
-              // Determine projectId or teamId from chatId
+            // Determine projectId or teamId from chatId (only for group calls)
               let projectId: string | undefined;
               let teamId: string | undefined;
               if (chatId.startsWith('project-')) {
@@ -479,7 +491,7 @@ export function VoiceCallButton({
                 teamId = chatId.replace('team-', '');
               }
               
-              // Create a message in the channel announcing the call
+            // Create a message in the chat announcing the call
               // Include callId and roomName in the content so we can detect it later
               await messagesService.create({
                 chatId,
@@ -491,25 +503,81 @@ export function VoiceCallButton({
                 memberAvatar: callerInitials,
               });
               
-              console.log('Group call message created in channel', { callId, roomName, participantCount: groupMembers.length });
+            console.log('Call message created in chat', { 
+              callId, 
+              roomName, 
+              isGroupCall,
+              participantCount: isGroupCall ? groupMembers.length : 2 
+            });
             } catch (messageError) {
-              console.error('Failed to create group call message:', messageError);
+            console.error('Failed to create call message:', messageError);
               // Continue anyway - call is already started
-            }
           }
         }
         
         console.log('Call record created', { callId, roomName, isGroupCall });
       } catch (createError) {
         console.error('Failed to create call record', createError);
-        // Continue anyway - LiveKit call is already started
+        throw createError; // Don't continue if we can't create the call record
+      }
+      
+      // Now connect to LiveKit room (room is already "created" in Firestore)
+      setIsCalling(true);
+      console.log('Connecting to LiveKit room...', { roomName, callId });
+      try {
+        await startCall(roomName, participantName);
+        console.log('LiveKit call started', { roomName, isGroupCall });
+        
+        // Update call status to 'active' after successful connection
+        if (callId && db) {
+          try {
+            const orgSlug = getCurrentOrgSlug();
+            const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+            const { doc, updateDoc } = await import('firebase/firestore');
+            const callRef = doc(db, callsPath, callId);
+            await updateDoc(callRef, {
+              status: 'active',
+            });
+            console.log('Call status updated to active', { callId });
+            
+            // Start transcription for the call
+            try {
+              await callSignalingService.startTranscription(callId);
+              console.log('✅ Transcription started', { callId });
+            } catch (transcriptionError) {
+              console.error('❌ Failed to start transcription:', transcriptionError);
+              // Continue anyway - call is active even if transcription fails
+            }
+          } catch (updateError) {
+            console.error('Failed to update call status to active:', updateError);
+            // Continue anyway - LiveKit call is connected
+          }
       }
       
       callIdRef.current = callId;
       setCurrentCallId(callId); // Update shared context
       isCreatingCallRef.current = false; // Call creation is complete
-      setIsCalling(true);
       console.log('Call setup complete', { callId, roomName, isCalling: true });
+      } catch (livekitError) {
+        // If LiveKit connection fails, mark call as ended in Firestore
+        console.error('❌ VoiceCall: LiveKit connection failed:', livekitError);
+        if (callId && db) {
+          try {
+            const orgSlug = getCurrentOrgSlug();
+            const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+            const { doc, updateDoc } = await import('firebase/firestore');
+            const callRef = doc(db, callsPath, callId);
+            await updateDoc(callRef, {
+              status: 'ended',
+              endedAt: new Date(),
+            });
+            console.log('Call marked as ended due to connection failure', { callId });
+          } catch (updateError) {
+            console.error('Failed to mark call as ended:', updateError);
+          }
+        }
+        throw livekitError; // Re-throw to be caught by outer catch
+      }
     } catch (err) {
       console.error('❌ VoiceCall: Error starting call:', err);
       isCreatingCallRef.current = false; // Call creation failed
@@ -606,11 +674,15 @@ export function VoiceCallButton({
   const displayStatus = (externalCallStatus && externalCallStatus !== 'idle' && externalCallStatus !== 'ended') 
     ? externalCallStatus 
     : (callStatus !== 'idle' && callStatus !== 'ended' ? callStatus : externalCallStatus || callStatus);
-  // Only show as in call if we have an active call ID and are actually calling
-  // Also ensure we're not in ended state
-  const isInCall = (displayStatus !== 'idle' && displayStatus !== 'ended') && 
-                    (isCalling || callIdRef.current) && 
-                    callStatus !== 'ended';
+  // Only show as in call if:
+  // 1. User has actually joined the room (callStatus is 'active' or 'connecting')
+  // 2. OR user is the caller and has initiated the call (isCalling is true and callStatus is not idle/ended/ringing)
+  // This prevents callees from seeing call controls before they join the room
+  // For callees: only show controls after they've joined (callStatus is 'active' or 'connecting')
+  // For callers: show controls when they've initiated the call (isCalling is true)
+  const isInCall = callStatus === 'active' || 
+                    callStatus === 'connecting' || 
+                    (isCalling && callStatus !== 'idle' && callStatus !== 'ended' && callStatus !== 'ringing');
   
   // Get status text for button
   const getStatusText = () => {
@@ -685,12 +757,19 @@ export function VoiceCallButton({
     );
   }
 
-  // For group calls, show "Join Call" button if there's an active call we're not in
-  const showJoinButton = isGroupCall && callSignal && 
+  // Show "Join Call" button if there's an active call we're a participant of but haven't joined yet
+  // This works for both 1:1 and group calls - unified UX
+  const isParticipant = callSignal?.participantEmails?.some(
+    (email: string) => email?.toLowerCase() === user?.email?.toLowerCase()
+  ) || false;
+  const isCaller = callSignal?.callerEmail?.toLowerCase() === user?.email?.toLowerCase();
+  
+  const showJoinButton = callSignal && 
     (callSignal.status === 'ringing' || callSignal.status === 'active') &&
     callStatus === 'idle' &&
     !isCalling &&
-    callSignal.callerEmail.toLowerCase() !== user?.email?.toLowerCase();
+    isParticipant &&
+    !isCaller;
 
   if (showJoinButton) {
     return (
@@ -704,13 +783,25 @@ export function VoiceCallButton({
           
           try {
             setIsCalling(true);
-            const participantName = user?.name || user?.email || 'User';
+            const participantName = user?.email || 'User';
             await answerCall(callSignal.roomName, participantName);
             callIdRef.current = callSignal.callId;
             setCurrentCallId(callSignal.callId);
-            console.log('Joined group call', { callId: callSignal.callId, roomName: callSignal.roomName });
+            console.log('Joined call', { callId: callSignal.callId, roomName: callSignal.roomName, isGroupCall });
+            
+            // Start transcription if call is active and transcription hasn't started yet
+            // Only the first participant to join should start it, but it's safe to call multiple times
+            if (callSignal.status === 'active' && callSignal.callId) {
+              try {
+                await callSignalingService.startTranscription(callSignal.callId);
+                console.log('✅ Transcription started after joining call', { callId: callSignal.callId });
+              } catch (transcriptionError) {
+                console.error('❌ Failed to start transcription after joining:', transcriptionError);
+                // Continue anyway - call is active even if transcription fails
+              }
+            }
           } catch (err) {
-            console.error('Error joining group call:', err);
+            console.error('Error joining call:', err);
             setIsCalling(false);
           }
         }}
@@ -822,31 +913,45 @@ export function IncomingCallDialog({
       setIsAnswering(true);
       console.log('📞 IncomingCallDialog: Accepting call...', {
         callId: callSignal.callId,
-        hasOffer: !!callSignal.offer,
+        hasRoomName: !!callSignal.roomName,
       });
       
       // Get room name from call signal or generate from chatId
       const roomName = callSignal.roomName || `call-${callSignal.chatId}`;
-      const participantName = user?.name || user?.email || 'User';
+      const participantName = user?.email || 'User';
       
-      // Answer the call by connecting to LiveKit room
+      // Join the LiveKit room (room is already created by caller, similar to group calls)
       await answerCall(roomName, participantName);
-      console.log('📞 IncomingCallDialog: LiveKit call answered', {
+      console.log('📞 IncomingCallDialog: Joined LiveKit room', {
         roomName,
         callId: callSignal.callId,
       });
       
-      // Update call status in Firestore (optional, for UI state)
+      // Update call status to 'active' if it's still 'ringing' (caller may have already updated it)
       if (callSignal.callId && db) {
         try {
           const orgSlug = getCurrentOrgSlug();
           const callsPath = `orgs/${orgSlug || 'default'}/calls`;
-          const { doc, updateDoc } = await import('firebase/firestore');
+          const { doc, updateDoc, getDoc } = await import('firebase/firestore');
           const callRef = doc(db, callsPath, callSignal.callId);
-          await updateDoc(callRef, {
-            status: 'active',
-          });
-          console.log('✅ IncomingCallDialog: Call status updated in Firestore');
+          const callDoc = await getDoc(callRef);
+          if (callDoc.exists() && callDoc.data().status === 'ringing') {
+            await updateDoc(callRef, {
+              status: 'active',
+            });
+            console.log('✅ IncomingCallDialog: Call status updated to active');
+            
+            // Start transcription for the call
+            try {
+              await callSignalingService.startTranscription(callSignal.callId);
+              console.log('✅ Transcription started', { callId: callSignal.callId });
+            } catch (transcriptionError) {
+              console.error('❌ Failed to start transcription:', transcriptionError);
+              // Continue anyway - call is active even if transcription fails
+            }
+          } else {
+            console.log('📞 IncomingCallDialog: Call status already updated or call ended');
+          }
         } catch (updateError) {
           console.error('❌ IncomingCallDialog: Error updating call status:', updateError);
           // Continue anyway - LiveKit call is already connected
@@ -946,7 +1051,7 @@ export function IncomingCallDialog({
         <DialogOverlay className="bg-transparent" />
         <DialogPrimitive.Content
           className={cn(
-            "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg sm:max-w-md"
+            "fixed left-[50%] top-[50%] z-[9999] grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg sm:max-w-md"
           )}
         >
           <DialogHeader>

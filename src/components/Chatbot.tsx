@@ -4999,8 +4999,8 @@ export function Chatbot() {
         </div>
       </div>
 
-      {/* Incoming Call Dialog */}
-      {incomingCallSignal && incomingCallSignal.status === 'ringing' && (() => {
+      {/* Incoming Call Dialog - Only for group calls, 1:1 calls use "Join Call" button */}
+      {incomingCallSignal && incomingCallSignal.status === 'ringing' && incomingCallSignal.isGroupCall && (() => {
         // Determine chatId for the incoming call
         let dialogChatId = '';
         if ((isProjectChannel && selectedProjectId) || (isTeamChannel && selectedTeamId)) {

@@ -210,7 +210,8 @@ const AppRoutesContent = () => {
             </ProtectedRoute>
           }
         />
-        <Route
+        {/* Subscription page hidden - everyone is on standard tier */}
+        {/* <Route
           path="/subscription"
           element={
             <ProtectedRoute>
@@ -219,7 +220,7 @@ const AppRoutesContent = () => {
               </DashboardLayout>
             </ProtectedRoute>
           }
-        />
+        /> */}
         {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
         <Route path="*" element={<NotFound />} />
       </Routes>

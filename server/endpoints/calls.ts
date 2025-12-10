@@ -5,12 +5,18 @@
  */
 
 import express from 'express';
-import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
+import crypto from 'crypto';
+import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getOrgSlugById, getOrgPool } from '../../database/multi-tenant-pool.js';
+import { publishCallEvent } from '../services/pubsub-events.js';
+import { flushCallBuffers } from '../services/audio-recorder.js';
 
 export function setupCallEndpoints(
   app: express.Application,
   authenticateUser: express.RequestHandler,
-  db: FirebaseFirestore.Firestore
+  db: FirebaseFirestore.Firestore,
+  secretManagerClient?: SecretManagerServiceClient,
+  projectId?: string
 ) {
   
   // Validate chatId is a DM chat
@@ -129,6 +135,8 @@ export function setupCallEndpoints(
         offer: JSON.stringify(offer),
         iceCandidates: [],
         createdAt: new Date(),
+        transcriptionEnabled: true, // Enable transcription by default
+        transcriptReady: false,
       };
 
       console.log('📞 [Backend] Creating call document', {
@@ -243,7 +251,49 @@ export function setupCallEndpoints(
       await callRef.update({
         answer: JSON.stringify(answer),
         status: 'active',
+        transcriptionEnabled: true, // Enable transcription for active calls
       });
+
+      // Start transcription if roomName is available
+      if (callData?.roomName) {
+        try {
+          const participants: Array<{ email: string; name?: string }> = [];
+          
+          if (callData.callerEmail) {
+            participants.push({ email: callData.callerEmail });
+          }
+          if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+            participants.push({ email: callData.calleeEmail });
+          }
+          if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+            for (const email of callData.participantEmails) {
+              if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+                participants.push({ email });
+              }
+            }
+          }
+
+          if (participants.length > 0) {
+            // Publish transcription_started event to Pub/Sub (async processing)
+            await publishCallEvent('transcription_started', {
+              callId,
+              chatId,
+              roomName: callData.roomName,
+              participants,
+              orgId,
+            });
+            console.log(`✅ Transcription started event published for call ${callId}`);
+            
+            // Note: LiveKit egress needs to be configured on the LiveKit server
+            // For now, transcription will work if egress is manually started or configured via webhooks
+            // TODO: Add code to start LiveKit egress programmatically when transcription begins
+            console.log(`📝 Note: Ensure LiveKit egress is configured to stream to /api/livekit/audio?callId=${callId}&participantEmail={participant}`);
+          }
+        } catch (transcriptionError) {
+          console.error('❌ Error starting transcription:', transcriptionError);
+          // Don't fail the call answer if transcription fails
+        }
+      }
 
       res.json({ success: true });
     } catch (error) {
@@ -364,6 +414,49 @@ export function setupCallEndpoints(
         endedAt: new Date(),
       });
 
+      // Start flushing audio buffers in background (don't await - let it complete asynchronously)
+      // This ensures final metadata is published to Pub/Sub, but doesn't block the API response
+      flushCallBuffers(callId).catch((flushError: any) => {
+        console.warn('⚠️ Error flushing audio buffers:', flushError.message);
+      });
+
+      // Get participants for the call_ended event
+      const participants: Array<{ email: string; name?: string }> = [];
+      if (callData?.callerEmail) {
+        participants.push({ email: callData.callerEmail });
+      }
+      if (callData?.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+        participants.push({ email: callData.calleeEmail });
+      }
+      if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+        for (const email of callData.participantEmails) {
+          if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+            participants.push({ email });
+          }
+        }
+      }
+
+      // Publish call_ended event immediately (don't wait for GCS uploads to complete)
+      // The transcription worker will handle finalization and note creation
+      // Worker has retry logic and waits for pending chunks, so it can handle files that aren't ready yet
+      if (orgId && participants.length > 0) {
+        try {
+          await publishCallEvent('call_ended', {
+            callId,
+            chatId,
+            participants,
+            orgId,
+          });
+          console.log(`✅ Published 'call_ended' event for call ${callId}`);
+          console.log(`📝 Transcription will be finalized by worker asynchronously`);
+        } catch (pubsubError: any) {
+          console.error('❌ Error publishing call_ended event:', pubsubError);
+          // Don't fail the call end if Pub/Sub fails
+        }
+      } else {
+        console.warn('⚠️ Cannot publish call_ended event: orgId or participants missing');
+      }
+
       res.json({ success: true });
     } catch (error) {
       console.error('End call error:', error);
@@ -469,6 +562,116 @@ export function setupCallEndpoints(
     } catch (error) {
       console.error('Get incoming calls error:', error);
       res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // POST /api/calls/:callId/start-transcription - Start transcription for an active call
+  app.post('/api/calls/:callId/start-transcription', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).userEmail?.toLowerCase();
+      const callId = req.params.callId;
+
+      // Get call document
+      let callsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          callsPath = `orgs/${orgSlug}/calls`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          callsPath = `orgs/default/calls`;
+        }
+      } else {
+        callsPath = `orgs/default/calls`;
+      }
+      const callRef = db.collection(callsPath).doc(callId);
+      const callDoc = await callRef.get();
+
+      if (!callDoc.exists) {
+        return res.status(404).json({ error: 'Call not found' });
+      }
+
+      const callData = callDoc.data();
+      
+      // Verify user is a participant
+      const isCaller = callData?.callerEmail?.toLowerCase() === userEmail;
+      const isCallee = callData?.calleeEmail?.toLowerCase() === userEmail;
+      const isGroupParticipant = callData?.participantEmails?.some((email: string) => 
+        email.toLowerCase() === userEmail
+      );
+
+      if (!isCaller && !isCallee && !isGroupParticipant) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      // Check if call is active
+      if (callData?.status !== 'active') {
+        return res.status(400).json({ error: 'Call must be active to start transcription' });
+      }
+
+      // Check if transcription is already active
+      // In async architecture, check if transcription session exists in database
+      // Note: transcription_sessions are stored in org databases, not shared
+      if (orgId) {
+        try {
+          const pool = await getOrgPool(orgId);
+          const result = await pool.query(
+            'SELECT status FROM transcription_sessions WHERE call_id = $1 AND status IN ($2, $3)',
+            [callId, 'active', 'processing']
+          );
+          if (result.rows.length > 0) {
+            return res.json({ success: true, message: 'Transcription already active' });
+          }
+        } catch (error: any) {
+          console.warn(`⚠️ Error checking transcription status:`, error.message);
+          // Continue with starting transcription
+        }
+      }
+
+      // Get participants
+      const participants: Array<{ email: string; name?: string }> = [];
+      
+      if (callData.callerEmail) {
+        participants.push({ email: callData.callerEmail });
+      }
+      if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+        participants.push({ email: callData.calleeEmail });
+      }
+      if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+        for (const email of callData.participantEmails) {
+          if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+            participants.push({ email });
+          }
+        }
+      }
+
+      if (!callData?.roomName) {
+        return res.status(400).json({ error: 'Room name is required for transcription' });
+      }
+
+      // Publish transcription_started event to Pub/Sub (async processing)
+      await publishCallEvent('transcription_started', {
+        callId,
+        chatId: req.params.chatId,
+        roomName: callData.roomName,
+        participants,
+        orgId,
+      });
+
+      // Update call document
+      await callRef.update({
+        transcriptionEnabled: true,
+      });
+
+      console.log(`✅ Transcription started event published for call ${callId}`);
+      console.log(`📝 Note: Egress will start automatically via webhooks when audio tracks are published`);
+      console.log(`   If tracks were published before transcription started, webhook retry will handle them`);
+
+      res.json({ success: true, message: 'Transcription started' });
+    } catch (error: any) {
+      console.error('Start transcription error:', error);
+      res.status(500).json({ error: error.message });
     }
   });
 
