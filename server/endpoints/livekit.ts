@@ -716,7 +716,7 @@ export function setupLiveKitEndpoints(
 
       // Process audio chunk - resample and record
       const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
-      const resampledAudio = resample48kHzTo16kHz(audioBuffer);
+      const resampledAudio = await resample48kHzTo16kHz(audioBuffer);
       await recordChunk(callId as string, participantEmail as string, resampledAudio);
 
       res.status(200).json({ received: true });
@@ -809,7 +809,7 @@ export function setupLiveKitWebSocketServer(server: any): void {
           }
           
           // Resample from 48kHz to 16kHz (LiveKit sends 48kHz, but we store/process at 16kHz)
-          const resampledAudio = resample48kHzTo16kHz(data);
+          const resampledAudio = await resample48kHzTo16kHz(data);
           
           // Record audio chunk (non-blocking: saves to Cloud Storage and publishes to Pub/Sub)
           await recordChunk(callId, participantEmail, resampledAudio);

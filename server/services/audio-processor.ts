@@ -3,6 +3,9 @@
  * Processes audio streams from LiveKit and routes to transcription service
  */
 
+import libsamplerate from '@alexanderolsen/libsamplerate-js';
+const { create, ConverterType } = libsamplerate;
+
 // Note: processAudioChunk is no longer used in async architecture
 // Audio is now recorded via audio-recorder.ts and processed by transcription-worker.ts
 
@@ -13,11 +16,11 @@
  * Note: LiveKit egress sends PCM16 at 48kHz, but AssemblyAI requires 16kHz
  * We resample the audio before sending to the transcription service
  */
-export function processLiveKitAudio(
+export async function processLiveKitAudio(
   callId: string,
   participantEmail: string,
   audioData: Buffer | Uint8Array
-): void {
+): Promise<void> {
   try {
     // Convert to Buffer if needed
     const audioBuffer = Buffer.isBuffer(audioData) 
@@ -26,7 +29,7 @@ export function processLiveKitAudio(
 
     // Resample from 48kHz to 16kHz (AssemblyAI requirement)
     // LiveKit Track Egress sends PCM16 at 48kHz
-    const resampledAudio = resample48kHzTo16kHz(audioBuffer);
+    const resampledAudio = await resample48kHzTo16kHz(audioBuffer);
 
     // Route resampled audio to transcription service
     processAudioChunk(callId, participantEmail, resampledAudio);
@@ -37,7 +40,7 @@ export function processLiveKitAudio(
 
 /**
  * Resample PCM16 audio from 48kHz to 16kHz
- * Uses simple linear interpolation for downsampling
+ * Uses high-quality resampling with anti-aliasing filter
  * 
  * @param audioData - PCM16 audio buffer at 48kHz
  * @returns Resampled PCM16 audio buffer at 16kHz
@@ -50,37 +53,92 @@ let resamplingStats = {
   lastLogTime: Date.now()
 };
 
-export function resample48kHzTo16kHz(audioData: Buffer): Buffer {
-  // 48kHz to 16kHz is a 3:1 ratio
-  // We'll take every 3rd sample (simple decimation)
-  // For better quality, we could use linear interpolation, but this is simpler and faster
+// Create a resampler instance (reused for efficiency, created lazily)
+let resamplerInstance: any = null;
+let resamplerInitPromise: Promise<any> | null = null;
+
+async function getResampler(): Promise<any> {
+  if (resamplerInstance) {
+    return resamplerInstance;
+  }
   
-  const inputSamples = audioData.length / 2; // 16-bit = 2 bytes per sample
-  const outputSamples = Math.floor(inputSamples / 3);
-  const outputBuffer = Buffer.alloc(outputSamples * 2);
+  if (resamplerInitPromise) {
+    return resamplerInitPromise;
+  }
   
-  for (let i = 0; i < outputSamples; i++) {
-    const inputIndex = i * 3;
-    if (inputIndex * 2 + 1 < audioData.length) {
-      // Read 16-bit little-endian sample
-      const sample = audioData.readInt16LE(inputIndex * 2);
-      // Write to output buffer
+  // Create resampler: 48kHz -> 16kHz, mono channel, best quality
+  resamplerInitPromise = create(1, 48000, 16000, {
+    converterType: ConverterType.SRC_SINC_BEST_QUALITY,
+  }).then((resampler) => {
+    resamplerInstance = resampler;
+    resamplerInitPromise = null;
+    return resampler;
+  });
+  
+  return resamplerInitPromise;
+}
+
+// Initialize resampler eagerly at module load
+getResampler().catch((error) => {
+  console.error(`❌ Error initializing resampler at startup:`, error);
+});
+
+export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
+  try {
+    // Convert Buffer to Int16Array
+    const inputSamples = audioData.length / 2; // 16-bit = 2 bytes per sample
+    const inputArray = new Int16Array(audioData.buffer, audioData.byteOffset, inputSamples);
+    
+    // Convert Int16 to Float32 (normalize to -1.0 to 1.0)
+    const inputFloat = new Float32Array(inputSamples);
+    for (let i = 0; i < inputSamples; i++) {
+      inputFloat[i] = inputArray[i] / 32768.0;
+    }
+    
+    // Get resampler (wait for initialization if needed)
+    const resampler = await getResampler();
+    
+    // Resample using high-quality algorithm
+    const outputFloat = resampler.simple(inputFloat);
+    
+    // Convert Float32 back to Int16 Buffer
+    const outputSamples = outputFloat.length;
+    const outputBuffer = Buffer.alloc(outputSamples * 2);
+    for (let i = 0; i < outputSamples; i++) {
+      // Clamp to valid Int16 range and convert back
+      const sample = Math.max(-32768, Math.min(32767, Math.round(outputFloat[i] * 32768.0)));
       outputBuffer.writeInt16LE(sample, i * 2);
     }
+    
+    // Log resampling stats occasionally
+    resamplingStats.totalChunks++;
+    resamplingStats.totalInputBytes += audioData.length;
+    resamplingStats.totalOutputBytes += outputBuffer.length;
+    
+    const now = Date.now();
+    if (now - resamplingStats.lastLogTime > 10000) { // Log every 10 seconds
+      console.log(`🔄 Resampling stats: ${resamplingStats.totalChunks} chunks, ${resamplingStats.totalInputBytes} bytes in → ${resamplingStats.totalOutputBytes} bytes out (ratio: ${(resamplingStats.totalOutputBytes / resamplingStats.totalInputBytes * 100).toFixed(1)}%)`);
+      resamplingStats.lastLogTime = now;
+    }
+    
+    return outputBuffer;
+  } catch (error: any) {
+    console.error(`❌ Error in resampling:`, error);
+    // Fallback to simple decimation if resampling fails
+    const inputSamples = audioData.length / 2;
+    const outputSamples = Math.floor(inputSamples / 3);
+    const outputBuffer = Buffer.alloc(outputSamples * 2);
+    
+    for (let i = 0; i < outputSamples; i++) {
+      const inputIndex = i * 3;
+      if (inputIndex * 2 + 1 < audioData.length) {
+        const sample = audioData.readInt16LE(inputIndex * 2);
+        outputBuffer.writeInt16LE(sample, i * 2);
+      }
+    }
+    
+    return outputBuffer;
   }
-  
-  // Log resampling stats occasionally
-  resamplingStats.totalChunks++;
-  resamplingStats.totalInputBytes += audioData.length;
-  resamplingStats.totalOutputBytes += outputBuffer.length;
-  
-  const now = Date.now();
-  if (now - resamplingStats.lastLogTime > 10000) { // Log every 10 seconds
-    console.log(`🔄 Resampling stats: ${resamplingStats.totalChunks} chunks, ${resamplingStats.totalInputBytes} bytes in → ${resamplingStats.totalOutputBytes} bytes out (ratio: ${(resamplingStats.totalOutputBytes / resamplingStats.totalInputBytes * 100).toFixed(1)}%)`);
-    resamplingStats.lastLogTime = now;
-  }
-  
-  return outputBuffer;
 }
 
 /**
