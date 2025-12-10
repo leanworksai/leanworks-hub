@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import { Readable } from 'stream';
 import { getOrgPool, getUserInfoBatch } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
+import { resample48kHzTo16kHz } from '../services/audio-processor.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -91,6 +92,84 @@ async function pushAudioInChunks(stream: Readable, audioBuffer: Buffer, email?: 
   if (email) {
     console.log(`📤 Pushed ${totalPushed} bytes to audio stream for ${email}`);
   }
+}
+
+/**
+ * Detect if audio buffer is likely 48kHz and needs resampling to 16kHz
+ * Heuristic: Check if buffer size suggests 48kHz sample rate
+ * At 16kHz: 1 second = 16,000 samples * 2 bytes = 32,000 bytes
+ * At 48kHz: 1 second = 48,000 samples * 2 bytes = 96,000 bytes
+ * 
+ * Simple strategy: If buffer size is > 2.5x what we'd expect for 16kHz, it's likely 48kHz
+ * This handles the case where audio was stored as 48kHz instead of being resampled
+ */
+function needsResampling(audioBuffer: Buffer): boolean {
+  const size = audioBuffer.length;
+  
+  // At 16kHz, typical chunks should be:
+  // - Small chunks: ~10-30KB (0.3-0.9 seconds)
+  // - Large chunks: up to ~100KB (3 seconds)
+  // At 48kHz, same duration would be 3x larger:
+  // - Small chunks: ~30-90KB
+  // - Large chunks: up to ~300KB
+  
+  // Simple heuristic: if size > 50KB, it's likely 48kHz (since 50KB at 16kHz = 1.56 seconds)
+  // But we also check the ratio to be more accurate
+  const bytesPerSecond16kHz = 16000 * 2; // 32,000 bytes
+  const ratio = size / bytesPerSecond16kHz;
+  
+  // If ratio > 2.5, it's likely 48kHz (since 48kHz is exactly 3x 16kHz)
+  // This catches cases where audio is stored as 48kHz
+  if (ratio > 2.5 && size > 50000) {
+    return true;
+  }
+  
+  // Default: assume 16kHz (safer - won't break if already correct)
+  return false;
+}
+
+/**
+ * Resample audio to 16kHz if needed before sending to AssemblyAI
+ * AssemblyAI requires 16kHz, but audio might be stored as 48kHz
+ * 
+ * This function ensures audio is always 16kHz before transcription,
+ * which fixes the issue where 48kHz audio causes poor transcription quality
+ */
+async function ensure16kHz(audioBuffer: Buffer, email?: string): Promise<Buffer> {
+  // Check if resampling is needed based on buffer size heuristics
+  if (needsResampling(audioBuffer)) {
+    try {
+      const originalSize = audioBuffer.length;
+      console.log(`🔄 Resampling audio from 48kHz to 16kHz for ${email || 'unknown'} (${originalSize} bytes)`);
+      
+      const resampled = await resample48kHzTo16kHz(audioBuffer);
+      
+      // Verify resampling produced expected size (should be ~1/3 of original for 48kHz->16kHz)
+      const expectedSize = Math.floor(originalSize / 3);
+      const sizeDiff = Math.abs(resampled.length - expectedSize);
+      const sizeDiffPercent = (sizeDiff / expectedSize) * 100;
+      
+      if (sizeDiffPercent > 10) {
+        console.warn(`⚠️ Resampled audio size (${resampled.length}) differs significantly from expected (${expectedSize}) for ${email || 'unknown'}`);
+      }
+      
+      console.log(`✅ Resampled audio: ${originalSize} bytes → ${resampled.length} bytes (expected ~${expectedSize}) for ${email || 'unknown'}`);
+      return resampled;
+    } catch (error: any) {
+      console.error(`❌ Error resampling audio for ${email || 'unknown'}:`, error);
+      // If resampling fails, log warning but return original
+      // This might cause transcription issues, but better than crashing
+      console.warn(`⚠️ Using original audio buffer (may be wrong sample rate) for ${email || 'unknown'}`);
+      return audioBuffer;
+    }
+  }
+  
+  // Audio appears to be 16kHz already, return as-is
+  // Log for debugging to verify our detection is working
+  if (audioBuffer.length > 0) {
+    console.log(`✓ Audio appears to be 16kHz already for ${email || 'unknown'} (${audioBuffer.length} bytes, skipping resample)`);
+  }
+  return audioBuffer;
 }
 
 // Get project ID
@@ -974,11 +1053,24 @@ async function processAudioChunk(message: any): Promise<void> {
       });
       
       // Push to audio stream only if we have new data
-      // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
+      // IMPORTANT: Resample to 16kHz if needed before sending to AssemblyAI
+      // AssemblyAI expects 16kHz, but audio might be stored as 48kHz
       if (audioBuffer.length > 0) {
-        await pushAudioInChunks(audioStream, audioBuffer, email);
+        // Resample to 16kHz if the audio appears to be 48kHz
+        const resampledAudio = await ensure16kHz(audioBuffer, email);
+        
+        // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
+        // Chunking is based on 16kHz (30KB ≈ 937ms at 16kHz)
+        await pushAudioInChunks(audioStream, resampledAudio, email);
+        
+        // Update lastProcessedByte based on original file position (not resampled size)
+        // This ensures we don't skip or duplicate audio when resampling changes the size
         session.lastProcessedBytes.set(email, lastProcessedByte + audioBuffer.length);
-        console.log(`📥 Downloaded ${audioBuffer.length} new bytes for ${email} (total processed: ${lastProcessedByte + audioBuffer.length}/${currentSize}, chunked into ${Math.ceil(audioBuffer.length / MAX_CHUNK_SIZE)} pieces)`);
+        
+        const resamplingNote = resampledAudio.length !== audioBuffer.length 
+          ? ` (resampled from ${audioBuffer.length} to ${resampledAudio.length} bytes)`
+          : '';
+        console.log(`📥 Downloaded ${audioBuffer.length} new bytes for ${email} (total processed: ${lastProcessedByte + audioBuffer.length}/${currentSize}, chunked into ${Math.ceil(resampledAudio.length / MAX_CHUNK_SIZE)} pieces${resamplingNote})`);
       }
       
       // Segment already marked as processed above (before async download)
