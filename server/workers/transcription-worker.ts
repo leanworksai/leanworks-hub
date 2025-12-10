@@ -49,22 +49,30 @@ const transcriptionSessionLocks = new Map<string, Promise<void>>();
 // At 16kHz PCM (16-bit): 1000ms = 16,000 samples * 2 bytes = 32,000 bytes
 // Use 30KB to ensure we stay well under the 1000ms limit
 const MAX_CHUNK_SIZE = 30 * 1024; // 30KB chunks (ensures <1000ms at 16kHz)
+// At 16kHz PCM, 30KB ≈ 937ms of audio
+// Send chunks at ~1x real-time speed (slightly faster for buffering, but not 8x)
+const CHUNK_INTERVAL_MS = 900; // Send 30KB chunks every 900ms (~1.04x real-time)
 
 /**
  * Push audio buffer to stream in chunks to meet AssemblyAI's requirements:
  * - Maximum frame size: 1MB
  * - Duration limit: 50-1000ms per chunk
+ * - Rate limit: Must send at approximately real-time speed to avoid "Audio Transmission Rate Exceeded" error
  * At 16kHz PCM (16-bit), 1000ms = 32KB, so we use 30KB chunks to stay safe
  */
-function pushAudioInChunks(stream: Readable, audioBuffer: Buffer): void {
+async function pushAudioInChunks(stream: Readable, audioBuffer: Buffer): Promise<void> {
   let offset = 0;
   while (offset < audioBuffer.length) {
     const chunk = audioBuffer.slice(offset, Math.min(offset + MAX_CHUNK_SIZE, audioBuffer.length));
     stream.push(chunk);
     offset += MAX_CHUNK_SIZE;
+    
+    // Rate limit: wait before sending next chunk to avoid exceeding AssemblyAI's rate limit
+    // Only wait if there's more data to send
+    if (offset < audioBuffer.length) {
+      await new Promise(resolve => setTimeout(resolve, CHUNK_INTERVAL_MS));
+    }
   }
-  // Note: We don't check for backpressure here because the stream will handle it internally
-  // and the transcriber should be able to process 30KB chunks quickly
 }
 
 // Get project ID
@@ -593,7 +601,7 @@ async function processAudioChunk(message: any): Promise<void> {
       // Push to audio stream only if we have new data
       // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
       if (audioBuffer.length > 0) {
-        pushAudioInChunks(audioStream, audioBuffer);
+        await pushAudioInChunks(audioStream, audioBuffer);
         session.lastProcessedBytes.set(email, lastProcessedByte + audioBuffer.length);
         console.log(`📥 Downloaded ${audioBuffer.length} new bytes for ${email} (total processed: ${lastProcessedByte + audioBuffer.length}/${currentSize}, chunked into ${Math.ceil(audioBuffer.length / MAX_CHUNK_SIZE)} pieces)`);
       }
@@ -633,7 +641,7 @@ async function processAudioChunk(message: any): Promise<void> {
         if (audioBuffer.length > lastSize) {
           const newData = audioBuffer.slice(lastSize);
           // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
-          pushAudioInChunks(audioStream, newData);
+          await pushAudioInChunks(audioStream, newData);
           // FIX: Should be lastSize + newData.length, not just audioBuffer.length
           // This correctly tracks total processed bytes
           session.lastProcessedBytes.set(email, lastSize + newData.length);
@@ -729,10 +737,11 @@ async function handleCallEnded(message: any): Promise<void> {
   }
 
   // Wait for final chunks to be processed with intelligent checking
-  // Since flushCallBuffers runs async, final metadata might take up to 5 minutes to publish
+  // Since flushCallBuffers runs async, final metadata might take time to publish
+  // GCS uploads typically complete within seconds to a minute, so 2 minutes is reasonable
   // We check periodically if all participants have received final chunks
-  const MAX_WAIT_TIME_MS = 300000; // 5 minutes maximum
-  const CHECK_INTERVAL_MS = 15000; // Check every 15 seconds
+  const MAX_WAIT_TIME_MS = 120000; // 2 minutes maximum (most uploads complete in <30s)
+  const CHECK_INTERVAL_MS = 10000; // Check every 10 seconds for faster detection
   const startWaitTime = Date.now();
   
   // Initialize finalChunksReceived if not already set
