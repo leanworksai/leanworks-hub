@@ -426,12 +426,19 @@ async function setupTranscriberForParticipant(
               const lastHasPunctuation = /[.!?]$/.test(lastTranscript);
               
               if (!lastHasPunctuation) {
-                // Combine: "is" + "going" -> "is going"
-                const combined = `${lastTranscript} ${transcriptText}`;
-                existingTranscripts[existingTranscripts.length - 1] = combined;
-                console.log(`📝 Combined transcript for ${email}: "${combined}" (from "${lastTranscript}" + "${transcriptText}")`);
-                saveSessionToDB(session).catch(console.error);
-                return; // Don't add as new, we combined it
+                // Only combine if the new transcript doesn't start with the old one
+                // This prevents "i wash and" + "i wash and pressure" -> "i wash and i wash and pressure"
+                if (!normalizedCurrent.startsWith(normalizedLast)) {
+                  // Combine: "is" + "going" -> "is going"
+                  const combined = `${lastTranscript} ${transcriptText}`;
+                  existingTranscripts[existingTranscripts.length - 1] = combined;
+                  console.log(`📝 Combined transcript for ${email}: "${combined}" (from "${lastTranscript}" + "${transcriptText}")`);
+                  saveSessionToDB(session).catch(console.error);
+                  return; // Don't add as new, we combined it
+                } else {
+                  // New transcript starts with old one - it's a refinement, not a combination
+                  // Let the refinement logic below handle it
+                }
               }
             } else {
               // Same word - skip duplicate
@@ -475,36 +482,14 @@ async function setupTranscriberForParticipant(
           // Save to DB periodically
           saveSessionToDB(session).catch(console.error);
         } else {
-          // Partial/interim transcripts - only filter very short fragments
-          // Skip very short fragments that are likely partial/interim (less than 3 characters)
-          if (transcriptText.length < 3) {
-            return; // Skip partial short fragments
-          }
-          
-          // For partials, only add if they're substantial and different from the last one
-          const lastTranscript = existingTranscripts[existingTranscripts.length - 1];
-          if (lastTranscript) {
-            const normalizedLast = normalizeText(lastTranscript);
-            const normalizedCurrent = normalizeText(transcriptText);
-            
-            // Skip if it's a duplicate or substring of the last one
-            if (normalizedLast === normalizedCurrent || 
-                (normalizedCurrent.length < normalizedLast.length && normalizedLast.includes(normalizedCurrent))) {
-              return; // Skip partial duplicates
-            }
-          }
-          
-          // Only add substantial partials (5+ characters)
+          // Partial/interim transcripts - DON'T save to session
+          // These are only for real-time display, not for final notes
+          // Only log them for debugging
           if (transcriptText.length >= 5) {
-            if (!session.transcripts.has(email)) {
-              session.transcripts.set(email, []);
-            }
-            session.transcripts.get(email)!.push(transcriptText);
-            console.log(`📝 Transcript for ${email}: ${transcriptText} (partial)`);
-            
-            // Save to DB periodically
-            saveSessionToDB(session).catch(console.error);
+            console.log(`🔄 Partial transcript for ${email}: "${transcriptText}" (not saved)`);
           }
+          // Don't add partial transcripts to session.transcripts
+          return;
         }
       }
     });
