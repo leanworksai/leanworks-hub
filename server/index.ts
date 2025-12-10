@@ -4661,8 +4661,6 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
     const orgId = req.headers['x-org-id'] as string | undefined;
     
     // Determine the external AI service URL
-    // In production, this should be the ask-api service URL
-    // In local dev, it's http://0.0.0.0:8081
     const isLocalDev = process.env.NODE_ENV !== 'production';
     const aiServiceBase = isLocalDev 
       ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
@@ -4675,13 +4673,32 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
       'Content-Type': 'application/json',
     };
     
-    // Get API key for authentication
-    try {
-      const apiKey = await getApiKeyFromSecretManager();
-      headers['X-API-Key'] = apiKey;
-    } catch (error) {
-      console.error('Failed to get API key, request may fail:', error);
-      // Continue anyway - the AI service might handle auth differently
+    // Use Bearer token for production, API key for local testing
+    if (isLocalDev) {
+      // Local testing: use API key
+      try {
+        const apiKey = await getApiKeyFromSecretManager();
+        headers['X-API-Key'] = apiKey;
+      } catch (error) {
+        console.error('Failed to get API key, request may fail:', error);
+        // Continue anyway - the AI service might handle auth differently
+      }
+    } else {
+      // Production (GKE): use Bearer token
+      // Get the Bearer token from the incoming request
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        headers['Authorization'] = authHeader;
+      } else {
+        // Fallback to API key if Bearer token not available
+        console.warn(`⚠️ No Bearer token in request, falling back to API key for ${userEmail}`);
+        try {
+          const apiKey = await getApiKeyFromSecretManager();
+          headers['X-API-Key'] = apiKey;
+        } catch (error) {
+          console.error('Failed to get API key, request may fail:', error);
+        }
+      }
     }
     
     // Ensure user_id is set

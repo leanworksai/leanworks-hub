@@ -11,9 +11,11 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Readable } from 'stream';
-import { getOrgPool, getUserInfoBatch } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getUserInfoBatch, getOrgSlugById } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
 import { resample48kHzTo16kHz } from '../services/audio-processor.js';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -180,6 +182,50 @@ function getProjectId(): string {
     return serviceAccount.project_id;
   }
   return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '';
+}
+
+// Initialize Firebase Admin SDK for Bearer token generation
+function initializeFirebaseAdmin() {
+  if (getApps().length === 0) {
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    if (existsSync(serviceAccountPath)) {
+      const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+      initializeApp({
+        credential: cert(serviceAccount),
+        projectId: serviceAccount.project_id,
+      });
+      console.log('✅ Firebase Admin SDK initialized for transcription worker');
+    } else {
+      console.warn('⚠️ GCP credentials not found, Firebase Admin SDK not initialized');
+    }
+  }
+}
+
+// Get Bearer token (custom token) for user email
+// In production, we create a custom token that can be verified by the API
+async function getBearerTokenForUser(userEmail: string): Promise<string | null> {
+  try {
+    initializeFirebaseAdmin();
+    const auth = getAuth();
+    
+    // Try to get the user by email first
+    let uid: string;
+    try {
+      const userRecord = await auth.getUserByEmail(userEmail.toLowerCase());
+      uid = userRecord.uid;
+    } catch (error: any) {
+      // If user doesn't exist, use email as UID for custom token
+      // The API middleware will handle verification
+      uid = userEmail.toLowerCase();
+    }
+    
+    // Create a custom token for the user
+    const customToken = await auth.createCustomToken(uid);
+    return customToken;
+  } catch (error: any) {
+    console.error(`❌ Failed to create Bearer token for ${userEmail}:`, error);
+    return null;
+  }
 }
 
 // Initialize clients
@@ -1164,6 +1210,102 @@ async function processAudioChunk(message: any): Promise<void> {
   }
 }
 
+// Get API key from Secret Manager for leanworks-app API
+async function getApiKeyFromSecretManager(): Promise<string> {
+  const projectId = getProjectId();
+  if (!secretManagerClient) {
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    if (existsSync(serviceAccountPath)) {
+      secretManagerClient = new SecretManagerServiceClient({
+        keyFilename: serviceAccountPath,
+      });
+    } else {
+      secretManagerClient = new SecretManagerServiceClient();
+    }
+  }
+
+  try {
+    const secretName = `projects/${projectId}/secrets/api-key/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
+    const apiKey = version.payload?.data?.toString() || '';
+    
+    if (apiKey) {
+      return apiKey;
+    } else {
+      throw new Error('API key is empty');
+    }
+  } catch (error) {
+    console.error('❌ Failed to fetch API key from Secret Manager:', error);
+    // Fallback to environment variable for local development
+    const fallbackKey = process.env.ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+    console.log('⚠️ Using fallback API key from environment variable');
+    return fallbackKey;
+  }
+}
+
+// Call meeting note summary API
+async function generateMeetingNoteSummary(
+  noteId: string,
+  userEmail: string,
+  orgSlug: string
+): Promise<void> {
+  try {
+    // Determine the AI service URL
+    const isLocalDev = process.env.NODE_ENV !== 'production';
+    const aiServiceBase = isLocalDev 
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
+      : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+    
+    const apiUrl = `${aiServiceBase}/api/notes/${noteId}/summary`;
+    
+    // Prepare request body
+    const requestBody = {
+      user_id: userEmail,
+      org_slug: orgSlug,
+    };
+    
+    // Prepare headers - use Bearer token for production, API key for local testing
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    
+    if (isLocalDev) {
+      // Local testing: use API key
+      const apiKey = await getApiKeyFromSecretManager();
+      headers['X-API-Key'] = apiKey;
+    } else {
+      // Production (GKE): use Bearer token
+      const bearerToken = await getBearerTokenForUser(userEmail);
+      if (bearerToken) {
+        headers['Authorization'] = `Bearer ${bearerToken}`;
+      } else {
+        // Fallback to API key if Bearer token generation fails
+        console.warn(`⚠️ Failed to generate Bearer token, falling back to API key for ${userEmail}`);
+        const apiKey = await getApiKeyFromSecretManager();
+        headers['X-API-Key'] = apiKey;
+      }
+    }
+    
+    // Make API call
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const result = await response.json();
+    console.log(`✅ Generated meeting note summary for note ${noteId}:`, result);
+  } catch (error: any) {
+    // Log error but don't fail the entire process
+    console.error(`❌ Error generating meeting note summary for note ${noteId}:`, error.message);
+  }
+}
+
 // Handle call ended event
 async function handleCallEnded(message: any): Promise<void> {
   let data: any;
@@ -1410,6 +1552,20 @@ async function handleCallEnded(message: any): Promise<void> {
             ]);
 
             console.log(`✅ Created meeting note for ${participant.email}`);
+            
+            // Generate meeting note summary asynchronously (don't wait for it)
+            if (orgId && formattedTranscript && formattedTranscript.trim().length > 0) {
+              try {
+                const orgSlug = await getOrgSlugById(orgId);
+                // Call summary API in background (fire and forget)
+                generateMeetingNoteSummary(noteId, participant.email.toLowerCase(), orgSlug)
+                  .catch((error) => {
+                    console.error(`❌ Background summary generation failed for note ${noteId}:`, error);
+                  });
+              } catch (orgError: any) {
+                console.warn(`⚠️ Could not get org slug for summary generation:`, orgError.message);
+              }
+            }
           } catch (noteError: any) {
             console.error(`❌ Error creating note for ${participant.email}:`, noteError);
           }
