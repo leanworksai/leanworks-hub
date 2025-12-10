@@ -23,6 +23,7 @@ import {
   AlignCenter,
   AlignRight,
   Link as LinkIcon,
+  Eraser,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Input } from '@/components/ui/input';
@@ -281,6 +282,17 @@ export function RichTextEditor({
         >
           <Strikethrough className="h-4 w-4" />
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            editor.chain().focus().unsetAllMarks().clearNodes().run();
+          }}
+          title="Clear all formatting"
+        >
+          <Eraser className="h-4 w-4" />
+        </Button>
 
         <Separator orientation="vertical" className="h-6" />
 
@@ -453,7 +465,7 @@ export function RichTextEditor({
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[500px] overflow-y-auto px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px]" 
+        className="min-h-[500px] overflow-y-auto px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug" 
       />
     </div>
   );
