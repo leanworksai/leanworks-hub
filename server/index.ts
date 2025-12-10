@@ -237,6 +237,51 @@ app.use((req, res, next) => {
 // AUTHENTICATION MIDDLEWARE
 // ============================================================================
 
+// Helper function to check if an error is a network/transient error
+function isNetworkError(error: any): boolean {
+  const networkErrorCodes = ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN'];
+  const networkErrorMessages = ['socket hang up', 'timeout', 'network', 'connection'];
+  
+  if (error.code && networkErrorCodes.includes(error.code)) {
+    return true;
+  }
+  
+  if (error.message) {
+    const lowerMessage = error.message.toLowerCase();
+    return networkErrorMessages.some(msg => lowerMessage.includes(msg));
+  }
+  
+  return false;
+}
+
+// Helper function to retry Firebase operations with exponential backoff
+async function retryFirebaseOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 100
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      lastError = error;
+      
+      // Only retry on network errors
+      if (!isNetworkError(error) || attempt === maxRetries - 1) {
+        throw error;
+      }
+      
+      // Exponential backoff: 100ms, 200ms, 400ms
+      const delay = baseDelay * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  throw lastError;
+}
+
 async function authenticateUser(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const authHeader = req.headers.authorization;
@@ -254,8 +299,12 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     
     // Try to verify as ID token first (normal flow when Firebase Auth works)
     try {
-      const decodedToken = await auth.verifyIdToken(token);
-    (req as any).user = decodedToken;
+      const decodedToken = await retryFirebaseOperation(
+        () => auth.verifyIdToken(token),
+        3, // max retries
+        100 // base delay in ms
+      );
+      (req as any).user = decodedToken;
       userEmail = decodedToken.email;
       (req as any).userEmail = userEmail;
     } catch (idTokenError: any) {
@@ -270,8 +319,12 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
             
             // If it has a uid, it's likely a custom token
             if (payload.uid) {
-              // Verify the user exists and get their info
-              const userRecord = await auth.getUser(payload.uid);
+              // Verify the user exists and get their info with retry
+              const userRecord = await retryFirebaseOperation(
+                () => auth.getUser(payload.uid),
+                3,
+                100
+              );
               
               // Create a decoded token-like object
               const decodedToken = {
@@ -290,6 +343,7 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
           console.error('❌ [Backend] authenticateUser: Custom token handling failed', {
             error: customTokenError.message,
             code: customTokenError.code,
+            isNetworkError: isNetworkError(customTokenError),
             stack: customTokenError.stack,
           });
           throw idTokenError;
@@ -313,14 +367,27 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     
     next();
   } catch (error: any) {
-    console.error('❌ [Backend] authenticateUser: Authentication failed', {
+    // Only log network errors at warn level to reduce noise
+    const logLevel = isNetworkError(error) ? 'warn' : 'error';
+    const logMethod = logLevel === 'warn' ? console.warn : console.error;
+    
+    logMethod(`❌ [Backend] authenticateUser: Authentication failed`, {
       error: error.message,
       code: error.code,
+      isNetworkError: isNetworkError(error),
       method: req.method,
       path: req.path,
       url: req.url,
     });
-    res.status(401).json({ error: 'Invalid token' });
+    
+    // For network errors, return 503 (Service Unavailable) instead of 401
+    // This helps clients distinguish between auth failures and service issues
+    const statusCode = isNetworkError(error) ? 503 : 401;
+    const errorMessage = isNetworkError(error) 
+      ? 'Authentication service temporarily unavailable. Please try again.' 
+      : 'Invalid token';
+    
+    res.status(statusCode).json({ error: errorMessage });
   }
 }
 

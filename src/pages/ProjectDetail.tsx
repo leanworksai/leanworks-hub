@@ -379,25 +379,26 @@ export default function ProjectDetail() {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <Button variant="ghost" onClick={() => navigate("/projects")}>
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <Button variant="ghost" onClick={() => navigate("/projects")} className="w-full sm:w-auto">
         <ArrowLeft className="mr-2 h-4 w-4" />
         Back to Projects
       </Button>
 
       <div>
-        <div className="flex items-start justify-between mb-2">
-          <h1 className="text-3xl font-bold tracking-tight">{project.name}</h1>
+        <div className="flex items-start justify-between mb-2 gap-2">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight flex-1 min-w-0">{project.name}</h1>
           <Button
             variant="destructive"
             size="sm"
             onClick={() => setShowDeleteDialog(true)}
+            className="flex-shrink-0"
           >
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
-        <p className="text-foreground text-lg mb-4">{project.description}</p>
-        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+        <p className="text-foreground text-base sm:text-lg mb-4">{project.description}</p>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
             <span>Created: <span className="text-foreground font-medium">{formatDate(project.createdDate)}</span></span>

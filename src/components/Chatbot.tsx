@@ -140,6 +140,7 @@ export function Chatbot() {
     };
   }, [currentUserProfile, user?.email]);
   const [isOpen, setIsOpen] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   
   // Clear old cache entries that don't have orgId (from domain-based system)
   const clearLegacyMessageCaches = useCallback(() => {
@@ -4241,12 +4242,28 @@ export function Chatbot() {
         className={cn(
           "fixed bottom-6 right-6 z-50 bg-background border rounded-lg shadow-2xl transition-all duration-300 flex flex-col",
           isOpen ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none",
-          "w-[900px] h-[700px] max-w-[calc(100vw-3rem)] max-h-[calc(100vh-3rem)]"
+          "w-[900px] h-[700px] max-w-[calc(100vw-3rem)] max-h-[calc(100vh-3rem)]",
+          "sm:bottom-6 sm:right-6",
+          "inset-0 sm:inset-auto sm:rounded-lg",
+          "rounded-none sm:rounded-lg"
         )}
       >
-        <div className="flex flex-1 min-h-0 overflow-hidden">
+        <div className="flex flex-1 min-h-0 overflow-hidden flex-col sm:flex-row relative">
+          {/* Mobile Sidebar Overlay */}
+          {isMobileSidebarOpen && (
+            <div 
+              className="fixed inset-0 bg-black/50 z-40 sm:hidden"
+              onClick={() => setIsMobileSidebarOpen(false)}
+            />
+          )}
+          
           {/* Left Sidebar */}
-          <div className="w-64 border-r bg-muted/30 flex flex-col flex-shrink-0">
+          <div className={cn(
+            "w-full sm:w-64 border-r bg-muted/30 flex flex-col flex-shrink-0",
+            "absolute sm:relative inset-y-0 left-0 z-50 sm:z-auto",
+            "transform transition-transform duration-300 sm:transform-none",
+            isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full sm:translate-x-0"
+          )}>
             {/* Sidebar Header */}
             <div className="p-4 border-b flex items-center justify-between">
               <h2 className="font-semibold text-lg">Chat</h2>
@@ -4485,6 +4502,14 @@ export function Chatbot() {
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {/* Chat Header */}
             <div className="flex items-center justify-between p-4 border-b bg-primary/5">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="sm:hidden mr-2"
+                onClick={() => setIsMobileSidebarOpen(true)}
+              >
+                <Search className="h-4 w-4" />
+              </Button>
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 <Avatar className="h-8 w-8 flex-shrink-0">
                   {selectedMember === "ai-assistant" ? (

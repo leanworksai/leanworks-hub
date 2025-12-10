@@ -215,11 +215,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
         <AppSidebar />
         <div className="flex-1 flex flex-col">
           <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-lg">
-            <div className="flex h-16 items-center gap-4 px-6">
+            <div className="flex h-16 items-center gap-2 sm:gap-4 px-3 sm:px-6">
               <SidebarTrigger className="-ml-2" />
               
-              <div className="flex-1 flex items-center gap-4">
-                <div className="relative w-full max-w-md">
+              <div className="flex-1 flex items-center gap-2 sm:gap-4 min-w-0">
+                <div className="relative w-full max-w-md hidden sm:block">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder="Search projects, teams..."
@@ -227,24 +227,44 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   />
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
                 <Button
                   variant={isSelectionMode ? "default" : "outline"}
                   size="sm"
                   onClick={handleToggleSelectionMode}
+                  className="hidden sm:inline-flex"
                 >
                   <CheckSquare className="mr-2 h-4 w-4" />
                   Select
+                </Button>
+                <Button
+                  variant={isSelectionMode ? "default" : "outline"}
+                  size="icon"
+                  onClick={handleToggleSelectionMode}
+                  className="sm:hidden"
+                >
+                  <CheckSquare className="h-4 w-4" />
                 </Button>
                 {isSelectionMode && totalSelections > 0 && (
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={handleClearAllSelections}
-                    className="hover:bg-destructive/10 hover:text-destructive hover:border-destructive"
+                    className="hover:bg-destructive/10 hover:text-destructive hover:border-destructive hidden sm:inline-flex"
                   >
                     <X className="mr-2 h-4 w-4" />
                     Clear All ({totalSelections})
+                  </Button>
+                )}
+                {isSelectionMode && totalSelections > 0 && (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={handleClearAllSelections}
+                    className="hover:bg-destructive/10 hover:text-destructive hover:border-destructive sm:hidden"
+                    title={`Clear All (${totalSelections})`}
+                  >
+                    <X className="h-4 w-4" />
                   </Button>
                 )}
                 <DropdownMenu>
@@ -258,7 +278,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       )}
                     </Button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent className="w-80" align="end" forceMount>
+                  <DropdownMenuContent className="w-[calc(100vw-2rem)] sm:w-80 max-w-sm" align="end" forceMount>
                     <DropdownMenuLabel className="flex items-center justify-between">
                       <span>Notifications</span>
                       {totalNotificationsCount > 0 && (
@@ -507,7 +527,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               </div>
             </div>
           </header>
-          <main className="flex-1 p-6">
+          <main className="flex-1 p-4 sm:p-6">
             {children}
           </main>
         </div>

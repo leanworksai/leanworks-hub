@@ -405,24 +405,24 @@ export default function Teams() {
 
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Teams</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Teams</h1>
           {selectedTeams.length > 0 && (
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-sm sm:text-base">
               <span className="text-primary">
                 ({selectedTeams.length} selected)
               </span>
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
           {pendingRequestsCount > 0 && (
             <Button 
               variant="outline"
               onClick={() => setShowRequestsDialog(true)}
-              className="relative"
+              className="relative flex-1 sm:flex-initial"
             >
               <Bell className="mr-2 h-4 w-4" />
               Requests
@@ -434,7 +434,7 @@ export default function Teams() {
             </Button>
           )}
           <Button 
-            className="bg-primary hover:bg-primary/90"
+            className="bg-primary hover:bg-primary/90 flex-1 sm:flex-initial"
             onClick={() => setIsDialogOpen(true)}
           >
             <Plus className="mr-2 h-4 w-4" />

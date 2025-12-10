@@ -103,12 +103,12 @@ export default function Projects() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Projects</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Projects</h1>
           {selectedProjects.length > 0 && (
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-sm sm:text-base">
               <span className="text-primary">
                 ({selectedProjects.length} selected)
               </span>
@@ -116,7 +116,7 @@ export default function Projects() {
           )}
         </div>
         <Button 
-          className="bg-primary hover:bg-primary/90"
+          className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
           onClick={() => {
             trackClick('create_project', '/projects');
             setIsNewProjectDialogOpen(true);
@@ -127,7 +127,7 @@ export default function Projects() {
         </Button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2">
         {projects.map((project) => (
           <Card 
             key={project.id} 
@@ -153,7 +153,7 @@ export default function Projects() {
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent 
-                    className="w-80" 
+                    className="w-[calc(100vw-2rem)] sm:w-80 max-w-sm" 
                     onClick={(e) => e.stopPropagation()}
                     onMouseEnter={() => setHoveredProject(project.id)}
                     onMouseLeave={() => setHoveredProject(null)}

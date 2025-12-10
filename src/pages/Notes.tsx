@@ -80,15 +80,18 @@ export default function Notes() {
   const unpinnedNotes = notes.filter(note => !note.isPinned);
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Notes</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Notes</h1>
         </div>
-        <Button onClick={() => {
-          trackClick('create_note', '/notes');
-          navigate("/notes/new");
-        }}>
+        <Button 
+          className="w-full sm:w-auto"
+          onClick={() => {
+            trackClick('create_note', '/notes');
+            navigate("/notes/new");
+          }}
+        >
           <Plus className="mr-2 h-4 w-4" />
           New Note
         </Button>

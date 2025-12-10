@@ -280,12 +280,12 @@ export default function Tasks() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Tasks</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Tasks</h1>
           {selectedTasks.length > 0 && (
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-sm sm:text-base">
               <span className="text-primary">
                 ({selectedTasks.length} selected)
               </span>
@@ -293,7 +293,7 @@ export default function Tasks() {
           )}
         </div>
         <Button 
-          className="bg-primary hover:bg-primary/90"
+          className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
           onClick={() => setIsNewTaskDialogOpen(true)}
         >
           <Plus className="mr-2 h-4 w-4" />
@@ -302,46 +302,50 @@ export default function Tasks() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Status:</span>
-          <Button
-            variant={filterStatus === "all" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilterStatus("all")}
-          >
-            All
-          </Button>
-          {(["todo", "in-progress", "review", "blocked", "completed"] as const).map((status) => (
+      <div className="flex flex-col sm:flex-row gap-3 sm:gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground w-full sm:w-auto">Status:</span>
+          <div className="flex flex-wrap gap-2">
             <Button
-              key={status}
-              variant={filterStatus === status ? "default" : "outline"}
+              variant={filterStatus === "all" ? "default" : "outline"}
               size="sm"
-              onClick={() => setFilterStatus(status)}
+              onClick={() => setFilterStatus("all")}
             >
-              {status.replace("-", " ")}
+              All
             </Button>
-          ))}
+            {(["todo", "in-progress", "review", "blocked", "completed"] as const).map((status) => (
+              <Button
+                key={status}
+                variant={filterStatus === status ? "default" : "outline"}
+                size="sm"
+                onClick={() => setFilterStatus(status)}
+              >
+                {status.replace("-", " ")}
+              </Button>
+            ))}
+          </div>
         </div>
-        <div className="flex items-center gap-2 ml-4">
-          <span className="text-sm text-muted-foreground">Priority:</span>
-          <Button
-            variant={filterPriority === "all" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setFilterPriority("all")}
-          >
-            All
-          </Button>
-          {(["low", "medium", "high", "urgent"] as const).map((priority) => (
+        <div className="flex flex-wrap items-center gap-2 sm:ml-4">
+          <span className="text-sm text-muted-foreground w-full sm:w-auto">Priority:</span>
+          <div className="flex flex-wrap gap-2">
             <Button
-              key={priority}
-              variant={filterPriority === priority ? "default" : "outline"}
+              variant={filterPriority === "all" ? "default" : "outline"}
               size="sm"
-              onClick={() => setFilterPriority(priority)}
+              onClick={() => setFilterPriority("all")}
             >
-              {priority}
+              All
             </Button>
-          ))}
+            {(["low", "medium", "high", "urgent"] as const).map((priority) => (
+              <Button
+                key={priority}
+                variant={filterPriority === priority ? "default" : "outline"}
+                size="sm"
+                onClick={() => setFilterPriority(priority)}
+              >
+                {priority}
+              </Button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -390,7 +394,7 @@ export default function Tasks() {
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent 
-                      className="w-96 max-h-[500px] overflow-y-auto" 
+                      className="w-[calc(100vw-2rem)] sm:w-96 max-w-sm max-h-[500px] overflow-y-auto" 
                       onClick={(e) => e.stopPropagation()}
                       onMouseEnter={() => setHoveredTask(task.id)}
                       onMouseLeave={() => setHoveredTask(null)}
@@ -471,7 +475,7 @@ export default function Tasks() {
                             </Badge>
                           </button>
                         </PopoverTrigger>
-                        <PopoverContent className="w-[200px] p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                        <PopoverContent className="w-[calc(100vw-2rem)] sm:w-[200px] max-w-xs p-0" align="start" onClick={(e) => e.stopPropagation()}>
                           <Command>
                             <CommandList>
                               <CommandGroup>
@@ -500,7 +504,7 @@ export default function Tasks() {
                     </div>
                     
                     {/* Task Meta Info */}
-                    <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-sm text-muted-foreground">
                       <Popover 
                         open={isDropdownOpen(task.id, 'assignee')} 
                         onOpenChange={(open) => setDropdownOpen(task.id, 'assignee', open)}
@@ -515,7 +519,7 @@ export default function Tasks() {
                             <span className="cursor-pointer">{task.assignee || "Unassigned"}</span>
                           </button>
                         </PopoverTrigger>
-                        <PopoverContent className="w-[300px] p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                        <PopoverContent className="w-[calc(100vw-2rem)] sm:w-[300px] max-w-sm p-0" align="start" onClick={(e) => e.stopPropagation()}>
                           <Command>
                             <CommandInput placeholder="Search team members..." />
                             <CommandList>
@@ -593,7 +597,7 @@ export default function Tasks() {
                             </Badge>
                           </button>
                         </PopoverTrigger>
-                        <PopoverContent className="w-[200px] p-0" align="start" onClick={(e) => e.stopPropagation()}>
+                        <PopoverContent className="w-[calc(100vw-2rem)] sm:w-[200px] max-w-xs p-0" align="start" onClick={(e) => e.stopPropagation()}>
                           <Command>
                             <CommandList>
                               <CommandGroup>

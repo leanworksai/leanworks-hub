@@ -76,4 +76,24 @@ All colors MUST be HSL.
   [data-selected='true'] .text-muted-foreground {
     opacity: 0.7;
   }
+  
+  /* Mobile touch targets - ensure minimum 44x44px for better touch interaction */
+  @media (max-width: 768px) {
+    button,
+    a,
+    [role="button"],
+    input[type="checkbox"],
+    input[type="radio"] {
+      min-height: 44px;
+      min-width: 44px;
+    }
+    
+    /* Allow exceptions for icon-only buttons that are already sized */
+    button[class*="size-icon"],
+    button[class*="h-"],
+    .touch-target-exception {
+      min-height: auto;
+      min-width: auto;
+    }
+  }
 }
