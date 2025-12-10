@@ -414,12 +414,11 @@ export function setupCallEndpoints(
         endedAt: new Date(),
       });
 
-      // Flush any remaining audio buffers
-      try {
-        await flushCallBuffers(callId);
-      } catch (flushError: any) {
+      // Start flushing audio buffers in background (don't await - let it complete asynchronously)
+      // This ensures final metadata is published to Pub/Sub, but doesn't block the API response
+      flushCallBuffers(callId).catch((flushError: any) => {
         console.warn('⚠️ Error flushing audio buffers:', flushError.message);
-      }
+      });
 
       // Get participants for the call_ended event
       const participants: Array<{ email: string; name?: string }> = [];
@@ -437,8 +436,9 @@ export function setupCallEndpoints(
         }
       }
 
-      // Publish call_ended event to Pub/Sub for async transcription finalization
+      // Publish call_ended event immediately (don't wait for GCS uploads to complete)
       // The transcription worker will handle finalization and note creation
+      // Worker has retry logic and waits for pending chunks, so it can handle files that aren't ready yet
       if (orgId && participants.length > 0) {
         try {
           await publishCallEvent('call_ended', {

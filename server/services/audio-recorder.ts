@@ -436,6 +436,7 @@ export async function recordChunk(
 
 /**
  * Close streaming session and publish final metadata
+ * Waits for GCS upload to complete (up to 5 minutes) before publishing final metadata
  */
 async function closeStreamingSession(sessionKey: string, session: StreamingSession): Promise<void> {
   return new Promise((resolve) => {
@@ -452,11 +453,19 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
       return;
     }
     
-    // Close the write stream
-    session.writeStream.end(() => {
-      console.log(`✅ Closed streaming session for ${session.participantEmail}: ${session.totalBytes} bytes, ${session.chunkCount} chunks`);
+    let uploadCompleted = false;
+    let timeoutFired = false;
+    
+    // Wait for the GCS upload to complete (finish event)
+    session.writeStream.on('finish', () => {
+      if (timeoutFired) {
+        // Timeout already fired, don't do anything
+        return;
+      }
+      uploadCompleted = true;
+      console.log(`✅ GCS upload completed for ${session.participantEmail}: ${session.totalBytes} bytes, ${session.chunkCount} chunks`);
       
-      // Publish final metadata to Pub/Sub (async, non-blocking)
+      // Publish final metadata after upload is complete
       publishChunkMetadata(session, true).then(() => {
         resolve();
       }).catch((error) => {
@@ -465,20 +474,42 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
       });
     });
     
+    // Close the write stream
+    session.writeStream.end(() => {
+      console.log(`✅ Closed streaming session for ${session.participantEmail}: ${session.totalBytes} bytes, ${session.chunkCount} chunks`);
+      // Note: 'finish' event will fire when upload completes
+    });
+    
     // Handle stream errors during close
     session.writeStream.on('error', (error: any) => {
       // Ignore write-after-end errors during close
       if ((error as any).code !== 'ERR_STREAM_WRITE_AFTER_END') {
         console.error(`❌ Error closing stream for ${session.participantEmail}:`, error);
       }
-      resolve(); // Resolve anyway to not block cleanup
+      
+      // If upload hasn't completed and timeout hasn't fired, publish metadata anyway
+      if (!uploadCompleted && !timeoutFired) {
+        publishChunkMetadata(session, true).then(() => {
+          resolve();
+        }).catch(() => {
+          resolve();
+        });
+      }
     });
     
-    // Timeout after 10 seconds
+    // Timeout after 5 minutes (300000ms) - still publish final metadata even if upload incomplete
     setTimeout(() => {
-      console.warn(`⚠️ Timeout closing stream for ${session.participantEmail}`);
-      resolve();
-    }, 10000);
+      if (!uploadCompleted) {
+        timeoutFired = true;
+        console.warn(`⚠️ Timeout waiting for GCS upload for ${session.participantEmail} (5 min), publishing final metadata anyway`);
+        publishChunkMetadata(session, true).then(() => {
+          resolve();
+        }).catch((error) => {
+          console.error(`❌ Error publishing final metadata after timeout:`, error);
+          resolve();
+        });
+      }
+    }, 300000); // 5 minutes = 300000ms
   });
 }
 

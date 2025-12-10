@@ -35,6 +35,7 @@ interface TranscriptionSession {
   orgId?: string;
   processedSegments: Map<string, Set<number>>; // Track processed segments per participant (email -> Set<segmentIndex>)
   lastProcessedBytes: Map<string, number>; // Track last processed byte position per participant (email -> bytes)
+  finalChunksReceived: Set<string>; // Track which participants have received final chunks (email -> true)
 }
 
 const activeSessions = new Map<string, TranscriptionSession>();
@@ -163,6 +164,54 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
       participants.set(p.email.toLowerCase(), p);
     }
 
+    // Load processed segments from transcription_chunks table
+    const chunksResult = await pool.query(
+      'SELECT participant_email, chunk_index, storage_url FROM transcription_chunks WHERE call_id = $1',
+      [callId]
+    );
+
+    const processedSegments = new Map<string, Set<number>>();
+    const lastProcessedBytes = new Map<string, number>();
+    const storageUrlsByEmail = new Map<string, string>();
+
+    for (const chunkRow of chunksResult.rows) {
+      const email = chunkRow.participant_email.toLowerCase();
+      if (!processedSegments.has(email)) {
+        processedSegments.set(email, new Set());
+      }
+      processedSegments.get(email)!.add(chunkRow.chunk_index);
+      
+      // Store the latest storage URL for each participant (they should all point to the same file)
+      if (chunkRow.storage_url) {
+        storageUrlsByEmail.set(email, chunkRow.storage_url);
+      }
+    }
+
+    // Try to estimate lastProcessedBytes by checking GCS file size
+    // If we've processed all segments up to a certain point, we can estimate bytes
+    const storage = getStorageClient();
+    for (const [email, storageUrl] of storageUrlsByEmail.entries()) {
+      try {
+        const [bucketName, ...pathParts] = storageUrl.replace('gs://', '').split('/');
+        const filePath = pathParts.join('/');
+        const file = storage.bucket(bucketName).file(filePath);
+        const [metadata] = await file.getMetadata();
+        const fileSize = parseInt(String(metadata.size || '0'), 10);
+        
+        // If file exists and has size, use it as an estimate
+        // The actual processed bytes might be less, but this gives us a starting point
+        // The deduplication logic will prevent re-processing
+        if (fileSize > 0) {
+          lastProcessedBytes.set(email, fileSize);
+          console.log(`📊 Estimated lastProcessedBytes for ${email}: ${fileSize} bytes (from GCS file size)`);
+        }
+      } catch (error: any) {
+        console.warn(`⚠️ Could not get file size for ${email} from ${storageUrl}:`, error.message);
+        // Set to 0 if we can't determine
+        lastProcessedBytes.set(email, 0);
+      }
+    }
+
     const session: TranscriptionSession = {
       callId: row.call_id,
       roomName: row.room_name,
@@ -172,8 +221,9 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
       transcripts: new Map(),
       startTime: row.started_at,
       orgId,
-      processedSegments: new Map(), // Track processed segments per participant
-      lastProcessedBytes: new Map(), // Track last processed byte position per participant
+      processedSegments, // Restored from DB
+      lastProcessedBytes, // Estimated from GCS file sizes
+      finalChunksReceived: new Set(), // Initialize empty - will be populated as final chunks arrive
     };
 
     // Load transcripts from DB
@@ -181,6 +231,8 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
     for (const [email, transcriptArray] of Object.entries(transcriptsData)) {
       session.transcripts.set(email.toLowerCase(), transcriptArray as string[]);
     }
+
+    console.log(`📝 Loaded session from DB: ${processedSegments.size} participants with processed segments, ${Array.from(processedSegments.values()).reduce((sum, set) => sum + set.size, 0)} total segments processed`);
 
     return session;
   } catch (error: any) {
@@ -225,6 +277,104 @@ async function saveSessionToDB(session: TranscriptionSession): Promise<void> {
   }
 }
 
+// Helper function to create and set up a transcriber for a participant
+async function setupTranscriberForParticipant(
+  session: TranscriptionSession,
+  participant: { email: string; name?: string },
+  assemblyAI: any // AssemblyAI client
+): Promise<void> {
+  const email = participant.email.toLowerCase();
+  
+  try {
+    const transcriber = assemblyAI.streaming.transcriber({
+      sampleRate: 16000, // 16kHz
+      formatTurns: true,
+    });
+
+    let transcriberReady = false;
+    const transcriberReadyPromise = new Promise<void>((resolve) => {
+      const openHandler = ({ id }: { id: string }) => {
+        transcriberReady = true;
+        console.log(`✅ Transcription session opened for ${email}, ID: ${id}`);
+        resolve();
+      };
+      transcriber.on('open', openHandler);
+    });
+
+    transcriber.on('turn', (turn: any) => {
+      if (turn.transcript && turn.transcript.trim()) {
+        if (!session.transcripts.has(email)) {
+          session.transcripts.set(email, []);
+        }
+        session.transcripts.get(email)!.push(turn.transcript);
+        console.log(`📝 Transcript for ${email}: ${turn.transcript}`);
+        
+        // Save to DB periodically
+        saveSessionToDB(session).catch(console.error);
+      }
+    });
+
+    transcriber.on('error', (error: any) => {
+      console.error(`❌ Transcription error for ${email}:`, error);
+    });
+
+    transcriber.on('close', (code: number, reason: string) => {
+      console.log(`🔌 Transcription connection closed for ${email}: ${code} - ${reason}`);
+    });
+
+    const audioStream = new Readable({
+      read() {},
+      objectMode: false,
+      highWaterMark: 64 * 1024,
+    });
+
+    // Connect transcriber (non-blocking)
+    transcriber.connect().catch((error: any) => {
+      console.error(`❌ Error connecting transcriber for ${email}:`, error);
+    });
+
+    // Wait for transcriber to be ready in background
+    transcriberReadyPromise.then(() => {
+      console.log(`✅ Transcriber ready for ${email}`);
+    }).catch(console.error);
+
+    // Pipe audio stream to transcriber
+    if (typeof Readable.toWeb === 'function') {
+      const webStream = Readable.toWeb(audioStream);
+      const transcriberStream = transcriber.stream();
+      const writer = transcriberStream.getWriter();
+      const reader = webStream.getReader();
+
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              await writer.close();
+              break;
+            }
+            if (value && transcriberReady) {
+              await writer.write(value);
+            }
+          }
+        } catch (error: any) {
+          console.error(`❌ Error piping audio to transcriber for ${email}:`, error);
+          try {
+            await writer.abort();
+          } catch {}
+        } finally {
+          reader.releaseLock();
+        }
+      })();
+    }
+
+    session.transcribers.set(email, transcriber);
+    session.audioStreams.set(email, audioStream);
+  } catch (error: any) {
+    console.error(`❌ Error setting up transcriber for ${email}:`, error);
+  }
+}
+
 // Start transcription session
 async function startTranscriptionSession(
   callId: string,
@@ -250,126 +400,64 @@ async function startTranscriptionSession(
   }
   
   // Check if session already exists
-  let session = activeSessions.get(callId);
+  let session: TranscriptionSession | undefined = activeSessions.get(callId);
+  let sessionLoadedFromDB = false;
   if (!session && orgId) {
-    session = await loadSessionFromDB(callId, orgId);
-    if (session) {
+    const loadedSession = await loadSessionFromDB(callId, orgId);
+    if (loadedSession) {
+      session = loadedSession;
       activeSessions.set(callId, session);
+      sessionLoadedFromDB = true;
+      console.log(`📝 Loaded transcription session from DB for call ${callId}, will recreate transcribers`);
     }
   }
 
-  if (session) {
+  if (session && !sessionLoadedFromDB) {
     console.log(`📝 Transcription session already exists for call ${callId}`);
     return;
   }
 
   const assemblyAI = await getAssemblyAIClient();
 
-  session = {
-    callId,
-    roomName,
-    participants: new Map(participants.map(p => [p.email.toLowerCase(), p])),
-    transcribers: new Map(),
-    audioStreams: new Map(),
-    transcripts: new Map(),
-    startTime: new Date(),
-    orgId,
-    processedSegments: new Map(), // Track processed segments per participant
-    lastProcessedBytes: new Map(), // Track last processed byte position per participant
-  };
+  // If session was loaded from DB, we need to recreate transcribers
+  // If it's a new session, create it fresh
+  if (!session) {
+    session = {
+      callId,
+      roomName,
+      participants: new Map(participants.map(p => [p.email.toLowerCase(), p])),
+      transcribers: new Map(),
+      audioStreams: new Map(),
+      transcripts: new Map(),
+      startTime: new Date(),
+      orgId,
+      processedSegments: new Map(), // Track processed segments per participant
+      lastProcessedBytes: new Map(), // Track last processed byte position per participant
+      finalChunksReceived: new Set(), // Track which participants have received final chunks
+    };
+  } else {
+    // Session loaded from DB - ensure participants match
+    // Add any new participants that weren't in the DB
+    for (const participant of participants) {
+      const email = participant.email.toLowerCase();
+      if (!session.participants.has(email)) {
+        session.participants.set(email, participant);
+      }
+    }
+  }
 
-  // Create streaming transcriber for each participant
-  for (const participant of participants) {
+  // Create/recreate streaming transcriber for each participant
+  // This is needed both for new sessions and sessions restored from DB
+  for (const participant of Array.from(session.participants.values())) {
     const email = participant.email.toLowerCase();
     
-    try {
-      const transcriber = assemblyAI.streaming.transcriber({
-        sampleRate: 16000, // 16kHz
-        formatTurns: true,
-      });
-
-      let transcriberReady = false;
-      const transcriberReadyPromise = new Promise<void>((resolve) => {
-        const openHandler = ({ id }: { id: string }) => {
-          transcriberReady = true;
-          console.log(`✅ Transcription session opened for ${email}, ID: ${id}`);
-          resolve();
-        };
-        transcriber.on('open', openHandler);
-      });
-
-      transcriber.on('turn', (turn: any) => {
-        if (turn.transcript && turn.transcript.trim()) {
-          if (!session!.transcripts.has(email)) {
-            session!.transcripts.set(email, []);
-          }
-          session!.transcripts.get(email)!.push(turn.transcript);
-          console.log(`📝 Transcript for ${email}: ${turn.transcript}`);
-          
-          // Save to DB periodically
-          saveSessionToDB(session!).catch(console.error);
-        }
-      });
-
-      transcriber.on('error', (error: any) => {
-        console.error(`❌ Transcription error for ${email}:`, error);
-      });
-
-      transcriber.on('close', (code: number, reason: string) => {
-        console.log(`🔌 Transcription connection closed for ${email}: ${code} - ${reason}`);
-      });
-
-      const audioStream = new Readable({
-        read() {},
-        objectMode: false,
-        highWaterMark: 64 * 1024,
-      });
-
-      // Connect transcriber (non-blocking)
-      transcriber.connect().catch((error: any) => {
-        console.error(`❌ Error connecting transcriber for ${email}:`, error);
-      });
-
-      // Wait for transcriber to be ready in background
-      transcriberReadyPromise.then(() => {
-        console.log(`✅ Transcriber ready for ${email}`);
-      }).catch(console.error);
-
-      // Pipe audio stream to transcriber
-      if (typeof Readable.toWeb === 'function') {
-        const webStream = Readable.toWeb(audioStream);
-        const transcriberStream = transcriber.stream();
-        const writer = transcriberStream.getWriter();
-        const reader = webStream.getReader();
-
-        (async () => {
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) {
-                await writer.close();
-                break;
-              }
-              if (value && transcriberReady) {
-                await writer.write(value);
-              }
-            }
-          } catch (error: any) {
-            console.error(`❌ Error piping audio to transcriber for ${email}:`, error);
-            try {
-              await writer.abort();
-            } catch {}
-          } finally {
-            reader.releaseLock();
-          }
-        })();
-      }
-
-      session.transcribers.set(email, transcriber);
-      session.audioStreams.set(email, audioStream);
-    } catch (error: any) {
-      console.error(`❌ Error setting up transcriber for ${email}:`, error);
+    // If transcriber already exists (shouldn't happen for DB-loaded sessions, but check anyway)
+    if (session.transcribers.has(email) && session.audioStreams.has(email)) {
+      console.log(`📝 Transcriber already exists for ${email}, skipping recreation`);
+      continue;
     }
+    
+    await setupTranscriberForParticipant(session, participant, assemblyAI);
   }
 
   activeSessions.set(callId, session);
@@ -419,12 +507,13 @@ async function processAudioChunk(message: any): Promise<void> {
   console.log(`🎤 Processing audio chunk for ${participantEmail} in call ${callId} (segment ${segmentIdx}${isFinal ? ', final' : ''})`);
 
   // Get session
-  let session = activeSessions.get(callId);
+  let session: TranscriptionSession | undefined = activeSessions.get(callId);
   if (!session) {
     // Try to load from DB if orgId is available
     if (data.orgId) {
-      session = await loadSessionFromDB(callId, data.orgId);
-      if (session) {
+      const loadedSession = await loadSessionFromDB(callId, data.orgId);
+      if (loadedSession) {
+        session = loadedSession;
         activeSessions.set(callId, session);
         console.log(`📝 Loaded transcription session from DB for call ${callId}`);
       }
@@ -472,21 +561,30 @@ async function processAudioChunk(message: any): Promise<void> {
     const file = storage.bucket(bucketName).file(filePath);
     
     // For streaming uploads, only download new data (bytes we haven't processed yet)
-    const lastProcessedByte = session.lastProcessedBytes.get(email) || 0;
+    let lastProcessedByte = session.lastProcessedBytes.get(email) || 0;
     
     try {
       // Get file metadata to check current size
       const [metadata] = await file.getMetadata();
-      const currentSize = parseInt(metadata.size || '0', 10);
+      const currentSize = parseInt(String(metadata.size || '0'), 10);
       
       if (currentSize <= lastProcessedByte) {
-        // No new data, skip this segment
-        console.log(`⏭️ No new data for segment ${segmentIdx} (file size: ${currentSize}, last processed: ${lastProcessedByte})`);
-        message.ack();
-        return;
+        // Validate: lastProcessedByte should never exceed file size
+        if (lastProcessedByte > currentSize) {
+          console.warn(`⚠️ Invalid state: lastProcessedByte (${lastProcessedByte}) > file size (${currentSize}) for ${email}. This indicates a mismatch - possibly wrong file or session state corruption. Resetting to 0.`);
+          session.lastProcessedBytes.set(email, 0);
+          lastProcessedByte = 0; // Update local variable to use reset value
+          // Continue processing from beginning (processedSegments will prevent duplicates)
+        } else {
+          // No new data, skip this segment
+          console.log(`⏭️ No new data for segment ${segmentIdx} (file size: ${currentSize}, last processed: ${lastProcessedByte})`);
+          message.ack();
+          return;
+        }
       }
       
       // Download only the new portion of the file
+      // Note: lastProcessedByte might have been reset to 0 above
       const [audioBuffer] = await file.download({
         start: lastProcessedByte,
         end: isFinal ? undefined : currentSize, // Download up to current size, or all if final
@@ -515,6 +613,15 @@ async function processAudioChunk(message: any): Promise<void> {
 
       message.ack();
       console.log(`✅ Processed audio segment ${segmentIdx} for ${email}${isFinal ? ' (final)' : ''}`);
+      
+      // Track if this is a final chunk
+      if (isFinal) {
+        if (!session.finalChunksReceived) {
+          session.finalChunksReceived = new Set();
+        }
+        session.finalChunksReceived.add(email);
+        console.log(`✅ Final chunk received and processed for ${email}`);
+      }
     } catch (metadataError: any) {
       // If metadata fetch fails, try downloading the entire file (fallback)
       console.warn(`⚠️ Could not get file metadata, downloading entire file:`, metadataError.message);
@@ -527,7 +634,9 @@ async function processAudioChunk(message: any): Promise<void> {
           const newData = audioBuffer.slice(lastSize);
           // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
           pushAudioInChunks(audioStream, newData);
-          session.lastProcessedBytes.set(email, audioBuffer.length);
+          // FIX: Should be lastSize + newData.length, not just audioBuffer.length
+          // This correctly tracks total processed bytes
+          session.lastProcessedBytes.set(email, lastSize + newData.length);
         }
       }
       
@@ -544,6 +653,15 @@ async function processAudioChunk(message: any): Promise<void> {
       
       message.ack();
       console.log(`✅ Processed audio segment ${segmentIdx} for ${email} (fallback mode)${isFinal ? ' (final)' : ''}`);
+      
+      // Track if this is a final chunk (fallback mode)
+      if (isFinal) {
+        if (!session.finalChunksReceived) {
+          session.finalChunksReceived = new Set();
+        }
+        session.finalChunksReceived.add(email);
+        console.log(`✅ Final chunk received and processed for ${email} (fallback mode)`);
+      }
     }
   } catch (error: any) {
     // If file doesn't exist yet (streaming in progress), that's okay - we'll retry later
@@ -596,9 +714,12 @@ async function handleCallEnded(message: any): Promise<void> {
   console.log(`🔚 Handling call ended for ${callId}`);
 
   // Get session
-  let session = activeSessions.get(callId);
+  let session: TranscriptionSession | undefined = activeSessions.get(callId);
   if (!session && orgId) {
-    session = await loadSessionFromDB(callId, orgId);
+    const loadedSession = await loadSessionFromDB(callId, orgId);
+    if (loadedSession) {
+      session = loadedSession;
+    }
   }
 
   if (!session) {
@@ -607,11 +728,49 @@ async function handleCallEnded(message: any): Promise<void> {
     return;
   }
 
-  // Wait for any pending audio chunks to be processed first
-  // This gives time for final segments to be downloaded and processed
-  // Using longer waits for better stability (user is okay with up to 1 min delay)
-  console.log(`⏳ Waiting for pending audio chunks to be processed...`);
-  await new Promise(resolve => setTimeout(resolve, 20000)); // Wait 20 seconds for final chunks (increased for stability)
+  // Wait for final chunks to be processed with intelligent checking
+  // Since flushCallBuffers runs async, final metadata might take up to 5 minutes to publish
+  // We check periodically if all participants have received final chunks
+  const MAX_WAIT_TIME_MS = 300000; // 5 minutes maximum
+  const CHECK_INTERVAL_MS = 15000; // Check every 15 seconds
+  const startWaitTime = Date.now();
+  
+  // Initialize finalChunksReceived if not already set
+  if (!session.finalChunksReceived) {
+    session.finalChunksReceived = new Set();
+  }
+  
+  console.log(`⏳ Waiting for final chunks to be processed (max ${MAX_WAIT_TIME_MS / 1000}s, checking every ${CHECK_INTERVAL_MS / 1000}s)...`);
+  
+  while (Date.now() - startWaitTime < MAX_WAIT_TIME_MS) {
+    // Check if all participants have received final chunks
+    const allParticipants = Array.from(session.participants.keys());
+    const participantsWithFinalChunks = Array.from(session.finalChunksReceived);
+    const missingFinalChunks = allParticipants.filter(email => !session.finalChunksReceived.has(email));
+    
+    if (missingFinalChunks.length === 0) {
+      const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
+      console.log(`✅ All participants have final chunks processed (${participantsWithFinalChunks.length}/${allParticipants.length}) after ${elapsed}s`);
+      break;
+    }
+    
+    const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
+    const remaining = Math.floor((MAX_WAIT_TIME_MS - (Date.now() - startWaitTime)) / 1000);
+    console.log(`⏳ Still waiting for final chunks... (${elapsed}s elapsed, ${remaining}s remaining, missing: ${missingFinalChunks.join(', ')})`);
+    
+    // Wait before next check
+    await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL_MS));
+  }
+  
+  const totalWaitTime = Math.floor((Date.now() - startWaitTime) / 1000);
+  if (totalWaitTime >= MAX_WAIT_TIME_MS / 1000) {
+    const missing = Array.from(session.participants.keys()).filter(email => !session.finalChunksReceived.has(email));
+    if (missing.length > 0) {
+      console.warn(`⚠️ Timeout waiting for final chunks (${totalWaitTime}s). Missing final chunks for: ${missing.join(', ')}. Proceeding anyway.`);
+    } else {
+      console.log(`✅ All final chunks received after ${totalWaitTime}s`);
+    }
+  }
 
   // Now close all audio streams to signal end of input
   for (const [email, stream] of session.audioStreams.entries()) {
