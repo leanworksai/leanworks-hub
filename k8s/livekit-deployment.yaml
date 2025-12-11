@@ -155,7 +155,10 @@ spec:
           # Generate LiveKit config file
           mkdir -p /etc/livekit
           # Get webhook URL from environment or use default
-          WEBHOOK_URL=\${WEBHOOK_URL:-https://api.leanworks.ai/api/livekit/webhook}
+          # Note: Remove backslash to allow variable expansion
+          WEBHOOK_URL="${WEBHOOK_URL:-https://api.leanworks.ai/api/livekit/webhook}"
+          
+          echo "🔗 Using webhook URL: ${WEBHOOK_URL}"
           
           cat > /etc/livekit/livekit.yaml <<EOF
           port: 7880
@@ -196,6 +199,8 @@ spec:
         env:
         - name: GOOGLE_APPLICATION_CREDENTIALS
           value: /secrets/gcp_credential.json
+        - name: WEBHOOK_URL
+          value: "https://api.leanworks.ai/api/livekit/webhook"
       volumes:
       - name: livekit-config
         emptyDir: {}

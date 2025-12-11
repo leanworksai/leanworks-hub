@@ -1328,6 +1328,13 @@ async function handleCallEnded(message: any): Promise<void> {
   const { callId, chatId, participants, orgId } = data;
 
   console.log(`🔚 Handling call ended for ${callId}`);
+  console.log(`📋 Call ended data:`, {
+    callId,
+    chatId,
+    participantsCount: participants?.length || 0,
+    participants: participants?.map((p: any) => p.email) || [],
+    orgId: orgId || 'missing'
+  });
 
   // Get session
   let session: TranscriptionSession | undefined = activeSessions.get(callId);
@@ -1417,9 +1424,11 @@ async function handleCallEnded(message: any): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 5000)); // Increased to 5 seconds
 
   // Update session status in DB
-  if (session.orgId) {
+  // Use orgId from event, or fall back to session.orgId
+  const finalOrgId = orgId || session.orgId;
+  if (finalOrgId) {
     try {
-      const pool = await getOrgPool(session.orgId);
+      const pool = await getOrgPool(finalOrgId);
       
       // First, try to load any transcripts that might have been saved to DB during the call
       try {
@@ -1472,9 +1481,22 @@ async function handleCallEnded(message: any): Promise<void> {
       `, [JSON.stringify(transcriptsObj), callId]);
 
       // Create notes for each participant
-      if (participants && participants.length > 0) {
-        const userInfoMap = await getUserInfoBatch(participants.map(p => p.email));
-        const participantsWithNames = participants.map(p => {
+      // Fallback to session participants if event doesn't have participants
+      let participantsToUse = participants;
+      if (!participantsToUse || participantsToUse.length === 0) {
+        console.log(`⚠️ Event has no participants, falling back to session participants`);
+        const sessionParticipantEmails = Array.from(session.participants.keys());
+        if (sessionParticipantEmails.length > 0) {
+          participantsToUse = sessionParticipantEmails.map(email => ({ email }));
+          console.log(`✅ Using ${participantsToUse.length} participant(s) from session: ${sessionParticipantEmails.join(', ')}`);
+        }
+      }
+      
+      console.log(`📝 Checking if notes should be created: participants=${participantsToUse?.length || 0}, orgId=${orgId || 'missing'}`);
+      if (participantsToUse && participantsToUse.length > 0) {
+        console.log(`✅ Creating notes for ${participantsToUse.length} participant(s)`);
+        const userInfoMap = await getUserInfoBatch(participantsToUse.map(p => p.email));
+        const participantsWithNames = participantsToUse.map(p => {
           const info = userInfoMap.get(p.email.toLowerCase());
           return {
             email: p.email,
@@ -1551,12 +1573,13 @@ async function handleCallEnded(message: any): Promise<void> {
               false
             ]);
 
-            console.log(`✅ Created meeting note for ${participant.email}`);
+            console.log(`✅ Created meeting note for ${participant.email} (noteId: ${noteId})`);
             
             // Generate meeting note summary asynchronously (don't wait for it)
-            if (orgId && formattedTranscript && formattedTranscript.trim().length > 0) {
+            if (finalOrgId && formattedTranscript && formattedTranscript.trim().length > 0) {
+              console.log(`📊 Triggering summary generation for note ${noteId} (orgId: ${finalOrgId})`);
               try {
-                const orgSlug = await getOrgSlugById(orgId);
+                const orgSlug = await getOrgSlugById(finalOrgId);
                 // Call summary API in background (fire and forget)
                 generateMeetingNoteSummary(noteId, participant.email.toLowerCase(), orgSlug)
                   .catch((error) => {
@@ -1568,12 +1591,22 @@ async function handleCallEnded(message: any): Promise<void> {
             }
           } catch (noteError: any) {
             console.error(`❌ Error creating note for ${participant.email}:`, noteError);
+            console.error(`   Error details:`, noteError.message, noteError.stack);
           }
+        }
+        console.log(`✅ Finished processing notes for ${participantsToUse.length} participant(s)`);
+      } else {
+        console.warn(`⚠️ Skipping note creation: participants array is ${participantsToUse ? 'empty' : 'missing'}`);
+        if (!finalOrgId) {
+          console.warn(`⚠️ Also missing orgId, which is required for note creation`);
         }
       }
     } catch (error: any) {
       console.error(`❌ Error finalizing session for call ${callId}:`, error);
+      console.error(`   Error details:`, error.message, error.stack);
     }
+  } else {
+    console.warn(`⚠️ Cannot create notes: orgId is missing for call ${callId} (event orgId: ${orgId || 'missing'}, session orgId: ${session.orgId || 'missing'})`);
   }
 
   // Remove from active sessions

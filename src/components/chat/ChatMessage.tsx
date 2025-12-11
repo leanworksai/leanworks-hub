@@ -153,7 +153,7 @@ function CallJoinButton({ callId, roomName }: { callId: string; roomName: string
             // and it's not just a cache issue (check if it's from server)
             if (!snapshot.metadata.fromCache) {
               // This is a server snapshot confirming the document doesn't exist
-              setCallStatusFromFirestore('ended');
+            setCallStatusFromFirestore('ended');
             }
             // If it's from cache and empty, don't update status (might be stale cache)
           }
