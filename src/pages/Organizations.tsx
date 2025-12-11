@@ -207,19 +207,19 @@ export default function Organizations() {
   const personalOrg = organizations.find(org => org.type === 'personal');
 
   return (
-    <div className="container mx-auto py-6 space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="container mx-auto py-4 sm:py-6 space-y-4 sm:space-y-6 px-4 sm:px-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Organizations</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Organizations</h1>
         </div>
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
           <DialogTrigger asChild>
-            <Button>
+            <Button className="w-full sm:w-auto">
               <Plus className="mr-2 h-4 w-4" />
               Create Organization
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="w-[calc(100vw-2rem)] sm:w-full max-w-md">
             <DialogHeader>
               <DialogTitle>Create New Organization</DialogTitle>
               <DialogDescription>
@@ -247,11 +247,11 @@ export default function Organizations() {
                 />
               </div>
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)}>
+            <DialogFooter className="flex-col sm:flex-row gap-2">
+              <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} className="w-full sm:w-auto">
                 Cancel
               </Button>
-              <Button onClick={handleCreateOrg} disabled={isSubmitting}>
+              <Button onClick={handleCreateOrg} disabled={isSubmitting} className="w-full sm:w-auto">
                 {isSubmitting ? 'Creating...' : 'Create Organization'}
               </Button>
             </DialogFooter>
@@ -266,25 +266,25 @@ export default function Organizations() {
             <h2 className="text-lg font-semibold mb-3">Personal Workspace</h2>
             <Card className="bg-gradient-card border-border shadow-card">
               <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-10 w-10">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <Avatar className="h-10 w-10 flex-shrink-0">
                       <AvatarFallback className="bg-primary/10">
                         <User className="h-5 w-5" />
                       </AvatarFallback>
                     </Avatar>
-                    <div>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        {personalOrg.name}
+                    <div className="flex-1 min-w-0">
+                      <CardTitle className="text-base flex items-center gap-2 flex-wrap">
+                        <span className="truncate">{personalOrg.name}</span>
                         {currentOrg?.id === personalOrg.id && (
-                          <Badge variant="secondary" className="text-xs">Current</Badge>
+                          <Badge variant="secondary" className="text-xs flex-shrink-0">Current</Badge>
                         )}
                       </CardTitle>
                       <CardDescription>Your personal workspace</CardDescription>
                     </div>
                   </div>
                   {currentOrg?.id !== personalOrg.id && (
-                    <Button variant="outline" size="sm" onClick={() => switchOrg(personalOrg.id)}>
+                    <Button variant="outline" size="sm" onClick={() => switchOrg(personalOrg.id)} className="flex-shrink-0">
                       Switch
                     </Button>
                   )}
@@ -359,15 +359,16 @@ export default function Organizations() {
                       <p className="text-sm text-muted-foreground line-clamp-2">{org.description}</p>
                     </CardContent>
                   )}
-                  <CardFooter className="pt-0 flex gap-2" onClick={(e) => e.stopPropagation()}>
+                  <CardFooter className="pt-0 flex gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
                     {currentOrg?.id !== org.id && (
-                      <Button variant="outline" size="sm" onClick={() => switchOrg(org.id)}>
+                      <Button variant="outline" size="sm" onClick={() => switchOrg(org.id)} className="flex-1 sm:flex-initial">
                         Switch
                       </Button>
                     )}
                     {org.isOwner && (
                       <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleDeleteOrg(org)}>
-                        <Trash2 className="h-3 w-3" />
+                        <Trash2 className="h-3 w-3 sm:mr-0" />
+                        <span className="sm:hidden ml-1">Delete</span>
                       </Button>
                     )}
                     {!org.isOwner && (
@@ -386,7 +387,7 @@ export default function Organizations() {
 
       {/* Invite Dialog */}
       <Dialog open={isInviteDialogOpen} onOpenChange={setIsInviteDialogOpen}>
-        <DialogContent>
+        <DialogContent className="w-[calc(100vw-2rem)] sm:w-full max-w-md">
           <DialogHeader>
             <DialogTitle>Invite to {selectedOrg?.name}</DialogTitle>
             <DialogDescription>
@@ -415,11 +416,11 @@ export default function Organizations() {
               />
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsInviteDialogOpen(false)}>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={() => setIsInviteDialogOpen(false)} className="w-full sm:w-auto">
               Cancel
             </Button>
-            <Button onClick={handleInviteUser} disabled={isSubmitting}>
+            <Button onClick={handleInviteUser} disabled={isSubmitting} className="w-full sm:w-auto">
               {isSubmitting ? 'Sending...' : 'Send Invitation'}
             </Button>
           </DialogFooter>
@@ -428,7 +429,7 @@ export default function Organizations() {
 
       {/* Members Dialog */}
       <Dialog open={isMembersDialogOpen} onOpenChange={setIsMembersDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="w-[calc(100vw-2rem)] sm:w-full sm:max-w-lg max-h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
@@ -453,7 +454,7 @@ export default function Organizations() {
                 <p className="text-muted-foreground">No members found</p>
               </div>
             ) : (
-              <ScrollArea className="max-h-[400px] pr-4">
+              <ScrollArea className="max-h-[50vh] sm:max-h-[400px] pr-4">
                 <div className="space-y-3">
                   {members.map((member) => (
                     <div 

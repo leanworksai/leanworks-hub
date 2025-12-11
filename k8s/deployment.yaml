@@ -23,11 +23,16 @@ spec:
           name: http
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "100m"
+            memory: "512Mi"  # Minimum guaranteed memory (doubled from 256Mi)
+            cpu: "200m"      # Increased CPU for image processing
           limits:
-            memory: "512Mi"  # Increased for image uploads (10MB files in memory)
-            cpu: "200m"
+            memory: "2Gi"    # Increased to 2Gi for:
+                            # - Image uploads (10MB files + Sharp processing = ~30MB per upload)
+                            # - Firestore queries (up to 500 messages in memory when index missing)
+                            # - Multiple database connection pools (one per org)
+                            # - WebSocket connections and Firebase Admin SDK operations
+                            # - Node.js V8 heap and buffer overhead
+            cpu: "1000m"     # Increased CPU for concurrent image processing and database operations
         # Mount GCP credentials for Secret Manager access
         volumeMounts:
         - name: gcp-credentials

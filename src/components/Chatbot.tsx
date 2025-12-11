@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
+import { X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, ChevronLeft, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/api";
 import { CallStatus } from "@/hooks/useWebRTC";
@@ -50,6 +50,7 @@ import {
   getAIAssistantChatId, 
   isAIAssistantChatId 
 } from "@/hooks/useChatId";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface Message {
   id: string;
@@ -141,6 +142,8 @@ export function Chatbot() {
   }, [currentUserProfile, user?.email]);
   const [isOpen, setIsOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const isMobile = useIsMobile();
+  const [showMobileConversation, setShowMobileConversation] = useState(false);
   
   // Clear old cache entries that don't have orgId (from domain-based system)
   const clearLegacyMessageCaches = useCallback(() => {
@@ -4217,10 +4220,16 @@ export function Chatbot() {
         <Button
           onClick={() => {
             setIsOpen(!isOpen);
-            // When opening, restore the last selected member
+            // When opening on mobile, show contact list first
             if (!isOpen) {
-              const lastMember = getLastSelectedMember();
-              setSelectedMember(lastMember);
+              if (isMobile) {
+                setShowMobileConversation(false);
+                setIsMobileSidebarOpen(true);
+              } else {
+                // Desktop: restore the last selected member
+                const lastMember = getLastSelectedMember();
+                setSelectedMember(lastMember);
+              }
             }
           }}
           className={cn(
@@ -4240,17 +4249,19 @@ export function Chatbot() {
       {/* Chat Window - Slack-like Layout */}
       <div
         className={cn(
-          "fixed bottom-6 right-6 z-50 bg-background border rounded-lg shadow-2xl transition-all duration-300 flex flex-col",
+          "fixed z-50 bg-background transition-all duration-300 flex flex-col",
           isOpen ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none",
-          "w-[900px] h-[700px] max-w-[calc(100vw-3rem)] max-h-[calc(100vh-3rem)]",
-          "sm:bottom-6 sm:right-6",
-          "inset-0 sm:inset-auto sm:rounded-lg",
-          "rounded-none sm:rounded-lg"
+          // Mobile: fullscreen, no border, no shadow, no rounded corners
+          "top-0 left-0 right-0 bottom-0 rounded-none border-0 shadow-none",
+          // Desktop: positioned bottom-right with fixed size, border and shadow
+          "sm:top-auto sm:left-auto sm:bottom-6 sm:right-6 sm:rounded-lg sm:border sm:shadow-2xl",
+          "sm:w-[900px] sm:h-[700px]",
+          "sm:max-w-[calc(100vw-3rem)] sm:max-h-[calc(100vh-3rem)]"
         )}
       >
         <div className="flex flex-1 min-h-0 overflow-hidden flex-col sm:flex-row relative">
-          {/* Mobile Sidebar Overlay */}
-          {isMobileSidebarOpen && (
+          {/* Mobile Sidebar Overlay - only needed for desktop sidebar toggle */}
+          {!isMobile && isMobileSidebarOpen && (
             <div 
               className="fixed inset-0 bg-black/50 z-40 sm:hidden"
               onClick={() => setIsMobileSidebarOpen(false)}
@@ -4260,9 +4271,18 @@ export function Chatbot() {
           {/* Left Sidebar */}
           <div className={cn(
             "w-full sm:w-64 border-r bg-muted/30 flex flex-col flex-shrink-0",
-            "absolute sm:relative inset-y-0 left-0 z-50 sm:z-auto",
-            "transform transition-transform duration-300 sm:transform-none",
-            isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full sm:translate-x-0"
+            // Mobile: absolute positioning with slide animation
+            "absolute sm:relative",
+            "inset-y-0 left-0",
+            "z-50 sm:z-auto",
+            "transform transition-transform duration-300",
+            // Desktop: always visible, no transform
+            "sm:transform-none sm:translate-x-0",
+            // Mobile: show when NOT showing conversation (contact list view)
+            // OR when sidebar is explicitly opened (for search/back button)
+            isMobile 
+              ? (!showMobileConversation ? "translate-x-0" : "-translate-x-full")
+              : (isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full")
           )}>
             {/* Sidebar Header */}
             <div className="p-4 border-b flex items-center justify-between">
@@ -4281,6 +4301,11 @@ export function Chatbot() {
                     }
                   }
                   setIsOpen(false);
+                  // Reset mobile state when closing
+                  if (isMobile) {
+                    setShowMobileConversation(false);
+                    setIsMobileSidebarOpen(false);
+                  }
                 }}
                 className="h-8 w-8"
               >
@@ -4309,9 +4334,6 @@ export function Chatbot() {
                 {/* AI Assistant Section */}
                 {aiAssistantMatches && (
                   <div className="px-2 py-1.5">
-                    <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
-                      AI Project Manager
-                    </div>
                     <button
                       onClick={() => {
                         if (isFreePlan) {
@@ -4324,6 +4346,12 @@ export function Chatbot() {
                         }
                         setSelectedMember("ai-assistant");
                         setMemberSearchQuery("");
+                        if (isMobile) {
+                          setShowMobileConversation(true);
+                          setIsMobileSidebarOpen(false);
+                        } else {
+                          setIsMobileSidebarOpen(false);
+                        }
                       }}
                       disabled={isFreePlan}
                       className={cn(
@@ -4376,6 +4404,12 @@ export function Chatbot() {
                               onClick={() => {
                                 setSelectedMember(projectChatId);
                                 setMemberSearchQuery("");
+                                if (isMobile) {
+                                  setShowMobileConversation(true);
+                                  setIsMobileSidebarOpen(false);
+                                } else {
+                                  setIsMobileSidebarOpen(false);
+                                }
                               }}
                               className={cn(
                                 "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
@@ -4408,6 +4442,12 @@ export function Chatbot() {
                               onClick={() => {
                                 setSelectedMember(teamChatId);
                                 setMemberSearchQuery("");
+                                if (isMobile) {
+                                  setShowMobileConversation(true);
+                                  setIsMobileSidebarOpen(false);
+                                } else {
+                                  setIsMobileSidebarOpen(false);
+                                }
                               }}
                               className={cn(
                                 "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors group relative",
@@ -4462,6 +4502,12 @@ export function Chatbot() {
                             onClick={() => {
                               setSelectedMember(member.id);
                               setMemberSearchQuery("");
+                              if (isMobile) {
+                                setShowMobileConversation(true);
+                                setIsMobileSidebarOpen(false);
+                              } else {
+                                setIsMobileSidebarOpen(false);
+                              }
                             }}
                             className={cn(
                               "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-sm transition-colors relative",
@@ -4499,19 +4545,26 @@ export function Chatbot() {
           </div>
 
           {/* Main Chat Area */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          <div className={cn(
+            "flex-1 flex flex-col min-w-0 overflow-hidden",
+            // Mobile: hide if showing contact list
+            isMobile && !showMobileConversation ? "hidden" : "flex"
+          )}>
             {/* Chat Header */}
-            <div className="flex items-center justify-between p-4 border-b bg-primary/5">
+            <div className="flex items-center justify-between p-3 sm:p-4 border-b bg-primary/5">
               <Button
                 variant="ghost"
                 size="icon"
-                className="sm:hidden mr-2"
-                onClick={() => setIsMobileSidebarOpen(true)}
+                className="sm:hidden mr-2 flex-shrink-0"
+                onClick={() => {
+                  setShowMobileConversation(false);
+                  setIsMobileSidebarOpen(true);
+                }}
               >
-                <Search className="h-4 w-4" />
+                <ChevronLeft className="h-4 w-4" />
               </Button>
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                <Avatar className="h-8 w-8 flex-shrink-0">
+              <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
+                <Avatar className="h-7 w-7 sm:h-8 sm:w-8 flex-shrink-0">
                   {selectedMember === "ai-assistant" ? (
                     <>
                       <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
@@ -4537,13 +4590,13 @@ export function Chatbot() {
                   )}
                 </Avatar>
                 <div className="flex flex-col min-w-0">
-                  <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
-                  <p className="text-xs text-muted-foreground">
+                  <h3 className="font-semibold text-xs sm:text-sm truncate">{currentMember.name}</h3>
+                  <p className="text-[10px] sm:text-xs text-muted-foreground truncate">
                     {selectedMember === "ai-assistant" ? "AI Project Manager" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
                 {/* Show call button for DM chats and group calls (project/team channels) */}
                 {selectedMember !== "ai-assistant" && currentMember.id !== "ai-assistant" && (
                   <>
@@ -4661,6 +4714,7 @@ export function Chatbot() {
                         size="sm"
                         onClick={toggleMute}
                         title={isMuted ? "Unmute microphone" : "Mute microphone"}
+                        className="hidden sm:inline-flex"
                       >
                         {isMuted ? (
                           <>
@@ -4675,6 +4729,21 @@ export function Chatbot() {
                         )}
                       </Button>
                     )}
+                    {(displayCallStatus === 'active' || displayCallStatus === 'connecting') && (
+                      <Button
+                        variant={isMuted ? "destructive" : "outline"}
+                        size="icon"
+                        onClick={toggleMute}
+                        title={isMuted ? "Unmute microphone" : "Mute microphone"}
+                        className="sm:hidden"
+                      >
+                        {isMuted ? (
+                          <MicOff className="h-4 w-4" />
+                        ) : (
+                          <Mic className="h-4 w-4" />
+                        )}
+                      </Button>
+                    )}
                   </>
                 )}
               </div>
@@ -4682,7 +4751,7 @@ export function Chatbot() {
 
             {/* Messages Area */}
             <ScrollArea className="flex-1 min-w-0">
-              <div className="p-4 space-y-4 overflow-x-hidden w-full min-w-0">
+              <div className="p-3 sm:p-4 space-y-3 sm:space-y-4 overflow-x-hidden w-full min-w-0">
           {/* Loading indicator */}
           {isLoadingMessages && (
             <div className="flex items-center justify-center py-8">
@@ -4869,20 +4938,20 @@ export function Chatbot() {
                   </div>
                 </div>
               )}
-              <div className="p-4 relative">
+              <div className="p-3 sm:p-4 relative">
                 {/* Image Preview Section */}
                 {imagePreviewUrls.length > 0 && (
-                  <div className="mb-3 flex gap-2 flex-wrap">
+                  <div className="mb-2 sm:mb-3 flex gap-2 flex-wrap">
                     {imagePreviewUrls.map((url, index) => (
                       <div key={index} className="relative group">
                         <img
                           src={url}
                           alt={`Preview ${index + 1}`}
-                          className="h-20 w-20 object-cover rounded-md border"
+                          className="h-16 w-16 sm:h-20 sm:w-20 object-cover rounded-md border"
                         />
                         <button
                           onClick={() => removeImage(index)}
-                          className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="absolute -top-1 -right-1 sm:-top-2 sm:-right-2 bg-destructive text-destructive-foreground rounded-full p-0.5 sm:p-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
                         >
                           <X className="h-3 w-3" />
                         </button>
@@ -4900,7 +4969,7 @@ export function Chatbot() {
 
                 {/* Mention Suggestions Dropdown */}
                 {showMentionSuggestions && filteredMentionUsers.length > 0 && (isProjectChannel || isTeamChannel) && (
-                  <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border rounded-md shadow-lg z-50 max-h-60 overflow-auto">
+                  <div className="absolute bottom-full left-3 right-3 sm:left-4 sm:right-4 mb-2 bg-popover border rounded-md shadow-lg z-50 max-h-60 overflow-auto">
                     <div className="p-2">
                       <div className="text-xs font-semibold text-muted-foreground px-2 mb-1">Mention</div>
                       <div className="space-y-0.5">
@@ -4957,12 +5026,12 @@ export function Chatbot() {
                         <Smile className="h-4 w-4" />
                       </Button>
                     </PopoverTrigger>
-                    <PopoverContent className="w-auto p-0 border-0" align="start" side="top">
+                    <PopoverContent className="w-[calc(100vw-2rem)] sm:w-auto max-w-sm sm:max-w-none p-0 border-0" align="start" side="top">
                       <EmojiPicker
                         onEmojiClick={insertEmoji}
                         autoFocusSearch={false}
                         theme="light"
-                        width={350}
+                        width={typeof window !== 'undefined' && window.innerWidth < 640 ? Math.min(350, window.innerWidth - 32) : 350}
                         height={400}
                       />
                     </PopoverContent>
