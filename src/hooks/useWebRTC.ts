@@ -321,30 +321,55 @@ export function useWebRTC(
             
             const dataArray = new Uint8Array(analyser.frequencyBinCount);
             let checkCount = 0;
+            const startTime = Date.now();
+            const INITIAL_MONITOR_DURATION = 15000; // Monitor frequently for first 15 seconds
+            const INITIAL_INTERVAL = 2000; // 2 seconds during initial verification (industry standard)
+            const REGULAR_INTERVAL = 3000; // 3 seconds after initial verification (industry standard)
+            
+            let currentInterval = INITIAL_INTERVAL;
+            let intervalId: NodeJS.Timeout | null = null;
+            
             const checkAudio = () => {
               analyser.getByteFrequencyData(dataArray);
               const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
               checkCount++;
-              // Log every 2 seconds (every 4th check) or when audio is detected
-              if (checkCount % 4 === 0 || average > 0) {
+              const elapsed = Date.now() - startTime;
+              
+              // Switch to less frequent monitoring after initial verification period
+              if (elapsed > INITIAL_MONITOR_DURATION && currentInterval === INITIAL_INTERVAL && intervalId) {
+                currentInterval = REGULAR_INTERVAL;
+                // Restart interval with new frequency
+                clearInterval(intervalId);
+                intervalId = setInterval(checkAudio, currentInterval);
+                if (remoteAudioMonitorRef.current) {
+                  remoteAudioMonitorRef.current.interval = intervalId;
+                }
+                console.log('🔊 Remote audio monitor: Switched to regular monitoring (3s interval)');
+              }
+              
+              // Log every check during initial period, then less frequently
+              const shouldLog = elapsed <= INITIAL_MONITOR_DURATION || checkCount % 2 === 0 || average > 0;
+              if (shouldLog) {
                 console.log('🔊 Remote audio monitor:', {
                   level: average.toFixed(2),
                   hasAudio: average > 0,
                   checkCount,
+                  interval: currentInterval,
                 });
               }
             };
-            const interval = setInterval(checkAudio, 500);
+            intervalId = setInterval(checkAudio, INITIAL_INTERVAL);
             
-            console.log('🔊 Remote audio monitor started');
-            remoteAudioMonitorRef.current = { interval, context: audioContext };
+            console.log('🔊 Remote audio monitor started (2s interval for first 15s, then 3s)');
+            remoteAudioMonitorRef.current = { interval: intervalId, context: audioContext };
             
-            // Clean up after 60 seconds or when call ends
+            // Clean up after 60 seconds or when call ends (industry standard: stop after initial verification + some buffer)
             setTimeout(() => {
               if (remoteAudioMonitorRef.current) {
                 clearInterval(remoteAudioMonitorRef.current.interval);
                 remoteAudioMonitorRef.current.context.close().catch(() => {});
                 remoteAudioMonitorRef.current = null;
+                console.log('🔊 Remote audio monitor stopped (60s timeout)');
               }
             }, 60000);
           } catch (err) {
@@ -1134,30 +1159,55 @@ export function useWebRTC(
             
             const localDataArray = new Uint8Array(localAnalyser.frequencyBinCount);
             let localCheckCount = 0;
+            const localStartTime = Date.now();
+            const INITIAL_MONITOR_DURATION = 15000; // Monitor frequently for first 15 seconds
+            const INITIAL_INTERVAL = 2000; // 2 seconds during initial verification (industry standard)
+            const REGULAR_INTERVAL = 3000; // 3 seconds after initial verification (industry standard)
+            
+            let currentLocalInterval = INITIAL_INTERVAL;
+            let localIntervalId: NodeJS.Timeout | null = null;
+            
             const checkLocalAudio = () => {
               localAnalyser.getByteFrequencyData(localDataArray);
               const average = localDataArray.reduce((a, b) => a + b) / localDataArray.length;
               localCheckCount++;
-              // Log every 2 seconds (every 4th check) or when audio is detected
-              if (localCheckCount % 4 === 0 || average > 0) {
+              const elapsed = Date.now() - localStartTime;
+              
+              // Switch to less frequent monitoring after initial verification period
+              if (elapsed > INITIAL_MONITOR_DURATION && currentLocalInterval === INITIAL_INTERVAL && localIntervalId) {
+                currentLocalInterval = REGULAR_INTERVAL;
+                // Restart interval with new frequency
+                clearInterval(localIntervalId);
+                localIntervalId = setInterval(checkLocalAudio, currentLocalInterval);
+                if (localAudioMonitorRef.current) {
+                  localAudioMonitorRef.current.interval = localIntervalId;
+                }
+                console.log('🎤 Local audio monitor: Switched to regular monitoring (3s interval)');
+              }
+              
+              // Log every check during initial period, then less frequently
+              const shouldLog = elapsed <= INITIAL_MONITOR_DURATION || localCheckCount % 2 === 0 || average > 0;
+              if (shouldLog) {
                 console.log('🎤 Local audio monitor:', {
                   level: average.toFixed(2),
                   hasAudio: average > 0,
                   checkCount: localCheckCount,
+                  interval: currentLocalInterval,
                 });
               }
             };
-            const localInterval = setInterval(checkLocalAudio, 500);
+            localIntervalId = setInterval(checkLocalAudio, INITIAL_INTERVAL);
             
-            console.log('🎤 Local audio monitor started');
-            localAudioMonitorRef.current = { interval: localInterval, context: localAudioContext };
+            console.log('🎤 Local audio monitor started (2s interval for first 15s, then 3s)');
+            localAudioMonitorRef.current = { interval: localIntervalId, context: localAudioContext };
             
-            // Clean up after 60 seconds or when call ends
+            // Clean up after 60 seconds or when call ends (industry standard: stop after initial verification + some buffer)
             setTimeout(() => {
               if (localAudioMonitorRef.current) {
                 clearInterval(localAudioMonitorRef.current.interval);
                 localAudioMonitorRef.current.context.close().catch(() => {});
                 localAudioMonitorRef.current = null;
+                console.log('🎤 Local audio monitor stopped (60s timeout)');
               }
             }, 60000);
           }
