@@ -21,6 +21,7 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import VerifyEmail from "./pages/VerifyEmail";
 import Home from "./pages/Home";
+import Team from "./pages/Team";
 import Teams from "./pages/Teams";
 import TeamDetail from "./pages/TeamDetail";
 import Users from "./pages/Users";
@@ -53,6 +54,7 @@ const AppRoutesContent = () => {
   // Helper function to get page name from path
   const getPageName = (pathname: string): string => {
     if (pathname === '/') return 'Home';
+    if (pathname === '/team') return 'Team';
     if (pathname === '/login') return 'Login';
     if (pathname === '/signup') return 'Signup';
     if (pathname === '/verify-email') return 'Verify Email';
@@ -77,6 +79,7 @@ const AppRoutesContent = () => {
     <>
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/team" element={<Team />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/verify-email" element={<VerifyEmail />} />

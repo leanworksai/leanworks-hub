@@ -42,7 +42,9 @@ import {
   Activity,
   Circle,
   Plus,
-  PhoneOff
+  PhoneOff,
+  FileText,
+  Pin
 } from 'lucide-react';
 
 // API base URL - use localhost in development, relative path in production
@@ -157,7 +159,7 @@ export default function Home() {
             <span>Powered by AI</span>
           </div>
           <p className="text-xl text-muted-foreground">
-            Our AI seamlessly connects all the features to give you intelligent insights and automate workflows across your entire team.
+            Our AI seamlessly connects all the features and integrates with 3rd party platforms. It has all the contexts it needs to give you the best answer and automate end-to-end workflow.
           </p>
         </div>
       </section>
@@ -531,6 +533,91 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Feature 5: Note Taking */}
+      <section className="py-20 bg-slate-50/50">
+        <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="max-w-6xl mx-auto">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+              <div>
+                <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
+                  <FileText className="h-7 w-7 text-primary" />
+                </div>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Easy Note Taking</h2>
+                <p className="text-lg text-muted-foreground leading-relaxed">
+                  Capture your thoughts, ideas, and important information with our powerful note-taking feature. 
+                  Create rich text notes, organize them with tags, and link them to projects or teams for better 
+                  context. Pin important notes for quick access, and let our AI help you organize and find your 
+                  notes effortlessly. Perfect for meeting notes, project documentation, or personal reminders.
+                </p>
+              </div>
+              <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">
+                <CardHeader className="pb-2 border-b bg-muted/30">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-xl">My Notes</CardTitle>
+                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="p-4 bg-background/50 space-y-3">
+                  {/* Note 1: Pinned */}
+                  <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer">
+                    <div className="flex items-start gap-2 mb-2">
+                      <Pin className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-sm mb-1">Q4 Planning Meeting</h4>
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          Discussed roadmap priorities, resource allocation, and key milestones for Q4...
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-2">
+                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Planning</Badge>
+                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Q4</Badge>
+                      <span className="text-[10px] text-muted-foreground ml-auto">2 days ago</span>
+                    </div>
+                  </div>
+
+                  {/* Note 2 */}
+                  <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer">
+                    <div className="flex items-start gap-2 mb-2">
+                      <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-sm mb-1">API Integration Ideas</h4>
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          Research notes on potential third-party integrations for the platform...
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-2">
+                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Research</Badge>
+                      <span className="text-[10px] text-muted-foreground ml-auto">1 week ago</span>
+                    </div>
+                  </div>
+
+                  {/* Note 3 */}
+                  <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer opacity-60">
+                    <div className="flex items-start gap-2 mb-2">
+                      <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-semibold text-sm mb-1">Design System Updates</h4>
+                        <p className="text-xs text-muted-foreground line-clamp-2">
+                          Notes on component library improvements and accessibility enhancements...
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-2">
+                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Design</Badge>
+                      <span className="text-[10px] text-muted-foreground ml-auto">2 weeks ago</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Meet Lean Section */}
       <section className="py-20 bg-gradient-to-br from-primary/5 via-primary/10 to-primary/5">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
@@ -675,18 +762,27 @@ export default function Home() {
         <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-12">
           <div className="flex flex-col md:flex-row items-center justify-between">
             <div className="flex items-center space-x-2 mb-4 md:mb-0">
-              <img 
-                src="/logo.png" 
-                alt="LeanWorks" 
-                className="h-6 w-auto object-contain"
-                onError={(e) => {
-                  console.error('Failed to load logo:', e);
-                }}
-              />
-              <span className="font-semibold">LeanWorks</span>
+              <Link to="/">
+                <img 
+                  src="/logo.png" 
+                  alt="LeanWorks" 
+                  className="h-6 w-auto object-contain"
+                  onError={(e) => {
+                    console.error('Failed to load logo:', e);
+                  }}
+                />
+              </Link>
+              <Link to="/">
+                <span className="font-semibold">LeanWorks</span>
+              </Link>
             </div>
-            <div className="text-sm text-muted-foreground">
-              © {new Date().getFullYear()} LeanWorks. All rights reserved.
+            <div className="flex items-center gap-6">
+              <Link to="/team" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+                Team
+              </Link>
+              <div className="text-sm text-muted-foreground">
+                © {new Date().getFullYear()} LeanWorks. All rights reserved.
+              </div>
             </div>
           </div>
         </div>
