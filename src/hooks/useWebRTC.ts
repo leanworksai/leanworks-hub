@@ -789,6 +789,54 @@ export function useWebRTC(
     }
   }, []);
 
+  // Unlock audio element for mobile browsers during user gesture
+  // This must be called during a user interaction (like startCall/answerCall)
+  // to allow audio playback on mobile devices
+  const unlockAudioElement = useCallback(async () => {
+    try {
+      // Create audio element if it doesn't exist
+      if (!remoteAudioRef.current) {
+        const audio = document.createElement('audio');
+        audio.autoplay = true;
+        audio.setAttribute('playsinline', 'true'); // Required for Safari/iOS
+        audio.setAttribute('crossorigin', 'anonymous');
+        audio.style.display = 'none';
+        audio.style.position = 'fixed';
+        audio.style.top = '0';
+        audio.style.left = '0';
+        audio.style.width = '0';
+        audio.style.height = '0';
+        audio.style.opacity = '0';
+        audio.style.pointerEvents = 'none';
+        document.body.appendChild(audio);
+        remoteAudioRef.current = audio;
+      }
+
+      const audio = remoteAudioRef.current;
+      
+      // Create a silent/empty MediaStream to unlock the audio element
+      // This must happen during the user gesture to work on mobile
+      const silentStream = new MediaStream();
+      
+      // Set the silent stream and play it to unlock audio on mobile
+      audio.srcObject = silentStream;
+      audio.volume = 1.0;
+      audio.muted = false;
+      
+      try {
+        await audio.play();
+        console.log('✅ Audio element unlocked for mobile playback');
+      } catch (playError: any) {
+        // If play fails, it's OK - we'll try again when the real stream arrives
+        // The important thing is that we attempted to unlock during user gesture
+        console.log('ℹ️ Audio unlock attempt (will retry with real stream):', playError.message);
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to unlock audio element:', error);
+      // Don't throw - this is best effort, audio will still work on desktop
+    }
+  }, []);
+
   // Start a call (create offer)
   const startCall = useCallback(async () => {
     if (import.meta.env.DEV) {
@@ -838,6 +886,9 @@ export function useWebRTC(
         trackCount: stream.getTracks().length,
         audioTracks: stream.getAudioTracks().length,
       });
+      
+      // CRITICAL: Unlock audio element during user gesture (required for mobile)
+      await unlockAudioElement();
       
       // Verify stream is still valid and has tracks
       if (!stream || stream.getTracks().length === 0) {
@@ -1558,6 +1609,10 @@ export function useWebRTC(
         trackCount: stream.getTracks().length,
         audioTracks: stream.getAudioTracks().length,
       });
+      
+      // CRITICAL: Unlock audio element during user gesture (required for mobile)
+      await unlockAudioElement();
+      
       localStreamRef.current = stream;
       setLocalStream(stream);
       
