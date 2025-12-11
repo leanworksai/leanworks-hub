@@ -691,34 +691,46 @@ export const messagesService = {
       const messagesPath = `orgs/${orgSlug}/messages`;
       const messagesRef = collection(db, messagesPath);
 
-      // Build query based on chatId type (same logic as backend)
-      let q = query(messagesRef, where('chatId', '==', chatId));
+      // Build query constraints based on chatId type (same logic as backend)
+      // All constraints must be collected and passed in a single query() call
+      const queryConstraints: any[] = [where('chatId', '==', chatId)];
 
       // For AI assistant conversations, also filter by userId for privacy
       if (chatId.startsWith('ai-assistant-')) {
-        q = query(q, where('userId', '==', userEmail));
+        queryConstraints.push(where('userId', '==', userEmail));
       }
 
       // For project channels, also filter by projectId
       if (chatId.startsWith('project-')) {
         const projectId = chatId.replace('project-', '');
-        q = query(q, where('projectId', '==', projectId));
+        queryConstraints.push(where('projectId', '==', projectId));
       }
 
       // For team channels, also filter by teamId
       if (chatId.startsWith('team-')) {
         const teamId = chatId.replace('team-', '');
-        q = query(q, where('teamId', '==', teamId));
+        queryConstraints.push(where('teamId', '==', teamId));
       }
 
-      // Limit and order by timestamp
+      // Add orderBy and limit
       // Note: Firestore requires an index for compound queries with orderBy
       // If index doesn't exist, we'll catch the error and fall back to polling
+      let q;
       try {
-        q = query(q, orderBy('timestamp', 'desc'), limit(100));
+        q = query(
+          messagesRef,
+          ...queryConstraints,
+          orderBy('timestamp', 'desc'),
+          limit(100)
+        );
       } catch (error) {
         // If orderBy fails, try without it (will sort in memory)
         console.warn('OrderBy not available, will sort in memory');
+        q = query(
+          messagesRef,
+          ...queryConstraints,
+          limit(100)
+        );
       }
 
       unsubscribeFn = onSnapshot(
@@ -757,7 +769,11 @@ export const messagesService = {
             });
 
             // Sort by timestamp descending (newest first) if orderBy wasn't used
-            messages.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+            messages.sort((a, b) => {
+              const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+              const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+              return bTime - aTime;
+            });
 
             // Call callback with messages
             callback(messages);
@@ -2114,4 +2130,3 @@ export const subscriptionService = {
     return response.json();
   },
 };
-
