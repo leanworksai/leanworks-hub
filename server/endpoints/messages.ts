@@ -155,7 +155,7 @@ export function setupMessageEndpoints(
           const docs = snapshot.docs.sort((a, b) => {
             const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
             const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
-            return aTime - bTime; // Ascending
+            return aTime - bTime; // Ascending order (oldest first)
           });
           snapshot = { docs, empty: docs.length === 0 } as any;
         } else {

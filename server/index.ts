@@ -4374,13 +4374,13 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       }
     }
     
-    // Sort by timestamp in memory (ascending)
+    // Sort by timestamp in memory (ascending - oldest first)
     docs.sort((a, b) => {
       const aTime = a.data().timestamp?.toDate?.()?.getTime() || 
                     (typeof a.data().timestamp === 'number' ? a.data().timestamp : 0);
       const bTime = b.data().timestamp?.toDate?.()?.getTime() || 
                     (typeof b.data().timestamp === 'number' ? b.data().timestamp : 0);
-      return aTime - bTime; // Ascending
+      return aTime - bTime; // Ascending order (oldest first)
     });
     
     // Filter by afterTimestamp if provided

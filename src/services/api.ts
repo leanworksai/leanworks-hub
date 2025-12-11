@@ -720,7 +720,7 @@ export const messagesService = {
         q = query(
           messagesRef,
           ...queryConstraints,
-          orderBy('timestamp', 'desc'),
+          orderBy('timestamp', 'asc'),
           limit(100)
         );
       } catch (error) {
@@ -768,11 +768,11 @@ export const messagesService = {
               } as ChatMessage;
             });
 
-            // Sort by timestamp descending (newest first) if orderBy wasn't used
+            // Sort by timestamp ascending (oldest first) if orderBy wasn't used
             messages.sort((a, b) => {
               const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
               const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
-              return bTime - aTime;
+              return aTime - bTime;
             });
 
             // Call callback with messages

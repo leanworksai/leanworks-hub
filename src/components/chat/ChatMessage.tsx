@@ -123,14 +123,24 @@ function CallJoinButton({ callId, roomName }: { callId: string; roomName: string
 
         const callRef = doc(db, `orgs/${orgSlug}/calls`, callId);
         
-        // Check immediately
-        const callDoc = await getDoc(callRef);
+        // Check immediately, but retry if document doesn't exist (might be a timing issue)
+        let callDoc = await getDoc(callRef);
         if (callDoc.exists()) {
           const data = callDoc.data();
           setCallStatusFromFirestore(data.status || 'ringing');
         } else {
-          // Call document doesn't exist, assume ended
-          setCallStatusFromFirestore('ended');
+          // Document doesn't exist yet - might be a timing issue
+          // Retry once after a short delay before assuming it's ended
+          await new Promise(resolve => setTimeout(resolve, 500));
+          callDoc = await getDoc(callRef);
+          if (callDoc.exists()) {
+            const data = callDoc.data();
+            setCallStatusFromFirestore(data.status || 'ringing');
+          } else {
+            // Still doesn't exist after retry - only then assume ended
+            // But don't set it immediately, let the listener handle it
+            setCallStatusFromFirestore(null);
+          }
         }
 
         // Subscribe to real-time updates
@@ -139,8 +149,13 @@ function CallJoinButton({ callId, roomName }: { callId: string; roomName: string
             const data = snapshot.data();
             setCallStatusFromFirestore(data.status || 'ringing');
           } else {
-            // Call document doesn't exist, assume ended
-            setCallStatusFromFirestore('ended');
+            // Only mark as ended if we've confirmed the document doesn't exist
+            // and it's not just a cache issue (check if it's from server)
+            if (!snapshot.metadata.fromCache) {
+              // This is a server snapshot confirming the document doesn't exist
+              setCallStatusFromFirestore('ended');
+            }
+            // If it's from cache and empty, don't update status (might be stale cache)
           }
         }, (error) => {
           console.error('Error subscribing to call status:', error);
@@ -185,13 +200,14 @@ function CallJoinButton({ callId, roomName }: { callId: string; roomName: string
     }
   };
 
-  // Check if call has ended
+  // Check if call has ended (only if we've confirmed it from Firestore)
   const isCallEnded = callStatusFromFirestore === 'ended';
   
   // Check if user is already in this call
   const isInCall = callStatus !== 'idle' && callStatus !== 'ended' && currentCallId === callId;
   
-  if (isCallEnded) {
+  // Don't show "Call ended" if status is null (still checking) or if call is active/ringing
+  if (isCallEnded && callStatusFromFirestore !== null) {
     return (
       <div className="mt-2 text-xs text-muted-foreground italic">
         Call ended

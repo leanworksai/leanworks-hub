@@ -2206,7 +2206,7 @@ export function Chatbot() {
           const allMessages = Array.from(messageMap.values()).sort((a, b) => {
             const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
             const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
-            return aTime - bTime;
+            return aTime - bTime; // Ascending order (oldest first)
           });
           
           // Proactively refresh image URLs before displaying
@@ -2370,7 +2370,7 @@ export function Chatbot() {
           const allMessages = Array.from(messageMap.values()).sort((a, b) => {
             const aTime = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
             const bTime = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
-            return aTime - bTime;
+            return aTime - bTime; // Ascending order (oldest first)
           });
           
           // Proactively refresh image URLs before displaying

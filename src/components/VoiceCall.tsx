@@ -581,18 +581,19 @@ export function VoiceCallButton({
     } catch (err) {
       console.error('❌ VoiceCall: Error starting call:', err);
       isCreatingCallRef.current = false; // Call creation failed
+      
+      // Clean up all call state
       setIsCalling(false);
+      callIdRef.current = null;
+      setCurrentCallId(null); // Update shared context
+      setCallSignal(null); // Clear call signal state
+      processedAnswerRef.current = null; // Reset processed answer tracking
       
       // Clean up resources
       try {
         endCall();
       } catch (cleanupErr) {
         console.error('Error during cleanup:', cleanupErr);
-      }
-      
-      // Reset call ID ref if call failed before it was set
-      if (!callIdRef.current) {
-        callIdRef.current = null;
       }
       
       // Show user-friendly error message
@@ -802,7 +803,13 @@ export function VoiceCallButton({
             }
           } catch (err) {
             console.error('Error joining call:', err);
+            // Clean up all call state on join failure
             setIsCalling(false);
+            callIdRef.current = null;
+            setCurrentCallId(null);
+            setCallSignal(null);
+            processedAnswerRef.current = null;
+            endCall();
           }
         }}
         className={className}
@@ -992,6 +999,14 @@ export function IncomingCallDialog({
     } catch (err: any) {
       console.error('❌ IncomingCallDialog: Error answering call:', err);
       setIsAnswering(false);
+      
+      // Clean up call state on answer failure
+      setIsCalling(false);
+      callIdRef.current = null;
+      setCurrentCallId(null);
+      setCallSignal(null);
+      processedAnswerRef.current = null;
+      endCall();
       
       // Show user-friendly error message
       const errorMessage = err.message || 'Failed to accept call. Please try again.';
