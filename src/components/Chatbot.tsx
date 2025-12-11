@@ -2626,8 +2626,12 @@ export function Chatbot() {
     }, [user?.email, isOpen, selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, allTeamMembers, endWebRTCCall, currentCallId, setCurrentCallId, callStatus, db, auth]);
 
     // Set up real-time listener in a separate effect to avoid conflicts
+    // Best practice: Always set up subscription - don't block on loading state
+    // This ensures we catch messages created during loading (like call messages)
     useEffect(() => {
-      if (!user || !isOpen || !user.email || isLoadingMessages || isSendingMessage) return;
+      // Only block on critical conditions, not loading state or sending state
+      // The merge/deduplication logic handles race conditions when sending messages
+      if (!user || !isOpen || !user.email) return;
 
     let chatId: string;
     
@@ -2652,28 +2656,56 @@ export function Chatbot() {
     let unsubscribe: (() => void) | null = null;
     // Track if we've received the first update from the listener
     let isFirstListenerUpdate = true;
+    // Track when subscription starts to detect genuinely new messages during loading
+    const subscriptionStartTime = Date.now();
     
     // Set up listener immediately (no delay - this was causing messages to be missed)
     unsubscribe = messagesService.subscribeToMessages(chatId, (firestoreMessages) => {
-      // Skip the very first update if we just loaded messages (to avoid duplicate processing)
-      // But only skip if we're still loading initial messages
+      // Smart deduplication: Skip first update only if it's a duplicate of initial load
+      // BUT always process updates that contain genuinely new messages (like call messages)
       if (isFirstListenerUpdate && isLoadingMessages) {
-        isFirstListenerUpdate = false;
-        // Wait a bit for initial load to complete, then process updates
-        setTimeout(() => {
+        // Check if there are genuinely new messages (created after subscription started)
+        // This catches messages like call notifications created during initial load
+        const hasNewMessages = firestoreMessages.some(msg => {
+          const msgTime = msg.timestamp instanceof Date ? msg.timestamp.getTime() : new Date(msg.timestamp).getTime();
+          // Messages created after subscription started (with 1 second buffer for timing)
+          return msgTime > subscriptionStartTime - 1000;
+        });
+        
+        // Also check if there are messages not in current state (for better detection)
+        let hasMessagesNotInState = false;
+        if (!hasNewMessages) {
+          // Get current messages from state
+          let currentMessages: any[] = [];
+          if (isProjectChannel && selectedProjectId) {
+            currentMessages = channelMessages.get(selectedProjectId) || [];
+          } else if (isTeamChannel && selectedTeamId) {
+            currentMessages = channelMessages.get(selectedTeamId) || [];
+          } else {
+            currentMessages = messages;
+          }
+          
+          const currentIds = new Set(currentMessages.map(m => m.id));
+          hasMessagesNotInState = firestoreMessages.some(msg => !currentIds.has(msg.id));
+        }
+        
+        // Only skip if no new messages detected
+        if (!hasNewMessages && !hasMessagesNotInState) {
           isFirstListenerUpdate = false;
-        }, 500);
-        return;
+          // Wait a bit for initial load to complete, then process updates
+          setTimeout(() => {
+            isFirstListenerUpdate = false;
+          }, 500);
+          return;
+        }
+        // Otherwise, process it (has new messages like call notifications)
       }
       
       // After initial load completes, process all updates normally
       isFirstListenerUpdate = false;
         
-        // Don't process updates while sending a message (prevents race conditions)
-        if (isSendingMessage) {
-          return;
-        }
-        
+        // Process all updates - merge/deduplication logic handles race conditions
+        // The mergeMessages function preserves optimistic updates and handles deduplication
         try {
           // Calculate unread count for this chat
           const lastRead = lastReadTimestamps.get(chatId) || 0;
@@ -2993,7 +3025,8 @@ export function Chatbot() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedMember, isProjectChannel, selectedProjectId, user?.email, isOpen, isLoadingMessages, allChatCaches]);
+    // Note: isLoadingMessages removed from deps - subscription should persist across loading state changes
+  }, [selectedMember, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, user?.email, isOpen, allChatCaches]);
 
   // Check if "lean" is mentioned in a message
   const isLeanMentioned = useCallback((message: string): boolean => {
