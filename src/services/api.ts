@@ -629,16 +629,201 @@ export const messagesService = {
 
   // Subscribe to real-time message updates
   subscribeToMessages(chatId: string, callback: MessageListener): Unsubscribe {
-    // Use polling by default (more reliable, works without Firebase Auth)
-    // Firestore real-time listeners require Firebase Auth which may not be available
-    return this.subscribeViaPolling(chatId, callback);
+    // Try Firestore real-time listener first (better for battery life)
+    // Fall back to polling if Firestore isn't available
+    try {
+      if (db && auth?.currentUser?.email) {
+        return this.subscribeViaFirestore(chatId, callback);
+      }
+    } catch (error) {
+      console.debug('Firestore listener not available, using polling:', error);
+    }
     
-    // Note: Firestore real-time listeners are disabled by default because:
-    // 1. They require Firebase Auth which may not be configured
-    // 2. Dynamic imports are async and cause timing issues
-    // 3. Polling is more reliable and works with API-based auth
-    // If you need real-time listeners, ensure Firebase Auth is properly configured
-    // and handle the async nature of dynamic imports properly
+    // Fallback to polling
+    return this.subscribeViaPolling(chatId, callback);
+  },
+
+  // Firestore real-time listener for messages (battery-efficient)
+  subscribeViaFirestore(chatId: string, callback: MessageListener): Unsubscribe {
+    // Check if Firestore is available
+    if (!db) {
+      console.warn('Firestore not ready, falling back to polling');
+      return this.subscribeViaPolling(chatId, callback);
+    }
+
+    // Check auth
+    if (!auth?.currentUser?.email) {
+      console.warn('Firebase Auth not ready, falling back to polling');
+      return this.subscribeViaPolling(chatId, callback);
+    }
+
+    let unsubscribeFn: (() => void) | null = null;
+    let pollingUnsubscribe: Unsubscribe | null = null;
+    let isActive = true;
+    let usePolling = false;
+
+    // Use dynamic import to avoid issues if firebase/firestore is not available
+    import('firebase/firestore').then(async (firestore) => {
+      if (!isActive || usePolling) return;
+
+      const { collection, onSnapshot, query, where, orderBy, limit } = firestore;
+      
+      const userEmail = auth.currentUser?.email?.toLowerCase();
+      if (!userEmail) {
+        console.warn('No user email, falling back to polling');
+        usePolling = true;
+        if (isActive) {
+          pollingUnsubscribe = this.subscribeViaPolling(chatId, callback);
+        }
+        return;
+      }
+      
+      const orgSlug = getCurrentOrgSlug();
+      if (!orgSlug) {
+        console.warn('No org slug available, falling back to polling');
+        usePolling = true;
+        if (isActive) {
+          pollingUnsubscribe = this.subscribeViaPolling(chatId, callback);
+        }
+        return;
+      }
+
+      const messagesPath = `orgs/${orgSlug}/messages`;
+      const messagesRef = collection(db, messagesPath);
+
+      // Build query based on chatId type (same logic as backend)
+      let q = query(messagesRef, where('chatId', '==', chatId));
+
+      // For AI assistant conversations, also filter by userId for privacy
+      if (chatId.startsWith('ai-assistant-')) {
+        q = query(q, where('userId', '==', userEmail));
+      }
+
+      // For project channels, also filter by projectId
+      if (chatId.startsWith('project-')) {
+        const projectId = chatId.replace('project-', '');
+        q = query(q, where('projectId', '==', projectId));
+      }
+
+      // For team channels, also filter by teamId
+      if (chatId.startsWith('team-')) {
+        const teamId = chatId.replace('team-', '');
+        q = query(q, where('teamId', '==', teamId));
+      }
+
+      // Limit and order by timestamp
+      // Note: Firestore requires an index for compound queries with orderBy
+      // If index doesn't exist, we'll catch the error and fall back to polling
+      try {
+        q = query(q, orderBy('timestamp', 'desc'), limit(100));
+      } catch (error) {
+        // If orderBy fails, try without it (will sort in memory)
+        console.warn('OrderBy not available, will sort in memory');
+      }
+
+      unsubscribeFn = onSnapshot(
+        q,
+        {
+          includeMetadataChanges: false, // Only get actual data changes
+        },
+        (snapshot) => {
+          if (!isActive || usePolling) return;
+
+          // Skip cache-only empty snapshots
+          if (snapshot.metadata.fromCache && snapshot.empty) {
+            return;
+          }
+
+          try {
+            // Convert Firestore documents to ChatMessage format
+            const messages = snapshot.docs.map(doc => {
+              const data = doc.data();
+              return {
+                id: doc.id,
+                chatId: data.chatId || chatId,
+                role: data.role || 'user',
+                content: data.content || '',
+                timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : 
+                          (data.timestamp ? new Date(data.timestamp) : new Date()),
+                userId: data.userId || '',
+                projectId: data.projectId || null,
+                teamId: data.teamId || null,
+                memberName: data.memberName || '',
+                memberAvatar: data.memberAvatar || '',
+                imageUrls: data.imageUrls || null,
+                likes: Array.isArray(data.likes) ? data.likes : [],
+                citedContext: data.citedContext || null,
+              } as ChatMessage;
+            });
+
+            // Sort by timestamp descending (newest first) if orderBy wasn't used
+            messages.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+            // Call callback with messages
+            callback(messages);
+          } catch (error) {
+            console.error('Error processing Firestore snapshot:', error);
+            // Don't fallback on processing errors - just log and continue
+          }
+        },
+        (error: any) => {
+          if (!isActive) return;
+
+          console.error('Error in Firestore message listener:', error);
+          
+          // Check if it's an index error - these are recoverable with polling
+          if (error.code === 9 || error.message?.includes('index')) {
+            console.warn('Firestore index missing, falling back to polling');
+            usePolling = true;
+            // Unsubscribe from Firestore and switch to polling
+            if (unsubscribeFn) {
+              unsubscribeFn();
+              unsubscribeFn = null;
+            }
+            if (isActive && !pollingUnsubscribe) {
+              pollingUnsubscribe = this.subscribeViaPolling(chatId, callback);
+            }
+            return;
+          }
+
+          // For permission errors, fall back to polling
+          if (error.code === 'permission-denied') {
+            console.warn('Firestore permission denied, falling back to polling');
+            usePolling = true;
+            // Unsubscribe from Firestore and switch to polling
+            if (unsubscribeFn) {
+              unsubscribeFn();
+              unsubscribeFn = null;
+            }
+            if (isActive && !pollingUnsubscribe) {
+              pollingUnsubscribe = this.subscribeViaPolling(chatId, callback);
+            }
+            return;
+          }
+
+          // For other errors, log but don't fallback (might be temporary network issue)
+          console.warn('Firestore listener error (non-critical):', error.message);
+        }
+      );
+    }).catch((error: any) => {
+      if (!isActive) return;
+      console.error('Failed to setup Firestore listener:', error);
+      usePolling = true;
+      if (isActive && !pollingUnsubscribe) {
+        pollingUnsubscribe = this.subscribeViaPolling(chatId, callback);
+      }
+    });
+
+    // Return unsubscribe function
+    return () => {
+      isActive = false;
+      if (unsubscribeFn) {
+        unsubscribeFn();
+      }
+      if (pollingUnsubscribe) {
+        pollingUnsubscribe();
+      }
+    };
   },
 
   // Polling fallback for when Firestore real-time is not available
