@@ -47,6 +47,9 @@ export default function Integrations() {
   const { user } = useAuth();
   const { currentOrg } = useOrg();
   const { toast } = useToast();
+  
+  // Check if user is org owner (only owners can connect/disconnect)
+  const isOrgOwner = currentOrg?.isOwner || false;
 
   const loadIntegrations = useCallback(async () => {
     if (!user) return;
@@ -186,7 +189,8 @@ export default function Integrations() {
                     variant="outline"
                     className="w-full border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
                     onClick={() => handleDisconnect(integration.id)}
-                    disabled={loading}
+                    disabled={loading || !isOrgOwner}
+                    title={!isOrgOwner ? "Only organization owners can disconnect integrations" : undefined}
                   >
                     Disconnect
                   </Button>
@@ -194,7 +198,8 @@ export default function Integrations() {
                   <Button 
                     className="w-full bg-primary hover:bg-primary/90"
                     onClick={() => handleConnect(integration.id)}
-                    disabled={loading}
+                    disabled={loading || !isOrgOwner}
+                    title={!isOrgOwner ? "Only organization owners can connect integrations" : undefined}
                   >
                     Connect
                   </Button>

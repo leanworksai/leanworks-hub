@@ -132,11 +132,12 @@ export function setupIntegrationEndpoints(
   authenticateUser: express.RequestHandler,
   secretManagerClient: SecretManagerServiceClient,
   serviceAccount: any,
-  db: FirebaseFirestore.Firestore
+  db: FirebaseFirestore.Firestore,
+  requireOrgOwner: express.RequestHandler
 ) {
   const projectId = serviceAccount.project_id;
 
-  // GET all integrations
+  // GET all integrations - read-only access for all org members
   app.get('/api/integrations', authenticateUser, async (req, res) => {
     try {
       const userEmail = (req as any).userEmail;
@@ -183,8 +184,8 @@ export function setupIntegrationEndpoints(
     }
   });
 
-  // POST connect integration
-  app.post('/api/integrations/:integrationId/connect', authenticateUser, async (req, res) => {
+  // POST connect integration - only org owners can connect
+  app.post('/api/integrations/:integrationId/connect', authenticateUser, requireOrgOwner, async (req, res) => {
     try {
       const userEmail = (req as any).userEmail;
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
@@ -279,8 +280,8 @@ export function setupIntegrationEndpoints(
     }
   });
 
-  // POST disconnect integration
-  app.post('/api/integrations/:integrationId/disconnect', authenticateUser, async (req, res) => {
+  // POST disconnect integration - only org owners can disconnect
+  app.post('/api/integrations/:integrationId/disconnect', authenticateUser, requireOrgOwner, async (req, res) => {
     try {
       const userEmail = (req as any).userEmail;
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;

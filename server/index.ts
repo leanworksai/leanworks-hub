@@ -4911,7 +4911,7 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
 // INTEGRATIONS ENDPOINTS (PostgreSQL + Secret Manager)
 // ============================================================================
 
-setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAccount, db);
+setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAccount, db, requireOrgOwner);
 
 // ============================================================================
 // CALL ENDPOINTS (Firestore - Optional, can also use Firestore directly)
