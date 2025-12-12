@@ -107,23 +107,49 @@ const getPriorityColor = (priority: Task["priority"]) => {
   }
 };
 
-// Get all unique team members from projects
-const getAllTeamMembers = (projects: any[]) => {
+// Get team members for a specific task
+// If task has a project, return only project members
+// If task has no project, return all organization users
+const getTeamMembersForTask = (task: Task, projects: any[], users: any[] = []) => {
   const memberMap = new Map<string, { id?: string; name: string; avatar: string; role: string }>();
   
-  // Collect from project members
-  projects.forEach(project => {
-    project.members?.forEach((member: any) => {
-      if (!memberMap.has(member.name)) {
-        memberMap.set(member.name, {
-          id: member.id,
-          name: member.name,
-          avatar: member.avatar,
-          role: member.role,
+  const taskProjectId = task?.projectId;
+  const taskProjectName = task?.project;
+  
+  if (taskProjectId || taskProjectName) {
+    // Task has a project - only show project members
+    const taskProject = projects.find(p => 
+      p.id === taskProjectId || 
+      p.name === taskProjectId || 
+      p.name === taskProjectName
+    );
+    
+    if (taskProject?.members) {
+      taskProject.members.forEach((member: any) => {
+        if (!memberMap.has(member.name)) {
+          memberMap.set(member.name, {
+            id: member.id || member.email,
+            name: member.name,
+            avatar: member.avatar,
+            role: member.role,
+          });
+        }
+      });
+    }
+  } else {
+    // No project - use all org users
+    users.forEach(user => {
+      const name = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email;
+      if (!memberMap.has(name)) {
+        memberMap.set(name, {
+          id: user.email?.toLowerCase() || user.email,
+          name: name,
+          avatar: user.avatar || `${(user.firstName || '').charAt(0)}${(user.lastName || '').charAt(0)}`.toUpperCase() || user.email?.charAt(0).toUpperCase() || '?',
+          role: user.jobTitle || 'Member',
         });
       }
     });
-  });
+  }
   
   return Array.from(memberMap.values()).sort((a, b) => a.name.localeCompare(b.name));
 };
@@ -148,7 +174,6 @@ export default function Tasks() {
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
-  const teamMembers = getAllTeamMembers(projects);
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
@@ -521,14 +546,17 @@ export default function Tasks() {
                         </PopoverTrigger>
                         <PopoverContent className="w-[calc(100vw-2rem)] sm:w-[300px] max-w-sm p-0" align="start" onClick={(e) => e.stopPropagation()}>
                           <Command>
-                            <CommandInput placeholder="Search team members..." />
+                            <CommandInput placeholder={(task.projectId || task.project) ? "Search project members..." : "Search organization members..."} />
                             <CommandList>
-                              <CommandEmpty>No team member found.</CommandEmpty>
+                              <CommandEmpty>
+                                {(task.projectId || task.project) ? "No project member found." : "No organization member found."}
+                              </CommandEmpty>
                               <CommandGroup>
                                 <CommandItem
                                   value="unassigned"
                                   onSelect={() => {
                                     handleFieldSave(task.id, 'assigneeId', undefined, {
+                                      assigneeName: undefined,
                                       assignee: undefined,
                                       assigneeAvatar: undefined
                                     });
@@ -542,14 +570,15 @@ export default function Tasks() {
                                   />
                                   Unassigned
                                 </CommandItem>
-                                {teamMembers.map((member) => (
+                                {getTeamMembersForTask(task, projects, users).map((member) => (
                                   <CommandItem
                                     key={member.name}
                                     value={member.name}
                                     onSelect={() => {
                                       if (member.id) {
                                         handleFieldSave(task.id, 'assigneeId', member.id, {
-                                          assignee: member.name,
+                                          assigneeName: member.name,
+                                          assignee: member.name, // Also keep assignee for frontend display
                                           assigneeAvatar: member.avatar
                                         });
                                         setDropdownOpen(task.id, 'assignee', false);
@@ -558,7 +587,7 @@ export default function Tasks() {
                                   >
                                     <Check
                                       className={`mr-2 h-4 w-4 ${
-                                        task.assigneeId === member.id ? "opacity-100" : "opacity-0"
+                                        task.assigneeId?.toLowerCase() === member.id?.toLowerCase() ? "opacity-100" : "opacity-0"
                                       }`}
                                     />
                                     <div className="flex items-center gap-2 flex-1">
