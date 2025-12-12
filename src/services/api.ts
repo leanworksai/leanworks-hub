@@ -1040,13 +1040,23 @@ export const imageUploadService = {
       throw new Error('Authentication required');
     }
 
+    // Get org slug for storage path
+    const orgSlug = getCurrentOrgSlug();
+
     const url = import.meta.env.DEV ? `${API_BASE}/api/images/refresh` : `${API_BASE}/images/refresh`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+    
+    // Include org slug header if available
+    if (orgSlug) {
+      headers['X-Org-Slug'] = orgSlug;
+    }
+
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({ imageUrls, chatId }),
     });
 
@@ -1085,6 +1095,9 @@ export const imageUploadService = {
       throw new Error('Only image files are allowed (JPG, PNG, WebP, GIF)');
     }
 
+    // Get org slug for storage path
+    const orgSlug = getCurrentOrgSlug();
+
     // Create FormData
     const formData = new FormData();
     formData.append('image', file);
@@ -1092,11 +1105,18 @@ export const imageUploadService = {
 
     // Upload to backend API
     const url = import.meta.env.DEV ? `${API_BASE}/api/images/upload` : `${API_BASE}/images/upload`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+    };
+    
+    // Include org slug header if available
+    if (orgSlug) {
+      headers['X-Org-Slug'] = orgSlug;
+    }
+
     const response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
+      headers,
       body: formData,
     });
 

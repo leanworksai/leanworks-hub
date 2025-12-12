@@ -1,7 +1,7 @@
 /**
  * Image Upload Endpoints
  * Handles image uploads to Firebase Storage via Admin SDK
- * Images are stored at: orgs/{orgId}/chat-images/{chatId}/{imageId}.jpg
+ * Images are stored at: orgs/{orgSlug}/chat-images/{chatId}/{imageId}.jpg
  * All images are converted to JPG format for consistent storage
  */
 
@@ -159,16 +159,25 @@ export function setupImageEndpoints(
         const imageId = `${uuidv4()}.jpg`;
         
         // Construct storage path: orgs/{orgSlug}/chat-images/{chatId}/{imageId}
-        // Use org slug for storage path (sanitized name instead of ID)
+        // Use org slug directly from header if available, otherwise convert from orgId
         let orgSlugForPath: string;
-        if (orgId) {
+        const orgSlugFromHeader = req.headers['x-org-slug'] as string;
+        
+        if (orgSlugFromHeader) {
+          // Use org slug directly from header (preferred)
+          orgSlugForPath = orgSlugFromHeader;
+          console.log(`📸 Using org slug from header: ${orgSlugForPath}`);
+        } else if (orgId) {
+          // Fall back to converting orgId to slug
           try {
             orgSlugForPath = await getOrgSlugById(orgId);
+            console.log(`📸 Converted orgId ${orgId} to slug: ${orgSlugForPath}`);
           } catch (error) {
-            console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+            console.error(`❌ Failed to get org slug for ${orgId}, using default:`, error);
             orgSlugForPath = 'default';
           }
         } else {
+          console.warn('⚠️ No org slug or orgId provided, using default');
           orgSlugForPath = 'default';
         }
         const storagePath = `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageId}`;
@@ -302,15 +311,18 @@ export function setupImageEndpoints(
   };
 
   // Helper function to extract storage path from signed URL or imageId
-  const extractStoragePath = async (imageUrlOrId: string, chatId: string, orgId: string | undefined): Promise<string | null> => {
+  const extractStoragePath = async (imageUrlOrId: string, chatId: string, orgId: string | undefined, orgSlug?: string): Promise<string | null> => {
     // If it's already a storage path (either old domains/ or new orgs/ format), return it
     if (imageUrlOrId.startsWith('domains/') || imageUrlOrId.startsWith('orgs/')) {
       return imageUrlOrId;
     }
     
     // Get org slug for path construction
+    // Prefer org slug if provided, otherwise convert from orgId
     let orgSlugForPath: string;
-    if (orgId) {
+    if (orgSlug) {
+      orgSlugForPath = orgSlug;
+    } else if (orgId) {
       try {
         orgSlugForPath = await getOrgSlugById(orgId);
       } catch (error) {
@@ -350,6 +362,7 @@ export function setupImageEndpoints(
     async (req, res) => {
       try {
         const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+        const orgSlug = req.headers['x-org-slug'] as string;
         const { imageUrls, chatId } = req.body;
         
         if (!imageUrls || !Array.isArray(imageUrls)) {
@@ -363,7 +376,7 @@ export function setupImageEndpoints(
         // Process all URLs in parallel for better performance
         const refreshPromises = imageUrls.map(async (imageUrl) => {
           try {
-            const storagePath = await extractStoragePath(imageUrl, chatId, orgId);
+            const storagePath = await extractStoragePath(imageUrl, chatId, orgId, orgSlug);
             if (storagePath) {
               const newSignedUrl = await generateSignedUrl(storagePath);
               return newSignedUrl;
