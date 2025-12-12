@@ -627,6 +627,114 @@ export const messagesService = {
     return response.json();
   },
 
+  async generateResponse(params: {
+    messageWindow: Array<{
+      id: string;
+      role: string;
+      content: string;
+      timestamp: string | Date;
+      memberName?: string;
+      memberAvatar?: string;
+      projectId?: string;
+      teamId?: string;
+      citedContext?: any;
+      imageUrls?: string[];
+    }>;
+    chatId?: string;
+    sessionId?: string;
+  }): Promise<{ response: string; content: string }> {
+    const userEmail = auth?.currentUser?.email;
+    if (!userEmail) {
+      throw new Error('User must be authenticated to generate response');
+    }
+
+    const orgSlug = getCurrentOrgSlug();
+    if (!orgSlug) {
+      throw new Error('Organization context is required');
+    }
+
+    // Determine the external AI service URL
+    const isLocalDev = import.meta.env.DEV;
+    const aiServiceBase = isLocalDev 
+      ? import.meta.env.VITE_AI_SERVICE_URL || 'http://0.0.0.0:8081'
+      : import.meta.env.VITE_AI_SERVICE_URL || 'http://ask-api:80';
+    
+    const aiServiceUrl = `${aiServiceBase}/api/messages/generate-response`;
+
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // Use Bearer token for production, API key for local testing
+    if (isLocalDev) {
+      // Local testing: use API key
+      try {
+        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
+        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${await getAuthToken() || ''}`,
+          },
+        });
+
+        if (apiKeyResponse.ok) {
+          const apiKeyData = await apiKeyResponse.json();
+          headers['X-API-Key'] = apiKeyData.apiKey;
+        } else {
+          // Fallback to env var
+          const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+          headers['X-API-Key'] = fallbackKey;
+        }
+      } catch (error) {
+        console.error('Failed to fetch API key from backend, using fallback:', error);
+        const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
+        headers['X-API-Key'] = fallbackKey;
+      }
+    } else {
+      // Production: use Bearer token
+      const token = await getAuthToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+
+    // Format message window with proper timestamp format
+    const formattedMessageWindow = params.messageWindow.map(msg => ({
+      ...msg,
+      timestamp: msg.timestamp instanceof Date 
+        ? msg.timestamp.toISOString() 
+        : typeof msg.timestamp === 'string' 
+          ? msg.timestamp 
+          : new Date(msg.timestamp).toISOString(),
+    }));
+
+    const response = await fetch(aiServiceUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        user_id: userEmail.toLowerCase(),
+        org_slug: orgSlug,
+        message_window: formattedMessageWindow,
+        chatId: params.chatId,
+        session_id: params.sessionId,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ 
+        error: `Server error: ${response.status} ${response.statusText}` 
+      }));
+      throw new Error(errorData.error || `Failed to generate response: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return {
+      response: data.response || data.content || '',
+      content: data.content || data.response || '',
+    };
+  },
+
   // Subscribe to real-time message updates
   subscribeToMessages(chatId: string, callback: MessageListener): Unsubscribe {
     // Try Firestore real-time listener first (better for battery life)

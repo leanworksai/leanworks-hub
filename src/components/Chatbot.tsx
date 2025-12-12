@@ -353,6 +353,8 @@ export function Chatbot() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isGeneratingDraft, setIsGeneratingDraft] = useState(false);
+  const [generatingDraftMessageId, setGeneratingDraftMessageId] = useState<string | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState<number>(50); // Initial visible messages
   const INITIAL_MESSAGE_LIMIT = 50; // Show last 50 messages initially
   const MESSAGE_LOAD_INCREMENT = 50; // Load 50 more messages at a time
@@ -4239,6 +4241,90 @@ export function Chatbot() {
     }
   }, [user?.email]);
 
+  const handleDraftResponse = useCallback(async (messageId: string) => {
+    if (!user?.email || isGeneratingDraft) return;
+
+    try {
+      setIsGeneratingDraft(true);
+      setGeneratingDraftMessageId(messageId);
+
+      // Get current messages based on context
+      let currentMessages: (Message | ChannelMessage)[] = [];
+      let chatId: string | undefined;
+
+      if (isProjectChannel && selectedProjectId) {
+        currentMessages = channelMessages.get(selectedProjectId) || [];
+        chatId = `project-${selectedProjectId}`;
+      } else if (isTeamChannel && selectedTeamId) {
+        currentMessages = channelMessages.get(selectedTeamId) || [];
+        chatId = `team-${selectedTeamId}`;
+      } else {
+        currentMessages = messages;
+        chatId = chatId || 'general';
+      }
+
+      // Find the clicked message and get up to 5 recent messages including it
+      const messageIndex = currentMessages.findIndex(msg => msg.id === messageId);
+      if (messageIndex === -1) {
+        throw new Error('Message not found');
+      }
+
+      // Get up to 5 messages ending with the clicked message
+      const startIndex = Math.max(0, messageIndex - 4);
+      const messageWindow = currentMessages.slice(startIndex, messageIndex + 1);
+
+      // Format messages for API
+      const formattedMessages = messageWindow.map(msg => {
+        const timestamp = msg.timestamp instanceof Date 
+          ? msg.timestamp 
+          : new Date(msg.timestamp);
+        
+        return {
+          id: msg.id,
+          role: 'role' in msg ? msg.role : ('memberName' in msg ? 'user' : 'assistant'),
+          content: msg.content,
+          timestamp: timestamp,
+          memberName: 'memberName' in msg ? msg.memberName : undefined,
+          memberAvatar: 'memberAvatar' in msg ? msg.memberAvatar : undefined,
+          projectId: 'projectId' in msg ? msg.projectId : undefined,
+          teamId: 'teamId' in msg ? msg.teamId : undefined,
+          citedContext: 'citedContext' in msg ? msg.citedContext : undefined,
+          imageUrls: 'imageUrls' in msg ? msg.imageUrls : undefined,
+        };
+      });
+
+      // Call the generate response API
+      const response = await messagesService.generateResponse({
+        messageWindow: formattedMessages,
+        chatId: chatId,
+        sessionId: chatId,
+      });
+
+      // Prefill the input with the generated response
+      setInput(response.response || response.content || '');
+      
+      // Focus the input
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+
+      toast({
+        title: "Draft response generated",
+        description: "You can edit the response before sending.",
+      });
+    } catch (error) {
+      console.error('Error generating draft response:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to generate draft response",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingDraft(false);
+      setGeneratingDraftMessageId(null);
+    }
+  }, [user?.email, isGeneratingDraft, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, channelMessages, messages, toast]);
+
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -4856,6 +4942,9 @@ export function Chatbot() {
               getLikedByUsers={getLikedByUsers}
               getUserDisplayInfo={getMessageDisplayInfo}
               onImageError={handleImageError}
+              onDraftResponse={handleDraftResponse}
+              isGeneratingDraft={isGeneratingDraft}
+              generatingDraftMessageId={generatingDraftMessageId}
               emptyState={
                 <div className="flex flex-col items-center justify-center h-full text-center py-12">
                   <Users className="h-12 w-12 text-muted-foreground mb-4" />
@@ -4880,6 +4969,9 @@ export function Chatbot() {
               getLikedByUsers={getLikedByUsers}
               getUserDisplayInfo={getMessageDisplayInfo}
               onImageError={handleImageError}
+              onDraftResponse={handleDraftResponse}
+              isGeneratingDraft={isGeneratingDraft}
+              generatingDraftMessageId={generatingDraftMessageId}
               emptyState={
                 <div className="flex flex-col items-center justify-center h-full text-center py-12">
                   <Hash className="h-12 w-12 text-muted-foreground mb-4" />
@@ -4903,6 +4995,9 @@ export function Chatbot() {
               onToggleLike={handleToggleLike}
               getLikedByUsers={getLikedByUsers}
               getUserDisplayInfo={getMessageDisplayInfo}
+              onDraftResponse={handleDraftResponse}
+              isGeneratingDraft={isGeneratingDraft}
+              generatingDraftMessageId={generatingDraftMessageId}
               className="flex-1 min-h-0"
             />
           )}

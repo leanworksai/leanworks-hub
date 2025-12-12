@@ -4,6 +4,7 @@ import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { cn, getAvatarColor } from "@/lib/utils";
 import { LikeButton } from "./LikeButton";
+import { DraftResponseButton } from "./DraftResponseButton";
 import { CitedContextBadges } from "./CitedContextBadges";
 import { Message, ChannelMessage, LikedByUser, CitedContext } from "./types";
 import { useWebRTCContext } from "@/contexts/WebRTCContext";
@@ -247,6 +248,8 @@ export interface ChatMessageProps {
   getLikedByUsers: (likes: string[]) => LikedByUser[];
   onImageError?: (e: React.SyntheticEvent<HTMLImageElement>, imageUrls: string[], idx: number) => void;
   showSenderInfo?: boolean;
+  onDraftResponse?: (messageId: string) => void;
+  isGeneratingDraft?: boolean;
 }
 
 export function ChatMessage({
@@ -260,6 +263,8 @@ export function ChatMessage({
   getLikedByUsers,
   onImageError,
   showSenderInfo = true,
+  onDraftResponse,
+  isGeneratingDraft = false,
 }: ChatMessageProps) {
   const timestamp = message.timestamp instanceof Date 
     ? message.timestamp 
@@ -344,6 +349,23 @@ export function ChatMessage({
             position={isSent ? "left" : "right"}
             showOnHover={true}
           />
+        )}
+        
+        {/* Draft response button on hover (only for received messages, not from Lean) */}
+        {!isSent && !isLean && onDraftResponse && (
+          <div
+            className={cn(
+              "absolute top-0 flex items-start opacity-0 group-hover:opacity-100 transition-opacity z-10",
+              isSent ? "-left-16" : "-right-16"
+            )}
+          >
+            <DraftResponseButton
+              position={isSent ? "left" : "right"}
+              showOnHover={false}
+              onClick={() => onDraftResponse(message.id)}
+              isLoading={isGeneratingDraft}
+            />
+          </div>
         )}
         
         {/* Message bubble */}

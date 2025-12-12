@@ -23,6 +23,9 @@ export interface ChatMessageListProps {
   isLoading?: boolean;
   loadingIndicator?: ReactNode;
   className?: string;
+  onDraftResponse?: (messageId: string) => void;
+  isGeneratingDraft?: boolean;
+  generatingDraftMessageId?: string | null;
 }
 
 export interface ChatMessageListRef {
@@ -42,6 +45,9 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   isLoading,
   loadingIndicator,
   className,
+  onDraftResponse,
+  isGeneratingDraft = false,
+  generatingDraftMessageId = null,
 }, ref) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -107,6 +113,8 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
               onToggleLike={onToggleLike}
               getLikedByUsers={getLikedByUsers}
               onImageError={onImageError}
+              onDraftResponse={onDraftResponse}
+              isGeneratingDraft={isGeneratingDraft && generatingDraftMessageId === message.id}
             />
           );
         })}
