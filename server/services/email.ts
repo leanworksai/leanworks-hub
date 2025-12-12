@@ -239,6 +239,178 @@ export async function sendVerificationEmail(
   }
 }
 
+// Email template for organization invitation
+function getInvitationEmailHtml(
+  inviteeName: string,
+  inviterName: string,
+  orgName: string,
+  invitationLink: string,
+  message?: string
+): string {
+  const personalMessage = message ? `
+              <div style="margin: 24px 0; padding: 16px; background-color: #f4f4f5; border-left: 4px solid #18181b; border-radius: 4px;">
+                <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #52525b; font-style: italic;">
+                  "${message}"
+                </p>
+              </div>
+  ` : '';
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Organization Invitation - Leanworks</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f5;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 40px 40px 20px 40px; text-align: center;">
+              <h1 style="margin: 0; font-size: 28px; font-weight: 700; color: #18181b;">
+                🚀 Leanworks
+              </h1>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 20px 40px;">
+              <h2 style="margin: 0 0 16px 0; font-size: 24px; font-weight: 600; color: #18181b;">
+                You've been invited!
+              </h2>
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                Hi ${inviteeName || 'there'},
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                <strong>${inviterName}</strong> has invited you to join <strong>${orgName}</strong> on Leanworks.
+              </p>
+              ${personalMessage}
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                Click the button below to accept the invitation and join the organization.
+              </p>
+              
+              <!-- CTA Button -->
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 16px 0; text-align: center;">
+                    <a href="${invitationLink}" 
+                       style="display: inline-block; padding: 14px 32px; background-color: #18181b; color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
+                      Accept Invitation
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              
+              <p style="margin: 24px 0 16px 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                Or copy and paste this link into your browser:
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6; color: #3b82f6; word-break: break-all;">
+                ${invitationLink}
+              </p>
+              
+              <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                This invitation will expire in <strong>7 days</strong>.
+              </p>
+              <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                If you don't want to join this organization, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 30px 40px; border-top: 1px solid #e4e4e7;">
+              <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #a1a1aa; text-align: center;">
+                © ${new Date().getFullYear()} Leanworks. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`;
+}
+
+// Plain text version of the invitation email
+function getInvitationEmailText(
+  inviteeName: string,
+  inviterName: string,
+  orgName: string,
+  invitationLink: string,
+  message?: string
+): string {
+  const personalMessage = message ? `\n\nPersonal message from ${inviterName}:\n"${message}"\n` : '';
+  
+  return `
+You've been invited!
+
+Hi ${inviteeName || 'there'},
+
+${inviterName} has invited you to join ${orgName} on Leanworks.${personalMessage}
+
+Click the link below to accept the invitation:
+
+${invitationLink}
+
+This invitation will expire in 7 days.
+
+If you don't want to join this organization, you can safely ignore this email.
+
+© ${new Date().getFullYear()} Leanworks. All rights reserved.
+`.trim();
+}
+
+// Send organization invitation email
+export async function sendInvitationEmail(
+  secretManagerClient: SecretManagerServiceClient,
+  projectId: string,
+  toEmail: string,
+  inviteeName: string,
+  inviterName: string,
+  orgName: string,
+  invitationId: string,
+  message?: string
+): Promise<void> {
+  const transporter = await getTransporter(secretManagerClient, projectId);
+  const credentials = await getEmailCredentials(secretManagerClient, projectId);
+
+  // Construct invitation link - point to signup page
+  const invitationLink = `https://leanworks.ai/signup?invitation=${invitationId}`;
+  
+  console.log(`📧 Sending invitation email to ${toEmail} for org ${orgName}`);
+
+  // Use no-reply@leanworks.ai as the from address
+  // Note: This requires no-reply@leanworks.ai to be configured in Secret Manager
+  // or set up as an alias for the authenticated email account
+  const mailOptions = {
+    from: {
+      name: 'Leanworks',
+      address: 'no-reply@leanworks.ai',
+    },
+    replyTo: 'no-reply@leanworks.ai',
+    to: toEmail,
+    subject: `${inviterName} invited you to join ${orgName} on Leanworks`,
+    text: getInvitationEmailText(inviteeName, inviterName, orgName, invitationLink, message),
+    html: getInvitationEmailHtml(inviteeName, inviterName, orgName, invitationLink, message),
+  };
+
+  try {
+    const result = await transporter.sendMail(mailOptions);
+    console.log(`✅ Invitation email sent to ${toEmail}:`, result.messageId);
+  } catch (error: any) {
+    console.error(`❌ Failed to send invitation email to ${toEmail}:`, error);
+    throw new Error(`Failed to send invitation email: ${error.message}`);
+  }
+}
+
 // Clear cached transporter (useful for testing or credential rotation)
 export function clearEmailCache(): void {
   cachedTransporter = null;

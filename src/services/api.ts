@@ -655,9 +655,11 @@ export const messagesService = {
 
     // Determine the external AI service URL
     const isLocalDev = import.meta.env.DEV;
+    // In production, use relative URL (will be proxied through ingress with HTTPS)
+    // In local dev, use the direct service URL
     const aiServiceBase = isLocalDev 
       ? import.meta.env.VITE_AI_SERVICE_URL || 'http://0.0.0.0:8081'
-      : import.meta.env.VITE_AI_SERVICE_URL || 'http://ask-api:80';
+      : import.meta.env.VITE_AI_SERVICE_URL || ''; // Use relative URL in production for HTTPS
     
     const aiServiceUrl = `${aiServiceBase}/api/messages/generate-response`;
 

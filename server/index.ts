@@ -37,7 +37,7 @@ import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
-import { sendVerificationEmail } from './services/email.js';
+import { sendVerificationEmail, sendInvitationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -434,9 +434,14 @@ async function requireOrgMembership(req: express.Request, res: express.Response,
 async function requireOrgOwner(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const userEmail = (req as any).userEmail;
-    const orgId = req.headers['x-org-id'] as string || req.params.orgId;
+    const headerOrgId = req.headers['x-org-id'] as string;
+    const paramOrgId = req.params.orgId;
+    const orgId = headerOrgId || paramOrgId;
+    
+    console.log(`[requireOrgOwner] Checking ownership - headerOrgId: ${headerOrgId}, paramOrgId: ${paramOrgId}, final orgId: ${orgId}, userEmail: ${userEmail}`);
     
     if (!orgId) {
+      console.error(`[requireOrgOwner] Missing orgId - headers:`, req.headers, `params:`, req.params);
       return res.status(400).json({ error: 'Organization ID is required' });
     }
     
@@ -445,6 +450,7 @@ async function requireOrgOwner(req: express.Request, res: express.Response, next
     }
     
     const isOwner = await isOrgOwner(orgId, userEmail);
+    console.log(`[requireOrgOwner] Ownership check result - isOwner: ${isOwner} for orgId: ${orgId}, userEmail: ${userEmail}`);
     if (!isOwner) {
       return res.status(403).json({ error: 'Only organization owners can perform this action' });
     }
@@ -1609,11 +1615,27 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
     const orgId = req.params.orgId;
     const { email: inviteeEmail, message } = req.body;
     
+    console.log(`[Invite] Request received - orgId: ${orgId}, userEmail: ${userEmail}, body:`, JSON.stringify(req.body));
+    
     if (!inviteeEmail) {
+      console.log(`[Invite] Missing inviteeEmail in request body`);
       return res.status(400).json({ error: 'Invitee email is required' });
     }
     
-    const normalizedInviteeEmail = inviteeEmail.toLowerCase();
+    const trimmedEmail = typeof inviteeEmail === 'string' ? inviteeEmail.trim() : String(inviteeEmail).trim();
+    if (!trimmedEmail) {
+      console.log(`[Invite] Empty inviteeEmail after trimming`);
+      return res.status(400).json({ error: 'Invitee email is required' });
+    }
+    
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      console.log(`[Invite] Invalid email format: ${trimmedEmail}`);
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+    
+    const normalizedInviteeEmail = trimmedEmail.toLowerCase();
     const sharedPool = await getSharedPool();
     
     // Check if user is already a member
@@ -1623,36 +1645,101 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
     );
     
     if (existingMember.rows.length > 0) {
+      console.log(`[Invite] User ${normalizedInviteeEmail} is already a member of org ${orgId}`);
       return res.status(400).json({ error: 'User is already a member of this organization' });
     }
     
-    // Check for existing pending invitation
+    // Check for existing pending invitation - if exists, update it instead of creating new one
     const existingInvite = await sharedPool.query(
-      "SELECT 1 FROM org_invitations WHERE org_id = $1 AND invitee_email = $2 AND status = 'pending'",
+      "SELECT id FROM org_invitations WHERE org_id = $1 AND invitee_email = $2 AND status = 'pending'",
       [orgId, normalizedInviteeEmail]
     );
     
+    let invitation;
     if (existingInvite.rows.length > 0) {
-      return res.status(400).json({ error: 'User already has a pending invitation' });
+      // Update existing invitation - reset expiration and update message/token
+      console.log(`[Invite] Updating existing invitation for ${normalizedInviteeEmail} to org ${orgId}`);
+      const existingInvitationId = existingInvite.rows[0].id;
+      const token = crypto.randomBytes(32).toString('hex');
+      
+      const updateResult = await sharedPool.query(`
+        UPDATE org_invitations 
+        SET inviter_email = $1, 
+            message = $2, 
+            token = $3, 
+            created_at = NOW(), 
+            expires_at = NOW() + INTERVAL '7 days',
+            updated_at = NOW()
+        WHERE id = $4
+        RETURNING id, org_id, invitee_email, inviter_email, status, created_at, expires_at
+      `, [userEmail, message || null, token, existingInvitationId]);
+      
+      invitation = updateResult.rows[0];
+    } else {
+      // Generate invitation token
+      const token = crypto.randomBytes(32).toString('hex');
+      
+      // Create new invitation
+      const result = await sharedPool.query(`
+        INSERT INTO org_invitations (org_id, invitee_email, inviter_email, message, token, created_at, expires_at)
+        VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + INTERVAL '7 days')
+        RETURNING id, org_id, invitee_email, inviter_email, status, created_at, expires_at
+      `, [orgId, normalizedInviteeEmail, userEmail, message || null, token]);
+      
+      invitation = result.rows[0];
     }
     
-    // Generate invitation token
-    const token = crypto.randomBytes(32).toString('hex');
-    
-    // Create invitation
-    const result = await sharedPool.query(`
-      INSERT INTO org_invitations (org_id, invitee_email, inviter_email, message, token, created_at, expires_at)
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + INTERVAL '7 days')
-      RETURNING id, org_id, invitee_email, inviter_email, status, created_at, expires_at
-    `, [orgId, normalizedInviteeEmail, userEmail, message || null, token]);
-    
-    const invitation = result.rows[0];
-    
-    // Get org name for logging
+    // Get org name and inviter info for email
     const orgResult = await sharedPool.query('SELECT name FROM organizations WHERE id = $1', [orgId]);
     const orgName = orgResult.rows[0]?.name || 'Unknown Organization';
     
+    // Get inviter's name
+    const inviterResult = await sharedPool.query(
+      'SELECT first_name, last_name FROM users WHERE email = $1',
+      [userEmail]
+    );
+    const inviterData = inviterResult.rows[0] || {};
+    const inviterName = inviterData.first_name && inviterData.last_name
+      ? `${inviterData.first_name} ${inviterData.last_name}`
+      : inviterData.first_name || inviterData.last_name || userEmail.split('@')[0];
+    
+    // Get invitee's name if they already have an account
+    let inviteeName = normalizedInviteeEmail.split('@')[0];
+    try {
+      const inviteeResult = await sharedPool.query(
+        'SELECT first_name, last_name FROM users WHERE email = $1',
+        [normalizedInviteeEmail]
+      );
+      if (inviteeResult.rows.length > 0) {
+        const inviteeData = inviteeResult.rows[0];
+        if (inviteeData.first_name || inviteeData.last_name) {
+          inviteeName = [inviteeData.first_name, inviteeData.last_name].filter(Boolean).join(' ') || inviteeName;
+        }
+      }
+    } catch (err) {
+      // If we can't get invitee name, use email prefix
+      console.warn('Could not fetch invitee name:', err);
+    }
+    
     console.log(`✅ Invitation created for ${normalizedInviteeEmail} to join ${orgName}`);
+    
+    // Send invitation email
+    try {
+      await sendInvitationEmail(
+        secretManagerClient,
+        serviceAccount.project_id,
+        normalizedInviteeEmail,
+        inviteeName,
+        inviterName,
+        orgName,
+        invitation.id,
+        message || undefined
+      );
+      console.log(`✅ Invitation email sent to ${normalizedInviteeEmail}`);
+    } catch (emailError: any) {
+      console.error(`⚠️ Failed to send invitation email to ${normalizedInviteeEmail}:`, emailError.message);
+      // Don't fail the invitation if email fails - invitation is still created
+    }
     
     res.status(201).json({
       id: invitation.id,
@@ -1663,7 +1750,14 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
     });
   } catch (error) {
     console.error('Invite to org error:', error);
-    res.status(500).json({ error: (error as Error).message });
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('Invite error details:', {
+      orgId: req.params.orgId,
+      userEmail: (req as any).userEmail,
+      body: req.body,
+      error: errorMessage
+    });
+    res.status(500).json({ error: errorMessage });
   }
 });
 
