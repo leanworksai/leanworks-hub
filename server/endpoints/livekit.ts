@@ -591,9 +591,9 @@ export function setupLiveKitEndpoints(
           trackSid
         });
         
-        // Start egress for audio tracks when transcription is active
+        // Start egress for audio tracks when transcription is active and recording is enabled
         if (isAudio && roomName && participantIdentity && trackSid) {
-          // First, try to auto-start transcription if not already started
+          // First, try to auto-start transcription if not already started and recording is enabled
           try {
             const callSnapshot = await db.collectionGroup('calls')
               .where('roomName', '==', roomName)
@@ -605,6 +605,12 @@ export function setupLiveKitEndpoints(
               const callDoc = callSnapshot.docs[0];
               const callData = callDoc.data();
               const callId = callDoc.id;
+              
+              // Check if recording is enabled for this call
+              if (callData?.enableRecording !== true) {
+                console.log(`📝 Recording disabled for call ${callId}, skipping transcription`);
+                return;
+              }
               
               // Extract orgSlug from path: orgs/{orgSlug}/calls/{callId}
               const pathParts = callDoc.ref.path.split('/');

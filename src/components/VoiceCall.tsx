@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogOverlay } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, X } from 'lucide-react';
@@ -48,6 +49,8 @@ export function VoiceCallButton({
   const { data: allDomainUsers = [] } = useUsers();
   const [isCalling, setIsCalling] = useState(false);
   const [callSignal, setCallSignal] = useState<CallSignal | null>(null);
+  const [showRecordingConsent, setShowRecordingConsent] = useState(false);
+  const [pendingCallData, setPendingCallData] = useState<{ roomName: string; participantName: string; callId: string } | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const callIdRef = useRef<string | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
@@ -414,22 +417,35 @@ export function VoiceCallButton({
       alert('Voice calls are not available. Please ensure Firebase is properly configured.');
       return;
     }
-    console.log('canMakeCalls check passed, starting call...');
+    console.log('canMakeCalls check passed, showing recording consent dialog...');
+
+    // Generate room name from chatId (LiveKit uses room names instead of call IDs)
+    const roomName = `call-${chatId}`;
+    const participantName = user?.email || 'User';
+    
+    // Use a simple call ID format
+    const callId = `${chatId}-${Date.now()}`;
+    
+    // Store call data and show consent dialog
+    setPendingCallData({ roomName, participantName, callId });
+    setShowRecordingConsent(true);
+  };
+
+  const proceedWithCall = async (enableRecording: boolean) => {
+    if (!pendingCallData || !user?.email || !db) {
+      console.error('Cannot proceed with call: missing data');
+      return;
+    }
+
+    const { roomName, participantName, callId } = pendingCallData;
+    setShowRecordingConsent(false);
 
     try {
       isCreatingCallRef.current = true; // Mark that we're creating a call
       
-      // Generate room name from chatId (LiveKit uses room names instead of call IDs)
-      const roomName = `call-${chatId}`;
-      const participantName = user?.email || 'User';
-      
       // Create call record in Firestore FIRST (before connecting to LiveKit)
       // This ensures the room exists in Firestore before participants try to join
-      let callId: string;
       try {
-        // Use a simple call ID format
-        callId = `${chatId}-${Date.now()}`;
-        
         const orgSlug = getCurrentOrgSlug();
         const callsPath = `orgs/${orgSlug || 'default'}/calls`;
         // Unified approach: always use participantEmails for both 1:1 and group calls
@@ -452,6 +468,7 @@ export function VoiceCallButton({
           createdAt: new Date(),
           isGroupCall,
           participantEmails: participantEmails.filter(Boolean), // Remove any empty strings
+          enableRecording, // Store user's recording preference
         };
         
         // For 1:1 calls, include calleeEmail (required for security rules)
@@ -469,7 +486,7 @@ export function VoiceCallButton({
           const { doc, setDoc } = await import('firebase/firestore');
           const callRef = doc(db, callsPath, callId);
           await setDoc(callRef, callData);
-          console.log('Call record created in Firestore', { callId, roomName, isGroupCall });
+          console.log('Call record created in Firestore', { callId, roomName, isGroupCall, enableRecording });
           
           // Create a message in the chat (for both 1:1 and group calls) to notify participants
             try {
@@ -540,13 +557,17 @@ export function VoiceCallButton({
             });
             console.log('Call status updated to active', { callId });
             
-            // Start transcription for the call
-            try {
-              await callSignalingService.startTranscription(callId);
-              console.log('✅ Transcription started', { callId });
-            } catch (transcriptionError) {
-              console.error('❌ Failed to start transcription:', transcriptionError);
-              // Continue anyway - call is active even if transcription fails
+            // Start transcription for the call only if recording is enabled
+            if (enableRecording) {
+              try {
+                await callSignalingService.startTranscription(callId);
+                console.log('✅ Transcription started', { callId });
+              } catch (transcriptionError) {
+                console.error('❌ Failed to start transcription:', transcriptionError);
+                // Continue anyway - call is active even if transcription fails
+              }
+            } else {
+              console.log('📝 Recording disabled by user, skipping transcription', { callId });
             }
           } catch (updateError) {
             console.error('Failed to update call status to active:', updateError);
@@ -557,6 +578,7 @@ export function VoiceCallButton({
       callIdRef.current = callId;
       setCurrentCallId(callId); // Update shared context
       isCreatingCallRef.current = false; // Call creation is complete
+      setPendingCallData(null); // Clear pending call data
       console.log('Call setup complete', { callId, roomName, isCalling: true });
       } catch (livekitError) {
         // If LiveKit connection fails, mark call as ended in Firestore
@@ -760,10 +782,11 @@ export function VoiceCallButton({
 
   // Show "Join Call" button if there's an active call we're a participant of but haven't joined yet
   // This works for both 1:1 and group calls - unified UX
+  const userEmail = user?.email?.toLowerCase();
   const isParticipant = callSignal?.participantEmails?.some(
-    (email: string) => email?.toLowerCase() === user?.email?.toLowerCase()
-  ) || false;
-  const isCaller = callSignal?.callerEmail?.toLowerCase() === user?.email?.toLowerCase();
+    (email: string) => email?.toLowerCase() === userEmail
+  ) || callSignal?.calleeEmail?.toLowerCase() === userEmail || false; // Also check calleeEmail for 1:1 calls
+  const isCaller = callSignal?.callerEmail?.toLowerCase() === userEmail;
   
   const showJoinButton = callSignal && 
     (callSignal.status === 'ringing' || callSignal.status === 'active') &&
@@ -790,12 +813,24 @@ export function VoiceCallButton({
             setCurrentCallId(callSignal.callId);
             console.log('Joined call', { callId: callSignal.callId, roomName: callSignal.roomName, isGroupCall });
             
-            // Start transcription if call is active and transcription hasn't started yet
+            // Start transcription if call is active, transcription hasn't started yet, and recording is enabled
             // Only the first participant to join should start it, but it's safe to call multiple times
-            if (callSignal.status === 'active' && callSignal.callId) {
+            if (callSignal.status === 'active' && callSignal.callId && db) {
               try {
-                await callSignalingService.startTranscription(callSignal.callId);
-                console.log('✅ Transcription started after joining call', { callId: callSignal.callId });
+                // Check if recording is enabled for this call
+                const orgSlug = getCurrentOrgSlug();
+                const callsPath = `orgs/${orgSlug || 'default'}/calls`;
+                const { doc, getDoc } = await import('firebase/firestore');
+                const callRef = doc(db, callsPath, callSignal.callId);
+                const callDoc = await getDoc(callRef);
+                const enableRecording = callDoc.exists() ? (callDoc.data().enableRecording ?? false) : false;
+                
+                if (enableRecording) {
+                  await callSignalingService.startTranscription(callSignal.callId);
+                  console.log('✅ Transcription started after joining call', { callId: callSignal.callId });
+                } else {
+                  console.log('📝 Recording disabled for this call, skipping transcription', { callId: callSignal.callId });
+                }
               } catch (transcriptionError) {
                 console.error('❌ Failed to start transcription after joining:', transcriptionError);
                 // Continue anyway - call is active even if transcription fails
@@ -821,10 +856,35 @@ export function VoiceCallButton({
   }
 
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={(e) => {
+    <>
+      <AlertDialog open={showRecordingConsent} onOpenChange={(open) => {
+        if (!open) {
+          setShowRecordingConsent(false);
+          setPendingCallData(null);
+          isCreatingCallRef.current = false;
+        }
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Enable Recording with AI?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Would you like to enable recording with AI for this call? This will allow automatic transcription and summary generation after the call ends.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => proceedWithCall(false)}>
+              No, Start Call Without Recording
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => proceedWithCall(true)}>
+              Yes, Enable Recording
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
         handleCallClick();
@@ -835,6 +895,7 @@ export function VoiceCallButton({
       <Phone className="h-4 w-4 mr-2" />
       {getStatusText()}
     </Button>
+    </>
   );
 }
 
@@ -948,13 +1009,19 @@ export function IncomingCallDialog({
             });
             console.log('✅ IncomingCallDialog: Call status updated to active');
             
-            // Start transcription for the call
-            try {
-              await callSignalingService.startTranscription(callSignal.callId);
-              console.log('✅ Transcription started', { callId: callSignal.callId });
-            } catch (transcriptionError) {
-              console.error('❌ Failed to start transcription:', transcriptionError);
-              // Continue anyway - call is active even if transcription fails
+            // Start transcription for the call only if recording is enabled
+            const callData = callDoc.data();
+            const enableRecording = callData?.enableRecording ?? false;
+            if (enableRecording) {
+              try {
+                await callSignalingService.startTranscription(callSignal.callId);
+                console.log('✅ Transcription started', { callId: callSignal.callId });
+              } catch (transcriptionError) {
+                console.error('❌ Failed to start transcription:', transcriptionError);
+                // Continue anyway - call is active even if transcription fails
+              }
+            } else {
+              console.log('📝 Recording disabled for this call, skipping transcription', { callId: callSignal.callId });
             }
           } else {
             console.log('📞 IncomingCallDialog: Call status already updated or call ended');

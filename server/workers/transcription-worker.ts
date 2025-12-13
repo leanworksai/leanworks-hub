@@ -1355,8 +1355,8 @@ async function handleCallEnded(message: any): Promise<void> {
   // Since flushCallBuffers runs async, final metadata might take time to publish
   // GCS uploads typically complete within seconds to a minute, so 2 minutes is reasonable
   // We check periodically if all participants have received final chunks
-  const MAX_WAIT_TIME_MS = 120000; // 2 minutes maximum (most uploads complete in <30s)
-  const CHECK_INTERVAL_MS = 10000; // Check every 10 seconds for faster detection
+  const MAX_WAIT_TIME_MS = 60000; // 60 seconds maximum (most uploads complete in <10s, but allow buffer for slower cases)
+  const CHECK_INTERVAL_MS = 5000; // Check every 5 seconds for faster detection
   const startWaitTime = Date.now();
   
   // Initialize finalChunksReceived if not already set

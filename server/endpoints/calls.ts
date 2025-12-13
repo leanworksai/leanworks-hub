@@ -254,8 +254,8 @@ export function setupCallEndpoints(
         transcriptionEnabled: true, // Enable transcription for active calls
       });
 
-      // Start transcription if roomName is available
-      if (callData?.roomName) {
+      // Start transcription if roomName is available and recording is enabled
+      if (callData?.roomName && callData?.enableRecording === true) {
         try {
           const participants: Array<{ email: string; name?: string }> = [];
           
@@ -293,6 +293,8 @@ export function setupCallEndpoints(
           console.error('❌ Error starting transcription:', transcriptionError);
           // Don't fail the call answer if transcription fails
         }
+      } else if (callData?.roomName && callData?.enableRecording === false) {
+        console.log(`📝 Recording disabled for call ${callId}, skipping transcription`);
       }
 
       res.json({ success: true });
