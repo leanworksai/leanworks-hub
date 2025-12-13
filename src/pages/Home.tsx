@@ -625,7 +625,7 @@ export default function Home() {
             <div className="h-20 w-20 rounded-full bg-primary/20 flex items-center justify-center mb-8 mx-auto">
               <Brain className="h-10 w-10 text-primary" />
             </div>
-            <h2 className="text-3xl sm:text-4xl font-bold mb-6">Meet Lean, Your AI Project Manager</h2>
+            <h2 className="text-3xl sm:text-4xl font-bold mb-6">Meet Lean, Your AI Project Assistant</h2>
             <p className="text-lg text-muted-foreground leading-relaxed">
               Lean is your intelligent assistant that's always ready to help. Ask Lean any question about 
               your projects, teams, or tasks, and get instant answers. But Lean doesn't just answer 

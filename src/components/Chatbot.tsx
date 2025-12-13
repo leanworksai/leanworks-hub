@@ -1038,12 +1038,12 @@ export function Chatbot() {
       );
 
   const currentMember = selectedMember === "ai-assistant" 
-    ? { id: "ai-assistant", name: "lean", role: "AI Project Manager", avatar: "AI" }
+    ? { id: "ai-assistant", name: "lean", role: "", avatar: "AI" }
     : isProjectChannel && selectedProject
     ? { id: selectedMember, name: selectedProject.name, role: "Project Channel", avatar: "#" }
     : isTeamChannel && selectedTeam
     ? { id: selectedMember, name: selectedTeam.name, role: "Team Channel", avatar: "👥" }
-    : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "lean", role: "AI Project Manager", avatar: "AI" };
+    : allTeamMembers.find(m => m.id === selectedMember) || { id: "ai-assistant", name: "lean", role: "", avatar: "AI" };
 
   // Check if AI Assistant matches search query
   const aiAssistantMatches = memberSearchQuery.trim() === "" || 
@@ -1057,7 +1057,7 @@ export function Chatbot() {
     
     // Add lean (AI assistant) only for paid plans
     if (!isFreePlan) {
-      mentionable.push({ id: "lean", name: "lean", role: "AI Project Manager", avatar: "AI" });
+      mentionable.push({ id: "lean", name: "lean", role: "", avatar: "AI" });
     }
     
     // Add channel-specific members
@@ -2130,7 +2130,7 @@ export function Chatbot() {
             {
               id: "greeting",
               role: "assistant",
-              content: "Hello! I'm lean, your AI Project Manager. How can I help you today?",
+              content: "Hello! I'm lean. How can I help you today?",
               timestamp: new Date(),
             },
           ]);
@@ -2403,7 +2403,7 @@ export function Chatbot() {
                 {
                   id: "greeting",
                   role: "assistant",
-                  content: "Hello! I'm lean, your AI Project Manager. How can I help you today?",
+                  content: "Hello! I'm lean. How can I help you today?",
                   timestamp: new Date(),
                 },
               ]);
@@ -2447,7 +2447,7 @@ export function Chatbot() {
             {
               id: "greeting",
               role: "assistant",
-              content: "Hello! I'm lean, your AI Project Manager. How can I help you today?",
+              content: "Hello! I'm lean. How can I help you today?",
               timestamp: new Date(),
             },
           ]);
@@ -4711,7 +4711,7 @@ export function Chatbot() {
                 <div className="flex flex-col min-w-0">
                   <h3 className="font-semibold text-xs sm:text-sm truncate">{currentMember.name}</h3>
                   <p className="text-[10px] sm:text-xs text-muted-foreground truncate">
-                    {selectedMember === "ai-assistant" ? "AI Project Manager" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
+                    {selectedMember === "ai-assistant" ? "" : isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
                   </p>
                 </div>
               </div>
