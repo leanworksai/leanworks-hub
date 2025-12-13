@@ -3524,18 +3524,14 @@ app.delete('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, 
     const docId = req.params.id;
     const pool = await getOrgPool(orgId);
     
-    // Verify doc exists and user owns it
+    // Verify doc exists (all org members can delete docs)
     const checkResult = await pool.query(
-      'SELECT owner_email FROM docs WHERE id = $1',
+      'SELECT id FROM docs WHERE id = $1',
       [docId]
     );
     
     if (checkResult.rows.length === 0) {
       return res.status(404).json({ error: 'Doc not found' });
-    }
-    
-    if (checkResult.rows[0].owner_email?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'You do not have permission to delete this doc' });
     }
     
     await pool.query('DELETE FROM docs WHERE id = $1', [docId]);
