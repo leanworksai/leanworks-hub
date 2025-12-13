@@ -66,9 +66,9 @@ import { useUsers } from "@/hooks/useUsers";
 import { useSubscription } from "@/hooks/useSubscription";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
-import { format, parse } from "date-fns";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
+import { useDateSelection } from "@/hooks/useDateSelection";
 
 const getInitials = (name: string): string => {
   return name
@@ -218,6 +218,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
+  const { parseDateString, formatDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   
   // Check if user has access to the task
   const hasAccess = task ? (() => {
@@ -430,19 +431,6 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     }
   };
 
-  // Parse date string to Date object
-  const parseDateString = (dateString: string): Date | undefined => {
-    try {
-      return parse(dateString, "MMM d, yyyy", new Date());
-    } catch {
-      return undefined;
-    }
-  };
-
-  // Format Date object to date string
-  const formatDateString = (date: Date): string => {
-    return format(date, "MMM d, yyyy");
-  };
 
   // Combine and sort activities (updates and comments) by date
   const getActivities = () => {
@@ -752,7 +740,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                     className="w-[200px] justify-start text-left font-normal"
                   >
                     <Calendar className="mr-2 h-4 w-4" />
-                    {editedTask.dueDate ? editedTask.dueDate : "Pick a date"}
+                    {formatDateForDisplay(editedTask.dueDate) || "Pick a date"}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0" align="start">
@@ -761,9 +749,13 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                     selected={parseDateString(editedTask.dueDate)}
                     onSelect={(date) => {
                       if (date) {
-                        const formattedDate = formatDateString(date);
-                        handleFieldSave('dueDate', formattedDate);
-                        setDueDateOpen(false);
+                        handleDateSelection(date, (serverFormat) => {
+                          // Update local state with server format (will be formatted for display)
+                          setEditedTask({ ...editedTask, dueDate: serverFormat });
+                          // Save to server in YYYY-MM-DD format
+                          handleFieldSave('dueDate', serverFormat);
+                          setDueDateOpen(false);
+                        });
                       }
                     }}
                     initialFocus
@@ -775,7 +767,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                 className="text-foreground font-medium cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
                 onClick={() => handleFieldClick('dueDate')}
               >
-                {task.dueDate}
+                {formatDateForDisplay(task.dueDate)}
               </span>
             )}
           </div>

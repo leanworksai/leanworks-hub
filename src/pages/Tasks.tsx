@@ -61,7 +61,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useSubscription } from "@/hooks/useSubscription";
-import { format, parse } from "date-fns";
+import { useDateSelection } from "@/hooks/useDateSelection";
 import { cn } from "@/lib/utils";
 
 const getStatusIcon = (status: Task["status"]) => {
@@ -174,6 +174,7 @@ export default function Tasks() {
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
+  const { parseDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
@@ -280,19 +281,6 @@ export default function Tasks() {
     return openDropdowns[taskId]?.[field] || false;
   };
 
-  // Parse date string to Date object
-  const parseDateString = (dateString: string): Date | undefined => {
-    try {
-      return parse(dateString, "MMM d, yyyy", new Date());
-    } catch {
-      return undefined;
-    }
-  };
-
-  // Format Date object to date string
-  const formatDateString = (date: Date): string => {
-    return format(date, "MMM d, yyyy");
-  };
 
   if (isLoading) {
     return (
@@ -663,7 +651,9 @@ export default function Tasks() {
                             onClick={(e) => e.stopPropagation()}
                           >
                             <Calendar className="h-4 w-4" />
-                            <span className="cursor-pointer">{task.dueDate}</span>
+                            <span className="cursor-pointer">
+                              {formatDateForDisplay(task.dueDate)}
+                            </span>
                           </button>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="start" onClick={(e) => e.stopPropagation()}>
@@ -672,9 +662,10 @@ export default function Tasks() {
                             selected={parseDateString(task.dueDate)}
                             onSelect={(date) => {
                               if (date) {
-                                const formattedDate = formatDateString(date);
-                                handleFieldSave(task.id, 'dueDate', formattedDate);
-                                setDropdownOpen(task.id, 'dueDate', false);
+                                handleDateSelection(date, (serverFormat) => {
+                                  handleFieldSave(task.id, 'dueDate', serverFormat);
+                                  setDropdownOpen(task.id, 'dueDate', false);
+                                });
                               }
                             }}
                             initialFocus

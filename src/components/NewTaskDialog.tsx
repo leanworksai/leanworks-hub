@@ -59,6 +59,15 @@ const formatDate = (date: Date): string => {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
+// Helper to parse YYYY-MM-DD string to Date in local timezone
+const parseDateString = (dateString: string): Date => {
+  // Extract date components directly from string to avoid timezone issues
+  // When you do new Date("2024-12-24"), JS interprets it as UTC midnight
+  // which can shift the date when converted to local timezone
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(year, month - 1, day, 0, 0, 0, 0);
+};
+
 const generateTaskId = (): string => {
   return uuidv4();
 };
@@ -500,7 +509,9 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       // Format due date
       let formattedDueDate = "";
       if (data.dueDate) {
-        const dueDateObj = new Date(data.dueDate);
+        // Parse date string directly to avoid timezone shifts
+        // The date input returns YYYY-MM-DD format, which we need to parse as local date
+        const dueDateObj = parseDateString(data.dueDate);
         formattedDueDate = formatDate(dueDateObj);
       } else {
         // Default to 7 days from now if not provided
