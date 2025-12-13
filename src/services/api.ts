@@ -1,7 +1,7 @@
 import type { Project } from '@/data/projectsData';
 import type { Task } from '@/data/tasksData';
 import type { Team, TeamDetailData } from '@/data/teamsData';
-import type { Note } from '@/data/notesData';
+import type { Doc } from '@/data/docsData';
 import { auth, db } from '@/lib/firebase-client';
 
 // Use proxy API in development (uses gcp_credential.json via Admin SDK)
@@ -232,47 +232,48 @@ export const tasksService = {
   },
 };
 
-// Notes Service
-export const notesService = {
-  async getAll(): Promise<Note[]> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/notes` : `${API_BASE}/notes`;
+// Docs Service
+export const docsService = {
+  async getAll(): Promise<Doc[]> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/docs` : `${API_BASE}/docs`;
     const response = await authenticatedFetch(url);
-    if (!response.ok) throw new Error('Failed to fetch notes');
+    if (!response.ok) throw new Error('Failed to fetch docs');
     return response.json();
   },
 
-  async getById(noteId: string): Promise<Note | null> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/notes/${encodeURIComponent(noteId)}` : `${API_BASE}/notes/${encodeURIComponent(noteId)}`;
+  async getById(docId: string): Promise<Doc | null> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/docs/${encodeURIComponent(docId)}` : `${API_BASE}/docs/${encodeURIComponent(docId)}`;
     const response = await authenticatedFetch(url);
     if (response.status === 404) return null;
-    if (!response.ok) throw new Error('Failed to fetch note');
+    if (!response.ok) throw new Error('Failed to fetch doc');
     return response.json();
   },
 
-  async create(note: Note): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/notes` : `${API_BASE}/notes`;
+  async create(doc: Doc): Promise<Doc> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/docs` : `${API_BASE}/docs`;
     const response = await authenticatedFetch(url, {
       method: 'POST',
-      body: JSON.stringify(note),
+      body: JSON.stringify(doc),
     });
-    if (!response.ok) throw new Error('Failed to create note');
+    if (!response.ok) throw new Error('Failed to create doc');
+    return response.json();
   },
 
-  async update(noteId: string, updates: Partial<Note>): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/notes/${encodeURIComponent(noteId)}` : `${API_BASE}/notes/${encodeURIComponent(noteId)}`;
+  async update(docId: string, updates: Partial<Doc>): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/docs/${encodeURIComponent(docId)}` : `${API_BASE}/docs/${encodeURIComponent(docId)}`;
     const response = await authenticatedFetch(url, {
       method: 'PATCH',
       body: JSON.stringify(updates),
     });
-    if (!response.ok) throw new Error('Failed to update note');
+    if (!response.ok) throw new Error('Failed to update doc');
   },
 
-  async delete(noteId: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/notes/${encodeURIComponent(noteId)}` : `${API_BASE}/notes/${encodeURIComponent(noteId)}`;
+  async delete(docId: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/docs/${encodeURIComponent(docId)}` : `${API_BASE}/docs/${encodeURIComponent(docId)}`;
     const response = await authenticatedFetch(url, {
       method: 'DELETE',
     });
-    if (!response.ok) throw new Error('Failed to delete note');
+    if (!response.ok) throw new Error('Failed to delete doc');
   },
 };
 
@@ -2042,7 +2043,7 @@ export const callSignalingService = {
 
   /**
    * End call
-   * This calls the backend endpoint which finalizes transcription and creates notes
+   * This calls the backend endpoint which finalizes transcription and creates docs
    */
   async endCall(callId: string): Promise<void> {
     if (!db) {
@@ -2078,7 +2079,7 @@ export const callSignalingService = {
         return;
       }
 
-      // Call the backend endpoint which handles transcription finalization and note creation
+      // Call the backend endpoint which handles transcription finalization and doc creation
       const idToken = await getAuthToken();
       if (!idToken) {
         throw new Error('Failed to get auth token');
@@ -2109,7 +2110,7 @@ export const callSignalingService = {
         throw new Error(errorData.error || `Failed to end call: ${response.statusText}`);
       }
 
-      console.log('✅ Call ended successfully, transcription will be finalized and notes created');
+      console.log('✅ Call ended successfully, transcription will be finalized and docs created');
     } catch (error: any) {
       console.error('Failed to end call:', error);
       throw error;

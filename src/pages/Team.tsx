@@ -82,7 +82,7 @@ export default function Team() {
                       Yanfu is the visionary behind LeanWorks, dedicated to transforming how teams 
                       collaborate and work together. With 7 years of experience in artificial intelligence 
                       and as a full-stack machine learning engineer, he's building an all-in-one platform 
-                      that brings project management, messaging, notes, and meetings into one seamless 
+                      that brings project management, messaging, docs, and meetings into one seamless 
                       experience powered by artificial intelligence.
                     </p>
                   </div>

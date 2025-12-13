@@ -608,7 +608,7 @@ async function setupTranscriberForParticipant(
           saveSessionToDB(session).catch(console.error);
         } else {
           // Partial/interim transcripts - DON'T save to session
-          // These are only for real-time display, not for final notes
+          // These are only for real-time display, not for final docs
           // Only log them for debugging
           if (transcriptText.length >= 5) {
             console.log(`🔄 Partial transcript for ${email}: "${transcriptText}" (not saved)`);
@@ -1243,9 +1243,9 @@ async function getApiKeyFromSecretManager(): Promise<string> {
   }
 }
 
-// Call meeting note summary API
-async function generateMeetingNoteSummary(
-  noteId: string,
+// Call meeting doc summary API
+async function generateMeetingDocSummary(
+  docId: string,
   userEmail: string,
   orgSlug: string
 ): Promise<void> {
@@ -1256,7 +1256,7 @@ async function generateMeetingNoteSummary(
       ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
       : process.env.AI_SERVICE_URL || 'http://ask-api:80';
     
-    const apiUrl = `${aiServiceBase}/api/notes/${noteId}/summary`;
+    const apiUrl = `${aiServiceBase}/api/docs/${docId}/summary`;
     
     // Prepare request body
     const requestBody = {
@@ -1299,10 +1299,10 @@ async function generateMeetingNoteSummary(
     }
     
     const result = await response.json();
-    console.log(`✅ Generated meeting note summary for note ${noteId}:`, result);
+    console.log(`✅ Generated meeting doc summary for doc ${docId}:`, result);
   } catch (error: any) {
     // Log error but don't fail the entire process
-    console.error(`❌ Error generating meeting note summary for note ${noteId}:`, error.message);
+    console.error(`❌ Error generating meeting doc summary for doc ${docId}:`, error.message);
   }
 }
 
@@ -1480,7 +1480,7 @@ async function handleCallEnded(message: any): Promise<void> {
         WHERE call_id = $2
       `, [JSON.stringify(transcriptsObj), callId]);
 
-      // Create notes for each participant
+      // Create docs for each participant
       // Fallback to session participants if event doesn't have participants
       let participantsToUse = participants;
       if (!participantsToUse || participantsToUse.length === 0) {
@@ -1492,9 +1492,9 @@ async function handleCallEnded(message: any): Promise<void> {
         }
       }
       
-      console.log(`📝 Checking if notes should be created: participants=${participantsToUse?.length || 0}, orgId=${orgId || 'missing'}`);
+        console.log(`📝 Checking if docs should be created: participants=${participantsToUse?.length || 0}, orgId=${orgId || 'missing'}`);
       if (participantsToUse && participantsToUse.length > 0) {
-        console.log(`✅ Creating notes for ${participantsToUse.length} participant(s)`);
+        console.log(`✅ Creating docs for ${participantsToUse.length} participant(s)`);
         const userInfoMap = await getUserInfoBatch(participantsToUse.map(p => p.email));
         const participantsWithNames = participantsToUse.map(p => {
           const info = userInfoMap.get(p.email.toLowerCase());
@@ -1511,7 +1511,7 @@ async function handleCallEnded(message: any): Promise<void> {
         
         // Log if transcript is empty
         if (!formattedTranscript || formattedTranscript.trim().length === 0) {
-          console.warn(`⚠️ No transcript content to include in notes for call ${callId}`);
+          console.warn(`⚠️ No transcript content to include in docs for call ${callId}`);
           console.warn(`   Session transcripts Map size: ${session.transcripts.size}`);
           console.warn(`   Session transcripts keys: ${Array.from(session.transcripts.keys()).join(', ')}`);
         }
@@ -1536,18 +1536,18 @@ async function handleCallEnded(message: any): Promise<void> {
           minute: '2-digit'
         });
 
-        // Create note for each participant
+        // Create doc for each participant
         for (const participant of participantsWithNames) {
           try {
-            const noteId = crypto.randomBytes(16).toString('hex');
-            const noteTitle = `Meeting Notes - ${callDateStr}`;
+            const docId = crypto.randomBytes(16).toString('hex');
+            const docTitle = `Meeting Notes - ${callDateStr}`;
             
             // Use transcript if available, otherwise show a message
             const transcriptContent = formattedTranscript && formattedTranscript.trim().length > 0
               ? formattedTranscript
               : '<p><em>No transcript available for this call.</em></p>';
             
-            const noteContent = `
+            const docContent = `
               <div>
                 <h2>Voice Call Transcript</h2>
                 <p><strong>Date:</strong> ${callDateStr}</p>
@@ -1560,12 +1560,12 @@ async function handleCallEnded(message: any): Promise<void> {
             `;
 
             await pool.query(`
-              INSERT INTO notes (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
+              INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             `, [
-              noteId,
-              noteTitle,
-              noteContent,
+              docId,
+              docTitle,
+              docContent,
               participant.email.toLowerCase(),
               projectId,
               teamId,
@@ -1573,32 +1573,32 @@ async function handleCallEnded(message: any): Promise<void> {
               false
             ]);
 
-            console.log(`✅ Created meeting note for ${participant.email} (noteId: ${noteId})`);
+            console.log(`✅ Created meeting doc for ${participant.email} (docId: ${docId})`);
             
-            // Generate meeting note summary asynchronously (don't wait for it)
+            // Generate meeting doc summary asynchronously (don't wait for it)
             if (finalOrgId && formattedTranscript && formattedTranscript.trim().length > 0) {
-              console.log(`📊 Triggering summary generation for note ${noteId} (orgId: ${finalOrgId})`);
+              console.log(`📊 Triggering summary generation for doc ${docId} (orgId: ${finalOrgId})`);
               try {
                 const orgSlug = await getOrgSlugById(finalOrgId);
                 // Call summary API in background (fire and forget)
-                generateMeetingNoteSummary(noteId, participant.email.toLowerCase(), orgSlug)
+                generateMeetingDocSummary(docId, participant.email.toLowerCase(), orgSlug)
                   .catch((error) => {
-                    console.error(`❌ Background summary generation failed for note ${noteId}:`, error);
+                    console.error(`❌ Background summary generation failed for doc ${docId}:`, error);
                   });
               } catch (orgError: any) {
                 console.warn(`⚠️ Could not get org slug for summary generation:`, orgError.message);
               }
             }
-          } catch (noteError: any) {
-            console.error(`❌ Error creating note for ${participant.email}:`, noteError);
-            console.error(`   Error details:`, noteError.message, noteError.stack);
+          } catch (docError: any) {
+            console.error(`❌ Error creating doc for ${participant.email}:`, docError);
+            console.error(`   Error details:`, docError.message, docError.stack);
           }
         }
-        console.log(`✅ Finished processing notes for ${participantsToUse.length} participant(s)`);
+        console.log(`✅ Finished processing docs for ${participantsToUse.length} participant(s)`);
       } else {
-        console.warn(`⚠️ Skipping note creation: participants array is ${participantsToUse ? 'empty' : 'missing'}`);
+        console.warn(`⚠️ Skipping doc creation: participants array is ${participantsToUse ? 'empty' : 'missing'}`);
         if (!finalOrgId) {
-          console.warn(`⚠️ Also missing orgId, which is required for note creation`);
+          console.warn(`⚠️ Also missing orgId, which is required for doc creation`);
         }
       }
     } catch (error: any) {
@@ -1606,7 +1606,7 @@ async function handleCallEnded(message: any): Promise<void> {
       console.error(`   Error details:`, error.message, error.stack);
     }
   } else {
-    console.warn(`⚠️ Cannot create notes: orgId is missing for call ${callId} (event orgId: ${orgId || 'missing'}, session orgId: ${session.orgId || 'missing'})`);
+    console.warn(`⚠️ Cannot create docs: orgId is missing for call ${callId} (event orgId: ${orgId || 'missing'}, session orgId: ${session.orgId || 'missing'})`);
   }
 
   // Remove from active sessions

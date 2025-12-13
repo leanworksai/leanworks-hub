@@ -269,11 +269,11 @@ CREATE TABLE IF NOT EXISTS github_installations (
 );
 
 -- ============================================================================
--- NOTES TABLES
+-- DOCS TABLES
 -- ============================================================================
 
--- Notes table
-CREATE TABLE IF NOT EXISTS notes (
+-- Docs table
+CREATE TABLE IF NOT EXISTS docs (
   id VARCHAR(50) PRIMARY KEY,
   title VARCHAR(255) NOT NULL,
   content TEXT NOT NULL,  -- Rich text content (HTML)
@@ -286,11 +286,11 @@ CREATE TABLE IF NOT EXISTS notes (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_email);
-CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id);
-CREATE INDEX IF NOT EXISTS idx_notes_team ON notes(team_id);
-CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_notes_pinned ON notes(is_pinned DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_docs_owner ON docs(owner_email);
+CREATE INDEX IF NOT EXISTS idx_docs_project ON docs(project_id);
+CREATE INDEX IF NOT EXISTS idx_docs_team ON docs(team_id);
+CREATE INDEX IF NOT EXISTS idx_docs_created_at ON docs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_docs_pinned ON docs(is_pinned DESC, created_at DESC);
 
 -- ============================================================================
 -- MATERIALIZED VIEWS FOR ANALYTICS
@@ -365,8 +365,8 @@ CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects FOR EACH ROW
 DROP TRIGGER IF EXISTS update_tasks_updated_at ON tasks;
 CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
-DROP TRIGGER IF EXISTS update_notes_updated_at ON notes;
-CREATE TRIGGER update_notes_updated_at BEFORE UPDATE ON notes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+DROP TRIGGER IF EXISTS update_docs_updated_at ON docs;
+CREATE TRIGGER update_docs_updated_at BEFORE UPDATE ON docs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
 -- TRANSCRIPTION TABLES (Voice Call Transcription)
@@ -433,7 +433,7 @@ COMMENT ON TABLE users IS 'Organization-specific user profiles (links to global 
 COMMENT ON TABLE teams IS 'Teams within this organization';
 COMMENT ON TABLE projects IS 'Projects within this organization';
 COMMENT ON TABLE tasks IS 'Tasks within this organization';
-COMMENT ON TABLE notes IS 'Notes within this organization';
+COMMENT ON TABLE docs IS 'Docs within this organization';
 COMMENT ON TABLE integrations IS 'Third-party integrations for this organization';
 COMMENT ON TABLE transcription_sessions IS 'Voice call transcription sessions for this organization';
 COMMENT ON TABLE transcription_chunks IS 'Individual audio chunks processed for transcription';

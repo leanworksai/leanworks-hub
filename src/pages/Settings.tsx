@@ -128,7 +128,7 @@ export default function Settings() {
                       </p>
                       <ul className="list-disc list-inside space-y-1 text-sm">
                         <li>Your personal workspace</li>
-                        <li>Notes, tasks, and projects you own</li>
+                        <li>Docs, tasks, and projects you own</li>
                         <li>Team memberships</li>
                         <li>All account information</li>
                       </ul>

@@ -2,19 +2,19 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
-import { useNote, useCreateNote, useUpdateNote } from "@/hooks/useNotes";
+import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Save, Pin, PinOff } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 
-export default function NoteDetail() {
-  const { noteId } = useParams<{ noteId: string }>();
+export default function DocDetail() {
+  const { docId } = useParams<{ docId: string }>();
   const navigate = useNavigate();
-  const isNew = noteId === "new";
-  const { data: note, isLoading } = useNote(noteId || "");
-  const createNote = useCreateNote();
-  const updateNote = useUpdateNote();
+  const isNew = docId === "new";
+  const { data: doc, isLoading } = useDoc(docId || "");
+  const createDoc = useCreateDoc();
+  const updateDoc = useUpdateDoc();
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -23,20 +23,20 @@ export default function NoteDetail() {
   const [isPinned, setIsPinned] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Load note data when editing
+  // Load doc data when editing
   useEffect(() => {
-    if (note && !isNew) {
-      setTitle(note.title || "");
+    if (doc && !isNew) {
+      setTitle(doc.title || "");
       // Preserve content even if it's empty string, only default to empty if it's null/undefined
-      setContent(note.content !== null && note.content !== undefined ? note.content : "");
-      setIsPinned(note.isPinned || false);
+      setContent(doc.content !== null && doc.content !== undefined ? doc.content : "");
+      setIsPinned(doc.isPinned || false);
     } else if (isNew) {
-      // Reset form for new note
+      // Reset form for new doc
       setTitle("");
       setContent("");
       setIsPinned(false);
     }
-  }, [note, isNew]);
+  }, [doc, isNew]);
 
   const handleSave = async () => {
     if (!title.trim()) {
@@ -61,7 +61,7 @@ export default function NoteDetail() {
 
     try {
       if (isNew) {
-        const newNote = {
+        const newDoc = {
           id: uuidv4(),
           title: title.trim(),
           content,
@@ -72,15 +72,15 @@ export default function NoteDetail() {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
-        await createNote.mutateAsync(newNote);
+        const createdDoc = await createDoc.mutateAsync(newDoc);
         toast({
-          title: "Note created",
-          description: `"${newNote.title}" has been created successfully.`,
+          title: "Doc created",
+          description: `"${createdDoc.title}" has been created successfully.`,
         });
-        navigate(`/notes/${newNote.id}`);
-      } else if (noteId) {
-        await updateNote.mutateAsync({
-          noteId,
+        navigate(`/docs/${createdDoc.id}`);
+      } else if (docId) {
+        await updateDoc.mutateAsync({
+          docId,
           updates: {
             title: title.trim(),
             content,
@@ -88,14 +88,14 @@ export default function NoteDetail() {
           },
         });
         toast({
-          title: "Note updated",
+          title: "Doc updated",
           description: `"${title}" has been updated successfully.`,
         });
       }
     } catch (error) {
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to save note",
+        description: error instanceof Error ? error.message : "Failed to save doc",
         variant: "destructive",
       });
     } finally {
@@ -107,7 +107,7 @@ export default function NoteDetail() {
     return (
       <div className="space-y-6 animate-fade-in">
         <div className="text-center py-12">
-          <p className="text-muted-foreground">Loading note...</p>
+          <p className="text-muted-foreground">Loading doc...</p>
         </div>
       </div>
     );
@@ -116,7 +116,7 @@ export default function NoteDetail() {
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/notes")}>
+        <Button variant="ghost" size="sm" onClick={() => navigate("/docs")}>
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
@@ -146,18 +146,18 @@ export default function NoteDetail() {
         </div>
       </div>
 
-      {(!isNew && isLoading && !note) ? (
+      {(!isNew && isLoading && !doc) ? (
         <div className="min-h-[500px] border rounded-lg flex items-center justify-center">
           <p className="text-muted-foreground">Loading content...</p>
         </div>
       ) : (
         <RichTextEditor 
-          key={noteId || "new"}
+          key={docId || "new"}
           content={content || ""} 
           onChange={setContent}
           title={title}
           onTitleChange={setTitle}
-          titlePlaceholder="Note title..."
+          titlePlaceholder="Doc title..."
         />
       )}
     </div>

@@ -17,12 +17,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Pin, Trash2, Edit } from "lucide-react";
+import { Plus, MoreVertical, Pin, Trash2, Edit, User } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useNotes, useDeleteNote } from "@/hooks/useNotes";
+import { useDocs, useDeleteDoc } from "@/hooks/useDocs";
+import { useUsers } from "@/hooks/useUsers";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 
 const truncateText = (html: string, maxLength: number) => {
   // Remove HTML tags for truncation
@@ -31,35 +33,58 @@ const truncateText = (html: string, maxLength: number) => {
   return text.substring(0, maxLength) + "...";
 };
 
-export default function Notes() {
+export default function Docs() {
   const navigate = useNavigate();
-  const { data: notes = [], isLoading } = useNotes();
-  const deleteNote = useDeleteNote();
+  const { data: docs = [], isLoading } = useDocs();
+  const { data: users = [] } = useUsers();
+  const deleteDoc = useDeleteDoc();
   const { toast } = useToast();
-  const [noteToDelete, setNoteToDelete] = useState<string | null>(null);
+  const [docToDelete, setDocToDelete] = useState<string | null>(null);
 
-  const handleDeleteClick = (e: React.MouseEvent, noteId: string) => {
+  // Helper function to get user display name from email
+  const getUserDisplayName = (email: string): string => {
+    const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+    return user?.name || user?.email || email;
+  };
+
+  // Helper function to get user avatar initials
+  const getUserInitials = (email: string): string => {
+    const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+    if (user?.name) {
+      const names = user.name.split(' ');
+      if (names.length >= 2) {
+        return (names[0][0] + names[names.length - 1][0]).toUpperCase();
+      }
+      return user.name.substring(0, 2).toUpperCase();
+    }
+    if (user?.email) {
+      return user.email.substring(0, 2).toUpperCase();
+    }
+    return email.substring(0, 2).toUpperCase();
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, docId: string) => {
     e.stopPropagation();
-    trackClick('delete_note', '/notes');
-    setNoteToDelete(noteId);
+    trackClick('delete_doc', '/docs');
+    setDocToDelete(docId);
   };
 
   const handleDeleteConfirm = async () => {
-    if (!noteToDelete) return;
+    if (!docToDelete) return;
 
     try {
-      await deleteNote.mutateAsync(noteToDelete);
-      trackDelete('note', noteToDelete);
-      const note = notes.find(n => n.id === noteToDelete);
+      await deleteDoc.mutateAsync(docToDelete);
+      trackDelete('doc', docToDelete);
+      const doc = docs.find(d => d.id === docToDelete);
       toast({
-        title: "Note deleted",
-        description: `"${note?.title || 'Note'}" has been deleted successfully.`,
+        title: "Doc deleted",
+        description: `"${doc?.title || 'Doc'}" has been deleted successfully.`,
       });
-      setNoteToDelete(null);
+      setDocToDelete(null);
     } catch (error) {
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : "Failed to delete note",
+        description: error instanceof Error ? error.message : "Failed to delete doc",
         variant: "destructive",
       });
     }
@@ -69,72 +94,69 @@ export default function Notes() {
     return (
       <div className="space-y-6 animate-fade-in">
         <div className="text-center py-12">
-          <p className="text-muted-foreground">Loading notes...</p>
+          <p className="text-muted-foreground">Loading docs...</p>
         </div>
       </div>
     );
   }
 
-  // Separate pinned and unpinned notes
-  const pinnedNotes = notes.filter(note => note.isPinned);
-  const unpinnedNotes = notes.filter(note => !note.isPinned);
+  // Separate pinned and unpinned docs
+  const pinnedDocs = docs.filter(doc => doc.isPinned);
+  const unpinnedDocs = docs.filter(doc => !doc.isPinned);
 
   return (
     <div className="space-y-4 sm:space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Notes</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Docs</h1>
         </div>
         <Button 
           className="w-full sm:w-auto"
           onClick={() => {
-            trackClick('create_note', '/notes');
-            navigate("/notes/new");
+            trackClick('create_doc', '/docs');
+            navigate("/docs/new");
           }}
         >
           <Plus className="mr-2 h-4 w-4" />
-          New Note
+          New Doc
         </Button>
       </div>
 
-      {notes.length === 0 ? (
+      {docs.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-16">
-            <p className="text-muted-foreground mb-4">No notes yet</p>
+            <p className="text-muted-foreground mb-4">No docs yet</p>
             <Button onClick={() => {
-          trackClick('create_note', '/notes');
-          navigate("/notes/new");
+          trackClick('create_doc', '/docs');
+          navigate("/docs/new");
         }}>
               <Plus className="mr-2 h-4 w-4" />
-              Create your first note
+              Create your first doc
             </Button>
           </CardContent>
         </Card>
       ) : (
         <>
-          {pinnedNotes.length > 0 && (
+          {pinnedDocs.length > 0 && (
             <div className="space-y-4">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                 <Pin className="h-4 w-4" />
                 Pinned
               </h2>
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {pinnedNotes.map((note) => (
+                {pinnedDocs.map((doc) => (
                   <Card
-                    key={note.id}
+                    key={doc.id}
                     className="cursor-pointer hover:shadow-md transition-shadow"
                     onClick={() => {
-                      trackView('note', note.id);
-                      navigate(`/notes/${note.id}`);
+                      trackView('doc', doc.id);
+                      navigate(`/docs/${doc.id}`);
                     }}
                   >
                     <CardHeader>
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
-                          <CardTitle className="line-clamp-2">{note.title}</CardTitle>
-                          <CardDescription className="mt-1">
-                            {format(new Date(note.updatedAt), "MMM d, yyyy")}
-                          </CardDescription>
+                          <CardTitle className="line-clamp-2">{doc.title}</CardTitle>
                         </div>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
@@ -143,12 +165,12 @@ export default function Notes() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/notes/${note.id}`)}>
+                            <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}`)}>
                               <Edit className="mr-2 h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              onClick={(e) => handleDeleteClick(e, note.id)}
+                              onClick={(e) => handleDeleteClick(e, doc.id)}
                               className="text-destructive"
                             >
                               <Trash2 className="mr-2 h-4 w-4" />
@@ -157,11 +179,24 @@ export default function Notes() {
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
+                        <span>{format(new Date(doc.updatedAt), "MMM d, yyyy")}</span>
+                        {doc.ownerEmail && (
+                          <div className="flex items-center gap-1.5">
+                            <Avatar className="h-4 w-4">
+                              <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
+                                {getUserInitials(doc.ownerEmail)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="font-medium hidden sm:inline">{getUserDisplayName(doc.ownerEmail)}</span>
+                          </div>
+                        )}
+                      </div>
                     </CardHeader>
                     <CardContent>
                       <div
                         className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
-                        dangerouslySetInnerHTML={{ __html: truncateText(note.content, 150) }}
+                        dangerouslySetInnerHTML={{ __html: truncateText(doc.content, 150) }}
                       />
                     </CardContent>
                   </Card>
@@ -170,28 +205,25 @@ export default function Notes() {
             </div>
           )}
 
-          {unpinnedNotes.length > 0 && (
+          {unpinnedDocs.length > 0 && (
             <div className="space-y-4">
-              {pinnedNotes.length > 0 && (
-                <h2 className="text-lg font-semibold">All Notes</h2>
+              {pinnedDocs.length > 0 && (
+                <h2 className="text-lg font-semibold">All Docs</h2>
               )}
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {unpinnedNotes.map((note) => (
+                {unpinnedDocs.map((doc) => (
                   <Card
-                    key={note.id}
+                    key={doc.id}
                     className="cursor-pointer hover:shadow-md transition-shadow"
                     onClick={() => {
-                      trackView('note', note.id);
-                      navigate(`/notes/${note.id}`);
+                      trackView('doc', doc.id);
+                      navigate(`/docs/${doc.id}`);
                     }}
                   >
                     <CardHeader>
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
-                          <CardTitle className="line-clamp-2">{note.title}</CardTitle>
-                          <CardDescription className="mt-1">
-                            {format(new Date(note.updatedAt), "MMM d, yyyy")}
-                          </CardDescription>
+                          <CardTitle className="line-clamp-2">{doc.title}</CardTitle>
                         </div>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
@@ -200,12 +232,12 @@ export default function Notes() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/notes/${note.id}`)}>
+                            <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}`)}>
                               <Edit className="mr-2 h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              onClick={(e) => handleDeleteClick(e, note.id)}
+                              onClick={(e) => handleDeleteClick(e, doc.id)}
                               className="text-destructive"
                             >
                               <Trash2 className="mr-2 h-4 w-4" />
@@ -214,11 +246,24 @@ export default function Notes() {
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
+                        <span>{format(new Date(doc.updatedAt), "MMM d, yyyy")}</span>
+                        {doc.ownerEmail && (
+                          <div className="flex items-center gap-1.5">
+                            <Avatar className="h-4 w-4">
+                              <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
+                                {getUserInitials(doc.ownerEmail)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="font-medium hidden sm:inline">{getUserDisplayName(doc.ownerEmail)}</span>
+                          </div>
+                        )}
+                      </div>
                     </CardHeader>
                     <CardContent>
                       <div
                         className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
-                        dangerouslySetInnerHTML={{ __html: truncateText(note.content, 150) }}
+                        dangerouslySetInnerHTML={{ __html: truncateText(doc.content, 150) }}
                       />
                     </CardContent>
                   </Card>
@@ -229,12 +274,12 @@ export default function Notes() {
         </>
       )}
 
-      <AlertDialog open={!!noteToDelete} onOpenChange={(open) => !open && setNoteToDelete(null)}>
+      <AlertDialog open={!!docToDelete} onOpenChange={(open) => !open && setDocToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Note</AlertDialogTitle>
+            <AlertDialogTitle>Delete Doc</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this note? This action cannot be undone.
+              Are you sure you want to delete this doc? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

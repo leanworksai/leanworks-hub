@@ -1,4 +1,4 @@
-export interface Note {
+export interface Doc {
   id: string;
   title: string;
   content: string; // Rich text content (HTML)

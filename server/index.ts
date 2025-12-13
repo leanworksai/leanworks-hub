@@ -1311,8 +1311,8 @@ app.delete('/api/users/me', authenticateUser, async (req, res) => {
           [userEmail]
         );
         
-        // Delete notes owned by user
-        await orgPool.query('DELETE FROM notes WHERE owner_email = $1', [userEmail]);
+        // Delete docs owned by user
+        await orgPool.query('DELETE FROM docs WHERE owner_email = $1', [userEmail]);
         
         // Delete teams owned by user
         await orgPool.query('DELETE FROM teams WHERE owner_email = $1', [userEmail]);
@@ -3325,15 +3325,16 @@ app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, requireOr
 });
 
 // ============================================================================
-// NOTES ENDPOINTS (PostgreSQL)
+// DOCS ENDPOINTS (PostgreSQL)
 // ============================================================================
 
-app.get('/api/notes', authenticateUser, requireOrgMembership, async (req, res) => {
+app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
+    // All org members can view all docs in the org
     const result = await pool.query(`
       SELECT 
         id,
@@ -3346,34 +3347,36 @@ app.get('/api/notes', authenticateUser, requireOrgMembership, async (req, res) =
         is_pinned,
         created_at,
         updated_at
-      FROM notes
-      WHERE owner_email = $1
+      FROM docs
       ORDER BY is_pinned DESC, created_at DESC
-    `, [userEmail.toLowerCase()]);
+    `);
+    
+    console.log(`📚 GET /api/docs - Returning ${result.rows.length} docs for org ${orgId} (user: ${userEmail})`);
     
     // Transform to camelCase
     const transformed = result.rows.map(row => {
-      const note = transformRow(row);
-      note.tags = Array.isArray(note.tags) ? note.tags : (note.tags ? JSON.parse(note.tags) : []);
-      note.createdAt = note.createdAt ? new Date(note.createdAt).toISOString() : new Date().toISOString();
-      note.updatedAt = note.updatedAt ? new Date(note.updatedAt).toISOString() : new Date().toISOString();
-      return note;
+      const doc = transformRow(row);
+      doc.tags = Array.isArray(doc.tags) ? doc.tags : (doc.tags ? JSON.parse(doc.tags) : []);
+      doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
+      doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
+      return doc;
     });
     
     res.json(transformed);
   } catch (error) {
-    console.error('Get notes error:', error);
+    console.error('Get docs error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.get('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
-    const noteId = req.params.id;
+    const docId = req.params.id;
     const pool = await getOrgPool(orgId);
     
+    // All org members can view any doc in the org
     const result = await pool.query(`
       SELECT 
         id,
@@ -3386,46 +3389,46 @@ app.get('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, re
         is_pinned,
         created_at,
         updated_at
-      FROM notes
-      WHERE id = $1 AND owner_email = $2
-    `, [noteId, userEmail.toLowerCase()]);
+      FROM docs
+      WHERE id = $1
+    `, [docId]);
     
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Note not found' });
+      return res.status(404).json({ error: 'Doc not found' });
     }
     
-    const note = transformRow(result.rows[0]);
-    note.tags = Array.isArray(note.tags) ? note.tags : (note.tags ? JSON.parse(note.tags) : []);
-    note.createdAt = note.createdAt ? new Date(note.createdAt).toISOString() : new Date().toISOString();
-    note.updatedAt = note.updatedAt ? new Date(note.updatedAt).toISOString() : new Date().toISOString();
+    const doc = transformRow(result.rows[0]);
+    doc.tags = Array.isArray(doc.tags) ? doc.tags : (doc.tags ? JSON.parse(doc.tags) : []);
+    doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
+    doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
     
-    res.json(note);
+    res.json(doc);
   } catch (error) {
-    console.error('Get note error:', error);
+    console.error('Get doc error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.post('/api/notes', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    const { title, content, projectId, teamId, tags, isPinned } = req.body;
+    const { id, title, content, projectId, teamId, tags, isPinned } = req.body;
     
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required' });
     }
     
     const normalizedEmail = userEmail.toLowerCase();
-    const noteId = crypto.randomBytes(16).toString('hex');
+    const docId = id || crypto.randomBytes(16).toString('hex');
     
     await pool.query(`
-      INSERT INTO notes (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
+      INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
     `, [
-      noteId,
+      docId,
       title,
       content,
       normalizedEmail,
@@ -3436,7 +3439,7 @@ app.post('/api/notes', authenticateUser, requireOrgMembership, async (req, res) 
     ]);
     
     res.status(201).json({ 
-      id: noteId, 
+      id: docId, 
       title, 
       content,
       ownerEmail: normalizedEmail,
@@ -3446,31 +3449,27 @@ app.post('/api/notes', authenticateUser, requireOrgMembership, async (req, res) 
       isPinned: isPinned || false
     });
   } catch (error) {
-    console.error('Create note error:', error);
+    console.error('Create doc error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
-    const noteId = req.params.id;
+    const docId = req.params.id;
     const updates = req.body;
     const pool = await getOrgPool(orgId);
     
-    // Verify note exists and user owns it
+    // Verify doc exists (all org members can edit docs)
     const checkResult = await pool.query(
-      'SELECT owner_email FROM notes WHERE id = $1',
-      [noteId]
+      'SELECT id FROM docs WHERE id = $1',
+      [docId]
     );
     
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Note not found' });
-    }
-    
-    if (checkResult.rows[0].owner_email?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'You do not have permission to update this note' });
+      return res.status(404).json({ error: 'Doc not found' });
     }
     
     const setClauses: string[] = [];
@@ -3503,47 +3502,47 @@ app.patch('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, 
     }
     
     setClauses.push(`updated_at = NOW()`);
-    values.push(noteId);
+    values.push(docId);
     
     await pool.query(`
-      UPDATE notes 
+      UPDATE docs 
       SET ${setClauses.join(', ')}
       WHERE id = $${paramIndex}
     `, values);
     
     res.json({ success: true });
   } catch (error) {
-    console.error('Update note error:', error);
+    console.error('Update doc error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.delete('/api/notes/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.delete('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
-    const noteId = req.params.id;
+    const docId = req.params.id;
     const pool = await getOrgPool(orgId);
     
-    // Verify note exists and user owns it
+    // Verify doc exists and user owns it
     const checkResult = await pool.query(
-      'SELECT owner_email FROM notes WHERE id = $1',
-      [noteId]
+      'SELECT owner_email FROM docs WHERE id = $1',
+      [docId]
     );
     
     if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Note not found' });
+      return res.status(404).json({ error: 'Doc not found' });
     }
     
     if (checkResult.rows[0].owner_email?.toLowerCase() !== userEmail.toLowerCase()) {
-      return res.status(403).json({ error: 'You do not have permission to delete this note' });
+      return res.status(403).json({ error: 'You do not have permission to delete this doc' });
     }
     
-    await pool.query('DELETE FROM notes WHERE id = $1', [noteId]);
+    await pool.query('DELETE FROM docs WHERE id = $1', [docId]);
     
     res.json({ success: true });
   } catch (error) {
-    console.error('Delete note error:', error);
+    console.error('Delete doc error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });

@@ -130,7 +130,7 @@ export default function Home() {
             </span>
           </h1>
           <p className="text-xl sm:text-2xl text-muted-foreground mb-10 max-w-2xl mx-auto">
-            Project management, messaging, notes, meeting and AI—all in one place.
+            Project management, messaging, docs, meeting and AI—all in one place.
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link to="/login">
@@ -524,7 +524,7 @@ export default function Home() {
                   Start instant voice meetings directly from any conversation. Connect with your teammates 
                   with crystal-clear audio quality. No need to switch apps or schedule separate calls—just 
                   click to start a meeting and collaborate in real-time. Our AI automatically transcribes 
-                  your audio and summarizes meeting notes, so you never miss important details. Perfect for 
+                  your audio and summarizes meeting docs, so you never miss important details. Perfect for 
                   quick syncs, brainstorming sessions, or urgent discussions.
                 </p>
               </div>
@@ -533,7 +533,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Feature 5: Note Taking */}
+      {/* Feature 5: Documentation */}
       <section className="py-20 bg-slate-50/50">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto">
@@ -542,25 +542,25 @@ export default function Home() {
                 <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
                   <FileText className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Easy Note Taking</h2>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Easy Documentation</h2>
                 <p className="text-lg text-muted-foreground leading-relaxed">
-                  Capture your thoughts, ideas, and important information with our powerful note-taking feature. 
-                  Create rich text notes, organize them with tags, and link them to projects or teams for better 
-                  context. Pin important notes for quick access, and let our AI help you organize and find your 
-                  notes effortlessly. Perfect for meeting notes, project documentation, or personal reminders.
+                  Capture your thoughts, ideas, and important information with our powerful documentation feature. 
+                  Create rich text docs, organize them with tags, and link them to projects or teams for better 
+                  context. Pin important docs for quick access, and let our AI help you organize and find your 
+                  docs effortlessly. Perfect for meeting docs, project documentation, or personal reminders.
                 </p>
               </div>
               <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">
                 <CardHeader className="pb-2 border-b bg-muted/30">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-xl">My Notes</CardTitle>
+                    <CardTitle className="text-xl">My Docs</CardTitle>
                     <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
                       <Plus className="h-4 w-4" />
                     </Button>
                   </div>
                 </CardHeader>
                 <CardContent className="p-4 bg-background/50 space-y-3">
-                  {/* Note 1: Pinned */}
+                  {/* Doc 1: Pinned */}
                   <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer">
                     <div className="flex items-start gap-2 mb-2">
                       <Pin className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
@@ -578,14 +578,14 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Note 2 */}
+                  {/* Doc 2 */}
                   <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer">
                     <div className="flex items-start gap-2 mb-2">
                       <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <h4 className="font-semibold text-sm mb-1">API Integration Ideas</h4>
                         <p className="text-xs text-muted-foreground line-clamp-2">
-                          Research notes on potential third-party integrations for the platform...
+                          Research docs on potential third-party integrations for the platform...
                         </p>
                       </div>
                     </div>
@@ -595,14 +595,14 @@ export default function Home() {
                     </div>
                   </div>
 
-                  {/* Note 3 */}
+                  {/* Doc 3 */}
                   <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer opacity-60">
                     <div className="flex items-start gap-2 mb-2">
                       <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
                         <h4 className="font-semibold text-sm mb-1">Design System Updates</h4>
                         <p className="text-xs text-muted-foreground line-clamp-2">
-                          Notes on component library improvements and accessibility enhancements...
+                          Docs on component library improvements and accessibility enhancements...
                         </p>
                       </div>
                     </div>

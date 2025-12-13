@@ -30,8 +30,8 @@ import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
-import Notes from "./pages/Notes";
-import NoteDetail from "./pages/NoteDetail";
+import Docs from "./pages/Docs";
+import DocDetail from "./pages/DocDetail";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Organizations from "./pages/Organizations";
@@ -62,8 +62,8 @@ const AppRoutesContent = () => {
     if (pathname === '/projects') return 'Projects';
     if (pathname.startsWith('/tasks/')) return 'Task Detail';
     if (pathname === '/tasks') return 'Tasks';
-    if (pathname.startsWith('/notes/')) return 'Note Detail';
-    if (pathname === '/notes') return 'Notes';
+    if (pathname.startsWith('/docs/')) return 'Doc Detail';
+    if (pathname === '/docs') return 'Docs';
     if (pathname.startsWith('/teams/')) return 'Team Detail';
     if (pathname === '/teams') return 'Teams';
     if (pathname === '/users') return 'Users';
@@ -164,21 +164,21 @@ const AppRoutesContent = () => {
           }
         />
         <Route
-          path="/notes"
+          path="/docs"
           element={
             <ProtectedRoute>
               <DashboardLayout>
-                <Notes />
+                <Docs />
               </DashboardLayout>
             </ProtectedRoute>
           }
         />
         <Route
-          path="/notes/:noteId"
+          path="/docs/:docId"
           element={
             <ProtectedRoute>
               <DashboardLayout>
-                <NoteDetail />
+                <DocDetail />
               </DashboardLayout>
             </ProtectedRoute>
           }
