@@ -29,7 +29,6 @@ const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Docs", url: "/docs", icon: StickyNote },
-  { title: "Teams", url: "/teams", icon: Users },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
 ];
 

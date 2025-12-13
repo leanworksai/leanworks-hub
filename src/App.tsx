@@ -64,8 +64,8 @@ const AppRoutesContent = () => {
     if (pathname === '/tasks') return 'Tasks';
     if (pathname.startsWith('/docs/')) return 'Doc Detail';
     if (pathname === '/docs') return 'Docs';
-    if (pathname.startsWith('/teams/')) return 'Team Detail';
-    if (pathname === '/teams') return 'Teams';
+    // if (pathname.startsWith('/teams/')) return 'Team Detail';
+    // if (pathname === '/teams') return 'Teams';
     if (pathname === '/users') return 'Users';
     if (pathname === '/integrations') return 'Integrations';
     if (pathname === '/organizations') return 'Organizations';
@@ -83,25 +83,14 @@ const AppRoutesContent = () => {
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+        {/* Teams page hidden - redirect to home */}
         <Route
           path="/teams"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Teams />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
+          element={<Navigate to="/" replace />}
         />
         <Route
           path="/teams/:teamId"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <TeamDetail />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
+          element={<Navigate to="/" replace />}
         />
         <Route
           path="/users"
