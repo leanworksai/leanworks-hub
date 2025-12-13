@@ -48,6 +48,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
+import { useDateSelection } from "@/hooks/useDateSelection";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -83,6 +84,7 @@ const formatDate = (dateValue: any): string => {
 export default function ProjectDetail() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const { formatDateForDisplay } = useDateSelection();
   const [commentInput, setCommentInput] = useState("");
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [taskPageIndex, setTaskPageIndex] = useState(0);
@@ -405,7 +407,7 @@ export default function ProjectDetail() {
           </div>
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
-            <span>Due: <span className="text-foreground font-medium">{formatDate(project.dueDate)}</span></span>
+            <span>Due: <span className="text-foreground font-medium">{formatDateForDisplay(project.dueDate)}</span></span>
           </div>
         </div>
       </div>
@@ -549,7 +551,7 @@ export default function ProjectDetail() {
                           </div>
                           <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                             <span>Assignee: {task.assignee || "Unassigned"}</span>
-                            <span>Due: {formatDate(task.dueDate)}</span>
+                            <span>Due: {formatDateForDisplay(task.dueDate)}</span>
                           </div>
                         </div>
                         <Badge variant="outline" className="text-xs capitalize flex-shrink-0">

@@ -760,6 +760,23 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                     }}
                     initialFocus
                   />
+                  {editedTask.dueDate && (
+                    <div className="p-3 border-t">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => {
+                          setEditedTask({ ...editedTask, dueDate: undefined });
+                          handleFieldSave('dueDate', null);
+                          setDueDateOpen(false);
+                        }}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Remove due date
+                      </Button>
+                    </div>
+                  )}
                 </PopoverContent>
               </Popover>
             ) : (

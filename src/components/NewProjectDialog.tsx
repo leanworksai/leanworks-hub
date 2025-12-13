@@ -173,16 +173,13 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       }
 
       const now = new Date();
-      // Convert YYYY-MM-DD to the format used in Project interface
-      let formattedDueDate = "";
+      // Convert YYYY-MM-DD to the format used in Project interface (optional)
+      let formattedDueDate: string | undefined = undefined;
       if (data.dueDate) {
         // Parse date string directly to avoid timezone shifts
         // The date input returns YYYY-MM-DD format, which we need to parse as local date
         const dueDateObj = parseDateString(data.dueDate);
         formattedDueDate = formatDate(dueDateObj);
-      } else {
-        // Default to 30 days from now if not provided
-        formattedDueDate = formatDate(new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000));
       }
 
       // Get selected project members

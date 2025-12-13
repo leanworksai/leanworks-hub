@@ -40,7 +40,7 @@ export interface Project {
   detailedDescription: string;
   status: string;
   team: number;
-  dueDate: string;
+  dueDate?: string;
   createdDate: string;
   statusColor: string;
   ownerEmail?: string; // Email of the project owner/creator

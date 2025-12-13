@@ -670,6 +670,22 @@ export default function Tasks() {
                             }}
                             initialFocus
                           />
+                          {task.dueDate && (
+                            <div className="p-3 border-t">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="w-full text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => {
+                                  handleFieldSave(task.id, 'dueDate', null);
+                                  setDropdownOpen(task.id, 'dueDate', false);
+                                }}
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Remove due date
+                              </Button>
+                            </div>
+                          )}
                         </PopoverContent>
                       </Popover>
                       {task.projectId && (

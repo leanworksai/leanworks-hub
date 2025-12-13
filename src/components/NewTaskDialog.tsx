@@ -506,16 +506,13 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         throw new Error("Selected project not found");
       }
 
-      // Format due date
-      let formattedDueDate = "";
+      // Format due date (optional)
+      let formattedDueDate: string | undefined = undefined;
       if (data.dueDate) {
         // Parse date string directly to avoid timezone shifts
         // The date input returns YYYY-MM-DD format, which we need to parse as local date
         const dueDateObj = parseDateString(data.dueDate);
         formattedDueDate = formatDate(dueDateObj);
-      } else {
-        // Default to 7 days from now if not provided
-        formattedDueDate = formatDate(new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000));
       }
 
       // Parse tags

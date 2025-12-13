@@ -28,7 +28,7 @@ export interface Task {
   projectId?: string;
   teams?: string[]; // Teams that can see this task (for tasks without projects)
   createdBy?: string; // Email of the user who created the task
-  dueDate: string;
+  dueDate?: string;
   createdDate: string;
   createdAt?: number; // Timestamp in milliseconds for sorting
   estimatedHours?: number;

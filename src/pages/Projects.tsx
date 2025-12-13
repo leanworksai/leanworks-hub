@@ -35,6 +35,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/useSubscription";
 import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
+import { useDateSelection } from "@/hooks/useDateSelection";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
@@ -43,6 +44,7 @@ const truncateText = (text: string, maxLength: number) => {
 
 export default function Projects() {
   const navigate = useNavigate();
+  const { formatDateForDisplay } = useDateSelection();
   const { toggleProject, isProjectSelected, selectedProjects } = useSelectedProjects();
   const { isSelectionMode } = useSelectionMode();
   const { data: projects = [], isLoading } = useUserProjects();
@@ -233,7 +235,7 @@ export default function Projects() {
                 </div>
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Calendar className="h-4 w-4" />
-                  <span>{project.dueDate}</span>
+                  <span>{formatDateForDisplay(project.dueDate)}</span>
                 </div>
               </div>
             </CardContent>
