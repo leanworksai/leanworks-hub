@@ -35,6 +35,7 @@ import { Check, ChevronsUpDown, Sparkles, Lock, Share2 } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 import { getAuthToken } from "@/services/api";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { cn } from "@/lib/utils";
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -726,7 +727,12 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
                           variant="outline"
                           role="combobox"
                           aria-expanded={assigneeOpen}
-                          className="w-full justify-between"
+                          className={cn(
+                            "w-full justify-between",
+                            selectedAssignee 
+                              ? "bg-accent/50 border-primary/20 text-foreground font-medium" 
+                              : "text-muted-foreground"
+                          )}
                         >
                           {selectedAssignee ? (
                             <div className="flex items-center gap-2">

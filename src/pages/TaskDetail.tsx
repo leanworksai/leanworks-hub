@@ -592,7 +592,12 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                     variant="outline"
                     role="combobox"
                     aria-expanded={assigneeOpen}
-                    className="w-[250px] justify-between"
+                    className={cn(
+                      "w-[250px] justify-between",
+                      editedTask.assignee 
+                        ? "bg-accent/50 border-primary/20 text-foreground font-medium" 
+                        : "text-muted-foreground"
+                    )}
                   >
                     <div className="flex items-center gap-2">
                       <Avatar className="h-5 w-5">
@@ -762,10 +767,15 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                 <PopoverTrigger asChild>
                   <Button
                     variant="outline"
-                    className="w-[200px] justify-start text-left font-normal"
+                    className={cn(
+                      "w-[200px] justify-start text-left font-normal",
+                      editedTask.dueDate 
+                        ? "bg-accent/50 border-primary/20 text-foreground font-medium" 
+                        : "text-muted-foreground"
+                    )}
                   >
                     <Calendar className="mr-2 h-4 w-4" />
-                    {formatDateForDisplay(editedTask.dueDate) || "Pick a date"}
+                    {formatDateForDisplay(editedTask.dueDate) || "No Due Date"}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0" align="start">

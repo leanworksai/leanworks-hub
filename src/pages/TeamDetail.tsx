@@ -5,14 +5,9 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ArrowLeft, UserPlus, Mail, MoreVertical, Trash2, LogOut, Search } from "lucide-react";
+import { ArrowLeft, UserPlus, Mail, Trash2, LogOut, Search } from "lucide-react";
+import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { getAvatarColor } from "@/lib/utils";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -320,27 +315,24 @@ export default function TeamDetail() {
                     <Badge variant="default" className="bg-primary text-primary-foreground">Owner</Badge>
                   )}
                   {isUserOwner && member.email.toLowerCase() !== user?.email?.toLowerCase() && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>Edit Role</DropdownMenuItem>
-                        <DropdownMenuItem 
-                          className="text-destructive"
-                          onClick={() => setRemoveMemberDialog({
+                    <MoreOptionsMenu
+                      items={[
+                        {
+                          label: "Edit Role",
+                          onClick: () => {},
+                        },
+                        {
+                          icon: Trash2,
+                          label: "Remove from Team",
+                          onClick: () => setRemoveMemberDialog({
                             open: true,
                             memberEmail: member.email,
                             memberName: member.name,
-                          })}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Remove from Team
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                          }),
+                          isDestructive: true,
+                        },
+                      ]}
+                    />
                   )}
                 </div>
               </div>

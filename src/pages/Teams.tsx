@@ -5,7 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Plus, MoreVertical, Search, Mail, Briefcase, Check, ChevronsUpDown, Edit, Trash2, Bell, UserPlus, X } from "lucide-react";
+import { Plus, Search, Mail, Briefcase, Check, ChevronsUpDown, Edit, Trash2, Bell, UserPlus, X } from "lucide-react";
+import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
@@ -18,12 +19,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -485,40 +480,28 @@ export default function Teams() {
                       </div>
                     </div>
                     {!isSelectionMode && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button 
-                            variant="ghost" 
-                            size="icon"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          {isMember && (
-                            <>
-                              <DropdownMenuItem onClick={(e) => {
-                                e.stopPropagation();
-                                navigate(`/teams/${team.id}`);
-                              }}>
-                                View Details
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={(e) => handleEditClick(e, team)}>
-                                <Edit className="mr-2 h-4 w-4" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                className="text-destructive focus:text-destructive"
-                                onClick={(e) => handleDeleteClick(e, team.id)}
-                              >
-                                <Trash2 className="mr-2 h-4 w-4" />
-                                Delete
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <MoreOptionsMenu
+                        items={[
+                          {
+                            label: "View Details",
+                            onClick: () => navigate(`/teams/${team.id}`),
+                            show: isMember,
+                          },
+                          {
+                            icon: Edit,
+                            label: "Edit",
+                            onClick: (e) => handleEditClick(e, team),
+                            show: isMember,
+                          },
+                          {
+                            icon: Trash2,
+                            label: "Delete",
+                            onClick: (e) => handleDeleteClick(e, team.id),
+                            isDestructive: true,
+                            show: isMember,
+                          },
+                        ]}
+                      />
                     )}
                   </CardHeader>
                   <CardContent className="px-6 pb-6">
@@ -603,36 +586,25 @@ export default function Teams() {
                         </div>
                       </div>
                       {!isSelectionMode && (
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button 
-                              variant="ghost" 
-                              size="icon"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={(e) => {
-                              e.stopPropagation();
-                              navigate(`/teams/${team.id}`);
-                            }}>
-                              View Details
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => handleEditClick(e, team)}>
-                              <Edit className="mr-2 h-4 w-4" />
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              className="text-destructive focus:text-destructive"
-                              onClick={(e) => handleDeleteClick(e, team.id)}
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <MoreOptionsMenu
+                          items={[
+                            {
+                              label: "View Details",
+                              onClick: () => navigate(`/teams/${team.id}`),
+                            },
+                            {
+                              icon: Edit,
+                              label: "Edit",
+                              onClick: (e) => handleEditClick(e, team),
+                            },
+                            {
+                              icon: Trash2,
+                              label: "Delete",
+                              onClick: (e) => handleDeleteClick(e, team.id),
+                              isDestructive: true,
+                            },
+                          ]}
+                        />
                       )}
                     </CardHeader>
                     <CardContent className="px-6 pb-6">

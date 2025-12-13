@@ -2,12 +2,6 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -17,7 +11,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Pin, Trash2, Edit, User, Share2, Lock } from "lucide-react";
+import { Plus, Pin, Trash2, Edit, User, Share2, Lock } from "lucide-react";
+import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { useNavigate } from "react-router-dom";
 import { useDocs, useDeleteDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useUsers } from "@/hooks/useUsers";
@@ -179,32 +174,28 @@ export default function Docs() {
                         <div className="flex-1">
                           <CardTitle className="line-clamp-2">{doc.title}</CardTitle>
                         </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                            <Button variant="ghost" size="sm">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}`)}>
-                              <Edit className="mr-2 h-4 w-4" />
-                              Edit
-                            </DropdownMenuItem>
-                            {isOwner(doc) && (
-                              <DropdownMenuItem onClick={(e) => handleShareClick(e, doc)}>
-                                <Share2 className="mr-2 h-4 w-4" />
-                                Limit Visibility
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem
-                              onClick={(e) => handleDeleteClick(e, doc.id)}
-                              className="text-destructive"
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <MoreOptionsMenu
+                          size="sm"
+                          items={[
+                            {
+                              icon: Edit,
+                              label: "Edit",
+                              onClick: () => navigate(`/docs/${doc.id}`),
+                            },
+                            {
+                              icon: Share2,
+                              label: "Limit Visibility",
+                              onClick: (e) => handleShareClick(e, doc),
+                              show: isOwner(doc),
+                            },
+                            {
+                              icon: Trash2,
+                              label: "Delete",
+                              onClick: (e) => handleDeleteClick(e, doc.id),
+                              isDestructive: true,
+                            },
+                          ]}
+                        />
                       </div>
                       <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
                         <span>{format(new Date(doc.updatedAt), "MMM d, yyyy")}</span>
@@ -257,32 +248,28 @@ export default function Docs() {
                         <div className="flex-1">
                           <CardTitle className="line-clamp-2">{doc.title}</CardTitle>
                         </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                            <Button variant="ghost" size="sm">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}`)}>
-                              <Edit className="mr-2 h-4 w-4" />
-                              Edit
-                            </DropdownMenuItem>
-                            {isOwner(doc) && (
-                              <DropdownMenuItem onClick={(e) => handleShareClick(e, doc)}>
-                                <Share2 className="mr-2 h-4 w-4" />
-                                Limit Visibility
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem
-                              onClick={(e) => handleDeleteClick(e, doc.id)}
-                              className="text-destructive"
-                            >
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                        <MoreOptionsMenu
+                          size="sm"
+                          items={[
+                            {
+                              icon: Edit,
+                              label: "Edit",
+                              onClick: () => navigate(`/docs/${doc.id}`),
+                            },
+                            {
+                              icon: Share2,
+                              label: "Limit Visibility",
+                              onClick: (e) => handleShareClick(e, doc),
+                              show: isOwner(doc),
+                            },
+                            {
+                              icon: Trash2,
+                              label: "Delete",
+                              onClick: (e) => handleDeleteClick(e, doc.id),
+                              isDestructive: true,
+                            },
+                          ]}
+                        />
                       </div>
                       <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
                         <span>{format(new Date(doc.updatedAt), "MMM d, yyyy")}</span>

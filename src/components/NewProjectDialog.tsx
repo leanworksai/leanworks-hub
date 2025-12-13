@@ -20,14 +20,17 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { useCreateProject } from "@/hooks/useProjects";
 import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Project, ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
-import { Check, ChevronsUpDown } from "lucide-react";
+import { Check, ChevronsUpDown, Calendar, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 import { trackCreate, trackFormSubmit } from "@/lib/analytics";
+import { useDateSelection } from "@/hooks/useDateSelection";
+import { cn } from "@/lib/utils";
 
 interface NewProjectDialogProps {
   open: boolean;
@@ -50,15 +53,6 @@ const formatDate = (date: Date): string => {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
-// Helper to parse YYYY-MM-DD string to Date in local timezone
-const parseDateString = (dateString: string): Date => {
-  // Extract date components directly from string to avoid timezone issues
-  // When you do new Date("2024-12-24"), JS interprets it as UTC midnight
-  // which can shift the date when converted to local timezone
-  const [year, month, day] = dateString.split('-').map(Number);
-  return new Date(year, month - 1, day, 0, 0, 0, 0);
-};
-
 const getInitials = (name: string): string => {
   return name
     .split(" ")
@@ -76,6 +70,8 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   const { data: orgMembers = [], isLoading: isLoadingMembers } = useUsers();
   const { user } = useAuth();
   const [membersOpen, setMembersOpen] = useState(false);
+  const [dueDateOpen, setDueDateOpen] = useState(false);
+  const { parseDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
 
   type FormData = {
     name: string;
@@ -107,6 +103,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
     if (open) {
       setSelectedMembers(new Set());
       setMembersOpen(false);
+      setDueDateOpen(false);
     }
   }, [open]);
 
@@ -176,10 +173,11 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       // Convert YYYY-MM-DD to the format used in Project interface (optional)
       let formattedDueDate: string | undefined = undefined;
       if (data.dueDate) {
-        // Parse date string directly to avoid timezone shifts
-        // The date input returns YYYY-MM-DD format, which we need to parse as local date
+        // The calendar component returns YYYY-MM-DD format, which we need to parse as local date
         const dueDateObj = parseDateString(data.dueDate);
-        formattedDueDate = formatDate(dueDateObj);
+        if (dueDateObj) {
+          formattedDueDate = formatDate(dueDateObj);
+        }
       }
 
       // Get selected project members
@@ -290,7 +288,12 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
                       variant="outline"
                       role="combobox"
                       aria-expanded={membersOpen}
-                      className="w-full justify-between"
+                      className={cn(
+                        "w-full justify-between",
+                        selectedMembers.size > 0 
+                          ? "bg-accent/50 border-primary/20 text-foreground font-medium" 
+                          : "text-muted-foreground"
+                      )}
                     >
                       {selectedMembers.size > 0 ? (
                         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -390,11 +393,55 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
                 <FormItem>
                   <FormLabel>Due Date</FormLabel>
                   <FormControl>
-                    <Input 
-                      type="date" 
-                      {...field}
-                      value={field.value || ""}
-                    />
+                    <Popover open={dueDateOpen} onOpenChange={setDueDateOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          className={cn(
+                            "w-full justify-start text-left font-normal",
+                            field.value 
+                              ? "bg-accent/50 border-primary/20 text-foreground font-medium" 
+                              : "text-muted-foreground"
+                          )}
+                          type="button"
+                        >
+                          <Calendar className="mr-2 h-4 w-4" />
+                          {field.value ? formatDateForDisplay(field.value) : "No Due Date"}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <CalendarComponent
+                          mode="single"
+                          selected={parseDateString(field.value)}
+                          onSelect={(date) => {
+                            if (date) {
+                              handleDateSelection(date, (serverFormat) => {
+                                field.onChange(serverFormat);
+                                setDueDateOpen(false);
+                              });
+                            }
+                          }}
+                          initialFocus
+                        />
+                        {field.value && (
+                          <div className="p-3 border-t">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="w-full text-destructive hover:text-destructive hover:bg-destructive/10"
+                              type="button"
+                              onClick={() => {
+                                field.onChange("");
+                                setDueDateOpen(false);
+                              }}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Remove due date
+                            </Button>
+                          </div>
+                        )}
+                      </PopoverContent>
+                    </Popover>
                   </FormControl>
                   <FormDescription>
                     Set a target completion date for the project

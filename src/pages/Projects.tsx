@@ -4,12 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -24,7 +18,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Users, Calendar, Trash2, Sparkles, Share2 } from "lucide-react";
+import { Plus, Users, Calendar, Trash2, Sparkles, Share2, Edit } from "lucide-react";
+import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { useNavigate } from "react-router-dom";
 import { useUserProjects, useDeleteProject, useUpdateProject } from "@/hooks/useProjects";
 import { useUpdateSummaries } from "@/hooks/useUpdateSummaries";
@@ -208,41 +203,32 @@ export default function Projects() {
                   </div>
                   <CardDescription className={`line-clamp-2 text-foreground ${isSelectionMode ? 'ml-7' : ''}`}>{project.description}</CardDescription>
                 </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    >
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase() && (
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setProjectToLimitVisibility({ id: project.id, project });
-                        }}
-                      >
-                        <Share2 className="mr-2 h-4 w-4" />
-                        Limit Visibility
-                      </DropdownMenuItem>
-                    )}
-                    {user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase() && (
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onClick={(e) => handleDeleteClick(e, project.id, project.name)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <MoreOptionsMenu
+                  items={[
+                    {
+                      icon: Edit,
+                      label: "Edit",
+                      onClick: () => {
+                        navigate(`/projects/${project.id}`);
+                      },
+                    },
+                    {
+                      icon: Share2,
+                      label: "Limit Visibility",
+                      onClick: (e) => {
+                        setProjectToLimitVisibility({ id: project.id, project });
+                      },
+                      show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
+                    },
+                    {
+                      icon: Trash2,
+                      label: "Delete",
+                      onClick: (e) => handleDeleteClick(e, project.id, project.name),
+                      isDestructive: true,
+                      show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
+                    },
+                  ]}
+                />
               </div>
             </CardHeader>
             <CardContent className="space-y-4">

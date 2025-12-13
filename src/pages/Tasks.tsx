@@ -3,12 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -43,12 +37,12 @@ import {
   Calendar,
   User,
   ArrowRight,
-  MoreVertical,
   Trash2,
   Sparkles,
   Check,
   ChevronsUpDown,
-  Share2
+  Share2,
+  Edit
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
@@ -65,6 +59,7 @@ import { useDateSelection } from "@/hooks/useDateSelection";
 import { cn } from "@/lib/utils";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
+import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -528,7 +523,12 @@ export default function Tasks() {
                         <PopoverTrigger asChild>
                           <button 
                             type="button"
-                            className="flex items-center gap-1 border-0 bg-transparent p-0 hover:opacity-80"
+                            className={cn(
+                              "flex items-center gap-1 border-0 bg-transparent p-0 hover:opacity-80 transition-colors",
+                              task.assignee 
+                                ? "text-foreground font-medium" 
+                                : "text-muted-foreground"
+                            )}
                             onClick={(e) => e.stopPropagation()}
                           >
                             <User className="h-4 w-4" />
@@ -650,7 +650,12 @@ export default function Tasks() {
                         <PopoverTrigger asChild>
                           <button 
                             type="button"
-                            className="flex items-center gap-1 border-0 bg-transparent p-0 hover:opacity-80"
+                            className={cn(
+                              "flex items-center gap-1 border-0 bg-transparent p-0 hover:opacity-80 transition-colors",
+                              task.dueDate 
+                                ? "text-foreground font-medium" 
+                                : "text-muted-foreground"
+                            )}
                             onClick={(e) => e.stopPropagation()}
                           >
                             <Calendar className="h-4 w-4" />
@@ -703,41 +708,31 @@ export default function Tasks() {
                     </div>
                   </div>
                 </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button 
-                      variant="ghost" 
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    >
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {user && task.createdBy && user.email?.toLowerCase() === task.createdBy?.toLowerCase() && (
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setTaskToLimitVisibility({ id: task.id, task });
-                        }}
-                      >
-                        <Share2 className="mr-2 h-4 w-4" />
-                        Limit Visibility
-                      </DropdownMenuItem>
-                    )}
-                    {user && task.createdBy && user.email?.toLowerCase() === task.createdBy?.toLowerCase() && (
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onClick={(e) => handleDeleteClick(e, task.id)}
-                      >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <MoreOptionsMenu
+                  items={[
+                    {
+                      icon: Edit,
+                      label: "Edit",
+                      onClick: () => {
+                        navigate(`/tasks/${task.id}`);
+                      },
+                    },
+                    {
+                      icon: Share2,
+                      label: "Limit Visibility",
+                      onClick: () => {
+                        setTaskToLimitVisibility({ id: task.id, task });
+                      },
+                      show: user && task.createdBy && user.email?.toLowerCase() === task.createdBy?.toLowerCase(),
+                    },
+                    {
+                      icon: Trash2,
+                      label: "Delete",
+                      onClick: (e) => handleDeleteClick(e, task.id),
+                      isDestructive: true,
+                    },
+                  ]}
+                />
               </div>
             </CardHeader>
           </Card>
