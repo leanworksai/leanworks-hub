@@ -28,6 +28,8 @@ export interface Task {
   projectId?: string;
   teams?: string[]; // Teams that can see this task (for tasks without projects)
   createdBy?: string; // Email of the user who created the task
+  visibility?: 'all_members' | 'specific_members';
+  visibleToMembers?: string[]; // Array of member emails who can view this task
   dueDate?: string;
   createdDate: string;
   createdAt?: number; // Timestamp in milliseconds for sorting

@@ -47,7 +47,8 @@ import {
   Trash2,
   Sparkles,
   Check,
-  ChevronsUpDown
+  ChevronsUpDown,
+  Share2
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
@@ -56,13 +57,14 @@ import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
-import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { cn } from "@/lib/utils";
+import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { useAuth } from "@/contexts/AuthContext";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {
@@ -174,14 +176,15 @@ export default function Tasks() {
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
+  const { user } = useAuth();
   const { parseDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover
   const [openDropdowns, setOpenDropdowns] = useState<Record<string, { status?: boolean; priority?: boolean; assignee?: boolean; dueDate?: boolean }>>({});
+  const [taskToLimitVisibility, setTaskToLimitVisibility] = useState<{ id: string; task: Task } | null>(null);
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -214,9 +217,9 @@ export default function Tasks() {
     });
 
   const handleTaskClick = (taskId: string) => {
-    // Don't open dialog if in selection mode
+    // Don't navigate if in selection mode
     if (isSelectionMode) return;
-    setSelectedTaskId(taskId);
+    navigate(`/tasks/${taskId}`);
   };
 
   const handleProjectClick = (e: React.MouseEvent, projectId: string) => {
@@ -713,13 +716,26 @@ export default function Tasks() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onClick={(e) => handleDeleteClick(e, task.id)}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
+                    {user && task.createdBy && user.email?.toLowerCase() === task.createdBy?.toLowerCase() && (
+                      <DropdownMenuItem
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTaskToLimitVisibility({ id: task.id, task });
+                        }}
+                      >
+                        <Share2 className="mr-2 h-4 w-4" />
+                        Limit Visibility
+                      </DropdownMenuItem>
+                    )}
+                    {user && task.createdBy && user.email?.toLowerCase() === task.createdBy?.toLowerCase() && (
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onClick={(e) => handleDeleteClick(e, task.id)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -739,16 +755,31 @@ export default function Tasks() {
         onOpenChange={setIsNewTaskDialogOpen} 
       />
 
-      {/* Task Detail Dialog */}
-      <TaskDetailDialog
-        taskId={selectedTaskId}
-        open={!!selectedTaskId}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedTaskId(null);
-          }
-        }}
-      />
+      {/* Limit Visibility Dialog */}
+      {taskToLimitVisibility && (
+        <LimitVisibilityDialog
+          open={!!taskToLimitVisibility}
+          onOpenChange={(open) => !open && setTaskToLimitVisibility(null)}
+          title="Limit Task Visibility"
+          itemName={taskToLimitVisibility.task.title}
+          currentVisibility={taskToLimitVisibility.task.visibility || 'all_members'}
+          currentVisibleToMembers={taskToLimitVisibility.task.visibleToMembers || []}
+          onSave={async (newVisibility, newVisibleToMembers) => {
+            await updateTaskMutation.mutateAsync({
+              taskId: taskToLimitVisibility.id,
+              updates: {
+                visibility: newVisibility,
+                visibleToMembers: newVisibleToMembers,
+              },
+            });
+            toast({
+              title: "Visibility updated",
+              description: "Task visibility has been updated successfully.",
+            });
+            setTaskToLimitVisibility(null);
+          }}
+        />
+      )}
 
       <AlertDialog open={!!taskToDelete} onOpenChange={(open) => !open && setTaskToDelete(null)}>
         <AlertDialogContent>

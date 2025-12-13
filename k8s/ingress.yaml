@@ -55,6 +55,13 @@ spec:
             name: ask-api
             port:
               number: 80
+      - path: /api/doc-summary
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
       # Legacy /ask path for backward compatibility
       - path: /ask
         pathType: Exact
@@ -124,6 +131,13 @@ spec:
             port:
               number: 80
       - path: /api/messages/generate-response
+        pathType: Exact
+        backend:
+          service:
+            name: ask-api
+            port:
+              number: 80
+      - path: /api/doc-summary
         pathType: Exact
         backend:
           service:

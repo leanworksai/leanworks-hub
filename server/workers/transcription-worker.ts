@@ -1256,10 +1256,12 @@ async function generateMeetingDocSummary(
       ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
       : process.env.AI_SERVICE_URL || 'http://ask-api:80';
     
-    const apiUrl = `${aiServiceBase}/api/docs/${docId}/summary`;
+    // Use the correct endpoint path for doc summary
+    const apiUrl = `${aiServiceBase}/api/doc-summary`;
     
-    // Prepare request body
+    // Prepare request body with docId included
     const requestBody = {
+      doc_id: docId,
       user_id: userEmail,
       org_slug: orgSlug,
     };
@@ -1287,6 +1289,7 @@ async function generateMeetingDocSummary(
     }
     
     // Make API call
+    console.log(`📡 Calling doc summary API: ${apiUrl} (GKE: ${!isLocalDev ? 'yes' : 'no'})`);
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers,
@@ -1295,7 +1298,17 @@ async function generateMeetingDocSummary(
     
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`);
+      const errorMsg = `API call failed: ${response.status} ${response.statusText} - ${errorText}`;
+      console.error(`❌ Doc summary API error for doc ${docId}:`, {
+        url: apiUrl,
+        status: response.status,
+        statusText: response.statusText,
+        error: errorText.substring(0, 500), // Limit error text length
+        isLocalDev,
+        hasBearerToken: !!headers['Authorization'],
+        hasApiKey: !!headers['X-API-Key']
+      });
+      throw new Error(errorMsg);
     }
     
     const result = await response.json();
@@ -1480,7 +1493,7 @@ async function handleCallEnded(message: any): Promise<void> {
         WHERE call_id = $2
       `, [JSON.stringify(transcriptsObj), callId]);
 
-      // Create docs for each participant
+      // Create a single shared doc for all participants
       // Fallback to session participants if event doesn't have participants
       let participantsToUse = participants;
       if (!participantsToUse || participantsToUse.length === 0) {
@@ -1492,9 +1505,9 @@ async function handleCallEnded(message: any): Promise<void> {
         }
       }
       
-        console.log(`📝 Checking if docs should be created: participants=${participantsToUse?.length || 0}, orgId=${orgId || 'missing'}`);
+      console.log(`📝 Checking if shared doc should be created: participants=${participantsToUse?.length || 0}, orgId=${orgId || 'missing'}`);
       if (participantsToUse && participantsToUse.length > 0) {
-        console.log(`✅ Creating docs for ${participantsToUse.length} participant(s)`);
+        console.log(`✅ Creating shared doc for ${participantsToUse.length} participant(s)`);
         const userInfoMap = await getUserInfoBatch(participantsToUse.map(p => p.email));
         const participantsWithNames = participantsToUse.map(p => {
           const info = userInfoMap.get(p.email.toLowerCase());
@@ -1511,7 +1524,7 @@ async function handleCallEnded(message: any): Promise<void> {
         
         // Log if transcript is empty
         if (!formattedTranscript || formattedTranscript.trim().length === 0) {
-          console.warn(`⚠️ No transcript content to include in docs for call ${callId}`);
+          console.warn(`⚠️ No transcript content to include in doc for call ${callId}`);
           console.warn(`   Session transcripts Map size: ${session.transcripts.size}`);
           console.warn(`   Session transcripts keys: ${Array.from(session.transcripts.keys()).join(', ')}`);
         }
@@ -1536,65 +1549,74 @@ async function handleCallEnded(message: any): Promise<void> {
           minute: '2-digit'
         });
 
-        // Create doc for each participant
-        for (const participant of participantsWithNames) {
-          try {
-            const docId = crypto.randomBytes(16).toString('hex');
-            const docTitle = `Meeting Notes - ${callDateStr}`;
-            
-            // Use transcript if available, otherwise show a message
-            const transcriptContent = formattedTranscript && formattedTranscript.trim().length > 0
-              ? formattedTranscript
-              : '<p><em>No transcript available for this call.</em></p>';
-            
-            const docContent = `
+        // Create a single shared doc visible to all participants
+        try {
+          const docId = crypto.randomBytes(16).toString('hex');
+          const docTitle = `Meeting Notes - ${callDateStr}`;
+          
+          // Use transcript if available, otherwise show a message
+          const transcriptContent = formattedTranscript && formattedTranscript.trim().length > 0
+            ? formattedTranscript
+            : '<p><em>No transcript available for this call.</em></p>';
+          
+          const docContent = `
+            <div>
+              <h2>Voice Call Transcript</h2>
+              <p><strong>Date:</strong> ${callDateStr}</p>
+              <p><strong>Participants:</strong> ${participantsWithNames.map(p => p.name).join(', ')}</p>
+              <hr>
               <div>
-                <h2>Voice Call Transcript</h2>
-                <p><strong>Date:</strong> ${callDateStr}</p>
-                <p><strong>Participants:</strong> ${participantsWithNames.map(p => p.name).join(', ')}</p>
-                <hr>
-                <div>
-                  ${transcriptContent}
-                </div>
+                ${transcriptContent}
               </div>
-            `;
+            </div>
+          `;
 
-            await pool.query(`
-              INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-            `, [
-              docId,
-              docTitle,
-              docContent,
-              participant.email.toLowerCase(),
-              projectId,
-              teamId,
-              JSON.stringify(['meeting', 'transcript']),
-              false
-            ]);
-
-            console.log(`✅ Created meeting doc for ${participant.email} (docId: ${docId})`);
-            
-            // Generate meeting doc summary asynchronously (don't wait for it)
-            if (finalOrgId && formattedTranscript && formattedTranscript.trim().length > 0) {
-              console.log(`📊 Triggering summary generation for doc ${docId} (orgId: ${finalOrgId})`);
-              try {
-                const orgSlug = await getOrgSlugById(finalOrgId);
-                // Call summary API in background (fire and forget)
-                generateMeetingDocSummary(docId, participant.email.toLowerCase(), orgSlug)
-                  .catch((error) => {
-                    console.error(`❌ Background summary generation failed for doc ${docId}:`, error);
-                  });
-              } catch (orgError: any) {
-                console.warn(`⚠️ Could not get org slug for summary generation:`, orgError.message);
-              }
-            }
-          } catch (docError: any) {
-            console.error(`❌ Error creating doc for ${participant.email}:`, docError);
-            console.error(`   Error details:`, docError.message, docError.stack);
+          // Set owner to first participant (host), and make doc visible only to host and participants
+          const ownerEmail = participantsWithNames[0].email.toLowerCase();
+          // Ensure owner (host) is included in visibleToMembers along with all participants
+          const visibleToMembers = participantsWithNames.map(p => p.email.toLowerCase());
+          // Explicitly ensure owner is included (should already be there as first participant, but be explicit)
+          if (!visibleToMembers.includes(ownerEmail)) {
+            visibleToMembers.push(ownerEmail);
           }
+
+          await pool.query(`
+            INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, visibility, visible_to_members, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+          `, [
+            docId,
+            docTitle,
+            docContent,
+            ownerEmail,
+            projectId,
+            teamId,
+            JSON.stringify(['meeting', 'transcript']),
+            false,
+            'specific_members', // Visibility: only host and participants
+            JSON.stringify(visibleToMembers)
+          ]);
+
+          console.log(`✅ Created shared meeting doc (docId: ${docId}) visible to ${visibleToMembers.length} participant(s): ${visibleToMembers.join(', ')}`);
+          
+          // Generate meeting doc summary asynchronously (only once for the shared doc)
+          if (finalOrgId && formattedTranscript && formattedTranscript.trim().length > 0) {
+            console.log(`📊 Triggering summary generation for shared doc ${docId} (orgId: ${finalOrgId})`);
+            try {
+              const orgSlug = await getOrgSlugById(finalOrgId);
+              // Call summary API in background (fire and forget)
+              generateMeetingDocSummary(docId, ownerEmail, orgSlug)
+                .catch((error) => {
+                  console.error(`❌ Background summary generation failed for doc ${docId}:`, error);
+                });
+            } catch (orgError: any) {
+              console.warn(`⚠️ Could not get org slug for summary generation:`, orgError.message);
+            }
+          }
+        } catch (docError: any) {
+          console.error(`❌ Error creating shared doc:`, docError);
+          console.error(`   Error details:`, docError.message, docError.stack);
         }
-        console.log(`✅ Finished processing docs for ${participantsToUse.length} participant(s)`);
+        console.log(`✅ Finished processing shared doc for ${participantsToUse.length} participant(s)`);
       } else {
         console.warn(`⚠️ Skipping doc creation: participants array is ${participantsToUse ? 'empty' : 'missing'}`);
         if (!finalOrgId) {

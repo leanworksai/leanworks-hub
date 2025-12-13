@@ -18,10 +18,11 @@ export const useTasks = () => {
 };
 
 // Hook to get tasks filtered by current user's project membership
-// Tasks without projects are visible to all org members
+// Tasks without projects are only visible to creator and assignee
 export const useUserTasks = () => {
   const { data: allTasks = [], isLoading: isLoadingTasks } = useTasks();
   const { data: userProjects = [], isLoading: isLoadingProjects } = useUserProjects();
+  const { user } = useAuth();
 
   // Create a set of project IDs from user's projects
   const userProjectIds = new Set(
@@ -33,9 +34,12 @@ export const useUserTasks = () => {
     userProjects.map((project) => project.name.toLowerCase())
   );
 
+  // Get current user email for filtering tasks without projects
+  const userEmail = user?.email?.toLowerCase();
+
   // Filter tasks to show:
   // 1. Tasks whose project is in user's projects (matched by ID or name)
-  // 2. Tasks without a project - visible to all org members
+  // 2. Tasks without a project - only visible to creator or assignee
   const userTasks = allTasks.filter((task) => {
     // If task has a project, check if it's in user's projects
     if (task.projectId) {
@@ -60,8 +64,34 @@ export const useUserTasks = () => {
       return false;
     }
     
-    // If task has no project, it's visible to all org members
-        return true;
+    // If task has no project, check task visibility
+    if (!userEmail) {
+      return false;
+    }
+    const isCreator = task.createdBy?.toLowerCase() === userEmail;
+    const isAssignee = task.assigneeId?.toLowerCase() === userEmail;
+    
+    // Creator or assignee always has access
+    if (isCreator || isAssignee) {
+      return true;
+    }
+    
+    // Check task visibility
+    const taskVisibility = task.visibility || 'all_members';
+    
+    // If visibility is 'all_members', all org members can see it
+    if (taskVisibility === 'all_members') {
+      return true;
+    }
+    
+    // If visibility is 'specific_members', check if user is in visibleToMembers
+    if (taskVisibility === 'specific_members') {
+      const visibleToMembers = task.visibleToMembers || [];
+      return visibleToMembers.some((email: string) => email.toLowerCase() === userEmail);
+    }
+    
+    // Default: only creator and assignee (shouldn't reach here with current logic)
+    return false;
   });
 
   return {

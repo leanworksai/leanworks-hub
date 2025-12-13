@@ -9,20 +9,49 @@ import { userQueries } from '../../database/queries.js';
 import { getOrgPool, getOrgSlugById, getSharedPool } from '../../database/multi-tenant-pool.js';
 
 /**
- * Check if a user has access to a project (either as a member or owner)
+ * Check if a user has access to a project (checks visibility settings)
  */
 async function isProjectMember(orgId: string, userEmail: string, projectId: string): Promise<boolean> {
   try {
     const pool = await getOrgPool(orgId);
+    const normalizedEmail = userEmail.toLowerCase();
     const result = await pool.query(
-      `SELECT 1 
+      `SELECT 
+         p.visibility,
+         p.visible_to_members,
+         p.owner_email
        FROM projects p
-       LEFT JOIN project_members pm ON p.id = pm.project_id AND pm.user_email = $2
-       WHERE p.id = $1 
-         AND (p.owner_email = $2 OR pm.user_email IS NOT NULL)`,
-      [projectId, userEmail.toLowerCase()]
+       WHERE p.id = $1`,
+      [projectId]
     );
-    return result.rows.length > 0;
+    
+    if (result.rows.length === 0) {
+      return false;
+    }
+    
+    const project = result.rows[0];
+    const visibility = project.visibility || 'all_members';
+    const isOwner = project.owner_email.toLowerCase() === normalizedEmail;
+    
+    // Owner always has access
+    if (isOwner) {
+      return true;
+    }
+    
+    // If visibility is 'all_members', all org members have access
+    if (visibility === 'all_members') {
+      return true;
+    }
+    
+    // If visibility is 'specific_members', check if user is in visible_to_members
+    if (visibility === 'specific_members') {
+      const visibleToMembers = Array.isArray(project.visible_to_members) 
+        ? project.visible_to_members 
+        : (project.visible_to_members ? JSON.parse(project.visible_to_members) : []);
+      return visibleToMembers.includes(normalizedEmail);
+    }
+    
+    return false;
   } catch (error) {
     console.error('Error checking project access:', error);
     return false;

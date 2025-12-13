@@ -523,7 +523,12 @@ function transformMembers(members: any[] | null): any[] {
 // ============================================================================
 
 /**
- * Check if a user has access to a project (either as a member or owner)
+ * Check if a user has access to a project based on visibility rules
+ * Access is granted if:
+ * - User is the project owner, OR
+ * - Project visibility is 'all_members' (default - visible to all org members), OR
+ * - Project visibility is 'specific_members' and user is in visible_to_members
+ * Note: project_members table is NOT used for access control - only visibility rules apply
  * @param orgId - Organization ID to query in the correct database
  * @param userEmail - User's email
  * @param projectId - Project ID to check access for
@@ -531,14 +536,43 @@ function transformMembers(members: any[] | null): any[] {
 async function hasProjectAccess(orgId: string, userEmail: string, projectId: string): Promise<boolean> {
   try {
     const pool = await getOrgPool(orgId);
+    const normalizedEmail = userEmail.toLowerCase();
     const result = await pool.query(`
-      SELECT 1 
+      SELECT 
+        p.visibility,
+        p.visible_to_members,
+        p.owner_email
       FROM projects p
-      LEFT JOIN project_members pm ON p.id = pm.project_id AND pm.user_email = $2
-      WHERE p.id = $1 
-        AND (p.owner_email = $2 OR pm.user_email IS NOT NULL)
-    `, [projectId, userEmail.toLowerCase()]);
-    return result.rows.length > 0;
+      WHERE p.id = $1
+    `, [projectId]);
+    
+    if (result.rows.length === 0) {
+      return false;
+    }
+    
+    const project = result.rows[0];
+    const visibility = project.visibility || 'all_members';
+    const isOwner = project.owner_email.toLowerCase() === normalizedEmail;
+    
+    // Owner always has access
+    if (isOwner) {
+      return true;
+    }
+    
+    // If visibility is 'all_members', all org members have access
+    if (visibility === 'all_members') {
+      return true;
+    }
+    
+    // If visibility is 'specific_members', check if user is in visible_to_members
+    if (visibility === 'specific_members') {
+      const visibleToMembers = Array.isArray(project.visible_to_members) 
+        ? project.visible_to_members 
+        : (project.visible_to_members ? JSON.parse(project.visible_to_members) : []);
+      return visibleToMembers.includes(normalizedEmail);
+    }
+    
+    return false;
   } catch (error) {
     console.error('Error checking project access:', error);
     return false;
@@ -2700,17 +2734,15 @@ app.get('/api/projects', authenticateUser, requireOrgMembership, async (req, res
         WHERE t.project_id = p.id), '[]'::json) as tasks
       FROM projects p
       WHERE (
-        -- User is a member of the project
-        EXISTS (
-          SELECT 1 FROM project_members pm 
-          WHERE pm.project_id = p.id 
-            AND pm.user_email = $1
-        )
-        -- OR user is the owner of the project
-        OR p.owner_email = $1
+        -- Owner always has access
+        p.owner_email = $1
+        -- OR visibility is 'all_members' (default - visible to all org members)
+        OR (p.visibility = 'all_members' OR p.visibility IS NULL)
+        -- OR visibility is 'specific_members' and user is in visible_to_members
+        OR (p.visibility = 'specific_members' AND p.visible_to_members IS NOT NULL AND p.visible_to_members @> $2::jsonb)
       )
       ORDER BY p.created_at DESC
-    `, [userEmail.toLowerCase()]);
+    `, [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
     
     // Collect all member emails for batch user lookup
     const allMemberEmails: string[] = [];
@@ -2788,10 +2820,10 @@ app.get('/api/projects/:id', authenticateUser, requireOrgMembership, async (req,
     const projectId = req.params.id;
     const pool = await getOrgPool(orgId);
     
-    // Check if user has access to this project
+    // Check if user has access to this project (based on visibility rules)
     const hasAccess = await hasProjectAccess(orgId, userEmail, projectId);
     if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view this project' });
+      return res.status(403).json({ error: 'Access denied: You do not have access to this project based on visibility settings' });
     }
     
     const result = await pool.query(`
@@ -2806,6 +2838,8 @@ app.get('/api/projects/:id', authenticateUser, requireOrgMembership, async (req,
         p.end_date,
         CASE WHEN p.due_date IS NOT NULL THEN p.due_date::text ELSE NULL END as due_date,
         p.owner_email,
+        p.visibility,
+        p.visible_to_members,
         p.created_at,
         p.updated_at,
         COALESCE((SELECT json_agg(json_build_object(
@@ -3033,6 +3067,20 @@ app.post('/api/projects', authenticateUser, requireOrgMembership, async (req, re
     const priority = project?.priority || 'medium';
     const dueDate = project?.dueDate || null;
     
+    // Validate visibility (default to 'all_members' - visible to all org members)
+    const validVisibility = ['all_members', 'specific_members'];
+    const projectVisibility = project?.visibility && validVisibility.includes(project.visibility) ? project.visibility : 'all_members';
+    
+    // Validate visibleToMembers for specific_members visibility
+    let visibleToMembersArray: string[] = [];
+    if (projectVisibility === 'specific_members') {
+      if (Array.isArray(project?.visibleToMembers) && project.visibleToMembers.length > 0) {
+        visibleToMembersArray = project.visibleToMembers.map((email: string) => email.toLowerCase());
+      } else {
+        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+      }
+    }
+    
     if (!name) {
       return res.status(400).json({ error: 'Project name is required' });
     }
@@ -3045,9 +3093,9 @@ app.post('/api/projects', authenticateUser, requireOrgMembership, async (req, re
     
     // Insert project
     await pool.query(`
-      INSERT INTO projects (id, name, description, team_id, status, priority, owner_email, due_date, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-    `, [projectId, name, description, teamId, status, priority, normalizedEmail, dueDate]);
+      INSERT INTO projects (id, name, description, team_id, status, priority, owner_email, due_date, visibility, visible_to_members, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+    `, [projectId, name, description, teamId, status, priority, normalizedEmail, dueDate, projectVisibility, JSON.stringify(visibleToMembersArray)]);
     
     // Add project members if provided
     const members = project?.members || [];
@@ -3118,6 +3166,25 @@ app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, async (re
     const updates = req.body;
     const pool = await getOrgPool(orgId);
     
+    // Check if user is trying to update visibility - only owners can do this
+    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
+      const projectCheck = await pool.query(
+        'SELECT owner_email FROM projects WHERE id = $1',
+        [projectId]
+      );
+      
+      if (projectCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Project not found' });
+      }
+      
+      const projectOwnerEmail = projectCheck.rows[0].owner_email?.toLowerCase();
+      const normalizedUserEmail = userEmail.toLowerCase();
+      
+      if (projectOwnerEmail !== normalizedUserEmail) {
+        return res.status(403).json({ error: 'Only the project owner can update visibility settings' });
+      }
+    }
+    
     const setClauses: string[] = [];
     const values: any[] = [];
     let paramIndex = 1;
@@ -3135,8 +3202,33 @@ app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, async (re
       endDate: 'end_date'
     };
     
+    // Handle visibility separately
+    if (updates.visibility !== undefined) {
+      const validVisibility = ['all_members', 'specific_members'];
+      const projectVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
+      setClauses.push(`visibility = $${paramIndex}`);
+      values.push(projectVisibility);
+      paramIndex++;
+      
+      // Handle visibleToMembers
+      if (projectVisibility === 'specific_members') {
+        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
+          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
+          setClauses.push(`visible_to_members = $${paramIndex}`);
+          values.push(JSON.stringify(visibleToMembersArray));
+          paramIndex++;
+        } else {
+          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+        }
+      } else {
+        setClauses.push(`visible_to_members = $${paramIndex}`);
+        values.push(JSON.stringify([]));
+        paramIndex++;
+      }
+    }
+    
     Object.entries(updates).forEach(([key, value]) => {
-      if (key !== 'id' && fieldMap[key]) {
+      if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && fieldMap[key]) {
         const dbField = fieldMap[key];
         setClauses.push(`${dbField} = $${paramIndex}`);
         values.push(value);
@@ -3333,8 +3425,11 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
+    const normalizedEmail = userEmail.toLowerCase();
     
-    // All org members can view all docs in the org
+    // Filter docs based on visibility:
+    // - 'all_members': visible to all org members (default)
+    // - 'specific_members': visible to owner and members in visible_to_members array (limited visibility)
     const result = await pool.query(`
       SELECT 
         id,
@@ -3345,11 +3440,17 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
         team_id,
         tags,
         is_pinned,
+        visibility,
+        visible_to_members,
         created_at,
         updated_at
       FROM docs
+      WHERE 
+        visibility = 'all_members'
+        OR owner_email = $1
+        OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
       ORDER BY is_pinned DESC, created_at DESC
-    `);
+    `, [normalizedEmail, JSON.stringify([normalizedEmail])]);
     
     console.log(`📚 GET /api/docs - Returning ${result.rows.length} docs for org ${orgId} (user: ${userEmail})`);
     
@@ -3357,6 +3458,9 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
     const transformed = result.rows.map(row => {
       const doc = transformRow(row);
       doc.tags = Array.isArray(doc.tags) ? doc.tags : (doc.tags ? JSON.parse(doc.tags) : []);
+      doc.visibleToMembers = Array.isArray(doc.visibleToMembers) 
+        ? doc.visibleToMembers 
+        : (doc.visibleToMembers ? JSON.parse(doc.visibleToMembers) : []);
       doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
       doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
       return doc;
@@ -3375,8 +3479,9 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     const orgId = (req as any).orgId;
     const docId = req.params.id;
     const pool = await getOrgPool(orgId);
+    const normalizedEmail = userEmail.toLowerCase();
     
-    // All org members can view any doc in the org
+    // Get doc and check visibility
     const result = await pool.query(`
       SELECT 
         id,
@@ -3387,6 +3492,8 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
         team_id,
         tags,
         is_pinned,
+        visibility,
+        visible_to_members,
         created_at,
         updated_at
       FROM docs
@@ -3397,8 +3504,32 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
       return res.status(404).json({ error: 'Doc not found' });
     }
     
-    const doc = transformRow(result.rows[0]);
+    const row = result.rows[0];
+    const docVisibility = row.visibility || 'all_members';
+    
+    // Check if user has access
+    const isOwner = row.owner_email.toLowerCase() === normalizedEmail;
+    const isAllMembers = docVisibility === 'all_members';
+    const isSpecificMembers = docVisibility === 'specific_members';
+    
+    let hasAccess = isOwner || isAllMembers;
+    
+    if (isSpecificMembers) {
+      const visibleToMembers = Array.isArray(row.visible_to_members) 
+        ? row.visible_to_members 
+        : (row.visible_to_members ? JSON.parse(row.visible_to_members) : []);
+      hasAccess = isOwner || visibleToMembers.includes(normalizedEmail);
+    }
+    
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'You do not have access to this document' });
+    }
+    
+    const doc = transformRow(row);
     doc.tags = Array.isArray(doc.tags) ? doc.tags : (doc.tags ? JSON.parse(doc.tags) : []);
+    doc.visibleToMembers = Array.isArray(doc.visibleToMembers) 
+      ? doc.visibleToMembers 
+      : (doc.visibleToMembers ? JSON.parse(doc.visibleToMembers) : []);
     doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
     doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
     
@@ -3415,18 +3546,31 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    const { id, title, content, projectId, teamId, tags, isPinned } = req.body;
+    const { id, title, content, projectId, teamId, tags, isPinned, visibility, visibleToMembers } = req.body;
     
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required' });
+    }
+    
+    // Validate visibility (default to 'all_members' - visible to all org members)
+    const validVisibility = ['all_members', 'specific_members'];
+    const docVisibility = visibility && validVisibility.includes(visibility) ? visibility : 'all_members';
+    
+    // Validate visibleToMembers for specific_members visibility
+    let visibleToMembersArray: string[] = [];
+    if (docVisibility === 'specific_members') {
+      if (!Array.isArray(visibleToMembers) || visibleToMembers.length === 0) {
+        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+      }
+      visibleToMembersArray = visibleToMembers.map((email: string) => email.toLowerCase());
     }
     
     const normalizedEmail = userEmail.toLowerCase();
     const docId = id || crypto.randomBytes(16).toString('hex');
     
     await pool.query(`
-      INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+      INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, visibility, visible_to_members, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
     `, [
       docId,
       title,
@@ -3435,7 +3579,9 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
       projectId || null,
       teamId || null,
       tags ? JSON.stringify(tags) : '[]',
-      isPinned || false
+      isPinned || false,
+      docVisibility,
+      JSON.stringify(visibleToMembersArray)
     ]);
     
     res.status(201).json({ 
@@ -3446,7 +3592,9 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
       projectId: projectId || null,
       teamId: teamId || null,
       tags: tags || [],
-      isPinned: isPinned || false
+      isPinned: isPinned || false,
+      visibility: docVisibility,
+      visibleToMembers: visibleToMembersArray
     });
   } catch (error) {
     console.error('Create doc error:', error);
@@ -3461,15 +3609,22 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
     const docId = req.params.id;
     const updates = req.body;
     const pool = await getOrgPool(orgId);
+    const normalizedEmail = userEmail.toLowerCase();
     
-    // Verify doc exists (all org members can edit docs)
+    // Verify doc exists and user has access to edit
     const checkResult = await pool.query(
-      'SELECT id FROM docs WHERE id = $1',
+      'SELECT id, owner_email FROM docs WHERE id = $1',
       [docId]
     );
     
     if (checkResult.rows.length === 0) {
       return res.status(404).json({ error: 'Doc not found' });
+    }
+    
+    // Only owner can edit docs
+    const isOwner = checkResult.rows[0].owner_email.toLowerCase() === normalizedEmail;
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Only the document owner can edit it' });
     }
     
     const setClauses: string[] = [];
@@ -3481,18 +3636,30 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
       content: 'content',
       projectId: 'project_id',
       teamId: 'team_id',
-      isPinned: 'is_pinned'
+      isPinned: 'is_pinned',
+      visibility: 'visibility'
     };
     
     Object.entries(updates).forEach(([key, value]) => {
       if (key !== 'id' && fieldMap[key]) {
         const dbField = fieldMap[key];
+        // Validate visibility value
+        if (key === 'visibility') {
+          const validVisibility = ['private', 'specific_members', 'all_members'];
+          if (!validVisibility.includes(value as string)) {
+            return; // Skip invalid visibility
+          }
+        }
         setClauses.push(`${dbField} = $${paramIndex}`);
         values.push(value);
         paramIndex++;
       } else if (key === 'tags' && Array.isArray(value)) {
         setClauses.push(`tags = $${paramIndex}::jsonb`);
         values.push(JSON.stringify(value));
+        paramIndex++;
+      } else if (key === 'visibleToMembers' && Array.isArray(value)) {
+        setClauses.push(`visible_to_members = $${paramIndex}::jsonb`);
+        values.push(JSON.stringify(value.map((email: string) => email.toLowerCase())));
         paramIndex++;
       }
     });
@@ -3566,6 +3733,8 @@ app.get('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) =
         t.project_id,
         COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
+        t.visibility,
+        t.visible_to_members,
         CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
         CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
         t.created_at,
@@ -3593,20 +3762,24 @@ app.get('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) =
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
       WHERE (
-        -- User is a member of the project
-        EXISTS (
-          SELECT 1 FROM project_members pm 
-          WHERE pm.project_id = t.project_id 
-            AND pm.user_email = $1
-        )
-        -- OR user is the owner of the project
-        OR EXISTS (
-          SELECT 1 FROM projects p2 
-          WHERE p2.id = t.project_id 
-            AND p2.owner_email = $1
-        )
-        -- OR task has no project (should still be visible to assignee or creator)
-        OR t.project_id IS NULL
+        -- Tasks with projects: project visibility determines task visibility
+        (t.project_id IS NOT NULL AND (
+          -- Project owner always has access
+          p.owner_email = $1
+          -- OR project visibility is 'all_members' (default - all org members can see)
+          OR (p.visibility = 'all_members' OR p.visibility IS NULL)
+          -- OR project visibility is 'specific_members' and user is in visible_to_members
+          OR (p.visibility = 'specific_members' AND p.visible_to_members IS NOT NULL AND p.visible_to_members @> $2::jsonb)
+        ))
+        -- OR tasks without projects: check task visibility
+        OR (t.project_id IS NULL AND (
+          -- Creator or assignee always has access
+          (t.created_by = $1 OR t.assignee_id = $1)
+          -- OR task visibility is 'all_members' (default - visible to all org members)
+          OR (t.visibility = 'all_members' OR t.visibility IS NULL)
+          -- OR task visibility is 'specific_members' and user is in visible_to_members
+          OR (t.visibility = 'specific_members' AND t.visible_to_members IS NOT NULL AND t.visible_to_members @> $2::jsonb)
+        ))
       )
       ORDER BY 
         CASE t.status
@@ -3618,7 +3791,7 @@ app.get('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) =
           ELSE 6
         END,
         t.created_at DESC
-    `, [userEmail.toLowerCase()]);
+    `, [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
     
     // Collect all user emails for batch lookup
     const allEmails: string[] = [];
@@ -3767,10 +3940,10 @@ app.get('/api/tasks/project/:projectId', authenticateUser, requireOrgMembership,
     const projectId = req.params.projectId;
     const pool = await getOrgPool(orgId);
     
-    // Check if user has access to this project
+    // Check if user has access to this project (based on visibility rules)
     const hasAccess = await hasProjectAccess(orgId, userEmail, projectId);
     if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view tasks' });
+      return res.status(403).json({ error: 'Access denied: You do not have access to this project based on visibility settings' });
     }
     
     const result = await pool.query(`
@@ -3908,15 +4081,39 @@ app.get('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
     
     const taskInfo = taskCheck.rows[0];
     
-    // If task has a project, check if user has access to that project
+    // If task has a project, check if user has access to that project (project visibility determines task visibility)
     if (taskInfo.project_id) {
       const hasAccess = await hasProjectAccess(orgId, userEmail, taskInfo.project_id);
       if (!hasAccess) {
-        return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view this task' });
+        return res.status(403).json({ error: 'Access denied: You must have access to the project to view this task' });
+      }
+    } else {
+      // If task has no project, check task visibility
+      const userEmailLower = userEmail.toLowerCase();
+      const isCreator = taskInfo.created_by && taskInfo.created_by.toLowerCase() === userEmailLower;
+      const isAssignee = taskInfo.assignee_id && taskInfo.assignee_id.toLowerCase() === userEmailLower;
+      const taskVisibility = taskInfo.visibility || 'all_members';
+      
+      // Creator or assignee always has access
+      if (isCreator || isAssignee) {
+        // Allow access
+      } else if (taskVisibility === 'all_members') {
+        // All org members have access
+        // Allow access
+      } else if (taskVisibility === 'specific_members') {
+        // Check if user is in visible_to_members
+        const visibleToMembers = Array.isArray(taskInfo.visible_to_members) 
+          ? taskInfo.visible_to_members 
+          : (taskInfo.visible_to_members ? JSON.parse(taskInfo.visible_to_members) : []);
+        const hasAccess = visibleToMembers.some((email: string) => email.toLowerCase() === userEmailLower);
+        if (!hasAccess) {
+          return res.status(403).json({ error: 'Access denied: This task is only visible to specific members' });
+        }
+      } else {
+        // Default: only creator and assignee
+        return res.status(403).json({ error: 'Access denied: You must be the creator or assignee to view this task' });
       }
     }
-    // If task has no project, it's visible to all org members (no access check needed)
-    // The requireOrgMembership middleware already ensures the user is a member of the org
     
     const result = await pool.query(`
       SELECT 
@@ -3931,6 +4128,8 @@ app.get('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
         t.project_id,
         COALESCE(t.project_name, p.name) as project_name,
         t.created_by,
+        t.visibility,
+        t.visible_to_members,
         CASE WHEN t.due_date IS NOT NULL THEN t.due_date::text ELSE NULL END as due_date,
         CASE WHEN t.created_date IS NOT NULL THEN t.created_date::text ELSE NULL END as created_date,
         t.created_at,
@@ -4030,6 +4229,11 @@ app.get('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
     task.assignee = task.assigneeName || null;
     task.assigneeAvatar = task.assigneeAvatar || null;
     
+    // Ensure createdBy is set (transformRow should handle this, but be explicit)
+    if (!task.createdBy && row.created_by) {
+      task.createdBy = row.created_by;
+    }
+    
     // If assigneeId exists but assignee is still null, use email as fallback
     if (task.assigneeId && !task.assignee) {
       task.assignee = task.assigneeId;
@@ -4110,7 +4314,21 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) 
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
-    const { title, description, projectId, projectName, assigneeId, assignee, assigneeAvatar, status, priority, dueDate, tags, reason, estimatedHours } = req.body;
+    const { title, description, projectId, projectName, assigneeId, assignee, assigneeAvatar, status, priority, dueDate, tags, reason, estimatedHours, visibility, visibleToMembers } = req.body;
+    
+    // Validate visibility (default to 'all_members' - visible to all org members)
+    const validVisibility = ['all_members', 'specific_members'];
+    const taskVisibility = visibility && validVisibility.includes(visibility) ? visibility : 'all_members';
+    
+    // Validate visibleToMembers for specific_members visibility
+    let visibleToMembersArray: string[] = [];
+    if (taskVisibility === 'specific_members') {
+      if (Array.isArray(visibleToMembers) && visibleToMembers.length > 0) {
+        visibleToMembersArray = visibleToMembers.map((email: string) => email.toLowerCase());
+      } else {
+        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+      }
+    }
     const pool = await getOrgPool(orgId);
     
     // If assigneeId is provided but assignee/assigneeAvatar are not, look up the user
@@ -4169,9 +4387,9 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) 
     await pool.query(`
       INSERT INTO tasks (
         id, title, description, project_id, project_name, assignee_id, assignee_name, assignee_avatar, status, 
-        priority, due_date, created_by, created_at, tags, reason, estimated_hours
+        priority, due_date, created_by, created_at, tags, reason, estimated_hours, visibility, visible_to_members
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
     `, [
       taskId, 
       title, 
@@ -4188,7 +4406,9 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) 
       Date.now(),
       tags ? JSON.stringify(tags) : null,
       reason || null,
-      estimatedHours || null
+      estimatedHours || null,
+      taskVisibility,
+      JSON.stringify(visibleToMembersArray)
     ]);
     
     res.status(201).json({ id: taskId, title, description, projectId, assigneeId, status, priority });
@@ -4205,6 +4425,25 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
     const taskId = req.params.id;
     const updates = req.body;
     const pool = await getOrgPool(orgId);
+    
+    // Check if user is trying to update visibility - only creators can do this
+    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
+      const taskCheck = await pool.query(
+        'SELECT created_by FROM tasks WHERE id = $1',
+        [taskId]
+      );
+      
+      if (taskCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      
+      const taskCreatorEmail = taskCheck.rows[0].created_by?.toLowerCase();
+      const normalizedUserEmail = userEmail.toLowerCase();
+      
+      if (taskCreatorEmail !== normalizedUserEmail) {
+        return res.status(403).json({ error: 'Only the task creator can update visibility settings' });
+      }
+    }
     
     const setClauses: string[] = [];
     const values: any[] = [];
@@ -4228,8 +4467,33 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
       reason: 'reason'
     };
     
+    // Handle visibility separately
+    if (updates.visibility !== undefined) {
+      const validVisibility = ['all_members', 'specific_members'];
+      const taskVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
+      setClauses.push(`visibility = $${paramIndex}`);
+      values.push(taskVisibility);
+      paramIndex++;
+      
+      // Handle visibleToMembers
+      if (taskVisibility === 'specific_members') {
+        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
+          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
+          setClauses.push(`visible_to_members = $${paramIndex}`);
+          values.push(JSON.stringify(visibleToMembersArray));
+          paramIndex++;
+        } else {
+          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+        }
+      } else {
+        setClauses.push(`visible_to_members = $${paramIndex}`);
+        values.push(JSON.stringify([]));
+        paramIndex++;
+      }
+    }
+    
     Object.entries(updates).forEach(([key, value]) => {
-      if (key !== 'id' && fieldMap[key]) {
+      if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && fieldMap[key]) {
         const dbField = fieldMap[key];
         // Handle tags as JSONB
         if (key === 'tags' && Array.isArray(value)) {
@@ -4272,6 +4536,25 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
     const updates = req.body;
     const pool = await getOrgPool(orgId);
     
+    // Check if user is trying to update visibility - only creators can do this
+    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
+      const taskCheck = await pool.query(
+        'SELECT created_by FROM tasks WHERE id = $1',
+        [taskId]
+      );
+      
+      if (taskCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+      
+      const taskCreatorEmail = taskCheck.rows[0].created_by?.toLowerCase();
+      const normalizedUserEmail = userEmail.toLowerCase();
+      
+      if (taskCreatorEmail !== normalizedUserEmail) {
+        return res.status(403).json({ error: 'Only the task creator can update visibility settings' });
+      }
+    }
+    
     const setClauses: string[] = [];
     const values: any[] = [];
     let paramIndex = 1;
@@ -4294,8 +4577,33 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
       reason: 'reason'
     };
     
+    // Handle visibility separately (same as PUT endpoint)
+    if (updates.visibility !== undefined) {
+      const validVisibility = ['all_members', 'specific_members'];
+      const taskVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
+      setClauses.push(`visibility = $${paramIndex}`);
+      values.push(taskVisibility);
+      paramIndex++;
+      
+      // Handle visibleToMembers
+      if (taskVisibility === 'specific_members') {
+        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
+          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
+          setClauses.push(`visible_to_members = $${paramIndex}`);
+          values.push(JSON.stringify(visibleToMembersArray));
+          paramIndex++;
+        } else {
+          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+        }
+      } else {
+        setClauses.push(`visible_to_members = $${paramIndex}`);
+        values.push(JSON.stringify([]));
+        paramIndex++;
+      }
+    }
+    
     Object.entries(updates).forEach(([key, value]) => {
-      if (key !== 'id' && fieldMap[key]) {
+      if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && fieldMap[key]) {
         const dbField = fieldMap[key];
         // Handle tags as JSONB
         if (key === 'tags' && Array.isArray(value)) {
@@ -4303,7 +4611,7 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
           values.push(JSON.stringify(value));
         } else {
           setClauses.push(`${dbField} = $${paramIndex}`);
-        values.push(value);
+          values.push(value);
         }
         paramIndex++;
       }

@@ -17,11 +17,13 @@ export const useProjects = () => {
 };
 
 // Hook to get projects accessible to the current user
-// Backend already filters projects to only return those where user is a member or owner
+// Backend already filters projects based on visibility rules only
 export const useUserProjects = () => {
   // Backend already handles access control - it only returns projects where:
-  // 1. User is a project member (in project_members table), OR
-  // 2. User is the project owner
+  // 1. User is the project owner, OR
+  // 2. Project visibility is 'all_members' (default - visible to all org members), OR
+  // 3. Project visibility is 'specific_members' and user is in visible_to_members
+  // Note: project_members table is NOT used for access control - only visibility rules apply
   // So we can just return the projects directly without additional filtering
   return useProjects();
 };

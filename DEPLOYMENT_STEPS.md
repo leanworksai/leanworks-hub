@@ -31,33 +31,13 @@ gcloud projects add-iam-policy-binding leanworks-474204 \
 
 **Note:** `roles/secretmanager.secretAccessor` and `roles/cloudsql.client` should already be granted.
 
-### 3. Run Database Migration
+### 3. Database Schema
 
-The migration needs to be run for each organization database. You have two options:
-
-#### Option A: Run locally with Cloud SQL Proxy
-
-```bash
-# Start Cloud SQL Proxy (in a separate terminal)
-cloud-sql-proxy --credentials-file=./gcp_credential.json leanworks-474204:us-west1:leanworks-prod --port=5432
-
-# In another terminal, run the migration
-npx tsx database/migrate-transcription-tables.ts
-```
-
-#### Option B: Run in Kubernetes (recommended for production)
-
-Create a Kubernetes job to run the migration:
+The database schema is managed through `database/schema.sql` and `database/shared-schema.sql`. 
+Initialize the schema using:
 
 ```bash
-kubectl create job transcription-migration --from=cronjob/your-migration-job
-# Or create a one-time pod to run the migration
-```
-
-Or manually run in a pod:
-```bash
-kubectl run migration-pod --image=us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:latest --rm -it --restart=Never -- \
-  npx tsx database/migrate-transcription-tables.ts
+npm run db:init
 ```
 
 ### 4. Deploy Updated Code
@@ -92,7 +72,6 @@ gcloud pubsub topics list
 
 - ✅ Pub/Sub infrastructure created
 - ⏳ IAM roles need to be granted (manual step)
-- ⏳ Database migration needs to be run (requires DB connection)
 - ⏳ Code deployment (run `./deploy.sh`)
 
 ## 🔍 Verification

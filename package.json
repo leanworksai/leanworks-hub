@@ -15,12 +15,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "migrate:firestore": "tsx scripts/migrate-to-firestore.ts",
     "sync:users": "tsx scripts/sync-users-from-teams.ts",
-    "migrate:team-owners": "tsx scripts/migrate-team-owners.ts",
     "db:init": "tsx database/init-schema.ts",
-    "migrate:postgres": "tsx database/migrate-multi-tenant.ts",
-    "migrate:postgres:old": "tsx database/migrate-firestore-to-postgres.ts",
     "test:transcription": "tsx scripts/test-transcription.ts"
   },
   "dependencies": {

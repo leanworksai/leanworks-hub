@@ -17,14 +17,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Pin, Trash2, Edit, User } from "lucide-react";
+import { Plus, MoreVertical, Pin, Trash2, Edit, User, Share2, Lock } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useDocs, useDeleteDoc } from "@/hooks/useDocs";
+import { useDocs, useDeleteDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useUsers } from "@/hooks/useUsers";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import { format } from "date-fns";
 import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 
 const truncateText = (html: string, maxLength: number) => {
   // Remove HTML tags for truncation
@@ -38,8 +40,16 @@ export default function Docs() {
   const { data: docs = [], isLoading } = useDocs();
   const { data: users = [] } = useUsers();
   const deleteDoc = useDeleteDoc();
+  const updateDoc = useUpdateDoc();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [docToDelete, setDocToDelete] = useState<string | null>(null);
+  const [docToShare, setDocToShare] = useState<{ id: string; doc: any } | null>(null);
+
+  // Check if user is the owner of a doc
+  const isOwner = (doc: any) => {
+    return user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase();
+  };
 
   // Helper function to get user display name from email
   const getUserDisplayName = (email: string): string => {
@@ -67,6 +77,12 @@ export default function Docs() {
     e.stopPropagation();
     trackClick('delete_doc', '/docs');
     setDocToDelete(docId);
+  };
+
+  const handleShareClick = (e: React.MouseEvent, doc: any) => {
+    e.stopPropagation();
+    trackClick('limit_visibility_doc', '/docs');
+    setDocToShare({ id: doc.id, doc });
   };
 
   const handleDeleteConfirm = async () => {
@@ -147,12 +163,17 @@ export default function Docs() {
                 {pinnedDocs.map((doc) => (
                   <Card
                     key={doc.id}
-                    className="cursor-pointer hover:shadow-md transition-shadow"
+                    className="cursor-pointer hover:shadow-md transition-shadow relative"
                     onClick={() => {
                       trackView('doc', doc.id);
                       navigate(`/docs/${doc.id}`);
                     }}
                   >
+                    {doc.visibility === 'private' && (
+                      <div className="absolute top-2 left-2 z-10">
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
                     <CardHeader>
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
@@ -169,6 +190,12 @@ export default function Docs() {
                               <Edit className="mr-2 h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
+                            {isOwner(doc) && (
+                              <DropdownMenuItem onClick={(e) => handleShareClick(e, doc)}>
+                                <Share2 className="mr-2 h-4 w-4" />
+                                Limit Visibility
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem
                               onClick={(e) => handleDeleteClick(e, doc.id)}
                               className="text-destructive"
@@ -214,12 +241,17 @@ export default function Docs() {
                 {unpinnedDocs.map((doc) => (
                   <Card
                     key={doc.id}
-                    className="cursor-pointer hover:shadow-md transition-shadow"
+                    className="cursor-pointer hover:shadow-md transition-shadow relative"
                     onClick={() => {
                       trackView('doc', doc.id);
                       navigate(`/docs/${doc.id}`);
                     }}
                   >
+                    {doc.visibility === 'private' && (
+                      <div className="absolute top-2 left-2 z-10">
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    )}
                     <CardHeader>
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
@@ -236,6 +268,12 @@ export default function Docs() {
                               <Edit className="mr-2 h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
+                            {isOwner(doc) && (
+                              <DropdownMenuItem onClick={(e) => handleShareClick(e, doc)}>
+                                <Share2 className="mr-2 h-4 w-4" />
+                                Limit Visibility
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem
                               onClick={(e) => handleDeleteClick(e, doc.id)}
                               className="text-destructive"
@@ -290,6 +328,32 @@ export default function Docs() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Limit Visibility Dialog */}
+      {docToShare && (
+        <LimitVisibilityDialog
+          open={!!docToShare}
+          onOpenChange={(open) => !open && setDocToShare(null)}
+          title="Limit Document Visibility"
+          itemName={docToShare.doc.title}
+          currentVisibility={docToShare.doc.visibility || 'all_members'}
+          currentVisibleToMembers={docToShare.doc.visibleToMembers || []}
+          onSave={async (newVisibility, newVisibleToMembers) => {
+            await updateDoc.mutateAsync({
+              docId: docToShare.id,
+              updates: {
+                visibility: newVisibility,
+                visibleToMembers: newVisibleToMembers,
+              },
+            });
+            toast({
+              title: "Visibility updated",
+              description: "Document visibility has been updated successfully.",
+            });
+            setDocToShare(null);
+          }}
+        />
+      )}
     </div>
   );
 }

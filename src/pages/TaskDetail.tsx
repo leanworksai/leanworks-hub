@@ -56,7 +56,8 @@ import {
   ArrowRight,
   Check,
   ChevronsUpDown,
-  Trash2
+  Trash2,
+  Share2
 } from "lucide-react";
 import { Task } from "@/data/tasksData";
 import { useTask, useUpdateTask, useDeleteTask } from "@/hooks/useTasks";
@@ -69,6 +70,8 @@ import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { useDateSelection } from "@/hooks/useDateSelection";
+import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { useAuth } from "@/contexts/AuthContext";
 
 const getInitials = (name: string): string => {
   return name
@@ -213,8 +216,10 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showLimitVisibilityDialog, setShowLimitVisibilityDialog] = useState(false);
   
   const { data: task, isLoading } = useTask(taskId || '');
+  const { user } = useAuth();
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
@@ -313,10 +318,12 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     return (
       <div className="space-y-6 animate-fade-in">
         {!isDialog && (
-          <Button variant="ghost" onClick={handleBack}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Tasks
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button variant="ghost" size="sm" onClick={handleBack}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+          </div>
         )}
         <div className="text-center py-12">
           <p className="text-muted-foreground">Loading task...</p>
@@ -329,10 +336,12 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     return (
       <div className="space-y-6 animate-fade-in">
         {!isDialog && (
-          <Button variant="ghost" onClick={handleBack}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Tasks
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button variant="ghost" size="sm" onClick={handleBack}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+          </div>
         )}
         <div className="text-center py-12">
           <h1 className="text-2xl font-bold">Task not found</h1>
@@ -346,10 +355,12 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     return (
       <div className="space-y-6 animate-fade-in">
         {!isDialog && (
-          <Button variant="ghost" onClick={handleBack}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Tasks
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button variant="ghost" size="sm" onClick={handleBack}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+          </div>
         )}
         <div className="text-center py-12">
           <p className="text-muted-foreground">You don't have access to this task.</p>
@@ -463,13 +474,39 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     });
   };
 
+  // Check if user is the creator
+  const taskCreatorEmail = task.createdBy?.toLowerCase();
+  const userEmail = user?.email?.toLowerCase();
+  const isCreator = !task.createdBy || (taskCreatorEmail && userEmail && taskCreatorEmail === userEmail);
+
   return (
     <div className="space-y-6 animate-fade-in">
       {!isDialog && (
-        <Button variant="ghost" onClick={handleBack}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Tasks
-        </Button>
+        <div className="flex items-center justify-between">
+          <Button variant="ghost" size="sm" onClick={handleBack}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back
+          </Button>
+          {isCreator && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowLimitVisibilityDialog(true)}
+              >
+                <Share2 className="mr-2 h-4 w-4" />
+                Limit Visibility
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setShowDeleteDialog(true)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       <div>
@@ -501,18 +538,6 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
               )}
             </div>
           </div>
-          {/* Delete button on right when NOT in dialog mode */}
-          {!isDialog && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
         </div>
         {editingField === 'description' && editedTask ? (
           <Textarea
@@ -1036,6 +1061,31 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Limit Visibility Dialog */}
+      {task && (
+        <LimitVisibilityDialog
+          open={showLimitVisibilityDialog}
+          onOpenChange={setShowLimitVisibilityDialog}
+          title="Limit Task Visibility"
+          itemName={task.title}
+          currentVisibility={task.visibility || 'all_members'}
+          currentVisibleToMembers={task.visibleToMembers || []}
+          onSave={async (newVisibility, newVisibleToMembers) => {
+            await updateTaskMutation.mutateAsync({
+              taskId: task.id,
+              updates: {
+                visibility: newVisibility,
+                visibleToMembers: newVisibleToMembers,
+              },
+            });
+            toast({
+              title: "Visibility updated",
+              description: "Task visibility has been updated successfully.",
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

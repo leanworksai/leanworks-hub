@@ -1,4 +1,4 @@
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
 import TaskDetail from "@/pages/TaskDetail";
@@ -52,6 +52,12 @@ export function TaskDetailDialog({ taskId, open, onOpenChange }: TaskDetailDialo
     <>
       <Dialog open={open && !!taskId} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto p-0">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Task Details</DialogTitle>
+            <DialogDescription>
+              {task ? `View and edit details for "${task.title}"` : "View and edit task details"}
+            </DialogDescription>
+          </DialogHeader>
           {/* Delete button positioned absolutely relative to DialogContent - same as exit button */}
           {taskId && (
             <Button

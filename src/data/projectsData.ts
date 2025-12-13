@@ -44,6 +44,8 @@ export interface Project {
   createdDate: string;
   statusColor: string;
   ownerEmail?: string; // Email of the project owner/creator
+  visibility?: 'all_members' | 'specific_members';
+  visibleToMembers?: string[]; // Array of member emails who can view this project
   members: ProjectMember[];
   tasks: Task[];
   progressUpdates: ProgressUpdate[];

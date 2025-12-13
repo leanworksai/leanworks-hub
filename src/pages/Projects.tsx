@@ -24,9 +24,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, MoreVertical, Users, Calendar, Trash2, Sparkles } from "lucide-react";
+import { Plus, MoreVertical, Users, Calendar, Trash2, Sparkles, Share2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useUserProjects, useDeleteProject } from "@/hooks/useProjects";
+import { useUserProjects, useDeleteProject, useUpdateProject } from "@/hooks/useProjects";
 import { useUpdateSummaries } from "@/hooks/useUpdateSummaries";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
@@ -36,6 +36,8 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 import { useDateSelection } from "@/hooks/useDateSelection";
+import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { useAuth } from "@/contexts/AuthContext";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
@@ -50,11 +52,14 @@ export default function Projects() {
   const { data: projects = [], isLoading } = useUserProjects();
   const { data: updateSummaries = {}, isLoading: isLoadingSummaries } = useUpdateSummaries();
   const deleteProject = useDeleteProject();
+  const updateProject = useUpdateProject();
   const { toast } = useToast();
   const { isFreePlan } = useSubscription();
+  const { user } = useAuth();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   const [hoveredProject, setHoveredProject] = useState<string | null>(null); // Stores project ID
+  const [projectToLimitVisibility, setProjectToLimitVisibility] = useState<{ id: string; project: any } | null>(null);
 
   const handleCardClick = (projectId: string) => {
     // Don't navigate if in selection mode
@@ -216,13 +221,26 @@ export default function Projects() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onClick={(e) => handleDeleteClick(e, project.id, project.name)}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
+                    {user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase() && (
+                      <DropdownMenuItem
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setProjectToLimitVisibility({ id: project.id, project });
+                        }}
+                      >
+                        <Share2 className="mr-2 h-4 w-4" />
+                        Limit Visibility
+                      </DropdownMenuItem>
+                    )}
+                    {user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase() && (
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onClick={(e) => handleDeleteClick(e, project.id, project.name)}
+                      >
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -247,6 +265,32 @@ export default function Projects() {
         open={isNewProjectDialogOpen} 
         onOpenChange={setIsNewProjectDialogOpen} 
       />
+
+      {/* Limit Visibility Dialog */}
+      {projectToLimitVisibility && (
+        <LimitVisibilityDialog
+          open={!!projectToLimitVisibility}
+          onOpenChange={(open) => !open && setProjectToLimitVisibility(null)}
+          title="Limit Project Visibility"
+          itemName={projectToLimitVisibility.project.name}
+          currentVisibility={projectToLimitVisibility.project.visibility || 'all_members'}
+          currentVisibleToMembers={projectToLimitVisibility.project.visibleToMembers || []}
+          onSave={async (newVisibility, newVisibleToMembers) => {
+            await updateProject.mutateAsync({
+              projectId: projectToLimitVisibility.id,
+              updates: {
+                visibility: newVisibility,
+                visibleToMembers: newVisibleToMembers,
+              },
+            });
+            toast({
+              title: "Visibility updated",
+              description: "Project visibility has been updated successfully.",
+            });
+            setProjectToLimitVisibility(null);
+          }}
+        />
+      )}
 
       <AlertDialog open={!!projectToDelete} onOpenChange={(open) => !open && setProjectToDelete(null)}>
         <AlertDialogContent>

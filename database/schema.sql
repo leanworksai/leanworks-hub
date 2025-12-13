@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS projects (
   end_date DATE,
   due_date DATE,
   owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
+  visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
+  visible_to_members JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -132,6 +134,8 @@ CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id);
 CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_email);
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
 CREATE INDEX IF NOT EXISTS idx_projects_priority ON projects(priority);
+CREATE INDEX IF NOT EXISTS idx_projects_visibility ON projects(visibility);
+CREATE INDEX IF NOT EXISTS idx_projects_visible_to_members ON projects USING GIN (visible_to_members);
 
 -- Project members (normalized from projects.members array)
 CREATE TABLE IF NOT EXISTS project_members (
@@ -177,6 +181,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE CASCADE,
   project_name VARCHAR(255),
   created_by VARCHAR(255),  -- References user in shared DB (email)
+  visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
+  visible_to_members JSONB DEFAULT '[]'::jsonb,
   due_date DATE,
   created_date DATE,
   created_at BIGINT,
@@ -193,6 +199,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_tags ON tasks USING GIN (tags);
+CREATE INDEX IF NOT EXISTS idx_tasks_visibility ON tasks(visibility);
+CREATE INDEX IF NOT EXISTS idx_tasks_visible_to_members ON tasks USING GIN (visible_to_members);
 
 -- Task comments (normalized from tasks.comments array)
 CREATE TABLE IF NOT EXISTS task_comments (
@@ -282,6 +290,8 @@ CREATE TABLE IF NOT EXISTS docs (
   team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
   tags JSONB DEFAULT '[]'::jsonb,
   is_pinned BOOLEAN DEFAULT FALSE,
+  visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
+  visible_to_members JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
@@ -291,6 +301,8 @@ CREATE INDEX IF NOT EXISTS idx_docs_project ON docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_docs_team ON docs(team_id);
 CREATE INDEX IF NOT EXISTS idx_docs_created_at ON docs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_docs_pinned ON docs(is_pinned DESC, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_docs_visibility ON docs(visibility);
+CREATE INDEX IF NOT EXISTS idx_docs_visible_to_members ON docs USING GIN (visible_to_members);
 
 -- ============================================================================
 -- MATERIALIZED VIEWS FOR ANALYTICS

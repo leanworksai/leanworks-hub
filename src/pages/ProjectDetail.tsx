@@ -15,8 +15,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check } from "lucide-react";
-import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember } from "@/hooks/useProjects";
+import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2 } from "lucide-react";
+import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember, useUpdateProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState, useEffect } from "react";
@@ -26,7 +26,6 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { cn } from "@/lib/utils";
 import { TaskTooltip } from "@/components/TaskTooltip";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
-import { TaskDetailDialog } from "@/components/TaskDetailDialog";
 import {
   Dialog,
   DialogContent,
@@ -49,6 +48,7 @@ import {
 } from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { useDateSelection } from "@/hooks/useDateSelection";
+import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -94,10 +94,11 @@ export default function ProjectDetail() {
   const [memberPopoverOpen, setMemberPopoverOpen] = useState(false);
   const [memberToRemove, setMemberToRemove] = useState<{ email: string; name: string } | null>(null);
   const [showNewTaskDialog, setShowNewTaskDialog] = useState(false);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [showLimitVisibilityDialog, setShowLimitVisibilityDialog] = useState(false);
   const deleteProject = useDeleteProject();
   const addMember = useAddProjectMember();
   const removeMember = useRemoveProjectMember();
+  const updateProject = useUpdateProject();
   const { toast } = useToast();
   const { isFreePlan } = useSubscription();
   
@@ -382,22 +383,35 @@ export default function ProjectDetail() {
 
   return (
     <div className="space-y-4 sm:space-y-6 animate-fade-in">
-      <Button variant="ghost" onClick={() => navigate("/projects")} className="w-full sm:w-auto">
-        <ArrowLeft className="mr-2 h-4 w-4" />
-        Back to Projects
-      </Button>
+      <div className="flex items-center justify-between">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/projects")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back
+        </Button>
+        {isOwner && (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowLimitVisibilityDialog(true)}
+            >
+              <Share2 className="mr-2 h-4 w-4" />
+              Limit Visibility
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowDeleteDialog(true)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+      </div>
 
       <div>
         <div className="flex items-start justify-between mb-2 gap-2">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight flex-1 min-w-0">{project.name}</h1>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => setShowDeleteDialog(true)}
-            className="flex-shrink-0"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
         </div>
         <p className="text-foreground text-base sm:text-lg mb-4">{project.description}</p>
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 text-sm text-muted-foreground">
@@ -538,7 +552,7 @@ export default function ProjectDetail() {
                       <div 
                         key={task.id} 
                         className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border cursor-pointer hover:bg-background/70 transition-colors"
-                        onClick={() => setSelectedTaskId(task.id)}
+                        onClick={() => navigate(`/tasks/${task.id}`)}
                       >
                         {task.reason && (
                           <div className="flex-shrink-0 pt-0.5" onClick={(e) => e.stopPropagation()}>
@@ -844,16 +858,30 @@ export default function ProjectDetail() {
         initialProjectId={project.id}
       />
 
-      {/* Task Detail Dialog */}
-      <TaskDetailDialog
-        taskId={selectedTaskId}
-        open={!!selectedTaskId}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedTaskId(null);
-          }
-        }}
-      />
+      {/* Limit Visibility Dialog */}
+      {project && (
+        <LimitVisibilityDialog
+          open={showLimitVisibilityDialog}
+          onOpenChange={setShowLimitVisibilityDialog}
+          title="Limit Project Visibility"
+          itemName={project.name}
+          currentVisibility={project.visibility || 'all_members'}
+          currentVisibleToMembers={project.visibleToMembers || []}
+          onSave={async (newVisibility, newVisibleToMembers) => {
+            await updateProject.mutateAsync({
+              projectId: project.id,
+              updates: {
+                visibility: newVisibility,
+                visibleToMembers: newVisibleToMembers,
+              },
+            });
+            toast({
+              title: "Visibility updated",
+              description: "Project visibility has been updated successfully.",
+            });
+          }}
+        />
+      )}
     </div>
   );
 }

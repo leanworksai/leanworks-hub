@@ -1,12 +1,13 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Pin, PinOff } from "lucide-react";
+import { ArrowLeft, Save, Pin, PinOff, Share2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
+import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 
 export default function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
@@ -22,6 +23,9 @@ export default function DocDetail() {
   const [content, setContent] = useState("");
   const [isPinned, setIsPinned] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
+  const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
 
   // Load doc data when editing
   useEffect(() => {
@@ -30,11 +34,15 @@ export default function DocDetail() {
       // Preserve content even if it's empty string, only default to empty if it's null/undefined
       setContent(doc.content !== null && doc.content !== undefined ? doc.content : "");
       setIsPinned(doc.isPinned || false);
+      setVisibility(doc.visibility || 'all_members');
+      setVisibleToMembers(new Set(doc.visibleToMembers || []));
     } else if (isNew) {
       // Reset form for new doc
       setTitle("");
       setContent("");
       setIsPinned(false);
+      setVisibility('all_members');
+      setVisibleToMembers(new Set());
     }
   }, [doc, isNew]);
 
@@ -57,6 +65,16 @@ export default function DocDetail() {
       return;
     }
 
+    // Validate specific_members visibility
+    if (visibility === 'specific_members' && visibleToMembers.size === 0) {
+      toast({
+        title: "Error",
+        description: "Please select at least one member when visibility is set to 'Specific Members'",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSaving(true);
 
     try {
@@ -69,6 +87,8 @@ export default function DocDetail() {
           projectId: null,
           teamId: null,
           isPinned,
+          visibility,
+          visibleToMembers: Array.from(visibleToMembers),
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -85,6 +105,8 @@ export default function DocDetail() {
             title: title.trim(),
             content,
             isPinned,
+            visibility,
+            visibleToMembers: Array.from(visibleToMembers),
           },
         });
         toast({
@@ -121,6 +143,16 @@ export default function DocDetail() {
           Back
         </Button>
         <div className="flex items-center gap-2">
+          {!isNew && doc && user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShareDialogOpen(true)}
+            >
+              <Share2 className="mr-2 h-4 w-4" />
+              Limit Visibility
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -158,6 +190,33 @@ export default function DocDetail() {
           title={title}
           onTitleChange={setTitle}
           titlePlaceholder="Doc title..."
+        />
+      )}
+
+      {/* Limit Visibility Dialog */}
+      {!isNew && doc && (
+        <LimitVisibilityDialog
+          open={shareDialogOpen}
+          onOpenChange={setShareDialogOpen}
+          title="Limit Document Visibility"
+          itemName={doc.title}
+          currentVisibility={visibility}
+          currentVisibleToMembers={Array.from(visibleToMembers)}
+          onSave={async (newVisibility, newVisibleToMembers) => {
+            setVisibility(newVisibility);
+            setVisibleToMembers(new Set(newVisibleToMembers));
+            await updateDoc.mutateAsync({
+              docId: doc.id,
+              updates: {
+                visibility: newVisibility,
+                visibleToMembers: newVisibleToMembers,
+              },
+            });
+            toast({
+              title: "Visibility updated",
+              description: "Document visibility has been updated successfully.",
+            });
+          }}
         />
       )}
     </div>
