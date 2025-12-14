@@ -33,8 +33,15 @@ const menuItems = [
 ];
 
 export function AppSidebar() {
-  const { open } = useSidebar();
+  const { open, isMobile, setOpenMobile } = useSidebar();
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations } = useOrg();
+  
+  // Close mobile sidebar when a navigation item is clicked
+  const handleNavClick = () => {
+    if (isMobile) {
+      setOpenMobile(false);
+    }
+  };
 
   return (
     <Sidebar>
@@ -115,7 +122,11 @@ export function AppSidebar() {
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem asChild>
-                    <NavLink to="/organizations" className="flex items-center gap-2 py-2">
+                    <NavLink 
+                      to="/organizations" 
+                      onClick={handleNavClick}
+                      className="flex items-center gap-2 py-2"
+                    >
                       <Badge variant="destructive" className="h-5 min-w-5 px-1.5">
                         {orgInvitations.length}
                       </Badge>
@@ -126,7 +137,11 @@ export function AppSidebar() {
               )}
               <DropdownMenuSeparator />
               <DropdownMenuItem asChild>
-                <NavLink to="/organizations" className="flex items-center gap-2 py-2 text-muted-foreground hover:text-foreground">
+                <NavLink 
+                  to="/organizations" 
+                  onClick={handleNavClick}
+                  className="flex items-center gap-2 py-2 text-muted-foreground hover:text-foreground"
+                >
                   <Settings className="h-4 w-4" />
                   <span>Manage Organizations</span>
                 </NavLink>
@@ -144,6 +159,7 @@ export function AppSidebar() {
                   <SidebarMenuButton asChild>
                     <NavLink
                       to={item.url}
+                      onClick={handleNavClick}
                       className={({ isActive }) =>
                         isActive
                           ? "bg-sidebar-accent text-sidebar-accent-foreground"
