@@ -29,6 +29,7 @@ import {
   getUserInfoBatch,
   enrichWithUserNames,
   getOrgSlugById,
+  closeOrgPool,
 } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
@@ -38,6 +39,7 @@ import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail } from './services/email.js';
+import { triggerDataPipelineDeployment, deleteDataPipelineDeployment } from './services/data-pipeline.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -706,6 +708,11 @@ app.post('/api/auth/signup', async (req, res) => {
     
     console.log(`✅ Created personal workspace for ${normalizedEmail}: ${personalOrgName} (${personalSlug})`);
 
+    // Trigger data pipeline deployment for personal workspace (non-blocking)
+    triggerDataPipelineDeployment(personalSlug, normalizedEmail).catch((error) => {
+      console.error(`⚠️ Failed to trigger data pipeline deployment for ${personalSlug}:`, error);
+    });
+
     // Generate email verification token
     const verificationToken = crypto.randomBytes(32).toString('hex');
     
@@ -841,6 +848,11 @@ app.post('/api/auth/login', async (req, res) => {
         VALUES ($1, $2, $3, $4, 'owner', NOW())
         ON CONFLICT (email) DO NOTHING
       `, [normalizedEmail, userData.first_name, userData.last_name, userData.job_title || null]);
+      
+      // Trigger data pipeline deployment for personal workspace (non-blocking)
+      triggerDataPipelineDeployment(personalSlug, normalizedEmail).catch((error) => {
+        console.error(`⚠️ Failed to trigger data pipeline deployment for ${personalSlug}:`, error);
+      });
       
       organizations.push({
         ...newOrg,
@@ -1496,6 +1508,11 @@ app.post('/api/orgs', authenticateUser, async (req, res) => {
     
     console.log(`✅ Created organization ${name} (${slug}) with database ${dbName} for ${userEmail}`);
     
+    // Trigger data pipeline deployment for new organization (non-blocking)
+    triggerDataPipelineDeployment(slug, userEmail).catch((error) => {
+      console.error(`⚠️ Failed to trigger data pipeline deployment for ${slug}:`, error);
+    });
+    
     res.status(201).json({
       id: org.id,
       name: org.name,
@@ -1618,9 +1635,9 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
     const orgId = req.params.orgId;
     const sharedPool = await getSharedPool();
     
-    // Check if it's a personal workspace
+    // Get organization details including slug and owner_email
     const orgResult = await sharedPool.query(
-      'SELECT type FROM organizations WHERE id = $1',
+      'SELECT id, slug, type, name, owner_email FROM organizations WHERE id = $1',
       [orgId]
     );
     
@@ -1628,16 +1645,239 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
       return res.status(404).json({ error: 'Organization not found' });
     }
     
-    if (orgResult.rows[0].type === 'personal') {
+    const org = orgResult.rows[0];
+    
+    if (org.type === 'personal') {
       return res.status(400).json({ error: 'Cannot delete personal workspace' });
     }
     
-    // Delete org (cascade will handle members and invitations)
+    const orgSlug = org.slug;
+    const orgName = org.name;
+    const ownerEmail = org.owner_email;
+    
+    console.log(`🗑️ Starting complete deletion of organization: ${orgName} (${orgSlug})`);
+    
+    // 1. Get database name
+    const dbName = sanitizeSlugForDb(orgSlug);
+    console.log(`📦 Organization database: ${dbName}`);
+    
+    // 2. Delete data pipeline deployment (non-blocking)
+    if (ownerEmail) {
+      deleteDataPipelineDeployment(orgSlug, ownerEmail).catch((error) => {
+        console.error(`⚠️ Failed to delete data pipeline deployment for ${orgSlug}:`, error);
+      });
+    }
+    
+    // 3. Close and remove connection pool for this org
+    try {
+      await closeOrgPool(dbName);
+    } catch (poolError: any) {
+      console.warn(`⚠️ Error closing connection pool: ${poolError.message}`);
+    }
+    
+    // 4. Drop the PostgreSQL database
+    try {
+      // Get password from Secret Manager
+      const passwordSecretName = `projects/${serviceAccount.project_id}/secrets/postgresdb-password/versions/latest`;
+      const [passwordVersion] = await secretManagerClient.accessSecretVersion({ name: passwordSecretName });
+      const password = (passwordVersion.payload?.data?.toString() || '').trim();
+      const dbHost = process.env.DB_HOST || `/cloudsql/${serviceAccount.project_id}:us-west1:leanworks-prod`;
+      const dbPort = parseInt(process.env.DB_PORT || '5432');
+      
+      const { Client } = await import('pg');
+      const adminClient = new Client({
+        host: dbHost,
+        ...(dbHost.startsWith('/') ? {} : { port: dbPort }),
+        database: 'postgres', // Connect to postgres database to drop the org database
+        user: process.env.DB_USER || 'postgres',
+        password: password,
+        ssl: false,
+      });
+      
+      await adminClient.connect();
+      console.log(`🗑️ Dropping database: ${dbName}`);
+      
+      // Terminate all connections to the database first
+      await adminClient.query(`
+        SELECT pg_terminate_backend(pg_stat_activity.pid)
+        FROM pg_stat_activity
+        WHERE pg_stat_activity.datname = $1
+          AND pid <> pg_backend_pid()
+      `, [dbName]);
+      
+      // Drop the database
+      await adminClient.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+      await adminClient.end();
+      console.log(`✅ Database ${dbName} dropped successfully`);
+    } catch (dbError: any) {
+      console.error(`❌ Error dropping database ${dbName}:`, dbError.message);
+      // Continue with other cleanup even if database drop fails
+    }
+    
+    // 5. Delete all Firestore collections for this org
+    try {
+      const orgPath = `orgs/${orgSlug}`;
+      console.log(`🔥 Deleting Firestore collections under ${orgPath}`);
+      
+      // List of collections to delete
+      const collections = ['messages', 'calls', 'callInvitations'];
+      
+      for (const collection of collections) {
+        try {
+          const collectionRef = db.collection(`${orgPath}/${collection}`);
+          let totalDeleted = 0;
+          
+          // Firestore batches are limited to 500 operations, so we need to batch in chunks
+          while (true) {
+            const snapshot = await collectionRef.limit(500).get();
+            
+            if (snapshot.empty) {
+              break;
+            }
+            
+            console.log(`  Deleting batch of ${snapshot.size} documents from ${collection}...`);
+            const batch = db.batch();
+            snapshot.docs.forEach((doc) => {
+              batch.delete(doc.ref);
+            });
+            await batch.commit();
+            totalDeleted += snapshot.size;
+            
+            // If we got fewer than 500, we're done
+            if (snapshot.size < 500) {
+              break;
+            }
+          }
+          
+          if (totalDeleted > 0) {
+            console.log(`  ✅ Deleted ${totalDeleted} documents from ${collection} collection`);
+          }
+        } catch (collectionError: any) {
+          console.warn(`  ⚠️ Error deleting ${collection} collection: ${collectionError.message}`);
+        }
+      }
+      
+      console.log(`✅ Firestore collections deleted for ${orgSlug}`);
+    } catch (firestoreError: any) {
+      console.error(`❌ Error deleting Firestore collections: ${firestoreError.message}`);
+      // Continue with org deletion even if Firestore cleanup fails
+    }
+    
+    // 6. Delete org record from shared database (cascade will handle members and invitations)
+    console.log(`🗑️ Deleting organization record from shared database`);
     await sharedPool.query('DELETE FROM organizations WHERE id = $1', [orgId]);
     
-    res.json({ success: true, message: 'Organization deleted' });
+    console.log(`✅ Organization ${orgName} (${orgSlug}) completely deleted`);
+    res.json({ success: true, message: 'Organization deleted completely' });
   } catch (error) {
-    console.error('Delete org error:', error);
+    console.error('❌ Delete org error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Get system notifications for current user
+app.get('/api/notifications', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const sharedPool = await getSharedPool();
+    
+    // Get unread and read (but not dismissed) notifications
+    const result = await sharedPool.query(`
+      SELECT 
+        id,
+        user_email,
+        org_id,
+        type,
+        title,
+        message,
+        status,
+        created_at,
+        read_at,
+        dismissed_at
+      FROM system_notifications
+      WHERE user_email = $1 AND status != 'dismissed'
+      ORDER BY created_at DESC
+      LIMIT 50
+    `, [userEmail]);
+    
+    const notifications = result.rows.map(row => ({
+      id: row.id,
+      userEmail: row.user_email,
+      orgId: row.org_id,
+      type: row.type,
+      title: row.title,
+      message: row.message,
+      status: row.status,
+      createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      readAt: row.read_at ? new Date(row.read_at).toISOString() : null,
+      dismissedAt: row.dismissed_at ? new Date(row.dismissed_at).toISOString() : null,
+    }));
+    
+    res.json(notifications);
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Mark notification as read
+app.patch('/api/notifications/:notificationId/read', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const notificationId = req.params.notificationId;
+    const sharedPool = await getSharedPool();
+    
+    // Verify notification belongs to user
+    const checkResult = await sharedPool.query(
+      'SELECT id FROM system_notifications WHERE id = $1 AND user_email = $2',
+      [notificationId, userEmail]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    
+    // Update notification status
+    await sharedPool.query(`
+      UPDATE system_notifications
+      SET status = 'read', read_at = NOW()
+      WHERE id = $1 AND user_email = $2
+    `, [notificationId, userEmail]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark notification read error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Dismiss notification
+app.patch('/api/notifications/:notificationId/dismiss', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const notificationId = req.params.notificationId;
+    const sharedPool = await getSharedPool();
+    
+    // Verify notification belongs to user
+    const checkResult = await sharedPool.query(
+      'SELECT id FROM system_notifications WHERE id = $1 AND user_email = $2',
+      [notificationId, userEmail]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    
+    // Update notification status
+    await sharedPool.query(`
+      UPDATE system_notifications
+      SET status = 'dismissed', dismissed_at = NOW()
+      WHERE id = $1 AND user_email = $2
+    `, [notificationId, userEmail]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Dismiss notification error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
@@ -6119,6 +6359,12 @@ const server = http.createServer(app);
 setupLiveKitWebSocketServer(server);
 // Initialize audio recorder with Firestore for org-slug lookup
 setFirestoreDb(db);
+
+// Start deployment completion worker
+import { startDeploymentWorker } from './workers/deployment-worker.js';
+startDeploymentWorker().catch((error) => {
+  console.error('❌ Failed to start deployment worker:', error);
+});
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server started on port ${PORT}`);

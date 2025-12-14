@@ -571,6 +571,20 @@ export function clearOrgSlugCache(orgId?: string): void {
 /**
  * Close all connection pools (for graceful shutdown)
  */
+/**
+ * Close and remove connection pool for a specific org database
+ */
+export async function closeOrgPool(dbName: string): Promise<void> {
+  if (orgPools.has(dbName)) {
+    const pool = orgPools.get(dbName)!;
+    console.log(`🔌 Closing connection pool for ${dbName}`);
+    await pool.end();
+    orgPools.delete(dbName);
+    poolCreationPromises.delete(dbName);
+    console.log(`✅ Connection pool closed for ${dbName}`);
+  }
+}
+
 export async function closeAllPools(): Promise<void> {
   console.log('🔌 Closing all connection pools...');
   

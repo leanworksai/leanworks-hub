@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
-import { teamsService, teamJoinRequestsService, teamInvitationsService } from '@/services/api';
+import { teamsService, teamJoinRequestsService, teamInvitationsService, systemNotificationsService } from '@/services/api';
 import type { Team, TeamDetailData, TeamJoinRequest, TeamInvitation } from '@/data/teamsData';
 import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
@@ -257,6 +257,43 @@ export const useAcceptInvitation = () => {
     onSuccess: () => {
       queryClient.refetchQueries({ queryKey: ['teamInvitations'] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
+    },
+  });
+};
+
+// System notifications hooks
+export const useSystemNotifications = () => {
+  const { user, loading } = useAuth();
+  
+  return useQuery({
+    queryKey: ['systemNotifications'],
+    queryFn: () => systemNotificationsService.getNotifications(),
+    enabled: !loading && !!user, // Only fetch when user is authenticated
+    staleTime: 0, // Always consider data stale to allow immediate refetches
+    refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
+    refetchOnWindowFocus: true, // Refetch when user returns to the tab
+    refetchOnMount: true, // Always refetch when component mounts
+  });
+};
+
+export const useMarkNotificationRead = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (notificationId: string) => systemNotificationsService.markAsRead(notificationId),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['systemNotifications'] });
+    },
+  });
+};
+
+export const useDismissNotification = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: (notificationId: string) => systemNotificationsService.dismiss(notificationId),
+    onSuccess: () => {
+      queryClient.refetchQueries({ queryKey: ['systemNotifications'] });
     },
   });
 };

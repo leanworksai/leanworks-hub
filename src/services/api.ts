@@ -475,6 +475,57 @@ export const teamJoinRequestsService = {
 };
 
 // Team Invitations Service
+export const systemNotificationsService = {
+  async getNotifications(): Promise<Array<{
+    id: string;
+    userEmail: string;
+    orgId: string | null;
+    type: string;
+    title: string;
+    message: string;
+    status: 'unread' | 'read' | 'dismissed';
+    createdAt: string | null;
+    readAt: string | null;
+    dismissedAt: string | null;
+  }>> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/notifications` : `${API_BASE}/notifications`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to fetch notifications' }));
+      throw new Error(error.error || 'Failed to fetch notifications');
+    }
+    return response.json();
+  },
+
+  async markAsRead(notificationId: string): Promise<{ success: boolean }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/notifications/${notificationId}/read` 
+      : `${API_BASE}/notifications/${notificationId}/read`;
+    const response = await authenticatedFetch(url, {
+      method: 'PATCH',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to mark notification as read' }));
+      throw new Error(error.error || 'Failed to mark notification as read');
+    }
+    return response.json();
+  },
+
+  async dismiss(notificationId: string): Promise<{ success: boolean }> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/notifications/${notificationId}/dismiss` 
+      : `${API_BASE}/notifications/${notificationId}/dismiss`;
+    const response = await authenticatedFetch(url, {
+      method: 'PATCH',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to dismiss notification' }));
+      throw new Error(error.error || 'Failed to dismiss notification');
+    }
+    return response.json();
+  },
+};
+
 export const teamInvitationsService = {
   async inviteMember(teamName: string, inviteeEmail: string): Promise<void> {
     const url = import.meta.env.DEV 

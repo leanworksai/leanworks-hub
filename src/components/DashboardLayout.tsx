@@ -6,7 +6,7 @@ import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { Badge } from "./ui/badge";
 import { toast } from "./ui/sonner";
-import { getAvatarColor } from "@/lib/utils";
+import { getAvatarColor, cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,7 +26,7 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectionMode } from "@/contexts/SelectionModeContext";
-import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation } from "@/hooks/useTeams";
+import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation, useSystemNotifications, useMarkNotificationRead, useDismissNotification } from "@/hooks/useTeams";
 import type { TeamJoinRequest, TeamInvitation } from "@/data/teamsData";
 
 interface DashboardLayoutProps {
@@ -51,6 +51,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { isSelectionMode, toggleSelectionMode } = useSelectionMode();
   const { data: joinRequests = [], isLoading: isLoadingRequests } = useJoinRequests();
   const { data: invitations = [], isLoading: isLoadingInvitations } = useInvitations();
+  const { data: systemNotifications = [], isLoading: isLoadingSystemNotifications } = useSystemNotifications();
+  const markNotificationRead = useMarkNotificationRead();
+  const dismissNotification = useDismissNotification();
   const approveRequestMutation = useApproveJoinRequest();
   const rejectRequestMutation = useRejectJoinRequest();
   const acceptInvitationMutation = useAcceptInvitation();
@@ -68,11 +71,12 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     (invitation: TeamInvitation) => invitation.status === 'pending'
   );
 
-  // Get total pending notifications count (including org invitations)
+  // Get total pending notifications count (including org invitations and system notifications)
   const pendingRequestsCount = manageableRequests.length;
   const pendingInvitationsCount = userInvitations.length;
   const pendingOrgInvitationsCount = orgInvitations.length;
-  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + pendingOrgInvitationsCount;
+  const unreadSystemNotificationsCount = systemNotifications.filter(n => n.status === 'unread').length;
+  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + pendingOrgInvitationsCount + unreadSystemNotificationsCount;
 
 
   useEffect(() => {
@@ -280,7 +284,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       )}
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    {isLoadingRequests || isLoadingInvitations ? (
+                    {isLoadingRequests || isLoadingInvitations || isLoadingSystemNotifications ? (
                       <div className="p-4 text-center text-sm text-muted-foreground">
                         Loading notifications...
                       </div>
@@ -291,6 +295,61 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       </div>
                     ) : (
                       <div className="max-h-96 overflow-y-auto">
+                        {/* System Notifications */}
+                        {systemNotifications.filter(n => n.status !== 'dismissed').map((notification) => (
+                          <div
+                            key={notification.id}
+                            className={cn(
+                              "p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors",
+                              notification.status === 'unread' && "bg-accent/30"
+                            )}
+                          >
+                            <div className="flex items-start gap-3 mb-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className={cn(
+                                    "font-semibold text-sm",
+                                    notification.status === 'unread' && "font-bold"
+                                  )}>
+                                    {notification.title}
+                                  </p>
+                                  {notification.status === 'unread' && (
+                                    <Badge variant="default" className="text-xs flex-shrink-0 bg-primary">
+                                      New
+                                    </Badge>
+                                  )}
+                                </div>
+                                <p className="text-sm text-muted-foreground mb-2">
+                                  {notification.message}
+                                </p>
+                                {notification.createdAt && (
+                                  <p className="text-xs text-muted-foreground">
+                                    {formatDate(new Date(notification.createdAt))}
+                                  </p>
+                                )}
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 flex-shrink-0"
+                                onClick={() => dismissNotification.mutate(notification.id)}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                            {notification.status === 'unread' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full"
+                                onClick={() => markNotificationRead.mutate(notification.id)}
+                              >
+                                Mark as read
+                              </Button>
+                            )}
+                          </div>
+                        ))}
+
                         {/* Org Invitations */}
                         {orgInvitations.map((invitation) => (
                           <div
