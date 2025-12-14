@@ -25,6 +25,13 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { 
@@ -175,6 +182,7 @@ export default function Tasks() {
   const { parseDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
+  const [filterProject, setFilterProject] = useState<string>("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover
@@ -185,6 +193,18 @@ export default function Tasks() {
     .filter((task) => {
       if (filterStatus !== "all" && task.status !== filterStatus) return false;
       if (filterPriority !== "all" && task.priority !== filterPriority) return false;
+      if (filterProject !== "all") {
+        // Match by project ID or project name
+        const taskProjectId = task.projectId || '';
+        const taskProjectName = task.project || '';
+        if (filterProject === "none") {
+          // Filter for tasks without a project
+          if (taskProjectId || taskProjectName) return false;
+        } else {
+          // Filter for specific project
+          if (taskProjectId !== filterProject && taskProjectName !== filterProject) return false;
+        }
+      }
       return true;
     })
     .sort((a, b) => {
@@ -313,50 +333,54 @@ export default function Tasks() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3 sm:gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm text-muted-foreground w-full sm:w-auto">Status:</span>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant={filterStatus === "all" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setFilterStatus("all")}
-            >
-              All
-            </Button>
-            {(["todo", "in-progress", "review", "blocked", "completed"] as const).map((status) => (
-              <Button
-                key={status}
-                variant={filterStatus === status ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilterStatus(status)}
-              >
-                {status.replace("-", " ")}
-              </Button>
-            ))}
-          </div>
+      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">Status:</label>
+          <Select value={filterStatus} onValueChange={(value) => setFilterStatus(value as Task["status"] | "all")}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="todo">Todo</SelectItem>
+              <SelectItem value="in-progress">In Progress</SelectItem>
+              <SelectItem value="review">Review</SelectItem>
+              <SelectItem value="blocked">Blocked</SelectItem>
+              <SelectItem value="completed">Completed</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        <div className="flex flex-wrap items-center gap-2 sm:ml-4">
-          <span className="text-sm text-muted-foreground w-full sm:w-auto">Priority:</span>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant={filterPriority === "all" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setFilterPriority("all")}
-            >
-              All
-            </Button>
-            {(["low", "medium", "high", "urgent"] as const).map((priority) => (
-              <Button
-                key={priority}
-                variant={filterPriority === priority ? "default" : "outline"}
-                size="sm"
-                onClick={() => setFilterPriority(priority)}
-              >
-                {priority}
-              </Button>
-            ))}
-          </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">Priority:</label>
+          <Select value={filterPriority} onValueChange={(value) => setFilterPriority(value as Task["priority"] | "all")}>
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="All priorities" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="low">Low</SelectItem>
+              <SelectItem value="medium">Medium</SelectItem>
+              <SelectItem value="high">High</SelectItem>
+              <SelectItem value="urgent">Urgent</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-muted-foreground whitespace-nowrap">Project:</label>
+          <Select value={filterProject} onValueChange={setFilterProject}>
+            <SelectTrigger className="w-[200px]">
+              <SelectValue placeholder="All projects" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Projects</SelectItem>
+              <SelectItem value="none">No Project</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id}>
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
 
