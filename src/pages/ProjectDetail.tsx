@@ -28,6 +28,8 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { cn } from "@/lib/utils";
 import { TaskTooltip } from "@/components/TaskTooltip";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 import {
   Dialog,
   DialogContent,
@@ -111,6 +113,7 @@ export default function ProjectDetail() {
   const { data: projects = [] } = useUserProjects();
   const { user } = useAuth();
   const { data: users = [] } = useUsers();
+  const userTimezone = useUserTimezone();
   
   const isLoading = isLoadingProject;
   
@@ -701,7 +704,11 @@ export default function ProjectDetail() {
                                   </Badge>
                                 )}
                               </div>
-                              <span className="text-xs text-muted-foreground">{formatDate(activity.date)}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {typeof activity.date === 'string' 
+                                  ? formatDateStringInTimezone(activity.date, userTimezone)
+                                  : formatDate(activity.date)}
+                              </span>
                             </div>
                             <p className="text-sm text-muted-foreground">{activity.content}</p>
                           </div>

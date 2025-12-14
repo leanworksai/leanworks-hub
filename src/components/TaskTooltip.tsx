@@ -9,12 +9,15 @@ import { Sparkles } from "lucide-react";
 import { useUpdatesByTaskId } from "@/hooks/useUpdates";
 import { useSubscription } from "@/hooks/useSubscription";
 import { cn } from "@/lib/utils";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 
 // TaskTooltip component to show updates and reason
 export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason?: string }) {
   const [isHovered, setIsHovered] = useState(false);
   const { data: updates = [], isLoading } = useUpdatesByTaskId(isHovered ? taskId : null);
   const { isFreePlan } = useSubscription();
+  const userTimezone = useUserTimezone();
   
   // Only show tooltip if there's a reason (updates will be fetched on hover)
   if (!taskReason) {
@@ -59,7 +62,7 @@ export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason
                 <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
                 {latestUpdate.timestamp && (
                   <p className="text-xs text-muted-foreground/60">
-                    {new Date(latestUpdate.timestamp).toLocaleDateString()}
+                    {formatDateInTimezone(latestUpdate.timestamp, userTimezone)}
                   </p>
                 )}
               </div>

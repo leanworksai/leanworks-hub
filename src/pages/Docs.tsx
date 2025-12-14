@@ -18,8 +18,9 @@ import { useDocs, useDeleteDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useUsers } from "@/hooks/useUsers";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
-import { format } from "date-fns";
 import { trackClick, trackCreate, trackDelete, trackView } from "@/lib/analytics";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 
@@ -38,6 +39,7 @@ export default function Docs() {
   const updateDoc = useUpdateDoc();
   const { toast } = useToast();
   const { user } = useAuth();
+  const userTimezone = useUserTimezone();
   const [docToDelete, setDocToDelete] = useState<string | null>(null);
   const [docToShare, setDocToShare] = useState<{ id: string; doc: any } | null>(null);
 
@@ -198,7 +200,7 @@ export default function Docs() {
                         />
                       </div>
                       <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
-                        <span>{format(new Date(doc.updatedAt), "MMM d, yyyy")}</span>
+                        <span>{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
                         {doc.ownerEmail && (
                           <div className="flex items-center gap-1.5">
                             <Avatar className="h-4 w-4">
@@ -272,7 +274,7 @@ export default function Docs() {
                         />
                       </div>
                       <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
-                        <span>{format(new Date(doc.updatedAt), "MMM d, yyyy")}</span>
+                        <span>{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
                         {doc.ownerEmail && (
                           <div className="flex items-center gap-1.5">
                             <Avatar className="h-4 w-4">

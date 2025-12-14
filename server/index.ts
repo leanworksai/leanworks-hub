@@ -3459,9 +3459,25 @@ app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, a
       }
     }
     
+    // Get user's timezone from shared database
+    const sharedPool = await getSharedPool();
+    const userTimezoneResult = await sharedPool.query(
+      'SELECT timezone FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    const userTimezone = userTimezoneResult.rows[0]?.timezone || 'America/Los_Angeles';
+    
     // Generate comment ID
     const commentId = crypto.randomBytes(16).toString('hex');
-    const today = new Date().toISOString().split('T')[0];
+    
+    // Get today's date in user's timezone
+    const now = new Date();
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: userTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(now);
     
     // Insert comment
     await pool.query(
@@ -3529,9 +3545,25 @@ app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, asyn
       }
     }
     
+    // Get user's timezone from shared database
+    const sharedPool = await getSharedPool();
+    const userTimezoneResult = await sharedPool.query(
+      'SELECT timezone FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    const userTimezone = userTimezoneResult.rows[0]?.timezone || 'America/Los_Angeles';
+    
     // Generate comment ID
     const commentId = crypto.randomBytes(16).toString('hex');
-    const today = new Date().toISOString().split('T')[0];
+    
+    // Get today's date in user's timezone
+    const now = new Date();
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: userTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(now);
     
     // Insert comment
     await pool.query(

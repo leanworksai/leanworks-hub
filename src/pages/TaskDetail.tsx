@@ -74,6 +74,8 @@ import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { tasksService } from "@/services/api";
 import { useQueryClient } from "@tanstack/react-query";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 
 const getInitials = (name: string): string => {
   return name
@@ -226,6 +228,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
   const { parseDateString, formatDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
+  const userTimezone = useUserTimezone();
   
   // Check if user has access to the task
   const hasAccess = task ? (() => {
@@ -1047,7 +1050,11 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                                   </Badge>
                                 )}
                               </div>
-                              <span className="text-xs text-muted-foreground">{activity.date}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {typeof activity.date === 'string' 
+                                  ? formatDateStringInTimezone(activity.date, userTimezone)
+                                  : activity.date}
+                              </span>
                             </div>
                             <p className="text-sm text-muted-foreground leading-relaxed">
                               {activity.content}

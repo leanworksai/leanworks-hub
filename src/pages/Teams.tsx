@@ -51,6 +51,8 @@ import type { Team, TeamDetailData, TeamMember, TeamJoinRequest } from "@/data/t
 import { toast } from "@/components/ui/sonner";
 import { useAuth } from "@/contexts/AuthContext";
 import { v4 as uuidv4 } from 'uuid';
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 
 export default function Teams() {
   const navigate = useNavigate();
@@ -60,6 +62,7 @@ export default function Teams() {
   const { data: userTeams = [], isLoading: isLoadingUserTeams } = useUserTeams(); // Teams user is member of
   const { data: users = [], isLoading: isLoadingUsers } = useUsers();
   const { user } = useAuth();
+  const userTimezone = useUserTimezone();
   const createTeamMutation = useCreateTeam();
   const updateTeamMutation = useUpdateTeam();
   const updateTeamDetailMutation = useUpdateTeamDetail();
@@ -987,7 +990,7 @@ export default function Teams() {
                             </p>
                             {request.createdAt && (
                               <p className="text-xs text-muted-foreground">
-                                {new Date(request.createdAt).toLocaleDateString()}
+                                {formatDateInTimezone(request.createdAt, userTimezone)}
                               </p>
                             )}
                           </div>

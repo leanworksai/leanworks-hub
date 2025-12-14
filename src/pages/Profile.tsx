@@ -59,6 +59,7 @@ interface UserProfile {
 export default function Profile() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const userTimezone = useUserTimezone();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

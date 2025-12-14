@@ -24,6 +24,8 @@ import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { useOrg } from "@/contexts/OrgContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
@@ -117,6 +119,7 @@ export function Chatbot() {
   const { currentOrg } = useOrg();
   const { isFreePlan } = useSubscription();
   const { toast } = useToast();
+  const userTimezone = useUserTimezone();
   
   // Calculate current user's full profile data once (has firstName/lastName)
   // AuthContext user only has email, not firstName/lastName
@@ -1541,7 +1544,7 @@ export function Chatbot() {
             content: message.content,
             memberName: message.memberName,
             memberAvatar: message.memberAvatar,
-            date: message.timestamp.toLocaleDateString(),
+            date: formatDateInTimezone(message.timestamp, userTimezone),
           });
         }
       });

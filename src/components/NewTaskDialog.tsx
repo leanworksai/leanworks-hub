@@ -31,6 +31,8 @@ import type { Task } from "@/data/tasksData";
 import type { ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/useSubscription";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Check, ChevronsUpDown, Sparkles, Lock, Share2 } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 import { getAuthToken } from "@/services/api";
@@ -58,9 +60,7 @@ const priorityOptions = [
   { value: "urgent", label: "Urgent" },
 ];
 
-const formatDate = (date: Date): string => {
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-};
+// formatDate will be defined inside the component to use userTimezone
 
 // Helper to parse YYYY-MM-DD string to Date in local timezone
 const parseDateString = (dateString: string): Date => {
@@ -95,6 +95,11 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   const { user } = useAuth();
   const { currentOrg } = useOrg();
   const { isFreePlan } = useSubscription();
+  const userTimezone = useUserTimezone();
+  
+  const formatDate = (date: Date): string => {
+    return formatDateInTimezone(date, userTimezone, { month: "short", day: "numeric", year: "numeric" });
+  };
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
   const [selectedAssigneeId, setSelectedAssigneeId] = useState<string | null>(null);

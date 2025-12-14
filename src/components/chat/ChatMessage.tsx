@@ -12,6 +12,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { callSignalingService, type CallSignal } from "@/services/api";
 import { db } from "@/lib/firebase-client";
 import { getCurrentOrgSlug } from "@/services/api";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatTimeInTimezone } from "@/lib/dateTimeUtils";
 
 // Render message content with highlighted mentions and clickable links
 function renderMessageContent(content: string): (string | JSX.Element)[] | string {
@@ -272,6 +274,7 @@ export function ChatMessage({
   
   const userId = 'userId' in message ? message.userId : undefined;
   const role = 'role' in message ? message.role : (isLean ? 'assistant' : 'user');
+  const userTimezone = useUserTimezone();
   
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>, imageUrls: string[], idx: number) => {
     if (onImageError) {
@@ -321,10 +324,7 @@ export function ChatMessage({
           <div className="flex items-center gap-2 mb-1 px-1">
             <p className="font-medium text-sm">{displayName}</p>
             <span className="text-xs text-muted-foreground">
-              {timestamp.toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
+              {formatTimeInTimezone(timestamp, userTimezone)}
             </span>
           </div>
         )}
@@ -436,10 +436,7 @@ export function ChatMessage({
           
           {/* Timestamp for sent messages or at bottom */}
           <p className="text-xs mt-1 opacity-60">
-            {timestamp.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
+            {formatTimeInTimezone(timestamp, userTimezone)}
           </p>
         </div>
       </div>

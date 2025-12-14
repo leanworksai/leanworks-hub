@@ -31,6 +31,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { trackCreate, trackFormSubmit } from "@/lib/analytics";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { cn } from "@/lib/utils";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 
 interface NewProjectDialogProps {
   open: boolean;
@@ -49,9 +51,7 @@ const getStatusColor = (status: string): string => {
   return option?.color || "bg-gray-500";
 };
 
-const formatDate = (date: Date): string => {
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-};
+// formatDate will be defined inside the component to use userTimezone
 
 const getInitials = (name: string): string => {
   return name
@@ -72,6 +72,11 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   const [membersOpen, setMembersOpen] = useState(false);
   const [dueDateOpen, setDueDateOpen] = useState(false);
   const { parseDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
+  const userTimezone = useUserTimezone();
+  
+  const formatDate = (date: Date): string => {
+    return formatDateInTimezone(date, userTimezone, { month: "short", day: "numeric", year: "numeric" });
+  };
 
   type FormData = {
     name: string;

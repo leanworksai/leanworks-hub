@@ -1,4 +1,6 @@
 import { format, parse } from "date-fns";
+import { useUserTimezone } from "./useUserTimezone";
+import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 
 /**
  * Utility functions for date handling in local timezone
@@ -137,14 +139,20 @@ export const dateUtils = {
 /**
  * Hook for date selection functionality
  * Provides utilities and handlers for date selection components
+ * Now uses user's configured timezone for display
  */
 export function useDateSelection() {
+  const userTimezone = useUserTimezone();
+  
   return {
     // Utility functions
     parseDateString: dateUtils.parseDateString,
     formatDateString: dateUtils.formatDateString,
     formatDateForServer: dateUtils.formatDateForServer,
-    formatDateForDisplay: dateUtils.formatDateForDisplay,
+    // Use timezone-aware formatting for display
+    formatDateForDisplay: (dateString: string | undefined): string => {
+      return formatDateStringInTimezone(dateString, userTimezone);
+    },
     
     // Handler for calendar date selection
     handleDateSelection: (date: Date | undefined, onSave: (dateString: string) => void) => {

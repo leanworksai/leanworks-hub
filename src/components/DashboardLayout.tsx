@@ -18,6 +18,8 @@ import {
 import { useEffect, useState } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { formatDateInTimezone, formatRelativeTime } from "@/lib/dateTimeUtils";
 import { useOrg } from "@/contexts/OrgContext";
 import { usersService } from "@/services/api";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
@@ -42,6 +44,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations, acceptInvitation: acceptOrgInvitation, declineInvitation: declineOrgInvitation } = useOrg();
+  const userTimezone = useUserTimezone();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
   const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
@@ -131,20 +134,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     return email[0].toUpperCase();
   };
 
-  // Format date for notifications
+  // Format date for notifications (timezone-aware)
   const formatDate = (date: string | Date) => {
-    const d = new Date(date);
-    const now = new Date();
-    const diffMs = now.getTime() - d.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
-    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-    return d.toLocaleDateString();
+    return formatRelativeTime(date, userTimezone);
   };
 
   // Handle approve request
