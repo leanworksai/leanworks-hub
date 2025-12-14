@@ -228,13 +228,44 @@ export function Chatbot() {
 
   // Clear legacy message caches (domain-based format) on mount and when org changes
   useEffect(() => {
-    clearLegacyMessageCaches();
+    const previousOrgId = previousOrgIdRef.current;
+    const currentOrgId = currentOrg?.id || null;
     
-    // Clear channelMessages state when org changes to prevent showing old messages
-    if (currentOrg?.id) {
+    // Check if org actually changed
+    const orgChanged = previousOrgId !== null && previousOrgId !== currentOrgId;
+    
+    if (orgChanged) {
+      console.log('🔄 Organization changed - resetting chat:', { previousOrgId, currentOrgId });
+      
+      // Clear all message states
+      setMessages([]);
       setChannelMessages(new Map());
-      console.log('🧹 Cleared channelMessages state due to org change');
+      setCurrentChatId(null);
+      previousChatIdRef.current = null;
+      
+      // Reset to AI assistant chat when org changes
+      if (user?.email) {
+        setSelectedMember("ai-assistant");
+        // Clear the last selected member from storage so it resets
+        try {
+          const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+          localStorage.removeItem(storageKey);
+        } catch (error) {
+          console.warn('Failed to clear last selected member from storage:', error);
+        }
+      }
+      
+      // Clear all chat caches for the old org
+      setAllChatCaches(new Map());
+      setCacheLoadedForSession(false);
+      
+      console.log('✅ Chat reset complete for new organization');
     }
+    
+    // Update the ref to track current org
+    previousOrgIdRef.current = currentOrgId;
+    
+    clearLegacyMessageCaches();
     
     // Also do a one-time aggressive cleanup of ALL old format cache entries
     // This ensures we catch any edge cases the main cleanup might miss
@@ -387,6 +418,7 @@ export function Chatbot() {
   const inputRef = useRef<HTMLInputElement>(null);
   const memberSearchRef = useRef<HTMLInputElement>(null);
   const previousChatIdRef = useRef<string | null>(null); // Track previous chatId to detect chat switches
+  const previousOrgIdRef = useRef<string | null>(null); // Track previous org ID to detect org switches
   
   // WebRTC hook for call management - use shared context
   const {
@@ -1830,10 +1862,8 @@ export function Chatbot() {
               // If we got new messages, merge with cache and save
               if (newMessages.length > 0 || !hasCachedMessages) {
                 const messageMap = new Map<string, ChatMessage>();
-                if (cached) {
-                  if (validCached) {
-              validCached.messages.forEach(msg => messageMap.set(msg.id, msg));
-            }
+                if (cached && cached.messages.length > 0) {
+                  cached.messages.forEach(msg => messageMap.set(msg.id, msg));
                 }
                 newMessages.forEach(msg => messageMap.set(msg.id, msg));
 

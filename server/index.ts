@@ -5898,7 +5898,7 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), asyn
       console.error('Debug info:', {
         signaturePresent: !!sig,
         webhookSecretPresent: !!currentWebhookSecret,
-        webhookSecretPrefix: currentWebhookSecret?.substring(0, 10) || 'none',
+        webhookSecretLength: currentWebhookSecret?.length || 0,
         usingEnvVar: !!process.env.STRIPE_WEBHOOK_SECRET,
         bodyType: typeof req.body,
         bodyLength: req.body?.length || 0,
