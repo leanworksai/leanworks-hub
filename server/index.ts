@@ -1775,13 +1775,13 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
   }
 });
 
-// Get system notifications for current user
+// Get unified notifications for current user (includes all types: org invitations, system messages, etc.)
 app.get('/api/notifications', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const sharedPool = await getSharedPool();
     
-    // Get unread and read (but not dismissed) notifications
+    // Get unread and read (but not dismissed) notifications, ordered by most recent
     const result = await sharedPool.query(`
       SELECT 
         id,
@@ -1791,10 +1791,12 @@ app.get('/api/notifications', authenticateUser, async (req, res) => {
         title,
         message,
         status,
+        metadata,
+        action_url,
         created_at,
         read_at,
         dismissed_at
-      FROM system_notifications
+      FROM notifications
       WHERE user_email = $1 AND status != 'dismissed'
       ORDER BY created_at DESC
       LIMIT 50
@@ -1808,6 +1810,8 @@ app.get('/api/notifications', authenticateUser, async (req, res) => {
       title: row.title,
       message: row.message,
       status: row.status,
+      metadata: row.metadata,
+      actionUrl: row.action_url,
       createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
       readAt: row.read_at ? new Date(row.read_at).toISOString() : null,
       dismissedAt: row.dismissed_at ? new Date(row.dismissed_at).toISOString() : null,
@@ -1829,7 +1833,7 @@ app.patch('/api/notifications/:notificationId/read', authenticateUser, async (re
     
     // Verify notification belongs to user
     const checkResult = await sharedPool.query(
-      'SELECT id FROM system_notifications WHERE id = $1 AND user_email = $2',
+      'SELECT id FROM notifications WHERE id = $1 AND user_email = $2',
       [notificationId, userEmail]
     );
     
@@ -1839,7 +1843,7 @@ app.patch('/api/notifications/:notificationId/read', authenticateUser, async (re
     
     // Update notification status
     await sharedPool.query(`
-      UPDATE system_notifications
+      UPDATE notifications
       SET status = 'read', read_at = NOW()
       WHERE id = $1 AND user_email = $2
     `, [notificationId, userEmail]);
@@ -1860,7 +1864,7 @@ app.patch('/api/notifications/:notificationId/dismiss', authenticateUser, async 
     
     // Verify notification belongs to user
     const checkResult = await sharedPool.query(
-      'SELECT id FROM system_notifications WHERE id = $1 AND user_email = $2',
+      'SELECT id FROM notifications WHERE id = $1 AND user_email = $2',
       [notificationId, userEmail]
     );
     
@@ -1870,7 +1874,7 @@ app.patch('/api/notifications/:notificationId/dismiss', authenticateUser, async 
     
     // Update notification status
     await sharedPool.query(`
-      UPDATE system_notifications
+      UPDATE notifications
       SET status = 'dismissed', dismissed_at = NOW()
       WHERE id = $1 AND user_email = $2
     `, [notificationId, userEmail]);
@@ -1964,8 +1968,9 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
     }
     
     // Get org name and inviter info for email
-    const orgResult = await sharedPool.query('SELECT name FROM organizations WHERE id = $1', [orgId]);
+    const orgResult = await sharedPool.query('SELECT name, slug FROM organizations WHERE id = $1', [orgId]);
     const orgName = orgResult.rows[0]?.name || 'Unknown Organization';
+    const orgSlug = orgResult.rows[0]?.slug;
     
     // Get inviter's name
     const inviterResult = await sharedPool.query(
@@ -1976,6 +1981,43 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
     const inviterName = inviterData.first_name && inviterData.last_name
       ? `${inviterData.first_name} ${inviterData.last_name}`
       : inviterData.first_name || inviterData.last_name || userEmail.split('@')[0];
+    
+    // Create notification for the invitee
+    try {
+      await sharedPool.query(`
+        INSERT INTO notifications (
+          user_email,
+          org_id,
+          type,
+          title,
+          message,
+          status,
+          metadata,
+          created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT DO NOTHING
+      `, [
+        normalizedInviteeEmail,
+        orgId,
+        'org_invitation',
+        `${inviterName} invited you to join ${orgName}`,
+        message || `You have been invited to join ${orgName}`,
+        'unread',
+        JSON.stringify({
+          invitation_id: invitation.id,
+          inviter_email: userEmail,
+          inviter_name: inviterName,
+          org_name: orgName,
+          org_slug: orgSlug,
+          role: 'member',
+          expires_at: invitation.expires_at
+        })
+      ]);
+    } catch (notifError: any) {
+      // Don't fail invitation if notification creation fails
+      console.warn(`⚠️ Failed to create notification for invitation: ${notifError.message}`);
+    }
     
     // Get invitee's name if they already have an account
     let inviteeName = normalizedInviteeEmail.split('@')[0];

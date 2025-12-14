@@ -459,11 +459,7 @@ export default function Organizations() {
                   {members.map((member) => (
                     <div 
                       key={member.email}
-                      className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
-                        member.role === 'owner' 
-                          ? 'bg-primary/5 border-primary/20' 
-                          : 'bg-card hover:bg-accent/50'
-                      }`}
+                      className="flex items-center justify-between p-3 rounded-lg border border-border/50 bg-card"
                     >
                       <div className="flex items-center gap-3">
                         <Avatar className="h-10 w-10">

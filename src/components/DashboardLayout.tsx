@@ -71,12 +71,16 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     (invitation: TeamInvitation) => invitation.status === 'pending'
   );
 
-  // Get total pending notifications count (including org invitations and system notifications)
+  // Get total pending notifications count (unified notifications + team invitations + join requests)
   const pendingRequestsCount = manageableRequests.length;
   const pendingInvitationsCount = userInvitations.length;
-  const pendingOrgInvitationsCount = orgInvitations.length;
-  const unreadSystemNotificationsCount = systemNotifications.filter(n => n.status === 'unread').length;
-  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + pendingOrgInvitationsCount + unreadSystemNotificationsCount;
+  // Count org invitations from unified notifications table
+  const orgInvitationsFromNotifications = systemNotifications.filter(n => n.type === 'org_invitation' && n.status === 'unread').length;
+  // Count legacy org invitations (from org_invitations table) that aren't in notifications yet
+  const legacyOrgInvitationsCount = orgInvitations.length;
+  const unreadSystemNotificationsCount = systemNotifications.filter(n => n.status === 'unread' && n.type !== 'org_invitation').length;
+  // Total: system notifications + org invitations (from notifications) + legacy org invitations + team invitations + join requests
+  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + Math.max(orgInvitationsFromNotifications, legacyOrgInvitationsCount) + unreadSystemNotificationsCount;
 
 
   useEffect(() => {
@@ -295,63 +299,269 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       </div>
                     ) : (
                       <div className="max-h-96 overflow-y-auto">
-                        {/* System Notifications */}
-                        {systemNotifications.filter(n => n.status !== 'dismissed').map((notification) => (
-                          <div
-                            key={notification.id}
-                            className={cn(
-                              "p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors",
-                              notification.status === 'unread' && "bg-accent/30"
-                            )}
-                          >
-                            <div className="flex items-start gap-3 mb-2">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <p className={cn(
-                                    "font-semibold text-sm",
-                                    notification.status === 'unread' && "font-bold"
-                                  )}>
-                                    {notification.title}
-                                  </p>
-                                  {notification.status === 'unread' && (
-                                    <Badge variant="default" className="text-xs flex-shrink-0 bg-primary">
-                                      New
-                                    </Badge>
-                                  )}
-                                </div>
-                                <p className="text-sm text-muted-foreground mb-2">
-                                  {notification.message}
-                                </p>
-                                {notification.createdAt && (
-                                  <p className="text-xs text-muted-foreground">
-                                    {formatDate(new Date(notification.createdAt))}
-                                  </p>
-                                )}
-                              </div>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-6 w-6 flex-shrink-0"
-                                onClick={() => dismissNotification.mutate(notification.id)}
-                              >
-                                <X className="h-4 w-4" />
-                              </Button>
-                            </div>
-                            {notification.status === 'unread' && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="w-full"
-                                onClick={() => markNotificationRead.mutate(notification.id)}
-                              >
-                                Mark as read
-                              </Button>
-                            )}
-                          </div>
-                        ))}
+                        {/* Unified Notifications - sorted by date, deduplicated */}
+                        {(() => {
+                          // Collect all notifications
+                          const allNotifications: any[] = [
+                            // System notifications (deployment, etc.)
+                            ...systemNotifications
+                              .filter(n => n.status !== 'dismissed' && n.type !== 'org_invitation')
+                              .map(n => ({ ...n, notificationType: 'system' as const })),
+                            // Org invitations from notifications table
+                            ...systemNotifications
+                              .filter(n => n.status !== 'dismissed' && n.type === 'org_invitation')
+                              .map(n => ({ ...n, notificationType: 'org_invitation' as const })),
+                            // Legacy org invitations (from org_invitations table - only if not already in notifications)
+                            ...orgInvitations
+                              .filter(inv => {
+                                // Only include if there's no matching notification with same invitation_id
+                                const hasMatchingNotification = systemNotifications.some(n => {
+                                  if (n.type === 'org_invitation' && n.metadata) {
+                                    const metadata = typeof n.metadata === 'string' ? JSON.parse(n.metadata) : n.metadata;
+                                    return metadata.invitation_id === inv.id;
+                                  }
+                                  return false;
+                                });
+                                return !hasMatchingNotification;
+                              })
+                              .map(inv => ({ ...inv, notificationType: 'org_invitation_legacy' as const }))
+                          ];
 
-                        {/* Org Invitations */}
-                        {orgInvitations.map((invitation) => (
+                          // Deduplicate by invitation_id for org invitations
+                          const seenInvitationIds = new Set<string>();
+                          const deduplicated = allNotifications.filter((notif: any) => {
+                            if (notif.notificationType === 'org_invitation' && notif.metadata) {
+                              const metadata = typeof notif.metadata === 'string' ? JSON.parse(notif.metadata) : notif.metadata;
+                              if (metadata.invitation_id) {
+                                if (seenInvitationIds.has(metadata.invitation_id)) {
+                                  return false;
+                                }
+                                seenInvitationIds.add(metadata.invitation_id);
+                              }
+                            } else if (notif.notificationType === 'org_invitation_legacy') {
+                              if (seenInvitationIds.has(notif.id)) {
+                                return false;
+                              }
+                              seenInvitationIds.add(notif.id);
+                            }
+                            return true;
+                          });
+
+                          // Sort by date (most recent first)
+                          deduplicated.sort((a, b) => {
+                            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                            return dateB - dateA;
+                          });
+
+                          return deduplicated.map((notification: any) => {
+                            // Handle org invitations (from unified notifications table)
+                            if (notification.notificationType === 'org_invitation' && notification.metadata) {
+                              const metadata = typeof notification.metadata === 'string' 
+                                ? JSON.parse(notification.metadata) 
+                                : notification.metadata;
+                              return (
+                                <div
+                                  key={notification.id}
+                                  className="relative p-3 border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
+                                >
+                                  {notification.status === 'unread' && (
+                                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-r" />
+                                  )}
+                                  <div className="flex items-start gap-3">
+                                    <Avatar className="h-9 w-9 flex-shrink-0 border border-border">
+                                      <AvatarFallback className={`${getAvatarColor(metadata.inviter_email || metadata.inviter_name)} text-xs`}>
+                                        {getUserInitials(metadata.inviter_name, metadata.inviter_email)}
+                                      </AvatarFallback>
+                                    </Avatar>
+                                    <div className="flex-1 min-w-0 space-y-1.5">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="flex-1 min-w-0">
+                                          <div className="flex items-center gap-2 mb-0.5">
+                                            <p className="font-medium text-sm truncate">{metadata.inviter_name}</p>
+                                            {notification.status === 'unread' && (
+                                              <span className="h-2 w-2 rounded-full bg-primary flex-shrink-0" />
+                                            )}
+                                          </div>
+                                          <p className="text-xs text-muted-foreground truncate">
+                                            {metadata.inviter_email}
+                                          </p>
+                                        </div>
+                                        <Button
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-6 w-6 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                          onClick={() => dismissNotification.mutate(notification.id)}
+                                        >
+                                          <X className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                        <Building2 className="h-3 w-3 flex-shrink-0" />
+                                        <span className="truncate">
+                                          Invited you to join <span className="font-medium text-foreground">{metadata.org_name}</span>
+                                        </span>
+                                      </div>
+                                      {notification.createdAt && (
+                                        <p className="text-xs text-muted-foreground">
+                                          {formatDate(new Date(notification.createdAt))}
+                                        </p>
+                                      )}
+                                      <div className="flex items-center gap-2 pt-1">
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="flex-1 h-8 text-xs text-muted-foreground hover:text-destructive hover:border-destructive/50"
+                                          onClick={() => {
+                                            if (metadata.invitation_id) {
+                                              handleDeclineOrgInvitation(metadata.invitation_id);
+                                            }
+                                            dismissNotification.mutate(notification.id);
+                                          }}
+                                        >
+                                          <X className="mr-1.5 h-3 w-3" />
+                                          Decline
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          className="flex-1 h-8 text-xs bg-primary hover:bg-primary/90"
+                                          onClick={() => {
+                                            if (metadata.invitation_id) {
+                                              handleAcceptOrgInvitation(metadata.invitation_id);
+                                            }
+                                            if (notification.status === 'unread') {
+                                              markNotificationRead.mutate(notification.id);
+                                            }
+                                          }}
+                                        >
+                                          <Check className="mr-1.5 h-3 w-3" />
+                                          Accept
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            
+                            // Handle legacy org invitations (from org_invitations table)
+                            if (notification.notificationType === 'org_invitation_legacy') {
+                              return (
+                                <div
+                                  key={notification.id}
+                                  className="relative p-3 border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <Avatar className="h-9 w-9 flex-shrink-0 border border-border">
+                                      <AvatarFallback className={`${getAvatarColor(notification.inviterEmail || notification.inviterName)} text-xs`}>
+                                        {getUserInitials(notification.inviterName, notification.inviterEmail)}
+                                      </AvatarFallback>
+                                    </Avatar>
+                                    <div className="flex-1 min-w-0 space-y-1.5">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <div className="flex-1 min-w-0">
+                                          <p className="font-medium text-sm truncate">{notification.inviterName}</p>
+                                          <p className="text-xs text-muted-foreground truncate">
+                                            {notification.inviterEmail}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                        <Building2 className="h-3 w-3 flex-shrink-0" />
+                                        <span className="truncate">
+                                          Invited you to join <span className="font-medium text-foreground">{notification.orgName}</span>
+                                        </span>
+                                      </div>
+                                      {notification.createdAt && (
+                                        <p className="text-xs text-muted-foreground">
+                                          {formatDate(new Date(notification.createdAt))}
+                                        </p>
+                                      )}
+                                      <div className="flex items-center gap-2 pt-1">
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          className="flex-1 h-8 text-xs text-muted-foreground hover:text-destructive hover:border-destructive/50"
+                                          onClick={() => handleDeclineOrgInvitation(notification.id)}
+                                        >
+                                          <X className="mr-1.5 h-3 w-3" />
+                                          Decline
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          className="flex-1 h-8 text-xs bg-primary hover:bg-primary/90"
+                                          onClick={() => handleAcceptOrgInvitation(notification.id)}
+                                        >
+                                          <Check className="mr-1.5 h-3 w-3" />
+                                          Accept
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            
+                            // Handle system notifications (deployment, etc.)
+                            return (
+                              <div
+                                key={notification.id}
+                                className="relative p-3 border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
+                              >
+                                {notification.status === 'unread' && (
+                                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-primary rounded-r" />
+                                )}
+                                <div className="flex items-start gap-3">
+                                  <div className="flex-1 min-w-0 space-y-1.5">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-0.5">
+                                          <p className="font-medium text-sm">
+                                            {notification.title}
+                                          </p>
+                                          {notification.status === 'unread' && (
+                                            <span className="h-2 w-2 rounded-full bg-primary flex-shrink-0" />
+                                          )}
+                                        </div>
+                                        <p className="text-sm text-muted-foreground">
+                                          {notification.message}
+                                        </p>
+                                      </div>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-6 w-6 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                        onClick={() => dismissNotification.mutate(notification.id)}
+                                      >
+                                        <X className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                      {notification.createdAt && (
+                                        <p className="text-xs text-muted-foreground">
+                                          {formatDate(new Date(notification.createdAt))}
+                                        </p>
+                                      )}
+                                      {notification.status === 'unread' && (
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
+                                          className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                                          onClick={() => markNotificationRead.mutate(notification.id)}
+                                        >
+                                          Mark as read
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+
+                        {/* Team Invitations */}
+                        {userInvitations.map((invitation: TeamInvitation) => (
                           <div
                             key={invitation.id}
                             className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"

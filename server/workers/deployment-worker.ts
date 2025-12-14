@@ -116,9 +116,9 @@ async function processDeploymentCompletion(message: any): Promise<void> {
       notificationMessage = `Integration deployment encountered an issue for ${orgName}. Please contact support if you need assistance.`;
     }
 
-    // Insert system notification
+    // Insert notification in unified notifications table
     await sharedPool.query(`
-      INSERT INTO system_notifications (user_email, org_id, type, title, message, status, created_at)
+      INSERT INTO notifications (user_email, org_id, type, title, message, status, created_at)
       VALUES ($1, $2, $3, $4, $5, 'unread', NOW())
     `, [ownerEmail, org.id, notificationType, notificationTitle, notificationMessage]);
     

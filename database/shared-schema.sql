@@ -124,27 +124,31 @@ CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_token ON email_verifica
 CREATE INDEX IF NOT EXISTS idx_email_verification_tokens_expires ON email_verification_tokens(expires_at);
 
 -- ============================================================================
--- SYSTEM NOTIFICATIONS TABLE
+-- UNIFIED NOTIFICATIONS TABLE
 -- ============================================================================
 
--- System notifications - for system-generated notifications like deployment completion
-CREATE TABLE IF NOT EXISTS system_notifications (
+-- Unified notifications - for all notification types (org invitations, system messages, etc.)
+CREATE TABLE IF NOT EXISTS notifications (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_email VARCHAR(255) NOT NULL REFERENCES users(email) ON DELETE CASCADE,
   org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
-  type VARCHAR(50) NOT NULL, -- e.g., 'deployment_complete', 'deployment_error'
+  type VARCHAR(50) NOT NULL, -- 'org_invitation', 'team_invitation', 'deployment_complete', 'deployment_error', etc.
   title VARCHAR(255) NOT NULL,
   message TEXT NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'read', 'dismissed')),
+  metadata JSONB, -- Store type-specific data (inviter_email, inviter_name, org_name, token, etc.)
+  action_url VARCHAR(500), -- Optional action link (e.g., invitation accept link)
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   read_at TIMESTAMP,
   dismissed_at TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_system_notifications_user ON system_notifications(user_email);
-CREATE INDEX IF NOT EXISTS idx_system_notifications_status ON system_notifications(status);
-CREATE INDEX IF NOT EXISTS idx_system_notifications_org ON system_notifications(org_id);
-CREATE INDEX IF NOT EXISTS idx_system_notifications_created ON system_notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_email);
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status);
+CREATE INDEX IF NOT EXISTS idx_notifications_org ON notifications(org_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type);
+CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_status ON notifications(user_email, status);
 
 -- ============================================================================
 -- DEMO REQUESTS TABLE

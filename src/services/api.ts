@@ -484,6 +484,8 @@ export const systemNotificationsService = {
     title: string;
     message: string;
     status: 'unread' | 'read' | 'dismissed';
+    metadata?: any;
+    actionUrl?: string | null;
     createdAt: string | null;
     readAt: string | null;
     dismissedAt: string | null;
