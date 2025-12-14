@@ -1,5 +1,5 @@
-import type { Project } from '@/data/projectsData';
-import type { Task } from '@/data/tasksData';
+import type { Project, Comment } from '@/data/projectsData';
+import type { Task, TaskComment } from '@/data/tasksData';
 import type { Team, TeamDetailData } from '@/data/teamsData';
 import type { Doc } from '@/data/docsData';
 import { auth, db } from '@/lib/firebase-client';
@@ -179,6 +179,22 @@ export const projectsService = {
       throw new Error(error.error || 'Failed to remove member');
     }
   },
+
+  async addComment(projectId: string, comment: string): Promise<Comment> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/projects/${encodeURIComponent(projectId)}/comments`
+      : `${API_BASE}/projects/${encodeURIComponent(projectId)}/comments`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to add comment' }));
+      throw new Error(error.error || 'Failed to add comment');
+    }
+    const data = await response.json();
+    return data.comment;
+  },
 };
 
 // Tasks Service
@@ -229,6 +245,22 @@ export const tasksService = {
       method: 'DELETE',
     });
     if (!response.ok) throw new Error('Failed to delete task');
+  },
+
+  async addComment(taskId: string, comment: string): Promise<TaskComment> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/comments`
+      : `${API_BASE}/tasks/${encodeURIComponent(taskId)}/comments`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ comment }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to add comment' }));
+      throw new Error(error.error || 'Failed to add comment');
+    }
+    const data = await response.json();
+    return data.comment;
   },
 };
 

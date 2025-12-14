@@ -3416,6 +3416,146 @@ app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, requireOr
   }
 });
 
+// Add project comment
+app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const projectId = req.params.id;
+    const { comment } = req.body;
+    const pool = await getOrgPool(orgId);
+    
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({ error: 'Comment is required' });
+    }
+    
+    // Verify project exists
+    const projectResult = await pool.query(
+      'SELECT id FROM projects WHERE id = $1',
+      [projectId]
+    );
+    
+    if (projectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Get user info for member name and avatar
+    const userResult = await pool.query(
+      'SELECT first_name, last_name FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    
+    let memberName = userEmail;
+    let memberAvatar = 'U';
+    
+    if (userResult.rows.length > 0) {
+      const firstName = userResult.rows[0].first_name || '';
+      const lastName = userResult.rows[0].last_name || '';
+      if (firstName && lastName) {
+        memberName = `${firstName} ${lastName}`;
+        memberAvatar = (firstName.charAt(0) + lastName.charAt(0)).toUpperCase();
+      } else {
+        memberAvatar = userEmail.substring(0, 2).toUpperCase();
+      }
+    }
+    
+    // Generate comment ID
+    const commentId = crypto.randomBytes(16).toString('hex');
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Insert comment
+    await pool.query(
+      `INSERT INTO project_comments (id, project_id, member_name, member_avatar, date, comment)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [commentId, projectId, memberName, memberAvatar, today, comment.trim()]
+    );
+    
+    res.json({
+      success: true,
+      comment: {
+        id: commentId,
+        memberName,
+        memberAvatar,
+        date: today,
+        comment: comment.trim()
+      }
+    });
+  } catch (error) {
+    console.error('Add project comment error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Add task comment
+app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const taskId = req.params.id;
+    const { comment } = req.body;
+    const pool = await getOrgPool(orgId);
+    
+    if (!comment || !comment.trim()) {
+      return res.status(400).json({ error: 'Comment is required' });
+    }
+    
+    // Verify task exists
+    const taskResult = await pool.query(
+      'SELECT id FROM tasks WHERE id = $1',
+      [taskId]
+    );
+    
+    if (taskResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
+    // Get user info for member name and avatar
+    const userResult = await pool.query(
+      'SELECT first_name, last_name FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    
+    let memberName = userEmail;
+    let memberAvatar = 'U';
+    
+    if (userResult.rows.length > 0) {
+      const firstName = userResult.rows[0].first_name || '';
+      const lastName = userResult.rows[0].last_name || '';
+      if (firstName && lastName) {
+        memberName = `${firstName} ${lastName}`;
+        memberAvatar = (firstName.charAt(0) + lastName.charAt(0)).toUpperCase();
+      } else {
+        memberAvatar = userEmail.substring(0, 2).toUpperCase();
+      }
+    }
+    
+    // Generate comment ID
+    const commentId = crypto.randomBytes(16).toString('hex');
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Insert comment
+    await pool.query(
+      `INSERT INTO task_comments (id, task_id, member_name, member_avatar, date, comment)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [commentId, taskId, memberName, memberAvatar, today, comment.trim()]
+    );
+    
+    res.json({
+      success: true,
+      comment: {
+        id: commentId,
+        memberName,
+        memberAvatar,
+        date: today,
+        comment: comment.trim()
+      }
+    });
+  } catch (error) {
+    console.error('Add task comment error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
 // ============================================================================
 // DOCS ENDPOINTS (PostgreSQL)
 // ============================================================================

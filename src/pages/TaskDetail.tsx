@@ -72,6 +72,8 @@ import { cn } from "@/lib/utils";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
+import { tasksService } from "@/services/api";
+import { useQueryClient } from "@tanstack/react-query";
 
 const getInitials = (name: string): string => {
   return name
@@ -268,6 +270,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const updateTaskMutation = useUpdateTask();
   const deleteTask = useDeleteTask();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const teamMembers = getAllTeamMembers(projects, users, task);
 
   // Find creator user from users list
@@ -369,13 +372,26 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     );
   }
 
-  const handleAddComment = () => {
+  const handleAddComment = async () => {
     const comment = commentInput.trim();
-    if (!comment) return;
+    if (!comment || !taskId) return;
     
-    // In a real app, this would send to an API
-    // For now, we'll just clear the input
-    setCommentInput("");
+    try {
+      await tasksService.addComment(taskId, comment);
+      setCommentInput("");
+      toast({
+        title: "Comment added",
+        description: "Your comment has been posted successfully.",
+      });
+      // Invalidate and refetch task to show the new comment
+      queryClient.invalidateQueries({ queryKey: ['tasks', taskId] });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to add comment",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleProjectClick = () => {

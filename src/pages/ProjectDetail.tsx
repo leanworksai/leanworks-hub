@@ -18,9 +18,11 @@ import {
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2 } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember, useUpdateProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
+import { projectsService } from "@/services/api";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from "@tanstack/react-query";
 import { useUsers } from "@/hooks/useUsers";
 import { useSubscription } from "@/hooks/useSubscription";
 import { cn } from "@/lib/utils";
@@ -101,6 +103,7 @@ export default function ProjectDetail() {
   const updateProject = useUpdateProject();
   const { toast } = useToast();
   const { isFreePlan } = useSubscription();
+  const queryClient = useQueryClient();
   
   // Fetch project by ID
   // Backend already handles access control - if user doesn't have access, it returns 403
@@ -259,13 +262,26 @@ export default function ProjectDetail() {
     }
   };
 
-  const handleAddComment = () => {
+  const handleAddComment = async () => {
     const comment = commentInput.trim();
-    if (!comment) return;
+    if (!comment || !project) return;
     
-    // In a real app, this would send to an API
-    // For now, we'll just clear the input
-    setCommentInput("");
+    try {
+      await projectsService.addComment(project.id, comment);
+      setCommentInput("");
+      toast({
+        title: "Comment added",
+        description: "Your comment has been posted successfully.",
+      });
+      // Invalidate and refetch project to show the new comment
+      queryClient.invalidateQueries({ queryKey: ['projects', project.id] });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to add comment",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleAddMember = async () => {
