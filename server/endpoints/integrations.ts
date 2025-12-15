@@ -6,7 +6,7 @@
 import express from 'express';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getFirestore } from 'firebase-admin/firestore';
-import { getOrgPool, getOrgPoolBySlug, getSharedPool } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getOrgPoolBySlug, getSharedPool, getOrgSlugById } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
 
 // Cache for org name lookups (org_id -> name, slug -> name)
@@ -59,11 +59,14 @@ async function getOrgNameBySlug(orgSlug: string): Promise<string> {
   return name;
 }
 
-// Helper function to create secret name for org name and integration
-function getSecretName(orgName: string, integrationId: string): string {
-  const sanitizedOrgName = orgName.toLowerCase().replace(/[^a-z0-9]/g, '');
+// Helper function to create secret name for org slug and integration
+// GCP Secret Manager allows alphanumeric, hyphens, and underscores in secret names
+function getSecretName(orgSlug: string, integrationId: string): string {
+  // Use org slug directly (already in correct format with underscores)
+  // Convert underscores to hyphens for consistency with existing secret naming
+  const slugForSecret = orgSlug.replace(/_/g, '-');
   const sanitizedIntegrationId = integrationId.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return `integrations-${sanitizedOrgName}-${sanitizedIntegrationId}`;
+  return `integrations-${slugForSecret}-${sanitizedIntegrationId}`;
 }
 
 // Helper function to save secret to GCP Secret Manager
@@ -244,9 +247,9 @@ export function setupIntegrationEndpoints(
           return res.status(400).json({ error: 'Unsupported integration type' });
       }
 
-      // Get org name and generate secret name
-      const orgName = await getOrgNameById(orgId);
-      const secretName = getSecretName(orgName, integrationId);
+      // Get org slug and generate secret name
+      const orgSlug = await getOrgSlugById(orgId);
+      const secretName = getSecretName(orgSlug, integrationId);
       
       // Save credentials to GCP Secret Manager
       await saveSecret(secretManagerClient, projectId, secretName, JSON.stringify(credentials));
@@ -307,11 +310,11 @@ export function setupIntegrationEndpoints(
         [integrationId]
       );
       const integration = result.rows[0] || null;
-      // If secret_name is not stored, generate it from org name
+      // If secret_name is not stored, generate it from org slug
       let secretName = integration?.secret_name;
       if (!secretName) {
-        const orgName = await getOrgNameById(orgId);
-        secretName = getSecretName(orgName, integrationId);
+        const orgSlug = await getOrgSlugById(orgId);
+        secretName = getSecretName(orgSlug, integrationId);
       }
 
       // Delete secret from GCP Secret Manager
@@ -361,9 +364,8 @@ export function setupIntegrationEndpoints(
         [installationId, (setup_action as string) || 'install']
       );
 
-      // Get org name and save basic installation data to Secret Manager
-      const orgName = await getOrgNameBySlug(orgSlug);
-      const secretName = getSecretName(orgName, 'github');
+      // Save basic installation data to Secret Manager using org slug
+      const secretName = getSecretName(orgSlug, 'github');
       const basicInstallationData = {
         installationId,
         orgSlug,

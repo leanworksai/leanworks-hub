@@ -75,27 +75,32 @@ async function getPostgresPassword(): Promise<string> {
   }
 }
 
-// Sanitize org slug for database naming
+// Use org slug directly for database naming (with org_ prefix)
+// Database names will be quoted in SQL queries to handle special characters
 export function sanitizeSlugForDb(slug: string): string {
-  // Remove all special characters, keep only alphanumeric
-  const sanitized = slug.toLowerCase().replace(/[^a-z0-9]/g, '');
-  
-  // Ensure database name doesn't start with a number (PostgreSQL requirement)
-  if (sanitized && /^\d/.test(sanitized)) {
-    return 'org_' + sanitized;
-  }
-  
-  return 'org_' + sanitized;
+  // Use slug directly with org_ prefix, no sanitization
+  // PostgreSQL allows special characters in quoted identifiers
+  return 'org_' + slug;
 }
 
-// Generate a unique slug from org name
+// Generate a unique slug from org name (using underscores for separations)
+// Appends a unique ID to ensure uniqueness, similar to personal workspace slugs
 export function generateOrgSlug(name: string): string {
-  return name
+  const baseSlug = name
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .substring(0, 50);
+    .replace(/[^a-z0-9\s_]/g, '') // Keep only alphanumeric, spaces, and underscores
+    .replace(/\s+/g, '_') // Replace spaces with underscores
+    .replace(/-+/g, '_') // Replace hyphens with underscores
+    .replace(/_+/g, '_') // Replace multiple underscores with single underscore
+    .replace(/^_+|_+$/g, ''); // Remove leading/trailing underscores
+  
+  // Generate unique ID (similar to personal workspace format)
+  const uniqueId = Date.now().toString(36);
+  
+  // Truncate base slug to leave room for unique ID (max 40 chars for base, + 1 for underscore + ~9 for ID = ~50 total)
+  const truncatedBase = baseSlug.substring(0, 40);
+  
+  return `${truncatedBase}_${uniqueId}`;
 }
 
 // Generate personal workspace slug from email
