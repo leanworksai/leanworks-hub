@@ -10,8 +10,8 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { Readable } from 'stream';
-import { getOrgPool, getUserInfoBatch, getOrgSlugById } from '../../database/multi-tenant-pool.js';
+// Note: Readable stream import removed - no longer using streaming API
+import { getOrgPoolBySlug, getUserInfoBatch } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
 import { resample48kHzTo16kHz } from '../services/audio-processor.js';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
@@ -26,22 +26,29 @@ let storageClient: Storage | null = null;
 let assemblyAIClient: AssemblyAI | null = null;
 let secretManagerClient: SecretManagerServiceClient | null = null;
 
+// Configuration constants for chunk-based transcription
+const CHUNK_DURATION_MS = 45000; // 45 seconds (configurable: 30-60s)
+const CHUNK_OVERLAP_MS = 300; // 300ms overlap (200-500ms range)
+const ASSEMBLYAI_MAX_CONCURRENT_JOBS = 32; // Respect API limits
+const TRANSCRIPTION_POLL_INTERVAL_MS = 2000; // Poll every 2s
+const TRANSCRIPTION_MAX_WAIT_MS = 300000; // 5 min max wait per chunk
+
 // Active transcription sessions (in-memory for worker, but also persisted to DB)
 interface TranscriptionSession {
   callId: string;
   roomName: string;
   participants: Map<string, { email: string; name?: string }>;
-  transcribers: Map<string, any>; // AssemblyAI StreamingTranscriber per participant
-  audioStreams: Map<string, Readable>; // Readable streams for piping audio to transcribers
-  transcripts: Map<string, string[]>; // Transcripts per participant
+  transcripts: Map<string, string[]>; // Final stitched transcripts per participant
   startTime: Date;
-  orgId?: string;
-  processedSegments: Map<string, Set<number>>; // Track processed segments per participant (email -> Set<segmentIndex>)
-  lastProcessedBytes: Map<string, number>; // Track last processed byte position per participant (email -> bytes)
+  orgSlug?: string; // Organization slug (used for database access)
+  // Chunk-based transcription tracking
+  chunkTranscripts: Map<string, Map<number, string>>; // participant -> chunkIndex -> transcript text
+  chunkTranscriptionJobs: Map<string, Map<number, string>>; // participant -> chunkIndex -> AssemblyAI job ID
+  chunkTranscriptionStatus: Map<string, Map<number, 'pending' | 'processing' | 'completed' | 'failed'>>; // participant -> chunkIndex -> status
+  chunkStorageUrls: Map<string, Map<number, string>>; // participant -> chunkIndex -> storageUrl
+  processedChunks: Map<string, Set<number>>; // Track processed chunks per participant (email -> Set<chunkIndex>)
+  processingChunks: Map<string, Set<number>>; // Track chunks currently being processed (in-progress) per participant
   finalChunksReceived: Set<string>; // Track which participants have received final chunks (email -> true)
-  transcriberReady: Map<string, boolean>; // Track which transcribers are actually connected and ready
-  transcriberReadyTime: Map<string, number>; // Track when transcribers were last confirmed ready (timestamp)
-  audioPipeStarted: Map<string, boolean>; // Track whether audio pipe has started for each participant
 }
 
 const activeSessions = new Map<string, TranscriptionSession>();
@@ -50,51 +57,7 @@ const pendingChunks = new Map<string, Array<{ message: any; data: any }>>(); // 
 // Add near top with other Maps
 const transcriptionSessionLocks = new Map<string, Promise<void>>();
 
-// AssemblyAI has a 1MB frame size limit, so we chunk audio into smaller pieces
-// AssemblyAI requires chunks between 50-1000ms duration
-// At 16kHz PCM (16-bit): 1000ms = 16,000 samples * 2 bytes = 32,000 bytes
-// Use 30KB to ensure we stay well under the 1000ms limit
-const MAX_CHUNK_SIZE = 30 * 1024; // 30KB chunks (ensures <1000ms at 16kHz)
-// At 16kHz PCM, 30KB ≈ 937ms of audio
-// Send chunks faster than real-time but with backpressure handling
-// 50ms delay allows ~18x real-time max, but backpressure will naturally throttle
-const CHUNK_INTERVAL_MS = 50; // Send 30KB chunks every 50ms (allows faster transmission, backpressure handles throttling)
-
-/**
- * Push audio buffer to stream in chunks to meet AssemblyAI's requirements:
- * - Maximum frame size: 1MB
- * - Duration limit: 50-1000ms per chunk
- * - Rate limit: Must send at approximately real-time speed to avoid "Audio Transmission Rate Exceeded" error
- * At 16kHz PCM (16-bit), 1000ms = 32KB, so we use 30KB chunks to stay safe
- */
-async function pushAudioInChunks(stream: Readable, audioBuffer: Buffer, email?: string): Promise<void> {
-  let offset = 0;
-  let totalPushed = 0;
-  while (offset < audioBuffer.length) {
-    const chunk = audioBuffer.slice(offset, Math.min(offset + MAX_CHUNK_SIZE, audioBuffer.length));
-    
-    // Push chunk and check for backpressure
-    const canPush = stream.push(chunk);
-    totalPushed += chunk.length;
-    offset += MAX_CHUNK_SIZE;
-    
-    // If stream is backpressured, wait for drain event
-    if (!canPush) {
-      await new Promise<void>((resolve) => {
-        stream.once('drain', resolve);
-      });
-    }
-    
-    // Small delay to prevent tight loops and allow stream processing
-    // This is much faster than 900ms, allowing near real-time transmission
-    if (offset < audioBuffer.length) {
-      await new Promise(resolve => setTimeout(resolve, CHUNK_INTERVAL_MS));
-    }
-  }
-  if (email) {
-    console.log(`📤 Pushed ${totalPushed} bytes to audio stream for ${email}`);
-  }
-}
+// Note: pushAudioInChunks removed - no longer using streaming API
 
 /**
  * Detect if audio buffer is likely 48kHz and needs resampling to 16kHz
@@ -108,22 +71,27 @@ async function pushAudioInChunks(stream: Readable, audioBuffer: Buffer, email?: 
 function needsResampling(audioBuffer: Buffer): boolean {
   const size = audioBuffer.length;
   
-  // At 16kHz, typical chunks should be:
-  // - Small chunks: ~10-30KB (0.3-0.9 seconds)
-  // - Large chunks: up to ~100KB (3 seconds)
-  // At 48kHz, same duration would be 3x larger:
-  // - Small chunks: ~30-90KB
-  // - Large chunks: up to ~300KB
+  // Only check files > 50KB to avoid false positives on small chunks
+  if (size <= 50000) {
+    return false; // Assume 16kHz for small files
+  }
   
-  // Simple heuristic: if size > 50KB, it's likely 48kHz (since 50KB at 16kHz = 1.56 seconds)
-  // But we also check the ratio to be more accurate
+  // Calculate duration assuming 16kHz (mono, 16-bit = 2 bytes per sample)
+  // At 16kHz: 1 second = 16,000 samples * 2 bytes = 32,000 bytes
   const bytesPerSecond16kHz = 16000 * 2; // 32,000 bytes
-  const ratio = size / bytesPerSecond16kHz;
+  const duration = size / bytesPerSecond16kHz;
   
-  // If ratio > 2.5, it's likely 48kHz (since 48kHz is exactly 3x 16kHz)
-  // This catches cases where audio is stored as 48kHz
-  if (ratio > 2.5 && size > 50000) {
-    return true;
+  // Calculate expected size at 48kHz for the same duration
+  // At 48kHz: 1 second = 48,000 samples * 2 bytes = 96,000 bytes
+  const bytesPerSecond48kHz = 48000 * 2; // 96,000 bytes
+  const expected48kHz = duration * bytesPerSecond48kHz;
+  
+  // Compare actual size to expected 48kHz size
+  // If size / expected48kHz is between 0.8-1.2, it's likely 48kHz
+  const ratio = size / expected48kHz;
+  
+  if (ratio >= 0.8 && ratio <= 1.2) {
+    return true; // Likely 48kHz
   }
   
   // Default: assume 16kHz (safer - won't break if already correct)
@@ -131,15 +99,62 @@ function needsResampling(audioBuffer: Buffer): boolean {
 }
 
 /**
+ * Convert PCM16 buffer to WAV format
+ * AssemblyAI can auto-detect WAV files, but raw PCM requires format specification
+ * WAV is a container format that wraps PCM data with a header
+ */
+function pcmToWav(pcmBuffer: Buffer, sampleRate: number): Buffer {
+  const numChannels = 1; // Mono
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const fileSize = 36 + dataSize;
+  
+  // WAV file header (44 bytes)
+  const wavHeader = Buffer.alloc(44);
+  
+  // RIFF header
+  wavHeader.write('RIFF', 0);
+  wavHeader.writeUInt32LE(fileSize, 4);
+  wavHeader.write('WAVE', 8);
+  
+  // fmt chunk
+  wavHeader.write('fmt ', 12);
+  wavHeader.writeUInt32LE(16, 16); // fmt chunk size
+  wavHeader.writeUInt16LE(1, 20); // audio format (1 = PCM)
+  wavHeader.writeUInt16LE(numChannels, 22);
+  wavHeader.writeUInt32LE(sampleRate, 24);
+  wavHeader.writeUInt32LE(byteRate, 28);
+  wavHeader.writeUInt16LE(blockAlign, 32);
+  wavHeader.writeUInt16LE(bitsPerSample, 34);
+  
+  // data chunk
+  wavHeader.write('data', 36);
+  wavHeader.writeUInt32LE(dataSize, 40);
+  
+  // Combine header and PCM data
+  return Buffer.concat([wavHeader, pcmBuffer]);
+}
+
+/**
  * Resample audio to 16kHz if needed before sending to AssemblyAI
- * AssemblyAI requires 16kHz, but audio might be stored as 48kHz
+ * AssemblyAI requires 16kHz
  * 
- * This function ensures audio is always 16kHz before transcription,
- * which fixes the issue where 48kHz audio causes poor transcription quality
+ * Note: Audio is already resampled to 16kHz before saving to GCS (see livekit.ts line 854),
+ * so we should assume it's 16kHz. However, we keep the detection logic as a safety net
+ * for any legacy files or edge cases.
  */
 async function ensure16kHz(audioBuffer: Buffer, email?: string): Promise<Buffer> {
-  // Check if resampling is needed based on buffer size heuristics
+  // Audio is already resampled to 16kHz before saving to GCS (see livekit.ts line 854)
+  // So we can skip the resampling check and assume it's already 16kHz
+  // This prevents double-resampling which wastes CPU and can degrade quality
+  
+  // However, keep detection as a safety net for legacy files or edge cases
   if (needsResampling(audioBuffer)) {
+    console.warn(`⚠️ Audio file appears to be 48kHz for ${email || 'unknown'} (${audioBuffer.length} bytes) - this should not happen if audio was saved correctly`);
+    console.warn(`   This might be a legacy file or there was an error during save. Attempting to resample...`);
+    
     try {
       const originalSize = audioBuffer.length;
       console.log(`🔄 Resampling audio from 48kHz to 16kHz for ${email || 'unknown'} (${originalSize} bytes)`);
@@ -166,11 +181,7 @@ async function ensure16kHz(audioBuffer: Buffer, email?: string): Promise<Buffer>
     }
   }
   
-  // Audio appears to be 16kHz already, return as-is
-  // Log for debugging to verify our detection is working
-  if (audioBuffer.length > 0) {
-    console.log(`✓ Audio appears to be 16kHz already for ${email || 'unknown'} (${audioBuffer.length} bytes, skipping resample)`);
-  }
+  // Audio appears to be 16kHz already (as expected), return as-is
   return audioBuffer;
 }
 
@@ -290,14 +301,14 @@ async function getAssemblyAIClient(): Promise<AssemblyAI> {
 }
 
 // Load transcription session from database
-async function loadSessionFromDB(callId: string, orgId?: string): Promise<TranscriptionSession | null> {
-  if (!orgId) {
-    console.warn(`⚠️ Cannot load session from DB without orgId for call ${callId}`);
+async function loadSessionFromDB(callId: string, orgSlug?: string): Promise<TranscriptionSession | null> {
+  if (!orgSlug) {
+    console.warn(`⚠️ Cannot load session from DB without orgSlug for call ${callId}`);
     return null;
   }
 
   try {
-    const pool = await getOrgPool(orgId);
+    const pool = await getOrgPoolBySlug(orgSlug);
     const result = await pool.query(
       'SELECT * FROM transcription_sessions WHERE call_id = $1',
       [callId]
@@ -315,69 +326,64 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
       participants.set(p.email.toLowerCase(), p);
     }
 
-    // Load processed segments from transcription_chunks table
-    const chunksResult = await pool.query(
-      'SELECT participant_email, chunk_index, storage_url FROM transcription_chunks WHERE call_id = $1',
-      [callId]
-    );
-
-    const processedSegments = new Map<string, Set<number>>();
-    const lastProcessedBytes = new Map<string, number>();
-    const storageUrlsByEmail = new Map<string, string>();
-
-    for (const chunkRow of chunksResult.rows) {
-      const email = chunkRow.participant_email.toLowerCase();
-      if (!processedSegments.has(email)) {
-        processedSegments.set(email, new Set());
-      }
-      processedSegments.get(email)!.add(chunkRow.chunk_index);
+    // Load chunk transcripts from transcription_chunk_results table if it exists
+    const chunkTranscripts = new Map<string, Map<number, string>>();
+    const chunkTranscriptionJobs = new Map<string, Map<number, string>>();
+    const chunkTranscriptionStatus = new Map<string, Map<number, 'pending' | 'processing' | 'completed' | 'failed'>>();
+    const chunkStorageUrls = new Map<string, Map<number, string>>();
+    const processedChunks = new Map<string, Set<number>>();
+    
+    try {
+      const chunkResults = await pool.query(
+        'SELECT participant_email, chunk_index, transcript, assemblyai_job_id, status, storage_url FROM transcription_chunk_results WHERE call_id = $1',
+        [callId]
+      );
       
-      // Store the latest storage URL for each participant (they should all point to the same file)
-      if (chunkRow.storage_url) {
-        storageUrlsByEmail.set(email, chunkRow.storage_url);
-      }
-    }
-
-    // Try to estimate lastProcessedBytes by checking GCS file size
-    // If we've processed all segments up to a certain point, we can estimate bytes
-    const storage = getStorageClient();
-    for (const [email, storageUrl] of storageUrlsByEmail.entries()) {
-      try {
-        const [bucketName, ...pathParts] = storageUrl.replace('gs://', '').split('/');
-        const filePath = pathParts.join('/');
-        const file = storage.bucket(bucketName).file(filePath);
-        const [metadata] = await file.getMetadata();
-        const fileSize = parseInt(String(metadata.size || '0'), 10);
+      for (const chunkRow of chunkResults.rows) {
+        const email = chunkRow.participant_email.toLowerCase();
+        const chunkIndex = chunkRow.chunk_index;
         
-        // If file exists and has size, use it as an estimate
-        // The actual processed bytes might be less, but this gives us a starting point
-        // The deduplication logic will prevent re-processing
-        if (fileSize > 0) {
-          lastProcessedBytes.set(email, fileSize);
-          console.log(`📊 Estimated lastProcessedBytes for ${email}: ${fileSize} bytes (from GCS file size)`);
+        if (!chunkTranscripts.has(email)) {
+          chunkTranscripts.set(email, new Map());
+          chunkTranscriptionJobs.set(email, new Map());
+          chunkTranscriptionStatus.set(email, new Map());
+          chunkStorageUrls.set(email, new Map());
+          processedChunks.set(email, new Set());
         }
-      } catch (error: any) {
-        console.warn(`⚠️ Could not get file size for ${email} from ${storageUrl}:`, error.message);
-        // Set to 0 if we can't determine
-        lastProcessedBytes.set(email, 0);
+        
+        if (chunkRow.transcript) {
+          chunkTranscripts.get(email)!.set(chunkIndex, chunkRow.transcript);
+        }
+        if (chunkRow.assemblyai_job_id) {
+          chunkTranscriptionJobs.get(email)!.set(chunkIndex, chunkRow.assemblyai_job_id);
+        }
+        if (chunkRow.status) {
+          chunkTranscriptionStatus.get(email)!.set(chunkIndex, chunkRow.status as 'pending' | 'processing' | 'completed' | 'failed');
+        }
+        if (chunkRow.storage_url) {
+          chunkStorageUrls.get(email)!.set(chunkIndex, chunkRow.storage_url);
+        }
+        processedChunks.get(email)!.add(chunkIndex);
       }
+    } catch (error: any) {
+      // Table might not exist yet (migration not run), that's okay
+      console.warn(`⚠️ Could not load chunk results from DB (table may not exist):`, error.message);
     }
 
     const session: TranscriptionSession = {
       callId: row.call_id,
       roomName: row.room_name,
       participants,
-      transcribers: new Map(),
-      audioStreams: new Map(),
-      transcripts: new Map(),
+      transcripts: new Map(), // Final stitched transcripts
       startTime: row.started_at,
-      orgId,
-      processedSegments, // Restored from DB
-      lastProcessedBytes, // Estimated from GCS file sizes
+      orgSlug,
+      chunkTranscripts, // Restored from DB
+      chunkTranscriptionJobs, // Restored from DB
+      chunkTranscriptionStatus, // Restored from DB
+      chunkStorageUrls, // Restored from DB
+      processedChunks, // Restored from DB
+      processingChunks: new Map(), // Initialize empty - tracks chunks currently being processed
       finalChunksReceived: new Set(), // Initialize empty - will be populated as final chunks arrive
-      transcriberReady: new Map(), // Will be set when transcribers connect
-      transcriberReadyTime: new Map(), // Will be set when transcribers connect
-      audioPipeStarted: new Map(), // Will be set when audio pipes start
     };
 
     // Load transcripts from DB
@@ -386,7 +392,8 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
       session.transcripts.set(email.toLowerCase(), transcriptArray as string[]);
     }
 
-    console.log(`📝 Loaded session from DB: ${processedSegments.size} participants with processed segments, ${Array.from(processedSegments.values()).reduce((sum, set) => sum + set.size, 0)} total segments processed`);
+    const totalChunks = Array.from(chunkTranscripts.values()).reduce((sum, map) => sum + map.size, 0);
+    console.log(`📝 Loaded session from DB: ${chunkTranscripts.size} participants with ${totalChunks} chunk transcripts`);
 
     return session;
   } catch (error: any) {
@@ -397,13 +404,13 @@ async function loadSessionFromDB(callId: string, orgId?: string): Promise<Transc
 
 // Save transcription session to database
 async function saveSessionToDB(session: TranscriptionSession): Promise<void> {
-  if (!session.orgId) {
-    console.warn(`⚠️ Cannot save session to DB without orgId for call ${session.callId}`);
+  if (!session.orgSlug) {
+    console.warn(`⚠️ Cannot save session to DB without orgSlug for call ${session.callId}`);
     return;
   }
 
   try {
-    const pool = await getOrgPool(session.orgId);
+    const pool = await getOrgPoolBySlug(session.orgSlug);
     const participantsArray = Array.from(session.participants.values());
     const transcriptsObj: Record<string, string[]> = {};
     for (const [email, transcripts] of session.transcripts.entries()) {
@@ -431,335 +438,14 @@ async function saveSessionToDB(session: TranscriptionSession): Promise<void> {
   }
 }
 
-// Helper function to create and set up a transcriber for a participant
-async function setupTranscriberForParticipant(
-  session: TranscriptionSession,
-  participant: { email: string; name?: string },
-  assemblyAI: any // AssemblyAI client
-): Promise<void> {
-  const email = participant.email.toLowerCase();
-  
-  try {
-    const transcriber = assemblyAI.streaming.transcriber({
-      sampleRate: 16000, // 16kHz
-      formatTurns: true,
-      formatText: true, // Enable punctuation and capitalization for better readability
-      // Turn detection: 'aggressive' ends turns quickly, 'balanced' is natural, 'conservative' holds longer
-      // Using 'balanced' for natural sentence completion
-    });
-
-    let transcriberReady = false;
-    let promiseResolve: (() => void) | null = null;
-    let promiseReject: ((error: Error) => void) | null = null;
-    
-    const transcriberReadyPromise = new Promise<void>((resolve, reject) => {
-      promiseResolve = resolve;
-      promiseReject = reject;
-      
-      // Set a timeout to detect if transcriber never connects
-      const timeout = setTimeout(() => {
-        if (!transcriberReady) {
-          console.error(`❌ Transcriber connection timeout for ${email} after 30 seconds`);
-          reject(new Error('Transcriber connection timeout'));
-        }
-      }, 30000); // 30 second timeout
-      
-      const openHandler = ({ id }: { id: string }) => {
-        clearTimeout(timeout);
-        transcriberReady = true;
-        // Mark transcriber as ready in session
-        if (!session.transcriberReady) {
-          session.transcriberReady = new Map();
-        }
-        session.transcriberReady.set(email, true);
-        if (!session.transcriberReadyTime) {
-          session.transcriberReadyTime = new Map();
-        }
-        session.transcriberReadyTime.set(email, Date.now());
-        console.log(`✅ Transcription session opened for ${email}, ID: ${id}`);
-        resolve();
-      };
-      
-      const errorHandler = (error: any) => {
-        clearTimeout(timeout);
-        // Mark transcriber as not ready in session
-        if (!session.transcriberReady) {
-          session.transcriberReady = new Map();
-        }
-        session.transcriberReady.set(email, false);
-        console.error(`❌ Transcriber connection error for ${email}:`, error);
-        reject(error);
-      };
-      
-      transcriber.on('open', openHandler);
-      transcriber.on('error', errorHandler);
-    });
-
-    // Add logging for all transcriber events to debug
-    transcriber.on('close', () => {
-      console.log(`🔌 Transcriber closed for ${email}`);
-    });
-    
-    transcriber.on('error', (error: any) => {
-      console.error(`❌ Transcriber error event for ${email}:`, error);
-      if (!session.transcriberReady) {
-        session.transcriberReady = new Map();
-      }
-      session.transcriberReady.set(email, false);
-    });
-
-    transcriber.on('turn', (turn: any) => {
-      console.log(`🔄 Turn event received for ${email}:`, { 
-        transcript: turn.transcript?.substring(0, 50) || '(empty)', 
-        end_of_turn: turn.end_of_turn,
-        hasTranscript: !!turn.transcript,
-        fullTurn: JSON.stringify(turn).substring(0, 200) // Log first 200 chars of full turn object
-      });
-      if (turn.transcript && turn.transcript.trim()) {
-        const existingTranscripts = session.transcripts.get(email) || [];
-        const transcriptText = turn.transcript.trim();
-        
-        // Filter out partial/interim transcripts - only capture final ones
-        // AssemblyAI's turn event has 'end_of_turn' property for final transcripts
-        const isFinal = turn.end_of_turn === true;
-        
-        // Helper function to normalize text for comparison (remove punctuation, lowercase)
-        const normalizeText = (text: string): string => {
-          return text.toLowerCase()
-            .replace(/[.,!?;:]/g, '') // Remove punctuation
-            .trim();
-        };
-        
-        // For final transcripts, accumulate short words into sentences
-        // For partial transcripts, only filter very short ones
-        if (isFinal) {
-          // Check if transcript ends with sentence-ending punctuation
-          const hasSentenceEnding = /[.!?]$/.test(transcriptText);
-          
-          // Final transcripts - accumulate short words into sentences
-          const lastTranscript = existingTranscripts[existingTranscripts.length - 1];
-          
-          // If we have a last transcript and the current one is short (likely a word)
-          // and doesn't have sentence-ending punctuation, try to combine them
-          if (lastTranscript && transcriptText.length < 20 && !hasSentenceEnding) {
-            const normalizedLast = normalizeText(lastTranscript);
-            const normalizedCurrent = normalizeText(transcriptText);
-            
-            // If they're different words, combine them
-            if (normalizedLast !== normalizedCurrent) {
-              // Check if last transcript also doesn't end with punctuation
-              const lastHasPunctuation = /[.!?]$/.test(lastTranscript);
-              
-              if (!lastHasPunctuation) {
-                // Only combine if the new transcript doesn't start with the old one
-                // This prevents "i wash and" + "i wash and pressure" -> "i wash and i wash and pressure"
-                if (!normalizedCurrent.startsWith(normalizedLast)) {
-                  // Combine: "is" + "going" -> "is going"
-                  const combined = `${lastTranscript} ${transcriptText}`;
-                  existingTranscripts[existingTranscripts.length - 1] = combined;
-                  console.log(`📝 Combined transcript for ${email}: "${combined}" (from "${lastTranscript}" + "${transcriptText}")`);
-                  saveSessionToDB(session).catch(console.error);
-                  return; // Don't add as new, we combined it
-                } else {
-                  // New transcript starts with old one - it's a refinement, not a combination
-                  // Let the refinement logic below handle it
-                }
-              }
-            } else {
-              // Same word - skip duplicate
-              console.log(`⏭️ Skipping duplicate final transcript for ${email}: "${transcriptText}"`);
-              return;
-            }
-          }
-          
-          // Check for duplicates (normalized comparison)
-          if (lastTranscript) {
-            const normalizedLast = normalizeText(lastTranscript);
-            const normalizedCurrent = normalizeText(transcriptText);
-            
-            // Skip if normalized versions are identical (handles "three" vs "Three.")
-            if (normalizedLast === normalizedCurrent) {
-              console.log(`⏭️ Skipping duplicate final transcript for ${email}: "${transcriptText}" (same as "${lastTranscript}")`);
-              return; // Skip exact duplicates (case/punctuation variations)
-            }
-            
-            // Replace if last is clearly a substring/refinement
-            // Be conservative - only if the last one is significantly shorter and contained
-            if (normalizedLast.length < normalizedCurrent.length && 
-                normalizedCurrent.startsWith(normalizedLast) &&
-                normalizedLast.length > 0 &&
-                (normalizedCurrent.length - normalizedLast.length) > 2) {
-              // Replace the last transcript with the more complete version
-              existingTranscripts[existingTranscripts.length - 1] = transcriptText;
-              console.log(`📝 Updated transcript for ${email}: "${transcriptText}" (refined from "${lastTranscript}")`);
-              saveSessionToDB(session).catch(console.error);
-              return; // Don't add as new transcript, we just updated the last one
-            }
-          }
-          
-          // Add final transcript
-          if (!session.transcripts.has(email)) {
-            session.transcripts.set(email, []);
-          }
-          session.transcripts.get(email)!.push(transcriptText);
-          console.log(`📝 Transcript for ${email}: ${transcriptText} (final)`);
-          
-          // Save to DB periodically
-          saveSessionToDB(session).catch(console.error);
-        } else {
-          // Partial/interim transcripts - DON'T save to session
-          // These are only for real-time display, not for final docs
-          // Only log them for debugging
-          if (transcriptText.length >= 5) {
-            console.log(`🔄 Partial transcript for ${email}: "${transcriptText}" (not saved)`);
-          }
-          // Don't add partial transcripts to session.transcripts
-          return;
-        }
-      }
-    });
-
-    transcriber.on('error', (error: any) => {
-      console.error(`❌ Transcription error for ${email}:`, error);
-    });
-
-    transcriber.on('close', (code: number, reason: string) => {
-      console.log(`🔌 Transcription connection closed for ${email}: ${code} - ${reason}`);
-    });
-
-    const audioStream = new Readable({
-      read() {},
-      objectMode: false,
-      highWaterMark: 64 * 1024,
-    });
-
-    // Connect transcriber and wait for it to be ready
-    console.log(`🔌 Connecting transcriber for ${email}...`);
-    
-    // Start connection (non-blocking)
-    transcriber.connect()
-      .then(() => {
-        console.log(`✅ Transcriber.connect() completed for ${email} (waiting for 'open' event)`);
-      })
-      .catch((error: any) => {
-        console.error(`❌ Error connecting transcriber for ${email}:`, error);
-        // Mark as not ready on connection error
-        if (!session.transcriberReady) {
-          session.transcriberReady = new Map();
-        }
-        session.transcriberReady.set(email, false);
-        // Reject the promise so audio pipe doesn't wait forever
-        if (promiseReject) {
-          promiseReject(error);
-        }
-      });
-
-    // Wait for transcriber to be ready in background (don't block, but track status)
-    transcriberReadyPromise
-      .then(() => {
-        console.log(`✅ Transcriber ready for ${email}`);
-      })
-      .catch((error: any) => {
-        console.error(`❌ Transcriber failed to become ready for ${email}:`, error);
-        // Ensure it's marked as not ready on failure
-        if (!session.transcriberReady) {
-          session.transcriberReady = new Map();
-        }
-        session.transcriberReady.set(email, false);
-      });
-
-    // Pipe audio stream to transcriber
-    if (typeof Readable.toWeb === 'function') {
-      const webStream = Readable.toWeb(audioStream);
-      const transcriberStream = transcriber.stream();
-      const writer = transcriberStream.getWriter();
-      const reader = webStream.getReader();
-
-      (async () => {
-        try {
-          // Wait for transcriber to be ready before starting to pipe audio
-          // Use Promise.race to timeout after 35 seconds (5 seconds after transcriber timeout)
-          const timeoutPromise = new Promise<void>((_, reject) => {
-            setTimeout(() => {
-              reject(new Error('Audio pipe timeout: transcriber did not become ready within 35 seconds'));
-            }, 35000);
-          });
-          
-          await Promise.race([transcriberReadyPromise, timeoutPromise]);
-          console.log(`✅ Transcriber ready, starting audio pipe for ${email}`);
-          
-          // Mark audio pipe as started
-          if (!session.audioPipeStarted) {
-            session.audioPipeStarted = new Map();
-          }
-          session.audioPipeStarted.set(email, true);
-          
-          let bytesRead = 0;
-          let bytesWritten = 0;
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              console.log(`🔚 Audio pipe reader done for ${email}, closing writer (read ${bytesRead} bytes, wrote ${bytesWritten} bytes)`);
-              await writer.close();
-              break;
-            }
-            if (value) {
-              bytesRead += value.length;
-              // Verify audio format: should be Int16LE (2 bytes per sample)
-              if (bytesRead <= 64 * 1024 && bytesRead % 1024 === 0) {
-                // Convert Uint8Array to Buffer to use readInt16LE
-                const buffer = Buffer.from(value);
-                // Log first few samples to verify format
-                const sample1 = buffer.readInt16LE(0);
-                const sample2 = buffer.length >= 4 ? buffer.readInt16LE(2) : 0;
-                console.log(`🔍 Audio format check for ${email}: first samples=${sample1}, ${sample2}, buffer length=${value.length}`);
-              }
-              await writer.write(value);
-              bytesWritten += value.length;
-              if (bytesRead % (64 * 1024) === 0 || bytesRead < 64 * 1024) {
-                console.log(`📥 Audio pipe read ${bytesRead} bytes, wrote ${bytesWritten} bytes for ${email}`);
-              }
-            }
-          }
-        } catch (error: any) {
-          // Check if this is a premature close error (expected when recreating transcribers)
-          const isPrematureClose = error.code === 'ABORT_ERR' || 
-                                  error.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
-                                  error.cause?.code === 'ERR_STREAM_PREMATURE_CLOSE';
-          
-          if (isPrematureClose) {
-            console.log(`ℹ️ Audio pipe closed for ${email} (expected when recreating transcribers)`);
-          } else {
-            console.error(`❌ Error piping audio to transcriber for ${email}:`, error);
-            // Mark transcriber as not ready only for unexpected errors
-            if (!session.transcriberReady) {
-              session.transcriberReady = new Map();
-            }
-            session.transcriberReady.set(email, false);
-          }
-          
-          try {
-            await writer.abort();
-          } catch {}
-        } finally {
-          reader.releaseLock();
-        }
-      })();
-    }
-
-    session.transcribers.set(email, transcriber);
-    session.audioStreams.set(email, audioStream);
-  } catch (error: any) {
-    console.error(`❌ Error setting up transcriber for ${email}:`, error);
-  }
-}
+// Note: setupTranscriberForParticipant removed - no longer using streaming API
 
 // Start transcription session
 async function startTranscriptionSession(
   callId: string,
   roomName: string,
   participants: Array<{ email: string; name?: string }>,
-  orgId?: string
+  orgSlug?: string
 ): Promise<void> {
   // Check if session creation is already in progress
   if (transcriptionSessionLocks.has(callId)) {
@@ -781,170 +467,57 @@ async function startTranscriptionSession(
   // Check if session already exists
   let session: TranscriptionSession | undefined = activeSessions.get(callId);
   let sessionLoadedFromDB = false;
-  if (!session && orgId) {
-    const loadedSession = await loadSessionFromDB(callId, orgId);
+  if (!session && orgSlug) {
+    const loadedSession = await loadSessionFromDB(callId, orgSlug);
     if (loadedSession) {
       session = loadedSession;
       activeSessions.set(callId, session);
       sessionLoadedFromDB = true;
-      console.log(`📝 Loaded transcription session from DB for call ${callId}, will recreate transcribers`);
+      console.log(`📝 Loaded transcription session from DB for call ${callId}`);
     }
   }
 
-  // If session exists and wasn't loaded from DB, check if call is ending before recreating transcribers
-  // This prevents interrupting transcription finalization for a call that's already ending
+  // If session already exists, just ensure participants are up to date
   if (session && !sessionLoadedFromDB) {
-    // Check if call is already ending (all final chunks received)
-    // If so, don't recreate transcribers - they're needed to finish processing remaining audio
-    // session is guaranteed to be defined here because we're inside the if (session && !sessionLoadedFromDB) block
-    const currentSession = session;
-    if (currentSession.finalChunksReceived && currentSession.finalChunksReceived.size > 0) {
-      const allParticipants = Array.from(currentSession.participants.keys());
-      const allFinalChunksReceived = allParticipants.length > 0 && 
-        allParticipants.every(email => currentSession.finalChunksReceived!.has(email));
-      
-      if (allFinalChunksReceived) {
-        console.log(`⚠️ Call ${callId} is already ending (all final chunks received). Not recreating transcribers to avoid interrupting finalization.`);
-        // Verify transcribers still exist and are working
-        let allTranscribersActive = true;
-        for (const participant of participants) {
-          const email = participant.email.toLowerCase();
-          if (!currentSession.transcribers.has(email) || !currentSession.audioStreams.has(email)) {
-            allTranscribersActive = false;
-            break;
-          }
-        }
-        
-        if (allTranscribersActive) {
-          console.log(`✅ Transcribers are active for ending call ${callId}, not recreating`);
-          return;
-        } else {
-          console.log(`⚠️ Some transcribers missing for ending call, but proceeding with recreation anyway`);
-          // Fall through to recreate
-        }
-      }
-    }
-    
-    console.log(`📝 Transcription session already exists for call ${callId}, cleaning up old transcribers and creating fresh ones`);
-    
-    // Initialize maps if they don't exist (for sessions created before this change)
-    if (!currentSession.transcriberReady) {
-      currentSession.transcriberReady = new Map();
-    }
-    if (!currentSession.transcriberReadyTime) {
-      currentSession.transcriberReadyTime = new Map();
-    }
-    if (!currentSession.audioPipeStarted) {
-      currentSession.audioPipeStarted = new Map();
-    }
-    
-    // Clean up all existing transcribers to ensure fresh connections
-    const assemblyAI = await getAssemblyAIClient();
-    for (const participant of participants) {
-      const email = participant.email.toLowerCase();
-      
-      // Clean up old transcriber if it exists
-      const oldTranscriber = currentSession.transcribers.get(email);
-      if (oldTranscriber) {
-        console.log(`🧹 Cleaning up old transcriber for ${email}`);
-        try {
-          oldTranscriber.close?.();
-        } catch (error: any) {
-          console.warn(`⚠️ Error closing old transcriber for ${email}:`, error.message);
-        }
-        currentSession.transcribers.delete(email);
-      }
-      
-      // Clean up old audio stream if it exists
-      const oldAudioStream = currentSession.audioStreams.get(email);
-      if (oldAudioStream) {
-        try {
-          if (!oldAudioStream.destroyed) {
-            oldAudioStream.destroy();
-          }
-        } catch (error: any) {
-          console.warn(`⚠️ Error destroying old audio stream for ${email}:`, error.message);
-        }
-        currentSession.audioStreams.delete(email);
-      }
-      
-      // Clear state flags
-      currentSession.transcriberReady.delete(email);
-      currentSession.transcriberReadyTime.delete(email);
-      currentSession.audioPipeStarted.delete(email);
-      
-      // Create fresh transcriber
-      console.log(`🔄 Creating fresh transcriber for ${email}`);
-      await setupTranscriberForParticipant(currentSession, participant, assemblyAI);
-    }
-    
-    console.log(`✅ Recreated all transcribers for call ${callId}`);
-    return;
-  }
-
-  const assemblyAI = await getAssemblyAIClient();
-
-  // If session was loaded from DB, we need to recreate transcribers
-  // If it's a new session, create it fresh
-  if (!session) {
-    session = {
-      callId,
-      roomName,
-      participants: new Map(participants.map(p => [p.email.toLowerCase(), p])),
-      transcribers: new Map(),
-      audioStreams: new Map(),
-      transcripts: new Map(),
-      startTime: new Date(),
-      orgId,
-      processedSegments: new Map(), // Track processed segments per participant
-      lastProcessedBytes: new Map(), // Track last processed byte position per participant
-      finalChunksReceived: new Set(), // Track which participants have received final chunks
-      transcriberReady: new Map(), // Track which transcribers are actually connected and ready
-      transcriberReadyTime: new Map(), // Track when transcribers were last confirmed ready
-      audioPipeStarted: new Map(), // Track whether audio pipes have started for each participant
-    };
-  } else {
-    // Session loaded from DB - ensure participants match
-    // Add any new participants that weren't in the DB
+    // Session exists - ensure participants match
     for (const participant of participants) {
       const email = participant.email.toLowerCase();
       if (!session.participants.has(email)) {
         session.participants.set(email, participant);
       }
     }
+    console.log(`📝 Transcription session already exists for call ${callId}`);
+    activeSessions.set(callId, session);
+    await saveSessionToDB(session);
+    transcriptionSessionLocks.delete(callId);
+    return;
   }
 
-  // Create/recreate streaming transcriber for each participant
-  // This is needed both for new sessions and sessions restored from DB
-  for (const participant of Array.from(session.participants.values())) {
-    const email = participant.email.toLowerCase();
-    
-    // If transcriber already exists AND is ready (shouldn't happen for DB-loaded sessions, but check anyway)
-    const hasTranscriber = session.transcribers.has(email) && session.audioStreams.has(email);
-    const isReady = session.transcriberReady?.get(email) === true;
-    
-    if (hasTranscriber && isReady) {
-      console.log(`📝 Transcriber already exists and is ready for ${email}, skipping recreation`);
-      continue;
-    }
-    
-    // If transcriber exists but isn't ready, clean it up first
-    if (hasTranscriber && !isReady) {
-      console.log(`⚠️ Transcriber exists for ${email} but is not ready, cleaning up before recreation`);
-      const oldTranscriber = session.transcribers.get(email);
-      if (oldTranscriber) {
-        try {
-          oldTranscriber.close?.();
-        } catch {}
-        session.transcribers.delete(email);
-        session.audioStreams.delete(email);
-        if (session.transcriberReady) {
-          session.transcriberReady.delete(email);
-        }
+  // Create new session if it doesn't exist
+  if (!session) {
+    session = {
+      callId,
+      roomName,
+      participants: new Map(participants.map(p => [p.email.toLowerCase(), p])),
+      transcripts: new Map(), // Final stitched transcripts
+      startTime: new Date(),
+      orgSlug,
+      chunkTranscripts: new Map(), // participant -> chunkIndex -> transcript
+      chunkTranscriptionJobs: new Map(), // participant -> chunkIndex -> jobId
+      chunkTranscriptionStatus: new Map(), // participant -> chunkIndex -> status
+      chunkStorageUrls: new Map(), // participant -> chunkIndex -> storageUrl
+      processedChunks: new Map(), // participant -> Set<chunkIndex>
+      processingChunks: new Map(), // participant -> Set<chunkIndex>
+      finalChunksReceived: new Set(), // participant emails
+    };
+  } else {
+    // Session loaded from DB - ensure participants match
+    for (const participant of participants) {
+      const email = participant.email.toLowerCase();
+      if (!session.participants.has(email)) {
+        session.participants.set(email, participant);
       }
     }
-    
-    await setupTranscriberForParticipant(session, participant, assemblyAI);
   }
 
   activeSessions.set(callId, session);
@@ -968,7 +541,421 @@ async function startTranscriptionSession(
   transcriptionSessionLocks.delete(callId); // Clear lock when done
 }
 
-// Process audio chunk from Pub/Sub
+/**
+ * Transcribe an audio chunk using AssemblyAI pre-recorded API
+ */
+async function transcribeAudioChunk(
+  session: TranscriptionSession,
+  participantEmail: string,
+  chunkIndex: number,
+  storageUrl: string
+): Promise<string | null> {
+  const email = participantEmail.toLowerCase();
+  
+  try {
+    // Download chunk from GCS with retry logic for missing files
+    const storage = getStorageClient();
+    const [bucketName, ...pathParts] = storageUrl.replace('gs://', '').split('/');
+    const filePath = pathParts.join('/');
+    const file = storage.bucket(bucketName).file(filePath);
+    
+    // Check if file exists before trying to download (with retry)
+    let audioBuffer: Buffer | null = null;
+    let retries = 3;
+    let lastError: Error | null = null;
+    
+    while (retries > 0 && !audioBuffer) {
+      try {
+        // Check if file exists
+        const [exists] = await file.exists();
+        if (!exists) {
+          if (retries > 1) {
+            console.warn(`⚠️ File ${filePath} does not exist yet (chunk ${chunkIndex} for ${email}), retrying in 2s... (${retries - 1} retries left)`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+            retries--;
+            continue;
+          } else {
+            throw new Error(`File ${filePath} does not exist in GCS after retries. The upload may have failed.`);
+          }
+        }
+        
+        // File exists, download it
+        [audioBuffer] = await file.download();
+        break; // Success, exit retry loop
+      } catch (error: any) {
+        lastError = error;
+        if (error.code === 404 || error.code === 'ENOENT') {
+          if (retries > 1) {
+            console.warn(`⚠️ File ${filePath} not found (chunk ${chunkIndex} for ${email}), retrying in 2s... (${retries - 1} retries left)`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            retries--;
+            continue;
+          } else {
+            throw new Error(`File ${filePath} does not exist in GCS after retries. The upload may have failed.`);
+          }
+        }
+        // Non-404 error, don't retry
+        throw error;
+      }
+    }
+    
+    if (!audioBuffer) {
+      throw lastError || new Error('Failed to download file after retries');
+    }
+    
+    if (audioBuffer.length === 0) {
+      console.warn(`⚠️ Empty audio chunk ${chunkIndex} for ${email}`);
+      return null;
+    }
+    
+    // Check if file is WAV format (starts with "RIFF" header)
+    const isWav = audioBuffer.length >= 4 && audioBuffer.toString('ascii', 0, 4) === 'RIFF';
+    
+    let wavBuffer: Buffer;
+    
+    if (isWav) {
+      // File is already WAV format - verify sample rate from header
+      if (audioBuffer.length < 44) {
+        console.warn(`⚠️ WAV file too small (${audioBuffer.length} bytes) for chunk ${chunkIndex} of ${email}`);
+        return null;
+      }
+      
+      // Read sample rate from WAV header (bytes 24-27, little-endian)
+      const sampleRate = audioBuffer.readUInt32LE(24);
+      
+      if (sampleRate !== 16000) {
+        console.warn(`⚠️ WAV file has unexpected sample rate ${sampleRate}Hz (expected 16000Hz) for chunk ${chunkIndex} of ${email}`);
+        // Still proceed, but log warning
+      }
+      
+      // Use WAV file directly with AssemblyAI
+      wavBuffer = audioBuffer;
+    } else {
+      // Legacy PCM file - resample to 16kHz if needed and convert to WAV
+      const resampledAudio = await ensure16kHz(audioBuffer, email);
+      
+      // Convert PCM to WAV format for AssemblyAI (WAV is auto-detected, raw PCM is not)
+      wavBuffer = pcmToWav(resampledAudio, 16000);
+    }
+    
+    // Upload to AssemblyAI and submit transcription job
+    const assemblyAI = await getAssemblyAIClient();
+    const uploadUrl = await assemblyAI.files.upload(wavBuffer);
+    
+    // Submit transcription job (returns immediately, status will be 'queued' or 'processing')
+    const transcript = await assemblyAI.transcripts.transcribe({
+      audio: uploadUrl,
+      format_text: true,
+      punctuate: true,
+      speaker_labels: true, // Enable speaker diarization for multi-speaker calls
+    });
+    
+    // Store job ID and status
+    if (!session.chunkTranscriptionJobs.has(email)) {
+      session.chunkTranscriptionJobs.set(email, new Map());
+      session.chunkTranscriptionStatus.set(email, new Map());
+      session.chunkStorageUrls.set(email, new Map());
+    }
+    const jobId = transcript.id;
+    session.chunkTranscriptionJobs.get(email)!.set(chunkIndex, jobId);
+    session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'processing');
+    session.chunkStorageUrls.get(email)!.set(chunkIndex, storageUrl);
+    
+    // Save initial status to DB
+    if (session.orgSlug) {
+      try {
+        const pool = await getOrgPoolBySlug(session.orgSlug);
+        await pool.query(`
+          INSERT INTO transcription_chunk_results (call_id, participant_email, chunk_index, storage_url, assemblyai_job_id, status)
+          VALUES ($1, $2, $3, $4, $5, 'processing')
+          ON CONFLICT (call_id, participant_email, chunk_index) DO UPDATE SET
+            assemblyai_job_id = EXCLUDED.assemblyai_job_id,
+            status = 'processing'
+        `, [session.callId, email, chunkIndex, storageUrl, jobId]);
+      } catch (dbError: any) {
+        // Handle missing table gracefully - log warning but continue processing
+        if (dbError.code === '42P01') {
+          console.warn(`⚠️ Database table 'transcription_chunk_results' does not exist. Please run migration: database/migrations/add-transcription-chunk-results.sql`);
+          console.warn(`⚠️ Continuing without DB persistence - transcription will still work but results won't be saved to DB`);
+        } else {
+          console.error(`❌ Error saving chunk result to DB:`, dbError);
+        }
+      }
+    }
+    
+    // Poll for completion (async, don't await to allow parallel processing)
+    pollTranscriptionStatus(session, email, chunkIndex, jobId)
+      .then((transcriptText) => {
+        if (transcriptText) {
+          console.log(`✅ Chunk ${chunkIndex} transcription completed for ${email}`);
+        }
+      })
+      .catch((error) => {
+        console.error(`❌ Error polling transcription for chunk ${chunkIndex}:`, error);
+      });
+    
+    // Return null immediately - transcript will be available when polling completes
+    // The polling happens in background, and results are stored in session.chunkTranscripts
+    return null;
+  } catch (error: any) {
+    console.error(`❌ Error transcribing chunk ${chunkIndex} for ${email}:`, error);
+    
+    // Mark as failed
+    if (!session.chunkTranscriptionStatus.has(email)) {
+      session.chunkTranscriptionStatus.set(email, new Map());
+    }
+    session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'failed');
+    
+    // Save to DB
+    if (session.orgSlug) {
+      try {
+        const pool = await getOrgPoolBySlug(session.orgSlug);
+        await pool.query(`
+          INSERT INTO transcription_chunk_results (call_id, participant_email, chunk_index, storage_url, status, error_message)
+          VALUES ($1, $2, $3, $4, 'failed', $5)
+          ON CONFLICT (call_id, participant_email, chunk_index) DO UPDATE SET
+            status = 'failed',
+            error_message = EXCLUDED.error_message
+        `, [session.callId, email, chunkIndex, storageUrl, error.message]);
+      } catch (dbError: any) {
+        // Handle missing table gracefully
+        if (dbError.code === '42P01') {
+          console.warn(`⚠️ Database table 'transcription_chunk_results' does not exist. Please run migration.`);
+        } else {
+          console.error(`❌ Error saving chunk result to DB:`, dbError);
+        }
+      }
+    }
+    
+    return null;
+  }
+}
+
+/**
+ * Poll AssemblyAI for transcription status
+ */
+async function pollTranscriptionStatus(
+  session: TranscriptionSession,
+  participantEmail: string,
+  chunkIndex: number,
+  jobId: string
+): Promise<string | null> {
+  const email = participantEmail.toLowerCase();
+  const assemblyAI = await getAssemblyAIClient();
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < TRANSCRIPTION_MAX_WAIT_MS) {
+    try {
+      const transcript = await assemblyAI.transcripts.get(jobId);
+      
+      if (transcript.status === 'completed') {
+        const transcriptText = transcript.text || '';
+        
+        // Store transcript
+        if (!session.chunkTranscripts.has(email)) {
+          session.chunkTranscripts.set(email, new Map());
+        }
+        session.chunkTranscripts.get(email)!.set(chunkIndex, transcriptText);
+        session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'completed');
+        
+        // Mark as processed (remove from processing, add to processed)
+        if (!session.processingChunks.has(email)) {
+          session.processingChunks.set(email, new Set());
+        }
+        if (!session.processedChunks.has(email)) {
+          session.processedChunks.set(email, new Set());
+        }
+        session.processingChunks.get(email)!.delete(chunkIndex);
+        session.processedChunks.get(email)!.add(chunkIndex);
+        
+        // Save to DB - retrieve storage_url from session state or DB
+        if (session.orgSlug) {
+          try {
+            const pool = await getOrgPoolBySlug(session.orgSlug);
+            
+            // Get storage_url from session state
+            let storageUrl = session.chunkStorageUrls.get(email)?.get(chunkIndex);
+            
+            // If not in session state, try to get from DB as fallback
+            if (!storageUrl) {
+              try {
+                const dbResult = await pool.query(
+                  'SELECT storage_url FROM transcription_chunk_results WHERE call_id = $1 AND participant_email = $2 AND chunk_index = $3',
+                  [session.callId, email, chunkIndex]
+                );
+                if (dbResult.rows.length > 0 && dbResult.rows[0].storage_url) {
+                  storageUrl = dbResult.rows[0].storage_url;
+                }
+              } catch (queryError: any) {
+                console.warn(`⚠️ Could not retrieve storage_url from DB for chunk ${chunkIndex}:`, queryError.message);
+              }
+            }
+            
+            // If still no storage_url, we can't save (but log warning and continue)
+            if (!storageUrl) {
+              console.warn(`⚠️ No storage_url available for chunk ${chunkIndex} completion - skipping DB update`);
+            } else {
+              // Use UPSERT with storage_url included
+              await pool.query(`
+                INSERT INTO transcription_chunk_results (call_id, participant_email, chunk_index, storage_url, assemblyai_job_id, transcript, status, completed_at)
+                VALUES ($1, $2, $3, $4, $5, $6, 'completed', NOW())
+                ON CONFLICT (call_id, participant_email, chunk_index) DO UPDATE SET
+                  storage_url = COALESCE(EXCLUDED.storage_url, transcription_chunk_results.storage_url),
+                  assemblyai_job_id = EXCLUDED.assemblyai_job_id,
+                  transcript = EXCLUDED.transcript,
+                  status = 'completed',
+                  completed_at = NOW()
+              `, [session.callId, email, chunkIndex, storageUrl, jobId, transcriptText]);
+            }
+          } catch (dbError: any) {
+            // Handle missing table gracefully
+            if (dbError.code === '42P01') {
+              console.warn(`⚠️ Database table 'transcription_chunk_results' does not exist. Please run migration.`);
+            } else {
+              console.error(`❌ Error saving chunk result to DB:`, dbError);
+            }
+          }
+        }
+        
+        // Print full transcription for this chunk
+        console.log(`\n${'='.repeat(80)}`);
+        console.log(`✅ Chunk ${chunkIndex} transcription completed for ${email}`);
+        console.log(`${'='.repeat(80)}`);
+        console.log(`Full Transcription:`);
+        console.log(transcriptText);
+        console.log(`${'='.repeat(80)}\n`);
+        
+        return transcriptText;
+      } else if (transcript.status === 'error') {
+        // Mark as failed
+        session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'failed');
+        session.processingChunks.get(email)!.delete(chunkIndex);
+        
+        // Save to DB
+        if (session.orgSlug) {
+          try {
+            const pool = await getOrgPoolBySlug(session.orgSlug);
+            await pool.query(`
+              UPDATE transcription_chunk_results
+              SET status = 'failed', error_message = $1
+              WHERE call_id = $2 AND participant_email = $3 AND chunk_index = $4
+            `, [transcript.error || 'Unknown error', session.callId, email, chunkIndex]);
+          } catch (dbError: any) {
+            // Handle missing table gracefully
+            if (dbError.code === '42P01') {
+              console.warn(`⚠️ Database table 'transcription_chunk_results' does not exist. Please run migration.`);
+            } else {
+              console.error(`❌ Error updating chunk result in DB:`, dbError);
+            }
+          }
+        }
+        
+        throw new Error(`Transcription failed: ${transcript.error || 'Unknown error'}`);
+      }
+      
+      // Still processing (queued or processing), wait and poll again
+      await new Promise(resolve => setTimeout(resolve, TRANSCRIPTION_POLL_INTERVAL_MS));
+    } catch (error: any) {
+      if (error.message?.includes('Transcription failed') || error.message?.includes('Transcription timeout')) {
+        throw error;
+      }
+      console.warn(`⚠️ Error polling transcription status for chunk ${chunkIndex}:`, error.message);
+      await new Promise(resolve => setTimeout(resolve, TRANSCRIPTION_POLL_INTERVAL_MS));
+    }
+  }
+  
+  // Timeout - mark as failed
+  session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'failed');
+  session.processingChunks.get(email)!.delete(chunkIndex);
+  
+  if (session.orgSlug) {
+    try {
+      const pool = await getOrgPoolBySlug(session.orgSlug);
+      await pool.query(`
+        UPDATE transcription_chunk_results
+        SET status = 'failed', error_message = $1
+        WHERE call_id = $2 AND participant_email = $3 AND chunk_index = $4
+      `, [`Timeout after ${TRANSCRIPTION_MAX_WAIT_MS}ms`, session.callId, email, chunkIndex]);
+    } catch (dbError: any) {
+      // Handle missing table gracefully
+      if (dbError.code === '42P01') {
+        console.warn(`⚠️ Database table 'transcription_chunk_results' does not exist. Please run migration.`);
+      } else {
+        console.error(`❌ Error updating chunk result in DB:`, dbError);
+      }
+    }
+  }
+  
+  throw new Error(`Transcription timeout for chunk ${chunkIndex} after ${TRANSCRIPTION_MAX_WAIT_MS}ms`);
+}
+
+/**
+ * Stitch chunk transcripts together, removing overlaps
+ */
+function stitchChunkTranscripts(
+  session: TranscriptionSession,
+  participantEmail: string
+): string[] {
+  const email = participantEmail.toLowerCase();
+  const chunkTranscriptsMap = session.chunkTranscripts.get(email);
+  
+  if (!chunkTranscriptsMap || chunkTranscriptsMap.size === 0) {
+    return [];
+  }
+  
+  // Get all chunk indices and sort them
+  const chunkIndices = Array.from(chunkTranscriptsMap.keys()).sort((a, b) => a - b);
+  const stitched: string[] = [];
+  
+  for (let i = 0; i < chunkIndices.length; i++) {
+    const chunkIndex = chunkIndices[i];
+    const transcript = chunkTranscriptsMap.get(chunkIndex) || '';
+    
+    if (i === 0) {
+      // First chunk - add as-is
+      if (transcript.trim()) {
+        stitched.push(transcript.trim());
+      }
+    } else {
+      // Subsequent chunks - remove overlap with previous chunk
+      const prevTranscript = chunkTranscriptsMap.get(chunkIndices[i - 1]) || '';
+      
+      // Simple overlap removal: find common words at the end of prev and start of current
+      // This is a basic implementation - could be improved with more sophisticated text matching
+      const prevWords = prevTranscript.trim().split(/\s+/);
+      const currentWords = transcript.trim().split(/\s+/);
+      
+      // Find overlap (last N words of prev match first N words of current)
+      let overlapLength = 0;
+      const maxOverlap = Math.min(prevWords.length, currentWords.length, 10); // Max 10 words overlap
+      
+      for (let j = 1; j <= maxOverlap; j++) {
+        const prevSuffix = prevWords.slice(-j).join(' ').toLowerCase();
+        const currentPrefix = currentWords.slice(0, j).join(' ').toLowerCase();
+        if (prevSuffix === currentPrefix) {
+          overlapLength = j;
+        }
+      }
+      
+      // Add current transcript without overlap
+      if (overlapLength > 0) {
+        const remainingWords = currentWords.slice(overlapLength);
+        if (remainingWords.length > 0) {
+          stitched.push(remainingWords.join(' '));
+        }
+      } else {
+        // No overlap detected, add full transcript
+        if (transcript.trim()) {
+          stitched.push(transcript.trim());
+        }
+      }
+    }
+  }
+  
+  return stitched;
+}
+
+// Process AudioChunkReady event from Pub/Sub
 async function processAudioChunk(message: any): Promise<void> {
   let data: any;
   try {
@@ -988,17 +975,21 @@ async function processAudioChunk(message: any): Promise<void> {
     return;
   }
   
-  const { callId, participantEmail, storageUrl, chunkIndex, segmentIndex, orgId, isFinal } = data;
-  const segmentIdx = segmentIndex !== undefined ? segmentIndex : chunkIndex; // Support both field names
+  // Handle both old format (for backward compatibility) and new AudioChunkReady format
+  const eventType = data.event;
+  const isAudioChunkReady = eventType === 'audio_chunk_ready';
+  
+  const { callId, participantEmail, storageUrl, chunkIndex, orgSlug, isFinal } = data;
+  const chunkIdx = chunkIndex !== undefined ? chunkIndex : (data.segmentIndex !== undefined ? data.segmentIndex : 0);
 
-  console.log(`🎤 Processing audio chunk for ${participantEmail} in call ${callId} (segment ${segmentIdx}${isFinal ? ', final' : ''})`);
+  console.log(`🎤 Processing ${isAudioChunkReady ? 'AudioChunkReady' : 'audio chunk'} event for ${participantEmail} in call ${callId} (chunk ${chunkIdx}${isFinal ? ', final' : ''})`);
 
   // Get session
   let session: TranscriptionSession | undefined = activeSessions.get(callId);
   if (!session) {
-    // Try to load from DB if orgId is available
-    if (data.orgId) {
-      const loadedSession = await loadSessionFromDB(callId, data.orgId);
+    // Try to load from DB if orgSlug is available
+    if (orgSlug) {
+      const loadedSession = await loadSessionFromDB(callId, orgSlug);
       if (loadedSession) {
         session = loadedSession;
         activeSessions.set(callId, session);
@@ -1010,17 +1001,8 @@ async function processAudioChunk(message: any): Promise<void> {
     if (!session) {
       console.log(`📝 No transcription session found for call ${callId}, auto-starting...`);
       try {
-        // Extract participants from the audio chunk data or use a default
-        // We need at least the current participant
         const participants = [{ email: participantEmail }];
-        
-        // Try to get orgId from the data or use undefined
-        const orgId = data.orgId;
-        
-        // Auto-start the session
-        await startTranscriptionSession(callId, data.roomName || callId, participants, orgId);
-        
-        // Get the newly created session
+        await startTranscriptionSession(callId, data.roomName || callId, participants, orgSlug);
         session = activeSessions.get(callId);
         if (!session) {
           console.error(`❌ Failed to create transcription session for call ${callId}`);
@@ -1036,173 +1018,97 @@ async function processAudioChunk(message: any): Promise<void> {
     }
   }
 
-  const email = participantEmail.toLowerCase();
-  const audioStream = session.audioStreams.get(email);
-  
-  if (!audioStream) {
-    console.warn(`⚠️ No audio stream for ${email} in call ${callId}`);
+  if (!session) {
+    console.error(`❌ No transcription session available for call ${callId} after all attempts`);
     message.nack();
     return;
   }
 
-  try {
-    // Check if this segment has already been processed (deduplication)
-    if (!session.processedSegments.has(email)) {
-      session.processedSegments.set(email, new Set());
+  const email = participantEmail.toLowerCase();
+  
+  // Initialize maps if needed
+  if (!session.processedChunks.has(email)) {
+    session.processedChunks.set(email, new Set());
+  }
+  if (!session.processingChunks.has(email)) {
+    session.processingChunks.set(email, new Set());
+  }
+  
+  const processedChunks = session.processedChunks.get(email)!;
+  const processingChunks = session.processingChunks.get(email)!;
+  
+  // Check if this chunk has already been processed
+  if (processedChunks.has(chunkIdx)) {
+    if (isFinal) {
+      // Final chunks should always be processed - they may contain updated audio
+      // Remove from processedChunks to allow reprocessing
+      console.log(`🔄 Processing final chunk ${chunkIdx} for ${email} (updating existing record)`);
+      processedChunks.delete(chunkIdx);
+      // Also remove from processingChunks if it's there (shouldn't be, but be safe)
+      if (processingChunks.has(chunkIdx)) {
+        processingChunks.delete(chunkIdx);
+      }
+      // Continue processing...
+    } else {
+      console.log(`⏭️ Skipping duplicate chunk ${chunkIdx} for ${email} (already processed)`);
+      message.ack();
+      return;
     }
-    const processedSegments = session.processedSegments.get(email)!;
+  }
+  
+  // Check if this chunk is currently being processed
+  if (processingChunks.has(chunkIdx)) {
+    console.log(`⏳ Chunk ${chunkIdx} already being processed for ${email}, skipping concurrent attempt`);
+    message.nack(); // Nack to retry later
+    return;
+  }
+  
+  // Mark chunk as processing
+  processingChunks.add(chunkIdx);
+  
+  try {
+    // Transcribe chunk in parallel (respect concurrent job limits)
+    // Check current concurrent jobs for this participant
+    const currentJobs = Array.from(session.chunkTranscriptionStatus.get(email)?.values() || [])
+      .filter(status => status === 'processing' || status === 'pending').length;
     
-    if (processedSegments.has(segmentIdx)) {
-      console.log(`⏭️ Skipping duplicate segment ${segmentIdx} for ${email} (already processed)`);
-      message.ack(); // Ack to remove from queue, but don't process again
+    if (currentJobs >= ASSEMBLYAI_MAX_CONCURRENT_JOBS) {
+      // Too many concurrent jobs, nack and retry later
+      console.log(`⏳ Too many concurrent transcription jobs (${currentJobs}), deferring chunk ${chunkIdx} for ${email}`);
+      processingChunks.delete(chunkIdx);
+      setTimeout(() => {
+        message.nack();
+      }, 5000); // Retry in 5 seconds
       return;
     }
     
-    // Mark segment as processing BEFORE async download to prevent concurrent processing
-    // This prevents the same segment from being processed multiple times concurrently
-    processedSegments.add(segmentIdx);
+    // Transcribe chunk (starts job and polls in background)
+    await transcribeAudioChunk(session, participantEmail, chunkIdx, storageUrl);
     
-    // Download audio from Cloud Storage
-    const storage = getStorageClient();
-    const [bucketName, ...pathParts] = storageUrl.replace('gs://', '').split('/');
-    const filePath = pathParts.join('/');
-    const file = storage.bucket(bucketName).file(filePath);
+    // Note: Chunk is marked as "processing" - it will be marked as "processed" when transcription completes
+    // We don't remove from processingChunks here - that happens in pollTranscriptionStatus when complete
     
-    // For streaming uploads, only download new data (bytes we haven't processed yet)
-    let lastProcessedByte = session.lastProcessedBytes.get(email) || 0;
-    
-    try {
-      // Get file metadata to check current size
-      const [metadata] = await file.getMetadata();
-      const currentSize = parseInt(String(metadata.size || '0'), 10);
-      
-      if (currentSize <= lastProcessedByte) {
-        // Validate: lastProcessedByte should never exceed file size
-        if (lastProcessedByte > currentSize) {
-          console.warn(`⚠️ Invalid state: lastProcessedByte (${lastProcessedByte}) > file size (${currentSize}) for ${email}. This indicates a mismatch - possibly wrong file or session state corruption. Resetting to 0.`);
-          session.lastProcessedBytes.set(email, 0);
-          lastProcessedByte = 0; // Update local variable to use reset value
-          // Continue processing from beginning (processedSegments will prevent duplicates)
-        } else {
-          // No new data, skip this segment
-          console.log(`⏭️ No new data for segment ${segmentIdx} (file size: ${currentSize}, last processed: ${lastProcessedByte})`);
-          message.ack();
-          return;
-        }
-      }
-      
-      // Download only the new portion of the file
-      // Note: lastProcessedByte might have been reset to 0 above
-      const [audioBuffer] = await file.download({
-        start: lastProcessedByte,
-        end: isFinal ? undefined : currentSize, // Download up to current size, or all if final
-      });
-      
-      // Push to audio stream only if we have new data
-      // IMPORTANT: Resample to 16kHz if needed before sending to AssemblyAI
-      // AssemblyAI expects 16kHz, but audio might be stored as 48kHz
-      if (audioBuffer.length > 0) {
-        // Resample to 16kHz if the audio appears to be 48kHz
-        const resampledAudio = await ensure16kHz(audioBuffer, email);
-        
-        // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
-        // Chunking is based on 16kHz (30KB ≈ 937ms at 16kHz)
-        await pushAudioInChunks(audioStream, resampledAudio, email);
-        
-        // Update lastProcessedByte based on original file position (not resampled size)
-        // This ensures we don't skip or duplicate audio when resampling changes the size
-        session.lastProcessedBytes.set(email, lastProcessedByte + audioBuffer.length);
-        
-        const resamplingNote = resampledAudio.length !== audioBuffer.length 
-          ? ` (resampled from ${audioBuffer.length} to ${resampledAudio.length} bytes)`
-          : '';
-        console.log(`📥 Downloaded ${audioBuffer.length} new bytes for ${email} (total processed: ${lastProcessedByte + audioBuffer.length}/${currentSize}, chunked into ${Math.ceil(resampledAudio.length / MAX_CHUNK_SIZE)} pieces${resamplingNote})`);
-      }
-      
-      // Segment already marked as processed above (before async download)
-      
-      // Mark chunk as processed in DB
-      if (session.orgId) {
-        const pool = await getOrgPool(session.orgId);
-        await pool.query(`
-          INSERT INTO transcription_chunks (call_id, participant_email, chunk_index, storage_url, processed_at)
-          VALUES ($1, $2, $3, $4, NOW())
-          ON CONFLICT DO NOTHING
-        `, [callId, email, segmentIdx, storageUrl]);
-      }
-
-      message.ack();
-      console.log(`✅ Processed audio segment ${segmentIdx} for ${email}${isFinal ? ' (final)' : ''}`);
-      
-      // Track if this is a final chunk
-      if (isFinal) {
-        if (!session.finalChunksReceived) {
-          session.finalChunksReceived = new Set();
-        }
-        session.finalChunksReceived.add(email);
-        console.log(`✅ Final chunk received and processed for ${email}`);
-      }
-    } catch (metadataError: any) {
-      // If metadata fetch fails, try downloading the entire file (fallback)
-      console.warn(`⚠️ Could not get file metadata, downloading entire file:`, metadataError.message);
-      const [audioBuffer] = await file.download();
-      
-      if (audioBuffer.length > 0) {
-        // Only push if we haven't processed this exact size before
-        const lastSize = session.lastProcessedBytes.get(email) || 0;
-        if (audioBuffer.length > lastSize) {
-          const newData = audioBuffer.slice(lastSize);
-          // Chunk into smaller pieces to avoid exceeding AssemblyAI's 1MB frame limit
-          await pushAudioInChunks(audioStream, newData, email);
-          // FIX: Should be lastSize + newData.length, not just audioBuffer.length
-          // This correctly tracks total processed bytes
-          session.lastProcessedBytes.set(email, lastSize + newData.length);
-        }
-      }
-      
-      // Segment already marked as processed above (before async download)
-      
-      if (session.orgId) {
-        const pool = await getOrgPool(session.orgId);
-        await pool.query(`
-          INSERT INTO transcription_chunks (call_id, participant_email, chunk_index, storage_url, processed_at)
-          VALUES ($1, $2, $3, $4, NOW())
-          ON CONFLICT DO NOTHING
-        `, [callId, email, segmentIdx, storageUrl]);
-      }
-      
-      message.ack();
-      console.log(`✅ Processed audio segment ${segmentIdx} for ${email} (fallback mode)${isFinal ? ' (final)' : ''}`);
-      
-      // Track if this is a final chunk (fallback mode)
-      if (isFinal) {
-        if (!session.finalChunksReceived) {
-          session.finalChunksReceived = new Set();
-        }
-        session.finalChunksReceived.add(email);
-        console.log(`✅ Final chunk received and processed for ${email} (fallback mode)`);
-      }
+    // Track if this is a final chunk
+    if (isFinal) {
+      session.finalChunksReceived.add(email);
+      console.log(`✅ Final chunk received for ${email} (transcription in progress)`);
     }
+    
+    // Ack the message - transcription is in progress
+    message.ack();
   } catch (error: any) {
-    // If file doesn't exist yet (streaming in progress), that's okay - we'll retry later
+    // On error, remove from processing set so it can be retried
+    processingChunks.delete(chunkIdx);
+    
     if (error.code === 404 || error.code === 'ENOENT') {
-      // For final segments, wait longer for the file to be finalized (prioritizing stability)
-      if (isFinal) {
-        console.log(`⏳ File not ready yet for final segment ${segmentIdx}, waiting longer before retry...`);
-        // Wait 10 seconds before retrying final segments (file might still be closing/uploading)
-        setTimeout(() => {
-          message.nack(); // Nack to retry later
-        }, 10000);
-      } else {
-        console.log(`⏳ File not ready yet for segment ${segmentIdx}, will retry later`);
-        // For non-final segments, wait 3 seconds before retry
-        setTimeout(() => {
-          message.nack(); // Nack to retry later
-        }, 3000);
-      }
+      // File not ready yet
+      const waitTime = isFinal ? 10000 : 3000;
+      console.log(`⏳ File not ready yet for chunk ${chunkIdx}, will retry in ${waitTime}ms`);
+      setTimeout(() => {
+        message.nack();
+      }, waitTime);
     } else {
-      console.error(`❌ Error processing audio segment for ${email}:`, error);
-      // For other errors, wait a bit before retry
+      console.error(`❌ Error processing chunk ${chunkIdx} for ${email}:`, error);
       setTimeout(() => {
         message.nack();
       }, 2000);
@@ -1288,35 +1194,83 @@ async function generateMeetingDocSummary(
       }
     }
     
-    // Make API call
+    // Make API call with timeout (30 seconds)
     console.log(`📡 Calling doc summary API: ${apiUrl} (GKE: ${!isLocalDev ? 'yes' : 'no'})`);
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-    });
+    console.log(`   Request body: doc_id=${docId}, user_id=${userEmail}, org_slug=${orgSlug}`);
     
-    if (!response.ok) {
-      const errorText = await response.text();
-      const errorMsg = `API call failed: ${response.status} ${response.statusText} - ${errorText}`;
-      console.error(`❌ Doc summary API error for doc ${docId}:`, {
-        url: apiUrl,
-        status: response.status,
-        statusText: response.statusText,
-        error: errorText.substring(0, 500), // Limit error text length
-        isLocalDev,
-        hasBearerToken: !!headers['Authorization'],
-        hasApiKey: !!headers['X-API-Key']
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
       });
-      throw new Error(errorMsg);
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        const errorMsg = `API call failed: ${response.status} ${response.statusText} - ${errorText}`;
+        console.error(`❌ Doc summary API error for doc ${docId}:`, {
+          url: apiUrl,
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText.substring(0, 500), // Limit error text length
+          isLocalDev,
+          hasBearerToken: !!headers['Authorization'],
+          hasApiKey: !!headers['X-API-Key']
+        });
+        throw new Error(errorMsg);
+      }
+      
+      const result = await response.json();
+      console.log(`✅ Generated meeting doc summary for doc ${docId}:`, result);
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      if (fetchError.name === 'AbortError') {
+        throw new Error('API call timed out after 30 seconds');
+      }
+      throw fetchError;
     }
-    
-    const result = await response.json();
-    console.log(`✅ Generated meeting doc summary for doc ${docId}:`, result);
   } catch (error: any) {
     // Log error but don't fail the entire process
     console.error(`❌ Error generating meeting doc summary for doc ${docId}:`, error.message);
   }
+}
+
+/**
+ * Check if all chunks for all participants are fully transcribed
+ * Returns true if all chunks are completed, false otherwise
+ */
+function areAllChunksTranscribed(session: TranscriptionSession): { allComplete: boolean; incomplete: string[] } {
+  const incomplete: string[] = [];
+  
+  for (const email of Array.from(session.participants.keys())) {
+    const statusMap = session.chunkTranscriptionStatus.get(email);
+    const processingChunksSet = session.processingChunks.get(email);
+    
+    // Check for chunks with 'processing' or 'pending' status
+    if (statusMap) {
+      const processing = Array.from(statusMap.values()).filter(s => s === 'processing' || s === 'pending');
+      if (processing.length > 0) {
+        incomplete.push(`${email} (${processing.length} chunks in status map)`);
+      }
+    }
+    
+    // Also check processingChunks set - chunks that are being processed but may not have status yet
+    if (processingChunksSet && processingChunksSet.size > 0) {
+      const chunkIndices = Array.from(processingChunksSet).sort((a, b) => a - b);
+      incomplete.push(`${email} (${processingChunksSet.size} chunks in processing set: ${chunkIndices.join(', ')})`);
+    }
+  }
+  
+  return {
+    allComplete: incomplete.length === 0,
+    incomplete
+  };
 }
 
 // Handle call ended event
@@ -1338,7 +1292,7 @@ async function handleCallEnded(message: any): Promise<void> {
     return;
   }
   
-  const { callId, chatId, participants, orgId } = data;
+  const { callId, chatId, participants, orgSlug } = data;
 
   console.log(`🔚 Handling call ended for ${callId}`);
   console.log(`📋 Call ended data:`, {
@@ -1346,15 +1300,86 @@ async function handleCallEnded(message: any): Promise<void> {
     chatId,
     participantsCount: participants?.length || 0,
     participants: participants?.map((p: any) => p.email) || [],
-    orgId: orgId || 'missing'
+    orgSlug: orgSlug || 'missing'
   });
 
-  // Get session
+  // Get session - prefer in-memory, merge with DB if needed
   let session: TranscriptionSession | undefined = activeSessions.get(callId);
-  if (!session && orgId) {
-    const loadedSession = await loadSessionFromDB(callId, orgId);
+  if (!session && orgSlug) {
+    // No in-memory session, load from DB
+    const loadedSession = await loadSessionFromDB(callId, orgSlug);
     if (loadedSession) {
       session = loadedSession;
+    }
+  } else if (session && orgSlug) {
+    // Session exists in memory, but also load from DB to merge any missing chunks
+    const dbSession = await loadSessionFromDB(callId, orgSlug);
+    if (dbSession) {
+      // Merge chunk transcripts from DB into in-memory session
+      for (const [email, dbChunkMap] of dbSession.chunkTranscripts.entries()) {
+        if (!session.chunkTranscripts.has(email)) {
+          session.chunkTranscripts.set(email, new Map());
+        }
+        const memChunkMap = session.chunkTranscripts.get(email)!;
+        // Add any chunks from DB that aren't in memory
+        for (const [chunkIndex, transcript] of dbChunkMap.entries()) {
+          if (!memChunkMap.has(chunkIndex)) {
+            memChunkMap.set(chunkIndex, transcript);
+            console.log(`📥 Merged chunk ${chunkIndex} from DB for ${email}`);
+          }
+        }
+      }
+      
+      // Also merge chunk transcription status, jobs, and storage URLs
+      for (const [email, dbStatusMap] of dbSession.chunkTranscriptionStatus.entries()) {
+        if (!session.chunkTranscriptionStatus.has(email)) {
+          session.chunkTranscriptionStatus.set(email, new Map());
+        }
+        const memStatusMap = session.chunkTranscriptionStatus.get(email)!;
+        for (const [chunkIndex, status] of dbStatusMap.entries()) {
+          if (!memStatusMap.has(chunkIndex)) {
+            memStatusMap.set(chunkIndex, status);
+          }
+        }
+      }
+      
+      for (const [email, dbJobsMap] of dbSession.chunkTranscriptionJobs.entries()) {
+        if (!session.chunkTranscriptionJobs.has(email)) {
+          session.chunkTranscriptionJobs.set(email, new Map());
+        }
+        const memJobsMap = session.chunkTranscriptionJobs.get(email)!;
+        for (const [chunkIndex, jobId] of dbJobsMap.entries()) {
+          if (!memJobsMap.has(chunkIndex)) {
+            memJobsMap.set(chunkIndex, jobId);
+          }
+        }
+      }
+      
+      for (const [email, dbStorageMap] of dbSession.chunkStorageUrls.entries()) {
+        if (!session.chunkStorageUrls.has(email)) {
+          session.chunkStorageUrls.set(email, new Map());
+        }
+        const memStorageMap = session.chunkStorageUrls.get(email)!;
+        for (const [chunkIndex, storageUrl] of dbStorageMap.entries()) {
+          if (!memStorageMap.has(chunkIndex)) {
+            memStorageMap.set(chunkIndex, storageUrl);
+          }
+        }
+      }
+      
+      // Merge processed chunks
+      for (const [email, dbProcessedSet] of dbSession.processedChunks.entries()) {
+        if (!session.processedChunks.has(email)) {
+          session.processedChunks.set(email, new Set());
+        }
+        const memProcessedSet = session.processedChunks.get(email)!;
+        for (const chunkIndex of dbProcessedSet) {
+          memProcessedSet.add(chunkIndex);
+        }
+      }
+      
+      const totalMergedChunks = Array.from(session.chunkTranscripts.values()).reduce((sum, map) => sum + map.size, 0);
+      console.log(`✅ Merged DB chunks into in-memory session: ${totalMergedChunks} total chunks now available`);
     }
   }
 
@@ -1364,84 +1389,96 @@ async function handleCallEnded(message: any): Promise<void> {
     return;
   }
 
-  // Wait for final chunks to be processed with intelligent checking
-  // Since flushCallBuffers runs async, final metadata might take time to publish
-  // GCS uploads typically complete within seconds to a minute, so 2 minutes is reasonable
-  // We check periodically if all participants have received final chunks
-  const MAX_WAIT_TIME_MS = 60000; // 60 seconds maximum (most uploads complete in <10s, but allow buffer for slower cases)
-  const CHECK_INTERVAL_MS = 5000; // Check every 5 seconds for faster detection
-  const startWaitTime = Date.now();
-  
-  // Initialize finalChunksReceived if not already set
-  if (!session.finalChunksReceived) {
-    session.finalChunksReceived = new Set();
-  }
-  
-  console.log(`⏳ Waiting for final chunks to be processed (max ${MAX_WAIT_TIME_MS / 1000}s, checking every ${CHECK_INTERVAL_MS / 1000}s)...`);
-  
-  while (Date.now() - startWaitTime < MAX_WAIT_TIME_MS) {
-    // Check if all participants have received final chunks
-    const allParticipants = Array.from(session.participants.keys());
-    const participantsWithFinalChunks = Array.from(session.finalChunksReceived);
-    const missingFinalChunks = allParticipants.filter(email => !session.finalChunksReceived.has(email));
+  // First, check if all chunks are already transcribed - if so, proceed immediately
+  const initialCheck = areAllChunksTranscribed(session);
+  if (initialCheck.allComplete) {
+    console.log(`✅ All chunks are already transcribed! Proceeding immediately to merge and create doc.`);
+  } else {
+    // Wait for final chunks to be received and processed
+    const MAX_WAIT_TIME_MS = 120000; // 2 minutes maximum
+    const CHECK_INTERVAL_MS = 2000; // Check every 2 seconds (more frequent for faster response)
+    const startWaitTime = Date.now();
     
-    if (missingFinalChunks.length === 0) {
+    console.log(`⏳ Waiting for final chunks and transcriptions (max ${MAX_WAIT_TIME_MS / 1000}s)...`);
+    console.log(`   Initial status: ${initialCheck.incomplete.join(', ')}`);
+    
+    while (Date.now() - startWaitTime < MAX_WAIT_TIME_MS) {
+      const allParticipants = Array.from(session.participants.keys());
+      const missingFinalChunks = allParticipants.filter(email => !session.finalChunksReceived.has(email));
+      
+      // CRITICAL: First wait for all final chunks to be received
+      // This ensures we don't proceed before all chunks are published
+      // If we check transcription status before final chunks are received, we might miss chunks
+      // that are still being uploaded to GCS
+      if (missingFinalChunks.length > 0) {
+        const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
+        const remaining = Math.floor((MAX_WAIT_TIME_MS - (Date.now() - startWaitTime)) / 1000);
+        console.log(`⏳ Waiting for final chunks from: ${missingFinalChunks.join(', ')} (${elapsed}s elapsed, ${remaining}s remaining)`);
+        await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL_MS));
+        continue; // Don't check transcription status until all final chunks are received
+      }
+      
+      // Only after all final chunks are received, check if all chunks are transcribed
+      const checkResult = areAllChunksTranscribed(session);
+      
+      if (checkResult.allComplete) {
+        const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
+        console.log(`✅ All chunk transcriptions completed after ${elapsed}s`);
+        break;
+      }
+      
       const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
-      console.log(`✅ All participants have final chunks processed (${participantsWithFinalChunks.length}/${allParticipants.length}) after ${elapsed}s`);
-      break;
+      const remaining = Math.floor((MAX_WAIT_TIME_MS - (Date.now() - startWaitTime)) / 1000);
+      console.log(`⏳ Still waiting for transcriptions... (${elapsed}s elapsed, ${remaining}s remaining, incomplete: ${checkResult.incomplete.join(', ')})`);
+      
+      await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL_MS));
     }
     
-    const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
-    const remaining = Math.floor((MAX_WAIT_TIME_MS - (Date.now() - startWaitTime)) / 1000);
-    console.log(`⏳ Still waiting for final chunks... (${elapsed}s elapsed, ${remaining}s remaining, missing: ${missingFinalChunks.join(', ')})`);
+    // Final check - if still not complete after timeout, log warning but proceed
+    const finalCheck = areAllChunksTranscribed(session);
+    const allParticipants = Array.from(session.participants.keys());
+    const stillMissingFinalChunks = allParticipants.filter(email => !session.finalChunksReceived.has(email));
     
-    // Wait before next check
-    await new Promise(resolve => setTimeout(resolve, CHECK_INTERVAL_MS));
+    if (stillMissingFinalChunks.length > 0) {
+      console.warn(`⚠️ Timeout: Still missing final chunks from: ${stillMissingFinalChunks.join(', ')}. Proceeding anyway.`);
+    }
+    
+    if (!finalCheck.allComplete) {
+      console.warn(`⚠️ Timeout: Some chunks not transcribed after ${MAX_WAIT_TIME_MS / 1000}s. Proceeding with available chunks.`);
+      console.warn(`   Incomplete: ${finalCheck.incomplete.join(', ')}`);
+    }
   }
   
-  const totalWaitTime = Math.floor((Date.now() - startWaitTime) / 1000);
-  if (totalWaitTime >= MAX_WAIT_TIME_MS / 1000) {
-    const missing = Array.from(session.participants.keys()).filter(email => !session.finalChunksReceived.has(email));
-    if (missing.length > 0) {
-      console.warn(`⚠️ Timeout waiting for final chunks (${totalWaitTime}s). Missing final chunks for: ${missing.join(', ')}. Proceeding anyway.`);
-    } else {
-      console.log(`✅ All final chunks received after ${totalWaitTime}s`);
+  // Stitch all chunk transcripts together
+  console.log(`📝 Stitching chunk transcripts...`);
+  for (const email of Array.from(session.participants.keys())) {
+    // Print all chunk transcripts before stitching
+    const chunkTranscriptsMap = session.chunkTranscripts.get(email);
+    if (chunkTranscriptsMap && chunkTranscriptsMap.size > 0) {
+      const chunkIndices = Array.from(chunkTranscriptsMap.keys()).sort((a, b) => a - b);
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`📄 All Chunk Transcripts for ${email} (${chunkIndices.length} chunks):`);
+      console.log(`${'='.repeat(80)}`);
+      for (const chunkIndex of chunkIndices) {
+        const transcript = chunkTranscriptsMap.get(chunkIndex) || '';
+        console.log(`\n--- Chunk ${chunkIndex} Full Transcription ---`);
+        console.log(transcript);
+        console.log(`--- End of Chunk ${chunkIndex} ---\n`);
+      }
+      console.log(`${'='.repeat(80)}\n`);
     }
+    
+    const stitchedTranscripts = stitchChunkTranscripts(session, email);
+    session.transcripts.set(email, stitchedTranscripts);
+    console.log(`✅ Stitched ${stitchedTranscripts.length} transcript segments for ${email}`);
   }
-
-  // Now close all audio streams to signal end of input
-  for (const [email, stream] of session.audioStreams.entries()) {
-    try {
-      stream.push(null); // End stream
-      console.log(`🔚 Ended audio stream for ${email}`);
-    } catch (error: any) {
-      console.error(`❌ Error closing audio stream for ${email}:`, error);
-    }
-  }
-
-  // Wait for final transcripts to arrive (transcribers process remaining audio)
-  console.log(`⏳ Waiting for final transcripts... (current transcript count: ${Array.from(session.transcripts.values()).reduce((sum, arr) => sum + arr.length, 0)})`);
-  await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds for transcripts (increased for stability)
-
-  // Now close all transcribers
-  for (const [email, transcriber] of session.transcribers.entries()) {
-    try {
-      await transcriber.close();
-      console.log(`🔚 Closed transcriber for ${email}`);
-    } catch (error: any) {
-      console.error(`❌ Error closing transcriber for ${email}:`, error);
-    }
-  }
-
-  // Wait a bit more for any final transcript events
-  await new Promise(resolve => setTimeout(resolve, 5000)); // Increased to 5 seconds
 
   // Update session status in DB
-  // Use orgId from event, or fall back to session.orgId
-  const finalOrgId = orgId || session.orgId;
-  if (finalOrgId) {
+  // Use orgSlug from event, or fall back to session.orgSlug
+  const finalOrgSlug = orgSlug || session.orgSlug;
+  if (finalOrgSlug) {
     try {
-      const pool = await getOrgPool(finalOrgId);
+      const pool = await getOrgPoolBySlug(finalOrgSlug);
       
       // First, try to load any transcripts that might have been saved to DB during the call
       try {
@@ -1505,7 +1542,7 @@ async function handleCallEnded(message: any): Promise<void> {
         }
       }
       
-      console.log(`📝 Checking if shared doc should be created: participants=${participantsToUse?.length || 0}, orgId=${orgId || 'missing'}`);
+      console.log(`📝 Checking if shared doc should be created: participants=${participantsToUse?.length || 0}, orgSlug=${orgSlug || 'missing'}`);
       if (participantsToUse && participantsToUse.length > 0) {
         console.log(`✅ Creating shared doc for ${participantsToUse.length} participant(s)`);
         const userInfoMap = await getUserInfoBatch(participantsToUse.map(p => p.email));
@@ -1599,12 +1636,11 @@ async function handleCallEnded(message: any): Promise<void> {
           console.log(`✅ Created shared meeting doc (docId: ${docId}) visible to ${visibleToMembers.length} participant(s): ${visibleToMembers.join(', ')}`);
           
           // Generate meeting doc summary asynchronously (only once for the shared doc)
-          if (finalOrgId && formattedTranscript && formattedTranscript.trim().length > 0) {
-            console.log(`📊 Triggering summary generation for shared doc ${docId} (orgId: ${finalOrgId})`);
+          if (finalOrgSlug && formattedTranscript && formattedTranscript.trim().length > 0) {
+            console.log(`📊 Triggering summary generation for shared doc ${docId} (orgSlug: ${finalOrgSlug})`);
             try {
-              const orgSlug = await getOrgSlugById(finalOrgId);
               // Call summary API in background (fire and forget)
-              generateMeetingDocSummary(docId, ownerEmail, orgSlug)
+              generateMeetingDocSummary(docId, ownerEmail, finalOrgSlug)
                 .catch((error) => {
                   console.error(`❌ Background summary generation failed for doc ${docId}:`, error);
                 });
@@ -1619,8 +1655,8 @@ async function handleCallEnded(message: any): Promise<void> {
         console.log(`✅ Finished processing shared doc for ${participantsToUse.length} participant(s)`);
       } else {
         console.warn(`⚠️ Skipping doc creation: participants array is ${participantsToUse ? 'empty' : 'missing'}`);
-        if (!finalOrgId) {
-          console.warn(`⚠️ Also missing orgId, which is required for doc creation`);
+        if (!finalOrgSlug) {
+          console.warn(`⚠️ Also missing orgSlug, which is required for doc creation`);
         }
       }
     } catch (error: any) {
@@ -1628,7 +1664,7 @@ async function handleCallEnded(message: any): Promise<void> {
       console.error(`   Error details:`, error.message, error.stack);
     }
   } else {
-    console.warn(`⚠️ Cannot create docs: orgId is missing for call ${callId} (event orgId: ${orgId || 'missing'}, session orgId: ${session.orgId || 'missing'})`);
+    console.warn(`⚠️ Cannot create docs: orgSlug is missing for call ${callId} (event orgSlug: ${orgSlug || 'missing'}, session orgSlug: ${session.orgSlug || 'missing'})`);
   }
 
   // Remove from active sessions
@@ -1686,12 +1722,12 @@ async function handleTranscriptionStarted(message: any): Promise<void> {
     return;
   }
   
-  const { callId, roomName, participants, orgId } = data;
+  const { callId, roomName, participants, orgSlug } = data;
 
   console.log(`📝 Handling transcription started for call ${callId}`);
 
   try {
-    await startTranscriptionSession(callId, roomName, participants || [], orgId);
+    await startTranscriptionSession(callId, roomName, participants || [], orgSlug);
     message.ack();
   } catch (error: any) {
     console.error(`❌ Error starting transcription session:`, error);

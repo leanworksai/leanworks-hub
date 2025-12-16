@@ -248,462 +248,468 @@ export function setupLiveKitEndpoints(
 
   // POST /api/livekit/webhook - Handle LiveKit webhooks (egress, room events, etc.)
   // LiveKit sends webhooks with Content-Type: application/webhook+json
+  // Best practice: Respond immediately, process asynchronously to prevent timeouts
   app.post('/api/livekit/webhook', express.json({ 
     limit: '10mb',
     type: ['application/json', 'application/webhook+json']
   }), async (req, res) => {
-    try {
-      // Log raw request for debugging
-      console.log('📡 LiveKit webhook received!');
-      console.log('📡 LiveKit webhook - Method:', req.method);
-      console.log('📡 LiveKit webhook - URL:', req.url);
-      console.log('📡 LiveKit webhook - Headers:', JSON.stringify(req.headers, null, 2));
-      console.log('📡 LiveKit webhook - Body:', JSON.stringify(req.body, null, 2));
-      
-      const event = req.body;
-      const eventType = event?.event || 'unknown';
-      
-      console.log('📡 LiveKit webhook event type:', eventType, { 
-        room: event?.room?.name, 
-        participant: event?.participant?.identity,
-        track: event?.track?.sid
-      });
-      
-      // Helper function to actually start the egress (extracted for reuse)
-      const doStartEgress = async (
-        roomName: string,
-        participantIdentity: string,
-        trackSid: string,
-        callId: string,
-        callData: any
-      ) => {
-        // In async architecture, transcription is handled by the worker
-        // We just need to start egress and the worker will process audio chunks
-        
-        // Get participant email from identity (identity is usually the email)
-        const participantEmail = participantIdentity.toLowerCase();
-        
-        // Check if this participant is in the call
-        const isParticipant = callData.participantEmails?.some(
-          (email: string) => email.toLowerCase() === participantEmail
-        ) || callData.callerEmail?.toLowerCase() === participantEmail || 
-           callData.calleeEmail?.toLowerCase() === participantEmail;
-        
-        if (!isParticipant) {
-          console.log('📝 Participant not in call:', participantEmail);
-          return;
-        }
-        
-        // Get LiveKit credentials
-        const livekitUrl = process.env.LIVEKIT_URL || 
-                          (process.env.NODE_ENV === 'production' 
-                            ? 'wss://livekit.leanworks.ai' 
-                            : 'ws://localhost:7880');
-        const isLocalDev = livekitUrl.includes('localhost') || livekitUrl.includes('127.0.0.1');
-        const credentials = await getLiveKitCredentials(secretManagerClient, projectId, isLocalDev);
-        
-        // Get base URL for WebSocket audio endpoint
-        let baseUrl = process.env.API_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:3001';
-        if (isLocalDev && baseUrl.includes('localhost')) {
-          baseUrl = baseUrl.replace('localhost', 'host.docker.internal');
-        }
-        const wsBaseUrl = baseUrl.replace('http://', 'ws://').replace('https://', 'wss://');
-        const wsUrl = `${wsBaseUrl}/api/livekit/audio-ws?callId=${callId}&participantEmail=${encodeURIComponent(participantEmail)}`;
-        
-        // Create EgressClient
-        const httpUrl = livekitUrl.replace('ws://', 'http://').replace('wss://', 'https://');
-        console.log(`🔧 Creating EgressClient with URL: ${httpUrl}`);
-        const egressClient = new EgressClient(httpUrl, credentials.apiKey, credentials.apiSecret);
-        
-        try {
-          console.log(`📹 Starting egress for participant ${participantEmail} in call ${callId}`);
-          console.log(`   Room: ${roomName}, Track: ${trackSid}`);
-          console.log(`   WebSocket URL: ${wsUrl}`);
+    const event = req.body;
+    const eventType = event?.event || 'unknown';
+    
+    // Minimal logging before response
+    console.log('📡 LiveKit webhook received:', eventType, { 
+      room: event?.room?.name, 
+      participant: event?.participant?.identity,
+      track: event?.track?.sid
+    });
+    
+    // Respond immediately to prevent timeouts (LiveKit expects response within 5-10 seconds)
+    res.status(200).json({ received: true });
+    
+    // Process webhook asynchronously in background
+    setImmediate(async () => {
+      try {
+        // Helper function to actually start the egress (extracted for reuse)
+        const doStartEgress = async (
+          roomName: string,
+          participantIdentity: string,
+          trackSid: string,
+          callId: string,
+          callData: any,
+          orgSlug?: string
+        ) => {
+          // In async architecture, transcription is handled by the worker
+          // We just need to start egress and the worker will process audio chunks
           
-          const info = await egressClient.startTrackEgress(roomName, wsUrl, trackSid);
-          console.log(`✅ Egress started successfully:`, info.egressId);
-        } catch (egressError: any) {
-          const errorMessage = egressError.message || String(egressError);
-          const isEgressUnavailable = errorMessage.includes('no response from servers') || 
-                                     errorMessage.includes('unavailable') ||
-                                     egressError.code === 'unavailable';
+          // Get participant email from identity (identity is usually the email)
+          const participantEmail = participantIdentity.toLowerCase();
           
-          if (isEgressUnavailable && isLocalDev) {
-            console.warn('⚠️ LiveKit egress service not available in local development.');
-            console.warn('   Egress is a separate service that needs to be run alongside LiveKit server.');
-          } else {
-            console.error('❌ Error starting egress:', {
-              message: egressError.message,
-              code: egressError.code,
-              httpUrl,
-              roomName,
-              trackSid,
-            });
+          // Check if this participant is in the call
+          const isParticipant = callData.participantEmails?.some(
+            (email: string) => email.toLowerCase() === participantEmail
+          ) || callData.callerEmail?.toLowerCase() === participantEmail || 
+             callData.calleeEmail?.toLowerCase() === participantEmail;
+          
+          if (!isParticipant) {
+            console.log('📝 Participant not in call:', participantEmail);
+            return;
           }
-        }
-      };
-
-      // Helper function to start egress for a participant's audio track
-      const startEgressForParticipant = async (roomName: string, participantIdentity: string, trackSid: string) => {
-        console.log('🔍 startEgressForParticipant called:', { roomName, participantIdentity, trackSid });
-        
-        if (!db) {
-          console.warn('⚠️ Firestore not available, cannot look up call info');
-          return;
-        }
-
-        try {
-          // Look up call document by roomName using collection group query
-          // This searches across all orgs/calls collections
-          // Accept both 'ringing' and 'active' statuses (call might still be ringing when track is published)
-          let snapshot;
+          
+          // Get LiveKit credentials
+          const livekitUrl = process.env.LIVEKIT_URL || 
+                            (process.env.NODE_ENV === 'production' 
+                              ? 'wss://livekit.leanworks.ai' 
+                              : 'ws://localhost:7880');
+          const isLocalDev = livekitUrl.includes('localhost') || livekitUrl.includes('127.0.0.1');
+          const credentials = await getLiveKitCredentials(secretManagerClient, projectId, isLocalDev);
+          
+          // Get base URL for WebSocket audio endpoint
+          let baseUrl = process.env.API_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:3001';
+          if (isLocalDev && baseUrl.includes('localhost')) {
+            baseUrl = baseUrl.replace('localhost', 'host.docker.internal');
+          }
+          const wsBaseUrl = baseUrl.replace('http://', 'ws://').replace('https://', 'wss://');
+          // Include orgSlug in WebSocket URL if available
+          const wsUrlParams = new URLSearchParams({
+            callId,
+            participantEmail,
+            ...(orgSlug && { orgSlug })
+          });
+          const wsUrl = `${wsBaseUrl}/api/livekit/audio-ws?${wsUrlParams.toString()}`;
+          
+          // Create EgressClient
+          const httpUrl = livekitUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+          console.log(`🔧 Creating EgressClient with URL: ${httpUrl}`);
+          const egressClient = new EgressClient(httpUrl, credentials.apiKey, credentials.apiSecret);
+          
           try {
-            // Try query with orderBy first (requires composite index: roomName + createdAt)
-            let callsQuery = db.collectionGroup('calls')
-              .where('roomName', '==', roomName);
+            console.log(`📹 Starting egress for participant ${participantEmail} in call ${callId}`);
+            console.log(`   Room: ${roomName}, Track: ${trackSid}`);
+            console.log(`   WebSocket URL: ${wsUrl}`);
             
+            const info = await egressClient.startTrackEgress(roomName, wsUrl, trackSid);
+            console.log(`✅ Egress started successfully:`, info.egressId);
+          } catch (egressError: any) {
+            const errorMessage = egressError.message || String(egressError);
+            const isEgressUnavailable = errorMessage.includes('no response from servers') || 
+                                       errorMessage.includes('unavailable') ||
+                                       egressError.code === 'unavailable';
+            
+            if (isEgressUnavailable && isLocalDev) {
+              console.warn('⚠️ LiveKit egress service not available in local development.');
+              console.warn('   Egress is a separate service that needs to be run alongside LiveKit server.');
+            } else {
+              console.error('❌ Error starting egress:', {
+                message: egressError.message,
+                code: egressError.code,
+                httpUrl,
+                roomName,
+                trackSid,
+              });
+            }
+          }
+        };
+
+        // Helper function to start egress for a participant's audio track
+        const startEgressForParticipant = async (roomName: string, participantIdentity: string, trackSid: string) => {
+          console.log('🔍 startEgressForParticipant called:', { roomName, participantIdentity, trackSid });
+          
+          if (!db) {
+            console.warn('⚠️ Firestore not available, cannot look up call info');
+            return;
+          }
+
+          try {
+            // Look up call document by roomName using collection group query
+            // This searches across all orgs/calls collections
+            // Accept both 'ringing' and 'active' statuses (call might still be ringing when track is published)
+            let snapshot;
             try {
-              // Try to use orderBy if composite index exists
-              callsQuery = callsQuery.orderBy('createdAt', 'desc').limit(20);
-              snapshot = await callsQuery.get();
-            } catch (orderByError: any) {
-              // If orderBy fails (no composite index), query without orderBy and sort in memory
-              console.log('⚠️ Composite index (roomName + createdAt) not available, sorting in memory');
-              callsQuery = callsQuery.limit(50); // Get more documents to ensure we find the current call
-              snapshot = await callsQuery.get();
+              // Try query with orderBy first (requires composite index: roomName + createdAt)
+              let callsQuery = db.collectionGroup('calls')
+                .where('roomName', '==', roomName);
               
-              // Sort in memory by createdAt descending
-              if (snapshot.docs.length > 0) {
-                const docsArray = Array.from(snapshot.docs);
-                const sorted = docsArray.sort((a, b) => {
-                  const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
-                  const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
-                  return bTime - aTime; // Most recent first
-                });
-                snapshot = { docs: sorted, empty: sorted.length === 0 } as any;
-              }
-            }
-          } catch (queryError: any) {
-            // Handle missing index error (code 9 = FAILED_PRECONDITION)
-            if (queryError.code === 9 || queryError.code === 'FAILED_PRECONDITION') {
-              console.error('❌ Firestore index missing for collectionGroup("calls").where("roomName")');
-              console.error('');
-              console.error('   To fix this, you have two options:');
-              console.error('');
-              console.error('   1. Deploy indexes (if fieldOverrides is configured):');
-              console.error('      firebase deploy --only firestore:indexes');
-              console.error('');
-              console.error('   2. Create index manually in Firebase Console:');
-              console.error('      https://console.firebase.google.com/project/leanworks-474204/firestore/indexes');
-              console.error('');
-              console.error('      Steps:');
-              console.error('      - Click "Add Index"');
-              console.error('      - Collection ID: calls');
-              console.error('      - Query scope: Collection group');
-              console.error('      - Fields: roomName (Ascending)');
-              console.error('      - Click "Create"');
-              console.error('');
-              console.error('   Index needed: collectionGroup "calls" with field "roomName" (ASCENDING)');
-              // Don't throw - allow the retry mechanism to work
-              return;
-            }
-            throw queryError;
-          }
-          
-          let callData: any = null;
-          let callId: string | null = null;
-          
-          // Log all found documents for debugging
-          if (snapshot.docs.length > 0) {
-            console.log(`📝 Found ${snapshot.docs.length} call document(s) for roomName: ${roomName}`);
-            snapshot.docs.forEach((doc, idx) => {
-              const data = doc.data();
-              console.log(`   [${idx + 1}] Call ID: ${doc.id}, Status: ${data.status}, RoomName: ${data.roomName}, Path: ${doc.ref.path}`);
-            });
-          }
-          
-          // Try to find a call with 'ringing' or 'active' status
-          if (!callId) {
-            for (const doc of snapshot.docs) {
-              const data = doc.data();
-              if (data.status === 'active' || data.status === 'ringing') {
-                callData = data;
-                callId = doc.id;
-                console.log(`✅ Found matching call: ${callId} with status: ${data.status}`);
-                break;
-              }
-            }
-          }
-          
-          // If still no call found, use the most recent call document (even if status is not active)
-          // This handles cases where the call document exists but status hasn't been updated yet
-          // We sort by createdAt descending to get the most recent one
-          if (!callId && snapshot.docs.length > 0) {
-            const sortedDocs = snapshot.docs.sort((a, b) => {
-              const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.getTime?.() || 0;
-              const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.getTime?.() || 0;
-              return bTime - aTime; // Most recent first
-            });
-            const mostRecentDoc = sortedDocs[0];
-            const mostRecentData = mostRecentDoc.data();
-            // Only use if status is not 'ended' (to avoid using old calls)
-            if (mostRecentData.status !== 'ended') {
-              callData = mostRecentData;
-              callId = mostRecentDoc.id;
-              console.log(`✅ Using most recent call document: ${callId} with status: ${mostRecentData.status}`);
-            }
-          }
-          
-          // If still no call found, wait for transcription to start or retry
-          // This prevents using old ended calls which would cause transcription mismatch
-          
-          if (!callId || !callData) {
-            console.log('📝 No call found for room:', roomName, '- will retry in 2 seconds...');
-            console.log(`   Query returned ${snapshot.docs.length} document(s), but none with status 'ringing' or 'active'`);
-            // Retry after a delay - the call document might not be created yet, or transcription might start
-            setTimeout(async () => {
               try {
-                console.log('🔄 Retrying call lookup for room:', roomName);
+                // Try to use orderBy if composite index exists
+                callsQuery = callsQuery.orderBy('createdAt', 'desc').limit(20);
+                snapshot = await callsQuery.get();
+              } catch (orderByError: any) {
+                // If orderBy fails (no composite index), query without orderBy and sort in memory
+                console.log('⚠️ Composite index (roomName + createdAt) not available, sorting in memory');
+                callsQuery = callsQuery.limit(50); // Get more documents to ensure we find the current call
+                snapshot = await callsQuery.get();
                 
-                // Try Firestore query again with orderBy
-                let retryQuery = db.collectionGroup('calls')
-                  .where('roomName', '==', roomName);
-                
-                try {
-                  retryQuery = retryQuery.orderBy('createdAt', 'desc').limit(20);
-                } catch (orderByError: any) {
-                  retryQuery = retryQuery.limit(50); // Get more if orderBy not available
-                }
-                
-                const retrySnapshot = await retryQuery.get();
-                
-                // Sort in memory if needed
-                if (retrySnapshot.docs.length > 0) {
-                  const docsArray = Array.from(retrySnapshot.docs);
+                // Sort in memory by createdAt descending
+                if (snapshot.docs.length > 0) {
+                  const docsArray = Array.from(snapshot.docs);
                   const sorted = docsArray.sort((a, b) => {
                     const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
                     const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
                     return bTime - aTime; // Most recent first
                   });
-                  retrySnapshot = { docs: sorted, empty: sorted.length === 0 } as any;
-                }
-                console.log(`   Retry found ${retrySnapshot.docs.length} document(s) in Firestore`);
-                
-                // First try to find active/ringing call
-                let foundCall = false;
-                for (const doc of retrySnapshot.docs) {
-                  const data = doc.data();
-                  console.log(`   Checking: ${doc.id}, Status: ${data.status}, RoomName: ${data.roomName}`);
-                  if (data.status === 'active' || data.status === 'ringing') {
-                    console.log('✅ Call found on retry:', doc.id, 'status:', data.status);
-                    foundCall = true;
-                    // Recursively call this function with the found call
-                    await startEgressForParticipant(roomName, participantIdentity, trackSid);
-                    return;
-                  }
-                }
-                
-                // If no active/ringing call found, use the most recent call document as fallback
-                if (!foundCall && retrySnapshot.docs.length > 0) {
-                  const sortedDocs = retrySnapshot.docs.sort((a, b) => {
-                    const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.getTime?.() || 0;
-                    const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.getTime?.() || 0;
-                    return bTime - aTime; // Most recent first
-                  });
-                  const mostRecentDoc = sortedDocs[0];
-                  const mostRecentData = mostRecentDoc.data();
-                  if (mostRecentData.status !== 'ended') {
-                    console.log(`   ✅ Using most recent call document on retry: ${mostRecentDoc.id} with status: ${mostRecentData.status}`);
-                    callData = mostRecentData;
-                    callId = mostRecentDoc.id;
-                    foundCall = true;
-                  }
-                }
-                
-                if (!foundCall) {
-                  console.log('   ⚠️ No suitable call found - egress will not start');
-                  console.log('   This usually means the call document has not been created yet or transcription has not started');
-                  return;
-                }
-                
-                // Recursively call this function with the found call
-                await startEgressForParticipant(roomName, participantIdentity, trackSid);
-                return;
-                
-                console.log('📝 Call still not found after retry for room:', roomName);
-                console.log('   This might mean:');
-                console.log('   1. Call document was not created yet');
-                console.log('   2. Call document has a different roomName format');
-                console.log('   3. Call document is in a different org path');
-                console.log('   4. Transcription session hasn\'t started yet');
-              } catch (retryError: any) {
-                if (retryError.code === 9 || retryError.code === 'FAILED_PRECONDITION') {
-                  console.error('❌ Firestore index still missing on retry. Please deploy indexes.');
-                } else {
-                  console.error('❌ Error in retry query:', retryError);
+                  snapshot = { docs: sorted, empty: sorted.length === 0 } as any;
                 }
               }
-            }, 2000);
-            return;
-          }
-          
-          // Use the helper function to start egress
-          await doStartEgress(roomName, participantIdentity, trackSid, callId, callData);
-        } catch (error: any) {
-          console.error('❌ Error in startEgressForParticipant:', error);
-        }
-      };
-      
-      // Handle different webhook event types
-      if (eventType === 'egress_started' || eventType === 'egress_updated') {
-        console.log('📹 LiveKit egress event:', eventType, event.egressInfo);
-      } else if (eventType === 'room_started') {
-        console.log('📞 LiveKit room started:', event.room?.name);
-      } else if (eventType === 'participant_joined') {
-        console.log('👤 Participant joined:', event.participant?.identity, 'in room:', event.room?.name);
-      } else if (eventType === 'participant_left') {
-        console.log('👋 Participant left:', event.participant?.identity, 'from room:', event.room?.name, 'reason:', event.participant?.disconnectReason);
-      } else if (eventType === 'track_published') {
-        console.log('🎵 track_published webhook received:', {
-          roomName: event.room?.name,
-          participantIdentity: event.participant?.identity,
-          trackSid: event.track?.sid,
-          trackType: event.track?.type,
-          trackName: event.track?.name
-        });
-        const track = event.track;
-        const roomName = event.room?.name;
-        const participantIdentity = event.participant?.identity;
-        const trackSid = track?.sid;
-        
-        // Check if it's an audio track - LiveKit webhooks use mimeType or source
-        const isAudio = track?.mimeType?.startsWith('audio/') || 
-                       track?.source === 'MICROPHONE' ||
-                       track?.kind === 'audio';
-        
-        console.log('🎵 Track published:', { 
-          kind: track?.kind,
-          mimeType: track?.mimeType,
-          source: track?.source,
-          isAudio,
-          participant: participantIdentity,
-          room: roomName,
-          trackSid
-        });
-        
-        // Start egress for audio tracks when transcription is active and recording is enabled
-        if (isAudio && roomName && participantIdentity && trackSid) {
-          // First, try to auto-start transcription if not already started and recording is enabled
-          try {
-            const callSnapshot = await db.collectionGroup('calls')
-              .where('roomName', '==', roomName)
-              .where('status', 'in', ['active', 'ringing'])
-              .limit(1)
-              .get();
+            } catch (queryError: any) {
+              // Handle missing index error (code 9 = FAILED_PRECONDITION)
+              if (queryError.code === 9 || queryError.code === 'FAILED_PRECONDITION') {
+                console.error('❌ Firestore index missing for collectionGroup("calls").where("roomName")');
+                console.error('');
+                console.error('   To fix this, you have two options:');
+                console.error('');
+                console.error('   1. Deploy indexes (if fieldOverrides is configured):');
+                console.error('      firebase deploy --only firestore:indexes');
+                console.error('');
+                console.error('   2. Create index manually in Firebase Console:');
+                console.error('      https://console.firebase.google.com/project/leanworks-474204/firestore/indexes');
+                console.error('');
+                console.error('      Steps:');
+                console.error('      - Click "Add Index"');
+                console.error('      - Collection ID: calls');
+                console.error('      - Query scope: Collection group');
+                console.error('      - Fields: roomName (Ascending)');
+                console.error('      - Click "Create"');
+                console.error('');
+                console.error('   Index needed: collectionGroup "calls" with field "roomName" (ASCENDING)');
+                // Don't throw - allow the retry mechanism to work
+                return;
+              }
+              throw queryError;
+            }
             
-            if (!callSnapshot.empty) {
-              const callDoc = callSnapshot.docs[0];
-              const callData = callDoc.data();
-              const callId = callDoc.id;
-              
-              // Check if recording is enabled for this call
-              if (callData?.enableRecording !== true) {
-                console.log(`📝 Recording disabled for call ${callId}, skipping transcription`);
-                return;
-              }
-              
-              // Extract orgSlug from path: orgs/{orgSlug}/calls/{callId}
-              const pathParts = callDoc.ref.path.split('/');
-              if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
-                const orgSlug = pathParts[1];
-                
-                // Get orgId - first check if it's already in callData, then try to get from orgSlug
-                let orgId: string | undefined = callData.orgId || callData.organizationId;
-                
-                // If orgId not in callData, try to get it from orgSlug using multi-tenant-pool
-                if (!orgId && orgSlug) {
-                  try {
-                    // Try to import and get orgId from orgSlug
-                    const multiTenantPool = await import('../database/multi-tenant-pool.js').catch(() => null);
-                    if (multiTenantPool?.getOrgIdBySlug) {
-                      orgId = await multiTenantPool.getOrgIdBySlug(orgSlug);
-                      console.log(`✅ Retrieved orgId ${orgId} from orgSlug ${orgSlug} for call ${callId}`);
-                    } else {
-                      console.warn(`⚠️ multi-tenant-pool module not available, using orgSlug ${orgSlug} without orgId`);
-                    }
-                  } catch (orgError: any) {
-                    console.warn(`⚠️ Could not get orgId from orgSlug ${orgSlug} for auto-starting transcription:`, orgError.message);
-                    // Continue with orgSlug - transcription worker can work with orgSlug
+            let callData: any = null;
+            let callId: string | null = null;
+            
+            // Log all found documents for debugging
+            if (snapshot.docs.length > 0) {
+              console.log(`📝 Found ${snapshot.docs.length} call document(s) for roomName: ${roomName}`);
+              snapshot.docs.forEach((doc, idx) => {
+                const data = doc.data();
+                console.log(`   [${idx + 1}] Call ID: ${doc.id}, Status: ${data.status}, RoomName: ${data.roomName}, Path: ${doc.ref.path}`);
+              });
+            }
+            
+            let callDocRef: any = null; // Store document reference to extract orgSlug
+            let orgSlug: string | undefined;
+            
+            // Try to find a call with 'ringing' or 'active' status
+            if (!callId) {
+              for (const doc of snapshot.docs) {
+                const data = doc.data();
+                if (data.status === 'active' || data.status === 'ringing') {
+                  callData = data;
+                  callId = doc.id;
+                  callDocRef = doc.ref;
+                  // Extract orgSlug from document path: orgs/{orgSlug}/calls/{callId}
+                  const pathParts = doc.ref.path.split('/');
+                  if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
+                    orgSlug = pathParts[1];
+                    console.log(`✅ Found matching call: ${callId} with status: ${data.status}, orgSlug: ${orgSlug}`);
                   }
-                }
-                
-                // Log what we have
-                if (orgId) {
-                  console.log(`📝 Using orgId ${orgId} for transcription (orgSlug: ${orgSlug})`);
-                } else {
-                  console.log(`📝 Using orgSlug ${orgSlug} for transcription (no orgId available)`);
-                }
-                
-                // Check if transcription is enabled but not started
-                // Note: We continue even if orgId is undefined - the worker can handle it
-                if (callData.transcriptionEnabled && !callData.transcriptionStarted) {
-                  const participants: Array<{ email: string; name?: string }> = [];
-                  if (callData.callerEmail) {
-                    participants.push({ email: callData.callerEmail });
-                  }
-                  if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
-                    participants.push({ email: callData.calleeEmail });
-                  }
-                  if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
-                    for (const email of callData.participantEmails) {
-                      if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
-                        participants.push({ email });
-                      }
-                    }
-                  }
-                  
-                  if (participants.length > 0) {
-                    const { publishCallEvent } = await import('../services/pubsub-events.js');
-                    await publishCallEvent('transcription_started', {
-                      callId,
-                      roomName,
-                      participants,
-                      orgId, // Can be undefined - worker will handle it
-                    });
-                    console.log(`✅ Auto-started transcription for call ${callId} via track_published webhook${orgId ? ` (orgId: ${orgId})` : ' (no orgId)'}`);
-                    
-                    // Mark transcription as started in Firestore
-                    await callDoc.ref.update({ transcriptionStarted: true });
-                  }
+                  break;
                 }
               }
             }
-          } catch (autoStartError: any) {
-            console.warn('⚠️ Could not auto-start transcription:', autoStartError.message);
-            // Continue to start egress anyway
+            
+            // If still no call found, use the most recent call document (even if status is not active)
+            // This handles cases where the call document exists but status hasn't been updated yet
+            // We sort by createdAt descending to get the most recent one
+            if (!callId && snapshot.docs.length > 0) {
+              const sortedDocs = snapshot.docs.sort((a, b) => {
+                const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.getTime?.() || 0;
+                const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.getTime?.() || 0;
+                return bTime - aTime; // Most recent first
+              });
+              const mostRecentDoc = sortedDocs[0];
+              const mostRecentData = mostRecentDoc.data();
+              // Only use if status is not 'ended' (to avoid using old calls)
+              if (mostRecentData.status !== 'ended') {
+                callData = mostRecentData;
+                callId = mostRecentDoc.id;
+                callDocRef = mostRecentDoc.ref;
+                // Extract orgSlug from document path
+                const pathParts = mostRecentDoc.ref.path.split('/');
+                if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
+                  orgSlug = pathParts[1];
+                }
+                console.log(`✅ Using most recent call document: ${callId} with status: ${mostRecentData.status}, orgSlug: ${orgSlug}`);
+              }
+            }
+            
+            // If still no call found, wait for transcription to start or retry
+            // This prevents using old ended calls which would cause transcription mismatch
+            
+            if (!callId || !callData) {
+              console.log('📝 No call found for room:', roomName, '- will retry in 2 seconds...');
+              console.log(`   Query returned ${snapshot.docs.length} document(s), but none with status 'ringing' or 'active'`);
+              // Retry after a delay - the call document might not be created yet, or transcription might start
+              setTimeout(async () => {
+                try {
+                  console.log('🔄 Retrying call lookup for room:', roomName);
+                  
+                  // Try Firestore query again with orderBy
+                  let retryQuery = db.collectionGroup('calls')
+                    .where('roomName', '==', roomName);
+                  
+                  try {
+                    retryQuery = retryQuery.orderBy('createdAt', 'desc').limit(20);
+                  } catch (orderByError: any) {
+                    retryQuery = retryQuery.limit(50); // Get more if orderBy not available
+                  }
+                  
+                  const retrySnapshot = await retryQuery.get();
+                  
+                  // Sort in memory if needed
+                  if (retrySnapshot.docs.length > 0) {
+                    const docsArray = Array.from(retrySnapshot.docs);
+                    const sorted = docsArray.sort((a, b) => {
+                      const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
+                      const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
+                      return bTime - aTime; // Most recent first
+                    });
+                    retrySnapshot = { docs: sorted, empty: sorted.length === 0 } as any;
+                  }
+                  console.log(`   Retry found ${retrySnapshot.docs.length} document(s) in Firestore`);
+                  
+                  // First try to find active/ringing call
+                  let foundCall = false;
+                  for (const doc of retrySnapshot.docs) {
+                    const data = doc.data();
+                    console.log(`   Checking: ${doc.id}, Status: ${data.status}, RoomName: ${data.roomName}`);
+                    if (data.status === 'active' || data.status === 'ringing') {
+                      console.log('✅ Call found on retry:', doc.id, 'status:', data.status);
+                      foundCall = true;
+                      // Recursively call this function with the found call
+                      await startEgressForParticipant(roomName, participantIdentity, trackSid);
+                      return;
+                    }
+                  }
+                  
+                  // If no active/ringing call found, use the most recent call document as fallback
+                  if (!foundCall && retrySnapshot.docs.length > 0) {
+                    const sortedDocs = retrySnapshot.docs.sort((a, b) => {
+                      const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.getTime?.() || 0;
+                      const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.getTime?.() || 0;
+                      return bTime - aTime; // Most recent first
+                    });
+                    const mostRecentDoc = sortedDocs[0];
+                    const mostRecentData = mostRecentDoc.data();
+                    if (mostRecentData.status !== 'ended') {
+                      console.log(`   ✅ Using most recent call document on retry: ${mostRecentDoc.id} with status: ${mostRecentData.status}`);
+                      callData = mostRecentData;
+                      callId = mostRecentDoc.id;
+                      foundCall = true;
+                    }
+                  }
+                  
+                  if (!foundCall) {
+                    console.log('   ⚠️ No suitable call found - egress will not start');
+                    console.log('   This usually means the call document has not been created yet or transcription has not started');
+                    return;
+                  }
+                  
+                  // Recursively call this function with the found call
+                  await startEgressForParticipant(roomName, participantIdentity, trackSid);
+                  return;
+                  
+                  console.log('📝 Call still not found after retry for room:', roomName);
+                  console.log('   This might mean:');
+                  console.log('   1. Call document was not created yet');
+                  console.log('   2. Call document has a different roomName format');
+                  console.log('   3. Call document is in a different org path');
+                  console.log('   4. Transcription session hasn\'t started yet');
+                } catch (retryError: any) {
+                  if (retryError.code === 9 || retryError.code === 'FAILED_PRECONDITION') {
+                    console.error('❌ Firestore index still missing on retry. Please deploy indexes.');
+                  } else {
+                    console.error('❌ Error in retry query:', retryError);
+                  }
+                }
+              }, 2000);
+              return;
+            }
+            
+            // Use the helper function to start egress (pass orgSlug if we found it)
+            await doStartEgress(roomName, participantIdentity, trackSid, callId, callData, orgSlug);
+          } catch (error: any) {
+            console.error('❌ Error in startEgressForParticipant:', error);
           }
-          
-          console.log('🎵 Starting egress for audio track...');
-          await startEgressForParticipant(roomName, participantIdentity, trackSid);
-        } else {
-          console.log('🎵 Skipping egress - conditions not met:', {
-            isAudio,
-            hasRoomName: !!roomName,
-            hasParticipant: !!participantIdentity,
-            hasTrackSid: !!trackSid
+        };
+        
+        // Handle different webhook event types
+        if (eventType === 'egress_started' || eventType === 'egress_updated') {
+          console.log('📹 LiveKit egress event:', eventType, event.egressInfo);
+        } else if (eventType === 'room_started') {
+          console.log('📞 LiveKit room started:', event.room?.name);
+        } else if (eventType === 'participant_joined') {
+          console.log('👤 Participant joined:', event.participant?.identity, 'in room:', event.room?.name);
+        } else if (eventType === 'participant_left') {
+          console.log('👋 Participant left:', event.participant?.identity, 'from room:', event.room?.name, 'reason:', event.participant?.disconnectReason);
+        } else if (eventType === 'participant_connection_aborted') {
+          console.log('⚠️ Participant connection aborted:', event.participant?.identity, 'from room:', event.room?.name, 'reason:', event.participant?.disconnectReason);
+          // Connection aborted - similar to participant_left but indicates abnormal disconnection
+          // No special action needed, egress will stop automatically
+        } else if (eventType === 'track_published') {
+          console.log('🎵 track_published webhook received:', {
+            roomName: event.room?.name,
+            participantIdentity: event.participant?.identity,
+            trackSid: event.track?.sid,
+            trackType: event.track?.type,
+            trackName: event.track?.name
           });
+          const track = event.track;
+          const roomName = event.room?.name;
+          const participantIdentity = event.participant?.identity;
+          const trackSid = track?.sid;
+          
+          // Check if it's an audio track - LiveKit webhooks use mimeType or source
+          const isAudio = track?.mimeType?.startsWith('audio/') || 
+                         track?.source === 'MICROPHONE' ||
+                         track?.kind === 'audio';
+          
+          console.log('🎵 Track published:', { 
+            kind: track?.kind,
+            mimeType: track?.mimeType,
+            source: track?.source,
+            isAudio,
+            participant: participantIdentity,
+            room: roomName,
+            trackSid
+          });
+          
+          // Start egress for audio tracks when transcription is active and recording is enabled
+          if (isAudio && roomName && participantIdentity && trackSid) {
+            // First, try to auto-start transcription if not already started and recording is enabled
+            try {
+              const callSnapshot = await db.collectionGroup('calls')
+                .where('roomName', '==', roomName)
+                .where('status', 'in', ['active', 'ringing'])
+                .limit(1)
+                .get();
+              
+              if (!callSnapshot.empty) {
+                const callDoc = callSnapshot.docs[0];
+                const callData = callDoc.data();
+                const callId = callDoc.id;
+                
+                // Check if recording is enabled for this call
+                if (callData?.enableRecording !== true) {
+                  console.log(`📝 Recording disabled for call ${callId}, skipping transcription`);
+                  return;
+                }
+                
+                // Extract orgSlug from path: orgs/{orgSlug}/calls/{callId}
+                const pathParts = callDoc.ref.path.split('/');
+                if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
+                  const orgSlug = pathParts[1];
+                  
+                  console.log(`📝 Using orgSlug ${orgSlug} for transcription`);
+                  
+                  // Check if transcription is enabled but not started
+                  if (callData.transcriptionEnabled && !callData.transcriptionStarted) {
+                    const participants: Array<{ email: string; name?: string }> = [];
+                    if (callData.callerEmail) {
+                      participants.push({ email: callData.callerEmail });
+                    }
+                    if (callData.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+                      participants.push({ email: callData.calleeEmail });
+                    }
+                    if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+                      for (const email of callData.participantEmails) {
+                        if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+                          participants.push({ email });
+                        }
+                      }
+                    }
+                    
+                    if (participants.length > 0) {
+                      const { publishCallEvent } = await import('../services/pubsub-events.js');
+                      await publishCallEvent('transcription_started', {
+                        callId,
+                        roomName,
+                        participants,
+                        orgSlug, // Use orgSlug instead of orgId
+                      });
+                      console.log(`✅ Auto-started transcription for call ${callId} via track_published webhook (orgSlug: ${orgSlug})`);
+                      
+                      // Mark transcription as started in Firestore
+                      await callDoc.ref.update({ transcriptionStarted: true });
+                    }
+                  }
+                }
+              }
+            } catch (autoStartError: any) {
+              console.warn('⚠️ Could not auto-start transcription:', autoStartError.message);
+              // Continue to start egress anyway
+            }
+            
+            console.log('🎵 Starting egress for audio track...');
+            await startEgressForParticipant(roomName, participantIdentity, trackSid);
+          } else {
+            console.log('🎵 Skipping egress - conditions not met:', {
+              isAudio,
+              hasRoomName: !!roomName,
+              hasParticipant: !!participantIdentity,
+              hasTrackSid: !!trackSid
+            });
+          }
+        } else if (eventType === 'track_unpublished') {
+          console.log('🎵 track_unpublished webhook received:', {
+            roomName: event.room?.name,
+            participantIdentity: event.participant?.identity,
+            trackSid: event.track?.sid
+          });
+          // Track unpublished - no action needed, egress will stop automatically
+        } else if (eventType === 'egress_ended') {
+          console.log('📹 LiveKit egress ended:', event.egressInfo);
+        } else {
+          console.log('📡 Unhandled webhook event type:', eventType);
         }
-      } else if (eventType === 'egress_ended') {
-        console.log('📹 LiveKit egress ended:', event.egressInfo);
+      } catch (error: any) {
+        console.error('❌ Error processing LiveKit webhook (background):', error);
+        // Errors in background processing don't affect webhook response
       }
-
-      // Always respond 200 to acknowledge webhook
-      res.status(200).json({ received: true });
-    } catch (error: any) {
-      console.error('❌ Error handling LiveKit webhook:', error);
-      // Still return 200 to prevent retries for malformed requests
-      res.status(200).json({ received: true, error: error.message });
-    }
+    });
   });
 
   // POST /api/livekit/audio - Receive audio chunks from LiveKit egress
@@ -720,10 +726,35 @@ export function setupLiveKitEndpoints(
         return res.status(400).json({ error: 'Audio data is required' });
       }
 
+      // Look up orgSlug from call document
+      let orgSlug: string | undefined;
+      try {
+        if (db) {
+          const callsQuery = db.collectionGroup('calls');
+          const snapshot = await callsQuery.get();
+          
+          // Find document with matching ID
+          for (const doc of snapshot.docs) {
+            if (doc.id === callId) {
+              const pathParts = doc.ref.path.split('/');
+              if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
+                orgSlug = pathParts[1];
+                break;
+              }
+            }
+          }
+        }
+      } catch (error: any) {
+        console.warn(`⚠️ Could not look up orgSlug for call ${callId}:`, error.message);
+      }
+
       // Process audio chunk - resample and record
+      // NOTE: This endpoint is deprecated in favor of WebSocket, but keeping for backward compatibility
       const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
+      // Resample from 48kHz to 16kHz for AssemblyAI compatibility
       const resampledAudio = await resample48kHzTo16kHz(audioBuffer);
-      await recordChunk(callId as string, participantEmail as string, resampledAudio);
+      // Pass explicit sample rate: 16kHz after resampling
+      await recordChunk(callId as string, participantEmail as string, resampledAudio, orgSlug, 16000);
 
       res.status(200).json({ received: true });
     } catch (error: any) {
@@ -779,52 +810,169 @@ export function setupLiveKitWebSocketServer(server: any): void {
     }
   });
 
-  wss.on('connection', (ws, req) => {
+  wss.on('connection', async (ws, req) => {
     const url = new URL(req.url || '', `http://${req.headers.host}`);
     const callId = url.searchParams.get('callId');
     const participantEmail = url.searchParams.get('participantEmail');
+    const orgSlug = url.searchParams.get('orgSlug') || undefined; // Get orgSlug from URL parameter
 
     if (!callId || !participantEmail) {
       console.error('❌ WebSocket connection missing callId or participantEmail');
       ws.close(1008, 'Missing callId or participantEmail');
       return;
     }
+    
+    if (!orgSlug) {
+      console.warn(`⚠️ WebSocket connection missing orgSlug for call ${callId}. Audio files may be saved to wrong location.`);
+    } else {
+      console.log(`✅ WebSocket connection received orgSlug ${orgSlug} for call ${callId}`);
+    }
 
     console.log(`🔌 WebSocket connection opened for transcription:`, {
       callId,
       participantEmail,
+      orgSlug: orgSlug || '(not provided)',
       remoteAddress: req.socket.remoteAddress,
       url: req.url
     });
 
     let audioChunkCount = 0;
+    let verificationLogCount = 0; // Counter for verification logging (log every 100 chunks)
     let lastLogTime = Date.now();
     
-    // Handle binary audio data from LiveKit egress
-    ws.on('message', async (data: Buffer) => {
+    // Track pending chunks for backpressure detection
+    const pendingChunks = new Map<string, number>();
+    const sessionKey = `${callId}:${participantEmail}`;
+    
+    /**
+     * Process audio chunk asynchronously (non-blocking, fire-and-forget)
+     * This allows multiple chunks to be processed concurrently
+     */
+    async function processChunkAsync(
+      chunkData: Buffer,
+      chunkNumber: number,
+      resolvedOrgSlug: string | undefined
+    ): Promise<void> {
       try {
-        // LiveKit egress sends audio data as binary messages
-        if (Buffer.isBuffer(data)) {
-          audioChunkCount++;
-          const now = Date.now();
+        const originalSize = chunkData.length;
+        const BYPASS_RESAMPLING = false; // AssemblyAI requires 16kHz audio
+
+        // DIAGNOSTIC: Log first chunk to verify sample rate assumption
+        if (chunkNumber === 1) {
+          console.log(`🔍 First audio chunk diagnostic: ${originalSize} bytes`);
+          console.log(`   If this is 48kHz PCM16 mono: ${originalSize} bytes = ${originalSize / 2} samples = ${(originalSize / 2) / 48000} seconds`);
+          console.log(`   If this is 16kHz PCM16 mono: ${originalSize} bytes = ${originalSize / 2} samples = ${(originalSize / 2) / 16000} seconds`);
+          console.log(`   BYPASS_RESAMPLING = ${BYPASS_RESAMPLING} - ${BYPASS_RESAMPLING ? 'Skipping resampling, using original audio' : 'Resampling from 48kHz to 16kHz'}`);
           
-          // Log every 5 seconds to show audio is flowing
-          if (now - lastLogTime > 5000) {
-            console.log(`🎤 Audio streaming: ${audioChunkCount} chunks received from ${participantEmail} (${data.length} bytes)`);
-            lastLogTime = now;
+          // CRITICAL: Detect actual sample rate by analyzing chunk size
+          const expected48kHzSize = 960 * 2; // 1920 bytes
+          const expected16kHzSize = 320 * 2; // 640 bytes
+          const sizeDiff48kHz = Math.abs(originalSize - expected48kHzSize);
+          const sizeDiff16kHz = Math.abs(originalSize - expected16kHzSize);
+          
+          console.log(`   Expected size for 48kHz 20ms chunk: ${expected48kHzSize} bytes (diff: ${sizeDiff48kHz})`);
+          console.log(`   Expected size for 16kHz 20ms chunk: ${expected16kHzSize} bytes (diff: ${sizeDiff16kHz})`);
+          
+          if (sizeDiff16kHz < sizeDiff48kHz) {
+            console.error(`   ❌ CRITICAL: Audio appears to be 16kHz, not 48kHz!`);
+            console.error(`   This would cause "slow and deep" sound when played at 48kHz.`);
+            console.error(`   Actual size: ${originalSize}, Expected 16kHz: ${expected16kHzSize}, Expected 48kHz: ${expected48kHzSize}`);
           }
           
-          // Resample from 48kHz to 16kHz (LiveKit sends 48kHz, but we store/process at 16kHz)
-          const resampledAudio = await resample48kHzTo16kHz(data);
-          
-          // Record audio chunk (non-blocking: saves to Cloud Storage and publishes to Pub/Sub)
-          await recordChunk(callId, participantEmail, resampledAudio);
-        } else {
-          console.warn('⚠️ Received non-binary message from LiveKit egress:', typeof data);
+          // CRITICAL: Check if audio data looks valid
+          if (chunkData.length >= 20) {
+            const samples: Array<{ le: number; be: number }> = [];
+            let peak = 0;
+            for (let i = 0; i < 10 && i * 2 < chunkData.length; i++) {
+              const sampleLE = chunkData.readInt16LE(i * 2);
+              const sampleBE = chunkData.readInt16BE(i * 2);
+              samples.push({ le: sampleLE, be: sampleBE });
+              peak = Math.max(peak, Math.abs(sampleLE), Math.abs(sampleBE));
+            }
+            console.log(`   First 10 samples (as little-endian): ${samples.map(s => s.le).join(', ')}`);
+            console.log(`   Peak amplitude: ${peak} (${peak > 0 ? (20 * Math.log10(peak / 32768)).toFixed(2) : '-Inf'} dB)`);
+            
+            if (peak < 100) {
+              console.warn(`   ⚠️ WARNING: Audio is very quiet (peak=${peak}). This might indicate a problem.`);
+            }
+          }
         }
+
+        // Resample from 48kHz to 16kHz
+        let resampledAudio: Buffer;
+        if (BYPASS_RESAMPLING) {
+          resampledAudio = chunkData; // Fallback (should not be used)
+        } else {
+          resampledAudio = await resample48kHzTo16kHz(chunkData);
+          const resampledSize = resampledAudio.length;
+          
+          // Verify resampling worked (should be ~1/3 the size: 48kHz -> 16kHz = 1/3)
+          const expectedSize = Math.floor(originalSize / 3);
+          const sizeDiff = Math.abs(resampledSize - expectedSize);
+          const sizeDiffPercent = (sizeDiff / expectedSize) * 100;
+          
+          if (sizeDiffPercent > 15) {
+            console.error(`❌ Resampling verification failed for ${participantEmail}: original=${originalSize} bytes, resampled=${resampledSize} bytes, expected~${expectedSize} bytes (${sizeDiffPercent.toFixed(1)}% difference)`);
+            return; // Skip this chunk
+          }
+          
+          // Log verification success every 100 chunks (to avoid spam)
+          verificationLogCount++;
+          if (verificationLogCount % 100 === 0) {
+            console.log(`✓ Resampling verified for ${participantEmail}: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, ${sizeDiffPercent.toFixed(1)}% difference)`);
+          }
+        }
+        
+        // Record chunk (non-blocking - fire-and-forget)
+        // Don't await - let it process in background while we handle next chunk
+        const actualSampleRate = BYPASS_RESAMPLING ? 48000 : 16000;
+        recordChunk(callId, participantEmail, resampledAudio, resolvedOrgSlug, actualSampleRate)
+          .catch((error: any) => {
+            console.error(`❌ Error recording chunk ${chunkNumber} for ${participantEmail}:`, error);
+          });
       } catch (error: any) {
-        console.error(`❌ Error processing audio chunk for ${participantEmail}:`, error);
+        console.error(`❌ Error in processChunkAsync for chunk ${chunkNumber}:`, error);
+        throw error; // Re-throw to be caught by caller
       }
+    }
+    
+    // Handle binary audio data from LiveKit egress (fire-and-forget pattern)
+    ws.on('message', (data: Buffer) => {
+      // LiveKit egress sends audio data as binary messages
+      if (!Buffer.isBuffer(data)) {
+        console.warn('⚠️ Received non-binary message from LiveKit egress:', typeof data);
+        return;
+      }
+      
+      audioChunkCount++;
+      const now = Date.now();
+      
+      // Log every 5 seconds to show audio is flowing
+      if (now - lastLogTime > 5000) {
+        console.log(`🎤 Audio streaming: ${audioChunkCount} chunks received from ${participantEmail} (${data.length} bytes)`);
+        lastLogTime = now;
+      }
+      
+      // Backpressure detection
+      const pending = pendingChunks.get(sessionKey) || 0;
+      if (pending > 100) {
+        console.warn(`⚠️ Backpressure detected for ${participantEmail}: ${pending} chunks pending, dropping chunk ${audioChunkCount}`);
+        return; // Drop chunk to prevent memory issues
+      }
+      
+      // Increment pending counter
+      pendingChunks.set(sessionKey, pending + 1);
+      
+      // Process chunk asynchronously (fire-and-forget)
+      processChunkAsync(data, audioChunkCount, orgSlug ?? undefined)
+        .finally(() => {
+          // Decrement pending counter when done
+          const current = pendingChunks.get(sessionKey) || 0;
+          pendingChunks.set(sessionKey, Math.max(0, current - 1));
+        })
+        .catch((error: any) => {
+          console.error(`❌ Error processing chunk ${audioChunkCount} for ${participantEmail}:`, error);
+        });
     });
 
     ws.on('error', (error) => {

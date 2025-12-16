@@ -7,7 +7,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getOrgSlugById, getOrgPool } from '../../database/multi-tenant-pool.js';
+import { getOrgSlugById, getOrgPoolBySlug } from '../../database/multi-tenant-pool.js';
 import { publishCallEvent } from '../services/pubsub-events.js';
 import { flushCallBuffers } from '../services/audio-recorder.js';
 
@@ -274,13 +274,17 @@ export function setupCallEndpoints(
           }
 
           if (participants.length > 0) {
+            // Get orgSlug from the call document path
+            const pathParts = callRef.path.split('/');
+            const orgSlug = pathParts.length >= 2 && pathParts[0] === 'orgs' ? pathParts[1] : undefined;
+            
             // Publish transcription_started event to Pub/Sub (async processing)
             await publishCallEvent('transcription_started', {
               callId,
               chatId,
               roomName: callData.roomName,
               participants,
-              orgId,
+              orgSlug,
             });
             console.log(`✅ Transcription started event published for call ${callId}`);
             
@@ -441,13 +445,17 @@ export function setupCallEndpoints(
       // Publish call_ended event immediately (don't wait for GCS uploads to complete)
       // The transcription worker will handle finalization and note creation
       // Worker has retry logic and waits for pending chunks, so it can handle files that aren't ready yet
-      if (orgId && participants.length > 0) {
+      // Get orgSlug from the call document path
+      const pathParts = callRef.path.split('/');
+      const orgSlug = pathParts.length >= 2 && pathParts[0] === 'orgs' ? pathParts[1] : undefined;
+      
+      if (orgSlug && participants.length > 0) {
         try {
           await publishCallEvent('call_ended', {
             callId,
             chatId,
             participants,
-            orgId,
+            orgSlug,
           });
           console.log(`✅ Published 'call_ended' event for call ${callId}`);
           console.log(`📝 Transcription will be finalized by worker asynchronously`);
@@ -456,7 +464,7 @@ export function setupCallEndpoints(
           // Don't fail the call end if Pub/Sub fails
         }
       } else {
-        console.warn('⚠️ Cannot publish call_ended event: orgId or participants missing');
+        console.warn('⚠️ Cannot publish call_ended event: orgSlug or participants missing');
       }
 
       res.json({ success: true });
@@ -615,9 +623,13 @@ export function setupCallEndpoints(
       // Check if transcription is already active
       // In async architecture, check if transcription session exists in database
       // Note: transcription_sessions are stored in org databases, not shared
-      if (orgId) {
+      // Get orgSlug from the call document path
+      const pathParts = callRef.path.split('/');
+      const orgSlugForCheck = pathParts.length >= 2 && pathParts[0] === 'orgs' ? pathParts[1] : undefined;
+      
+      if (orgSlugForCheck) {
         try {
-          const pool = await getOrgPool(orgId);
+          const pool = await getOrgPoolBySlug(orgSlugForCheck);
           const result = await pool.query(
             'SELECT status FROM transcription_sessions WHERE call_id = $1 AND status IN ($2, $3)',
             [callId, 'active', 'processing']
@@ -652,13 +664,16 @@ export function setupCallEndpoints(
         return res.status(400).json({ error: 'Room name is required for transcription' });
       }
 
+      // Reuse orgSlug from earlier check
+      const orgSlug = orgSlugForCheck;
+      
       // Publish transcription_started event to Pub/Sub (async processing)
       await publishCallEvent('transcription_started', {
         callId,
         chatId: req.params.chatId,
         roomName: callData.roomName,
         participants,
-        orgId,
+        orgSlug,
       });
 
       // Update call document

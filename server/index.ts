@@ -39,7 +39,6 @@ import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail } from './services/email.js';
-import { triggerDataPipelineDeployment, deleteDataPipelineDeployment } from './services/data-pipeline.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -708,11 +707,6 @@ app.post('/api/auth/signup', async (req, res) => {
     
     console.log(`✅ Created personal workspace for ${normalizedEmail}: ${personalOrgName} (${personalSlug})`);
 
-    // Trigger data pipeline deployment for personal workspace (non-blocking)
-    triggerDataPipelineDeployment(personalSlug, normalizedEmail).catch((error) => {
-      console.error(`⚠️ Failed to trigger data pipeline deployment for ${personalSlug}:`, error);
-    });
-
     // Generate email verification token
     const verificationToken = crypto.randomBytes(32).toString('hex');
     
@@ -848,11 +842,6 @@ app.post('/api/auth/login', async (req, res) => {
         VALUES ($1, $2, $3, $4, 'owner', NOW())
         ON CONFLICT (email) DO NOTHING
       `, [normalizedEmail, userData.first_name, userData.last_name, userData.job_title || null]);
-      
-      // Trigger data pipeline deployment for personal workspace (non-blocking)
-      triggerDataPipelineDeployment(personalSlug, normalizedEmail).catch((error) => {
-        console.error(`⚠️ Failed to trigger data pipeline deployment for ${personalSlug}:`, error);
-      });
       
       organizations.push({
         ...newOrg,
@@ -1508,11 +1497,6 @@ app.post('/api/orgs', authenticateUser, async (req, res) => {
     
     console.log(`✅ Created organization ${name} (${slug}) with database ${dbName} for ${userEmail}`);
     
-    // Trigger data pipeline deployment for new organization (non-blocking)
-    triggerDataPipelineDeployment(slug, userEmail).catch((error) => {
-      console.error(`⚠️ Failed to trigger data pipeline deployment for ${slug}:`, error);
-    });
-    
     res.status(201).json({
       id: org.id,
       name: org.name,
@@ -1661,14 +1645,7 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
     const dbName = sanitizeSlugForDb(orgSlug);
     console.log(`📦 Organization database: ${dbName}`);
     
-    // 2. Delete data pipeline deployment (non-blocking)
-    if (ownerEmail) {
-      deleteDataPipelineDeployment(orgSlug, ownerEmail).catch((error) => {
-        console.error(`⚠️ Failed to delete data pipeline deployment for ${orgSlug}:`, error);
-      });
-    }
-    
-    // 3. Close and remove connection pool for this org
+    // 2. Close and remove connection pool for this org
     try {
       await closeOrgPool(dbName);
     } catch (poolError: any) {
