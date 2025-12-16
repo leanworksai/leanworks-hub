@@ -65,13 +65,20 @@ async function getCallEventsTopic() {
  * Publish a call event to Pub/Sub
  */
 export async function publishCallEvent(
-  event: 'transcription_started' | 'call_ended',
+  event: 'transcription_started' | 'call_ended' | 'audio_chunk_ready',
   data: {
     callId: string;
     chatId?: string;
     roomName?: string;
     participants?: Array<{ email: string; name?: string }>;
-    orgId?: string;
+    orgSlug?: string; // Use orgSlug instead of orgId
+    // For audio_chunk_ready event:
+    participantEmail?: string;
+    chunkIndex?: number;
+    storageUrl?: string;
+    chunkStartTime?: number;
+    chunkEndTime?: number;
+    isFinal?: boolean;
   }
 ): Promise<void> {
   try {

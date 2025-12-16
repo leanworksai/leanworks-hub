@@ -660,8 +660,8 @@ export function useWebRTC(
       // Multiple tabs/browsers can share the mic on macOS if we don't constrain deviceId
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          // Disable echo cancellation in local dev for testing, enable in production/GKE
-          echoCancellation: !import.meta.env.DEV,
+          // Enable echo cancellation in both dev and production
+          echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
           // DO NOT specify deviceId - allows multiple tabs/browsers to share mic
