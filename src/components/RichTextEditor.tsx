@@ -131,6 +131,11 @@ export function RichTextEditor({
         class: 'w-full focus:outline-none min-h-[300px]',
         style: 'white-space: pre-wrap !important; margin: 0;',
       },
+      transformPastedHTML(html) {
+        // Preserve formatting by returning the HTML as-is
+        // TipTap will parse it and preserve supported formatting (bold, italic, colors, etc.)
+        return html;
+      },
       handleDOMEvents: {
         keydown: (view, event) => {
           // Preserve trailing spaces when space is pressed at end of line
