@@ -3855,6 +3855,17 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
+    
+    if (!orgId) {
+      return res.status(400).json({ error: 'Organization ID is required' });
+    }
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
+    console.log(`📚 GET /api/docs - Fetching docs for org ${orgId} (user: ${userEmail})`);
+    
     const pool = await getOrgPool(orgId);
     const normalizedEmail = userEmail.toLowerCase();
     
@@ -3885,22 +3896,50 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
     
     console.log(`📚 GET /api/docs - Returning ${result.rows.length} docs for org ${orgId} (user: ${userEmail})`);
     
+    // Helper function to safely parse JSONB fields
+    const parseJsonbField = (value: any): any => {
+      if (value === null || value === undefined) {
+        return [];
+      }
+      if (Array.isArray(value)) {
+        return value;
+      }
+      if (typeof value === 'object') {
+        return value;
+      }
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    };
+    
     // Transform to camelCase
     const transformed = result.rows.map(row => {
-      const doc = transformRow(row);
-      doc.tags = Array.isArray(doc.tags) ? doc.tags : (doc.tags ? JSON.parse(doc.tags) : []);
-      doc.visibleToMembers = Array.isArray(doc.visibleToMembers) 
-        ? doc.visibleToMembers 
-        : (doc.visibleToMembers ? JSON.parse(doc.visibleToMembers) : []);
-      doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
-      doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
-      return doc;
+      try {
+        const doc = transformRow(row);
+        // PostgreSQL JSONB fields are already parsed, but handle both cases
+        doc.tags = parseJsonbField(doc.tags);
+        doc.visibleToMembers = parseJsonbField(doc.visibleToMembers);
+        doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
+        doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
+        return doc;
+      } catch (transformError) {
+        console.error(`Error transforming doc row:`, transformError, row);
+        throw transformError;
+      }
     });
     
     res.json(transformed);
   } catch (error) {
-    console.error('Get docs error:', error);
-    res.status(500).json({ error: (error as Error).message });
+    console.error('❌ Get docs error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error('Error details:', { errorMessage, errorStack, orgId: (req as any).orgId, userEmail: (req as any).userEmail });
+    res.status(500).json({ error: errorMessage });
   }
 });
 
@@ -3909,8 +3948,38 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const docId = req.params.id;
+    
+    if (!orgId) {
+      return res.status(400).json({ error: 'Organization ID is required' });
+    }
+    
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
     const pool = await getOrgPool(orgId);
     const normalizedEmail = userEmail.toLowerCase();
+    
+    // Helper function to safely parse JSONB fields
+    const parseJsonbField = (value: any): any => {
+      if (value === null || value === undefined) {
+        return [];
+      }
+      if (Array.isArray(value)) {
+        return value;
+      }
+      if (typeof value === 'object') {
+        return value;
+      }
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    };
     
     // Get doc and check visibility
     const result = await pool.query(`
@@ -3946,10 +4015,8 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     let hasAccess = isOwner || isAllMembers;
     
     if (isSpecificMembers) {
-      const visibleToMembers = Array.isArray(row.visible_to_members) 
-        ? row.visible_to_members 
-        : (row.visible_to_members ? JSON.parse(row.visible_to_members) : []);
-      hasAccess = isOwner || visibleToMembers.includes(normalizedEmail);
+      const visibleToMembers = parseJsonbField(row.visible_to_members);
+      hasAccess = isOwner || (Array.isArray(visibleToMembers) && visibleToMembers.includes(normalizedEmail));
     }
     
     if (!hasAccess) {
@@ -3957,17 +4024,18 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     }
     
     const doc = transformRow(row);
-    doc.tags = Array.isArray(doc.tags) ? doc.tags : (doc.tags ? JSON.parse(doc.tags) : []);
-    doc.visibleToMembers = Array.isArray(doc.visibleToMembers) 
-      ? doc.visibleToMembers 
-      : (doc.visibleToMembers ? JSON.parse(doc.visibleToMembers) : []);
+    doc.tags = parseJsonbField(doc.tags);
+    doc.visibleToMembers = parseJsonbField(doc.visibleToMembers);
     doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
     doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
     
     res.json(doc);
   } catch (error) {
-    console.error('Get doc error:', error);
-    res.status(500).json({ error: (error as Error).message });
+    console.error('❌ Get doc error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error('Error details:', { errorMessage, errorStack, docId: req.params.id, orgId: (req as any).orgId, userEmail: (req as any).userEmail });
+    res.status(500).json({ error: errorMessage });
   }
 });
 
