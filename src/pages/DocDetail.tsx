@@ -35,7 +35,9 @@ export default function DocDetail() {
       setContent(doc.content !== null && doc.content !== undefined ? doc.content : "");
       setIsPinned(doc.isPinned || false);
       setVisibility(doc.visibility || 'all_members');
-      setVisibleToMembers(new Set(doc.visibleToMembers || []));
+      // Ensure visibleToMembers is always an array before creating Set
+      const membersArray = Array.isArray(doc.visibleToMembers) ? doc.visibleToMembers : [];
+      setVisibleToMembers(new Set(membersArray));
     } else if (isNew) {
       // Reset form for new doc
       setTitle("");
@@ -97,7 +99,7 @@ export default function DocDetail() {
           title: "Doc created",
           description: `"${createdDoc.title}" has been created successfully.`,
         });
-        navigate(`/docs/${createdDoc.id}`);
+        navigate('/docs');
       } else if (docId) {
         await updateDoc.mutateAsync({
           docId,
@@ -113,6 +115,7 @@ export default function DocDetail() {
           title: "Doc updated",
           description: `"${title}" has been updated successfully.`,
         });
+        navigate('/docs');
       }
     } catch (error) {
       toast({
@@ -204,12 +207,14 @@ export default function DocDetail() {
           currentVisibleToMembers={Array.from(visibleToMembers)}
           onSave={async (newVisibility, newVisibleToMembers) => {
             setVisibility(newVisibility);
-            setVisibleToMembers(new Set(newVisibleToMembers));
+            // Ensure newVisibleToMembers is always an array before creating Set
+            const membersArray = Array.isArray(newVisibleToMembers) ? newVisibleToMembers : [];
+            setVisibleToMembers(new Set(membersArray));
             await updateDoc.mutateAsync({
               docId: doc.id,
               updates: {
                 visibility: newVisibility,
-                visibleToMembers: newVisibleToMembers,
+                visibleToMembers: membersArray,
               },
             });
             toast({
