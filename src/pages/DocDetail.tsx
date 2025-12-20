@@ -1,10 +1,10 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Share2 } from "lucide-react";
+import { ArrowLeft, Save, Share2, Edit } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
@@ -12,6 +12,7 @@ import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 export default function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isNew = docId === "new";
   const { data: doc, isLoading } = useDoc(docId || "");
   const createDoc = useCreateDoc();
@@ -25,6 +26,9 @@ export default function DocDetail() {
   const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
   const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  // Check if edit query parameter is present, otherwise default to read-only for existing docs
+  const shouldStartInEditMode = searchParams.get('edit') === 'true' || isNew;
+  const [isEditMode, setIsEditMode] = useState(shouldStartInEditMode);
 
   // Load doc data when editing
   useEffect(() => {
@@ -36,14 +40,19 @@ export default function DocDetail() {
       // Ensure visibleToMembers is always an array before creating Set
       const membersArray = Array.isArray(doc.visibleToMembers) ? doc.visibleToMembers : [];
       setVisibleToMembers(new Set(membersArray));
+      // Set edit mode based on query parameter, default to read-only
+      const shouldEdit = searchParams.get('edit') === 'true';
+      setIsEditMode(shouldEdit);
     } else if (isNew) {
       // Reset form for new doc
       setTitle("");
       setContent("");
       setVisibility('all_members');
       setVisibleToMembers(new Set());
+      // New docs start in edit mode
+      setIsEditMode(true);
     }
-  }, [doc, isNew]);
+  }, [doc, isNew, searchParams]);
 
   const handleSave = async () => {
     if (!title.trim()) {
@@ -153,10 +162,17 @@ export default function DocDetail() {
               <span className="sm:hidden">Visibility</span>
             </Button>
           )}
-          <Button onClick={handleSave} disabled={isSaving} className="flex-1 sm:flex-initial">
-            <Save className="mr-2 h-4 w-4" />
-            {isSaving ? "Saving..." : "Save"}
-          </Button>
+          {isEditMode ? (
+            <Button onClick={handleSave} disabled={isSaving} className="flex-1 sm:flex-initial">
+              <Save className="mr-2 h-4 w-4" />
+              {isSaving ? "Saving..." : "Save"}
+            </Button>
+          ) : (
+            <Button onClick={() => setIsEditMode(true)} className="flex-1 sm:flex-initial">
+              <Edit className="mr-2 h-4 w-4" />
+              Edit
+            </Button>
+          )}
         </div>
       </div>
 
@@ -172,6 +188,7 @@ export default function DocDetail() {
           title={title}
           onTitleChange={setTitle}
           titlePlaceholder="Doc title..."
+          readOnly={!isEditMode}
         />
       )}
 

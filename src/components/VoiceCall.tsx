@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogOverlay } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
-import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Phone, PhoneOff, Mic, MicOff, X } from 'lucide-react';
 import { CallStatus, ParticipantInfo } from '@/hooks/useLiveKit';
@@ -1156,20 +1155,18 @@ export function IncomingCallDialog({
 
   return (
     <Dialog open={true} onOpenChange={(open) => !open && handleReject()}>
-      <DialogPrimitive.Portal>
-        {/* Transparent overlay instead of dark backdrop */}
-        <DialogOverlay className="bg-transparent" />
-        <DialogPrimitive.Content
-          className={cn(
-            "fixed left-[50%] top-[50%] z-[9999] grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg sm:max-w-md"
-          )}
-        >
-          <DialogHeader>
-            <DialogTitle>Incoming Call</DialogTitle>
-            <DialogDescription>
-              {callerName || 'Someone'} is calling you
-            </DialogDescription>
-          </DialogHeader>
+      <DialogContent 
+        className={cn(
+          "z-[9999] sm:max-w-md"
+        )}
+        onInteractOutside={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle>Incoming Call</DialogTitle>
+          <DialogDescription>
+            {callerName || 'Someone'} is calling you
+          </DialogDescription>
+        </DialogHeader>
           <div className="flex flex-col items-center space-y-4 py-4">
             <Avatar className="h-20 w-20">
               <AvatarFallback className="text-2xl">
@@ -1200,8 +1197,7 @@ export function IncomingCallDialog({
               </Button>
             </div>
           </div>
-        </DialogPrimitive.Content>
-      </DialogPrimitive.Portal>
+      </DialogContent>
     </Dialog>
   );
 }

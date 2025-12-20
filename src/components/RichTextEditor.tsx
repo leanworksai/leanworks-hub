@@ -44,6 +44,7 @@ interface RichTextEditorProps {
   title?: string;
   onTitleChange?: (title: string) => void;
   titlePlaceholder?: string;
+  readOnly?: boolean;
 }
 
 export function RichTextEditor({ 
@@ -52,7 +53,8 @@ export function RichTextEditor({
   placeholder = 'Start writing...',
   title,
   onTitleChange,
-  titlePlaceholder = 'Untitled'
+  titlePlaceholder = 'Untitled',
+  readOnly = false
 }: RichTextEditorProps) {
   const initialContent = content || '<p></p>';
   const contentRef = useRef<string>(initialContent);
@@ -97,6 +99,7 @@ export function RichTextEditor({
       TextStyle,
     ],
     content: initialContent,
+    editable: !readOnly,
     onUpdate: ({ editor }) => {
       // Only call onChange if we're not in the middle of a programmatic update
       if (!isUpdatingRef.current) {
@@ -161,6 +164,12 @@ export function RichTextEditor({
       },
     },
   });
+
+  // Update editor editability when readOnly changes
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(!readOnly);
+  }, [editor, readOnly]);
 
   // Update editor content when the content prop changes
   // Only update when loading a new note, not during user editing
@@ -241,11 +250,16 @@ export function RichTextEditor({
             placeholder={titlePlaceholder}
             value={title || ''}
             onChange={(e) => onTitleChange(e.target.value)}
-            className="w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-snug border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words"
+            readOnly={readOnly}
+            className={cn(
+              "w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-snug border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words",
+              readOnly && "cursor-default"
+            )}
           />
         </div>
       )}
       {/* Toolbar */}
+      {!readOnly && (
       <div className="border-y p-2 flex flex-wrap items-center gap-1 overflow-x-auto">
         {/* Text Formatting */}
         <Button
@@ -466,6 +480,7 @@ export function RichTextEditor({
           <Redo className="h-4 w-4" />
         </Button>
       </div>
+      )}
 
       {/* Editor Content */}
       <EditorContent 

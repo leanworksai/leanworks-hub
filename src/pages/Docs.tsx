@@ -191,7 +191,7 @@ export default function Docs() {
                             {
                               icon: Edit,
                               label: "Edit",
-                              onClick: () => navigate(`/docs/${doc.id}`),
+                              onClick: () => navigate(`/docs/${doc.id}?edit=true`),
                             },
                             {
                               icon: Share2,
@@ -272,7 +272,7 @@ export default function Docs() {
                             {
                               icon: Edit,
                               label: "Edit",
-                              onClick: () => navigate(`/docs/${doc.id}`),
+                              onClick: () => navigate(`/docs/${doc.id}?edit=true`),
                             },
                             {
                               icon: Share2,

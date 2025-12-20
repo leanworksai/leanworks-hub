@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -10,6 +10,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarFooter,
+  SidebarHeader,
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
@@ -40,7 +41,7 @@ const menuItems = [
 ];
 
 export function AppSidebar() {
-  const { open, isMobile, setOpenMobile } = useSidebar();
+  const { open, isMobile, setOpenMobile, toggleSidebar } = useSidebar();
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations } = useOrg();
   const { selectedProjects, toggleProject } = useSelectedProjects();
   const { selectedTasks, toggleTask } = useSelectedTasks();
@@ -60,7 +61,19 @@ export function AppSidebar() {
   const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
 
   return (
-    <Sidebar>
+    <Sidebar collapsible="offcanvas">
+      <SidebarHeader className="flex flex-row items-center justify-between px-3 py-2 border-b border-sidebar-border">
+        <span className="text-sm font-semibold text-sidebar-foreground">Menu</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={toggleSidebar}
+          aria-label="Close sidebar"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      </SidebarHeader>
       <SidebarContent>
         <div className="px-3 py-4">
           {/* Organization Switcher */}
