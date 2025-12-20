@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -60,6 +60,278 @@ export default function Home() {
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+  
+  // AI-Assisted Ticket Creation animation states
+  const [ticketDemoState, setTicketDemoState] = useState<'typing' | 'generating' | 'complete'>('typing');
+  const [typedTitle, setTypedTitle] = useState('');
+  const [generatingProgress, setGeneratingProgress] = useState(0);
+
+  // Progress Tracking animation states
+  const [progressDemoState, setProgressDemoState] = useState<'initial' | 'generating-updates' | 'complete'>('initial');
+  const [visibleUpdates, setVisibleUpdates] = useState<Array<{id: number, type: 'update' | 'comment', user: string, message: string, time: string, task: string}>>([]);
+
+  // Group Chat animation states
+  const [chatDemoState, setChatDemoState] = useState<'initial' | 'chatting' | 'ai-helping' | 'complete'>('initial');
+  const [chatMessages, setChatMessages] = useState<Array<{id: number, sender: string, message: string, time: string, isAI: boolean, isSummary?: boolean}>>([]);
+  const [showThinking, setShowThinking] = useState(false);
+
+  // Document/Notes demo states
+  const [docDemoState, setDocDemoState] = useState<'initial' | 'adding-notes' | 'asking-ai' | 'ai-analyzing' | 'complete'>('initial');
+  const [availableNotes, setAvailableNotes] = useState<Array<{id: number, title: string, content: string}>>([
+    { id: 1, title: 'User Feedback - Week 1', content: 'Users want faster load times. Mobile app crashes on iOS 15. Request for dark mode.' },
+    { id: 2, title: 'User Feedback - Week 2', content: 'More crashes reported on iOS 15. Performance issues on Android. Dark mode highly requested.' },
+    { id: 3, title: 'User Feedback - Week 3', content: 'iOS 15 compatibility critical. Dark mode still top request. Performance complaints increasing.' },
+  ]);
+  const [notesInContext, setNotesInContext] = useState<Array<{id: number, title: string, content: string}>>([]);
+  const [userQuestion, setUserQuestion] = useState('');
+  const [aiResponse, setAiResponse] = useState<{patterns: string[], visible: boolean}>({patterns: [], visible: false});
+
+  // Animation sequence for AI-Assisted Ticket Creation demo
+  useEffect(() => {
+    let typingTimeout: NodeJS.Timeout;
+    let generatingInterval: NodeJS.Timeout;
+    
+    const fullTitle = "Implement user authentication flow";
+    
+    if (ticketDemoState === 'typing') {
+      // Simulate typing
+      let currentIndex = 0;
+      const typingInterval = setInterval(() => {
+        if (currentIndex < fullTitle.length) {
+          setTypedTitle(fullTitle.slice(0, currentIndex + 1));
+          currentIndex++;
+        } else {
+          clearInterval(typingInterval);
+          setTimeout(() => {
+            setTicketDemoState('generating');
+            setGeneratingProgress(0);
+          }, 1000);
+        }
+      }, 80);
+      
+      return () => clearInterval(typingInterval);
+    } else if (ticketDemoState === 'generating') {
+      // Simulate AI generation progress
+      generatingInterval = setInterval(() => {
+        setGeneratingProgress((prev) => {
+          if (prev >= 100) {
+            clearInterval(generatingInterval);
+            setTimeout(() => {
+              setTicketDemoState('complete');
+            }, 500);
+            return 100;
+          }
+          return prev + 2;
+        });
+      }, 50);
+      
+      return () => clearInterval(generatingInterval);
+    } else if (ticketDemoState === 'complete') {
+      // Reset after showing complete state for 5 seconds
+      typingTimeout = setTimeout(() => {
+        setTicketDemoState('typing');
+        setTypedTitle('');
+        setGeneratingProgress(0);
+      }, 5000);
+      
+      return () => clearTimeout(typingTimeout);
+    }
+  }, [ticketDemoState]);
+
+  // Animation sequence for Progress Tracking demo
+  useEffect(() => {
+    let resetTimeout: NodeJS.Timeout;
+
+    if (progressDemoState === 'initial') {
+      // Start with initial state, then move to generating updates
+      const timeout = setTimeout(() => {
+        setProgressDemoState('generating-updates');
+      }, 1000);
+      return () => clearTimeout(timeout);
+    } else if (progressDemoState === 'generating-updates') {
+      // Show progress updates being generated automatically
+      const updates = [
+        { id: 1, type: 'update' as const, user: 'John Doe', message: 'Completed the initial wireframes for the dashboard.', time: '2h ago', task: 'Design System' },
+        { id: 2, type: 'comment' as const, user: 'Alice Smith', message: 'Looks great! Can we add a dark mode toggle?', time: '1h ago', task: 'Design System' },
+        { id: 3, type: 'update' as const, user: 'John Doe', message: 'Started implementation of the authentication flow.', time: 'Just now', task: 'API Integration' },
+        { id: 4, type: 'update' as const, user: 'Alice Smith', message: 'Finished user interviews and compiled insights.', time: '30m ago', task: 'User Research' },
+      ];
+
+      // Show updates one by one with delays
+      updates.forEach((update, index) => {
+        setTimeout(() => {
+          setVisibleUpdates((prev) => [...prev, update]);
+          if (index === updates.length - 1) {
+            setTimeout(() => {
+              setProgressDemoState('complete');
+            }, 2000);
+          }
+        }, index * 1800);
+      });
+
+      return () => {};
+    } else if (progressDemoState === 'complete') {
+      // Reset after showing complete state for 6 seconds
+      resetTimeout = setTimeout(() => {
+        setProgressDemoState('initial');
+        setVisibleUpdates([]);
+      }, 6000);
+
+      return () => clearTimeout(resetTimeout);
+    }
+  }, [progressDemoState]);
+
+  // Animation sequence for Group Chat demo
+  useEffect(() => {
+    let resetTimeout: NodeJS.Timeout;
+
+    if (chatDemoState === 'initial') {
+      // Start with initial state, then move to chatting
+      const timeout = setTimeout(() => {
+        setChatDemoState('chatting');
+      }, 1000);
+      return () => clearTimeout(timeout);
+    } else if (chatDemoState === 'chatting') {
+      // Show team members chatting
+      const messages = [
+        { id: 1, sender: 'John Doe', message: 'Hey team, we need to decide on the Q3 marketing strategy. Any thoughts?', time: '10:15 AM', isAI: false },
+        { id: 2, sender: 'Alice Smith', message: 'I think we should focus more on social media this quarter. Our engagement has been great.', time: '10:16 AM', isAI: false },
+        { id: 3, sender: 'John Doe', message: 'Good point. What about email campaigns?', time: '10:17 AM', isAI: false },
+      ];
+
+      // Show messages one by one
+      messages.forEach((message, index) => {
+        setTimeout(() => {
+          setChatMessages((prev) => [...prev, message]);
+          if (index === messages.length - 1) {
+            setTimeout(() => {
+              setChatDemoState('ai-helping');
+            }, 2000);
+          }
+        }, index * 2000);
+      });
+
+      return () => {};
+    } else if (chatDemoState === 'ai-helping') {
+      // Show thinking indicator first
+      setShowThinking(true);
+      
+      // AI joins to help with summary and insights
+      const aiMessages = [
+        { id: 4, sender: 'Lean', message: 'Based on your discussion, I can help summarize the key points:', time: '10:18 AM', isAI: true },
+        { id: 5, sender: 'Lean', message: '• Social media focus for Q3\n• Email campaigns need discussion\n• Current engagement metrics are positive', time: '10:18 AM', isAI: true, isSummary: true },
+        { id: 6, sender: 'Lean', message: 'Would you like me to create a draft strategy document based on this conversation?', time: '10:18 AM', isAI: true },
+      ];
+
+      // Show AI messages after a brief delay
+      setTimeout(() => {
+        setShowThinking(false);
+        aiMessages.forEach((message, index) => {
+          setTimeout(() => {
+            setChatMessages((prev) => [...prev, message]);
+            if (index === aiMessages.length - 1) {
+              setTimeout(() => {
+                setChatDemoState('complete');
+              }, 2000);
+            }
+          }, index * 2000);
+        });
+      }, 1500);
+
+      return () => {};
+    } else if (chatDemoState === 'complete') {
+      // Reset after showing complete state for 6 seconds
+      resetTimeout = setTimeout(() => {
+        setChatDemoState('initial');
+        setChatMessages([]);
+        setShowThinking(false);
+      }, 6000);
+
+      return () => clearTimeout(resetTimeout);
+    }
+  }, [chatDemoState]);
+
+  // Animation sequence for Document/Notes demo
+  useEffect(() => {
+    let resetTimeout: NodeJS.Timeout;
+
+    if (docDemoState === 'initial') {
+      // Start with initial state, then move to adding notes
+      const timeout = setTimeout(() => {
+        setDocDemoState('adding-notes');
+      }, 1000);
+      return () => clearTimeout(timeout);
+    } else if (docDemoState === 'adding-notes') {
+      // Show notes being added to context one by one
+      availableNotes.forEach((note, index) => {
+        setTimeout(() => {
+          setNotesInContext((prev) => [...prev, note]);
+          if (index === availableNotes.length - 1) {
+            setTimeout(() => {
+              setDocDemoState('asking-ai');
+            }, 2000);
+          }
+        }, index * 2000);
+      });
+
+      return () => {};
+    } else if (docDemoState === 'asking-ai') {
+      // Show user typing question
+      const question = "What patterns do you see in these user feedback notes?";
+      let currentIndex = 0;
+      const typingInterval = setInterval(() => {
+        if (currentIndex < question.length) {
+          setUserQuestion(question.slice(0, currentIndex + 1));
+          currentIndex++;
+        } else {
+          clearInterval(typingInterval);
+          setTimeout(() => {
+            setDocDemoState('ai-analyzing');
+          }, 1500);
+        }
+      }, 50);
+
+      return () => clearInterval(typingInterval);
+    } else if (docDemoState === 'ai-analyzing') {
+      // AI analyzes and finds patterns
+      const patterns = [
+        'iOS 15 compatibility issues are consistently reported across all weeks',
+        'Dark mode is the most frequently requested feature',
+        'Performance concerns are increasing over time',
+        'Mobile app stability is a recurring theme'
+      ];
+
+      // Show patterns appearing one by one
+      setTimeout(() => {
+        setAiResponse({ patterns: [], visible: true });
+        patterns.forEach((pattern, index) => {
+          setTimeout(() => {
+            setAiResponse((prev) => ({
+              ...prev,
+              patterns: [...prev.patterns, pattern]
+            }));
+            if (index === patterns.length - 1) {
+              setTimeout(() => {
+                setDocDemoState('complete');
+              }, 2000);
+            }
+          }, index * 800);
+        });
+      }, 1000);
+
+      return () => {};
+    } else if (docDemoState === 'complete') {
+      // Reset after showing complete state for 6 seconds
+      resetTimeout = setTimeout(() => {
+        setDocDemoState('initial');
+        setNotesInContext([]);
+        setUserQuestion('');
+        setAiResponse({patterns: [], visible: false});
+      }, 6000);
+
+      return () => clearTimeout(resetTimeout);
+    }
+  }, [docDemoState]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -181,75 +453,115 @@ export default function Home() {
                 </p>
               </div>
               <Card className="order-1 w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card">
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <CardTitle className="text-xl">Tasks</CardTitle>
+                      <CardTitle className="text-xl">Create New Ticket</CardTitle>
                       <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground">
-                          2 / 5 completed
-                        </span>
+                        {ticketDemoState === 'generating' && (
+                          <span className="text-sm text-primary flex items-center gap-2">
+                            <Brain className="h-3 w-3 animate-pulse" />
+                            AI is generating...
+                          </span>
+                        )}
+                        {ticketDemoState === 'complete' && (
+                          <span className="text-sm text-green-600 flex items-center gap-2">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Ticket created!
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <div className="w-full bg-secondary rounded-full h-2 mt-2">
-                    <div 
-                      className="bg-primary h-2 rounded-full transition-all"
-                      style={{ width: '40%' }}
-                    />
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
-                    <div className="flex-shrink-0 pt-0.5">
-                      <Circle className="h-4 w-4 text-muted-foreground" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-sm">Design System</p>
+                <CardContent className="space-y-4">
+                  {/* Typing/Input State */}
+                  {(ticketDemoState === 'typing' || ticketDemoState === 'generating') && (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="ticket-title" className="text-sm font-medium">
+                          Ticket Title
+                        </Label>
+                        <div className="relative">
+                          <Input
+                            id="ticket-title"
+                            value={typedTitle}
+                            readOnly
+                            className="pr-8 bg-background"
+                            placeholder="Enter ticket title..."
+                          />
+                          {ticketDemoState === 'typing' && (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground animate-pulse">
+                              |
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                        <span>Assignee: John Doe</span>
-                        <span>Due: Tomorrow</span>
-                      </div>
+                      
+                      {ticketDemoState === 'generating' && (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">AI is generating ticket details...</span>
+                            <span className="text-primary font-medium">{generatingProgress}%</span>
+                          </div>
+                          <div className="w-full bg-secondary rounded-full h-2">
+                            <div 
+                              className="bg-primary h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${generatingProgress}%` }}
+                            />
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground mt-2">
+                            <Brain className="h-3 w-3 animate-pulse" />
+                            <span>Adding description, assignee, and due date...</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <Badge variant="outline" className="text-xs capitalize flex-shrink-0">
-                      In Progress
-                    </Badge>
-                  </div>
+                  )}
 
-                  <div className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border">
-                    <div className="flex-shrink-0 pt-0.5">
-                      <CheckCircle2 className="h-4 w-4 text-green-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-sm">User Research</p>
+                  {/* Complete State - Show Generated Ticket */}
+                  {ticketDemoState === 'complete' && (
+                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      <div className="flex items-start gap-3 p-4 rounded-lg bg-background border-2 border-primary/20 shadow-sm">
+                        <div className="flex-shrink-0 pt-0.5">
+                          <Circle className="h-4 w-4 text-primary" />
+                        </div>
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="font-semibold text-sm">Implement user authentication flow</p>
+                            <Badge variant="outline" className="text-xs capitalize flex-shrink-0 bg-primary/10 text-primary border-primary/20">
+                              New
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            Create a secure authentication system with email/password login, password reset functionality, 
+                            and session management. Include proper error handling and validation.
+                          </p>
+                          <div className="flex flex-wrap gap-3 text-xs pt-2 border-t border-border">
+                            <div className="flex items-center gap-1">
+                              <Users className="h-3 w-3 text-muted-foreground" />
+                              <span className="text-muted-foreground">Assignee:</span>
+                              <span className="font-medium">John Doe</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3 text-muted-foreground" />
+                              <span className="text-muted-foreground">Due:</span>
+                              <span className="font-medium">In 3 days</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 mt-2">
+                            <Badge variant="outline" className="text-[10px] px-2 h-5">Backend</Badge>
+                            <Badge variant="outline" className="text-[10px] px-2 h-5">Security</Badge>
+                            <Badge variant="outline" className="text-[10px] px-2 h-5">High Priority</Badge>
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                        <span>Assignee: Alice Smith</span>
-                        <span>Due: Yesterday</span>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground justify-center pt-2">
+                        <Brain className="h-3 w-3 text-primary" />
+                        <span>AI automatically generated all details from the title</span>
                       </div>
                     </div>
-                    <Badge variant="outline" className="text-xs capitalize flex-shrink-0">
-                      Completed
-                    </Badge>
-                  </div>
-
-                   <div className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border opacity-60">
-                    <div className="flex-shrink-0 pt-0.5">
-                      <Circle className="h-4 w-4 text-muted-foreground" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <p className="font-medium text-sm">API Integration</p>
-                      </div>
-                    </div>
-                    <Badge variant="outline" className="text-xs capitalize flex-shrink-0">
-                      Pending
-                    </Badge>
-                  </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -267,88 +579,172 @@ export default function Home() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Activity className="h-5 w-5 text-muted-foreground" />
-                      <CardTitle className="text-xl">Project Updates</CardTitle>
+                      <CardTitle className="text-xl">Tasks & Progress</CardTitle>
+                      {progressDemoState === 'generating-updates' && (
+                        <span className="text-xs text-primary flex items-center gap-1 ml-2">
+                          <Brain className="h-3 w-3 animate-pulse" />
+                          Auto-tracking
+                        </span>
+                      )}
                     </div>
                     <ChevronDown className="h-4 w-4 text-muted-foreground" />
                   </div>
                 </CardHeader>
-                <CardContent className="p-4 bg-background/50">
-                  <div className="space-y-4">
-                    {/* Activity 1: Update */}
-                    <div className="border-l-2 pl-4 pb-4 border-primary relative">
-                      <div className="flex items-start gap-3 mb-2">
-                        <Avatar className="h-8 w-8 border border-border">
-                          <AvatarFallback className="bg-indigo-100 text-indigo-600 text-xs">JD</AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <p className="font-medium text-sm">John Doe</p>
+                <CardContent className="p-0 bg-background/50">
+                  <ScrollArea className="h-[500px] p-4">
+                    <div className="space-y-4">
+                  {/* Task 1: Design System */}
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-3 p-2 rounded-lg bg-background border border-border">
+                      <Circle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm">Design System</p>
+                        <p className="text-xs text-muted-foreground">Assignee: John Doe</p>
+                      </div>
+                      <Badge variant="outline" className="text-xs">In Progress</Badge>
+                    </div>
+                    {/* Progress updates for Design System */}
+                    {visibleUpdates.filter(u => u.task === 'Design System').map((update) => (
+                      <div 
+                        key={update.id}
+                        className="ml-6 border-l-2 pl-3 pb-2 animate-in fade-in slide-in-from-left-4 duration-500 border-primary"
+                      >
+                        <div className="flex items-start gap-2 mb-1">
+                          <Avatar className="h-6 w-6 border border-border">
+                            <AvatarFallback className="bg-indigo-100 text-indigo-600 text-[10px]">JD</AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <p className="font-medium text-xs">John Doe</p>
                               <Badge 
-                                className="bg-green-500/10 text-green-700 border-green-500/20 text-[10px] px-1.5 h-5 flex items-center gap-1"
+                                className={`${
+                                  update.type === 'update'
+                                    ? 'bg-green-500/10 text-green-700 border-green-500/20'
+                                    : 'bg-blue-500/10 text-blue-700 border-blue-500/20'
+                                } text-[9px] px-1.5 h-4 flex items-center gap-1`}
                                 variant="outline"
                               >
-                                <Activity className="h-3 w-3" />
-                                <span>update</span>
+                                {update.type === 'update' ? (
+                                  <Activity className="h-2.5 w-2.5" />
+                                ) : (
+                                  <MessageSquare className="h-2.5 w-2.5" />
+                                )}
+                                <span>{update.type}</span>
                               </Badge>
+                              <span className="text-[10px] text-muted-foreground ml-auto">{update.time}</span>
                             </div>
-                            <span className="text-xs text-muted-foreground">2h ago</span>
+                            <p className="text-xs text-muted-foreground">{update.message}</p>
                           </div>
-                          <p className="text-sm text-muted-foreground">Completed the initial wireframes for the dashboard.</p>
                         </div>
                       </div>
-                    </div>
-
-                    {/* Activity 2: Comment */}
-                    <div className="border-l-2 pl-4 pb-4 border-muted-foreground/20 relative">
-                      <div className="flex items-start gap-3 mb-2">
-                        <Avatar className="h-8 w-8 border border-border">
-                          <AvatarFallback className="bg-emerald-100 text-emerald-600 text-xs">AS</AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <p className="font-medium text-sm">Alice Smith</p>
+                    ))}
+                    {visibleUpdates.filter(u => u.task === 'Design System' && u.user === 'Alice Smith').map((update) => (
+                      <div 
+                        key={update.id}
+                        className="ml-6 border-l-2 pl-3 pb-2 animate-in fade-in slide-in-from-left-4 duration-500 border-muted-foreground/20"
+                      >
+                        <div className="flex items-start gap-2 mb-1">
+                          <Avatar className="h-6 w-6 border border-border">
+                            <AvatarFallback className="bg-emerald-100 text-emerald-600 text-[10px]">AS</AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <p className="font-medium text-xs">Alice Smith</p>
                               <Badge 
-                                className="bg-blue-500/10 text-blue-700 border-blue-500/20 text-[10px] px-1.5 h-5 flex items-center gap-1"
+                                className="bg-blue-500/10 text-blue-700 border-blue-500/20 text-[9px] px-1.5 h-4 flex items-center gap-1"
                                 variant="outline"
                               >
-                                <MessageSquare className="h-3 w-3" />
+                                <MessageSquare className="h-2.5 w-2.5" />
                                 <span>comment</span>
                               </Badge>
+                              <span className="text-[10px] text-muted-foreground ml-auto">{update.time}</span>
                             </div>
-                            <span className="text-xs text-muted-foreground">1h ago</span>
+                            <p className="text-xs text-muted-foreground">{update.message}</p>
                           </div>
-                          <p className="text-sm text-muted-foreground">Looks great! Can we add a dark mode toggle to the settings page?</p>
                         </div>
                       </div>
-                    </div>
+                    ))}
+                  </div>
 
-                    {/* Activity 3: Update */}
-                    <div className="border-l-2 pl-4 pb-0 border-primary relative">
-                      <div className="flex items-start gap-3 mb-2">
-                        <Avatar className="h-8 w-8 border border-border">
-                          <AvatarFallback className="bg-indigo-100 text-indigo-600 text-xs">JD</AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <p className="font-medium text-sm">John Doe</p>
+                  {/* Task 2: User Research */}
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-3 p-2 rounded-lg bg-background border border-border">
+                      <Circle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm">User Research</p>
+                        <p className="text-xs text-muted-foreground">Assignee: Alice Smith</p>
+                      </div>
+                      <Badge variant="outline" className="text-xs">In Progress</Badge>
+                    </div>
+                    {/* Progress updates for User Research */}
+                    {visibleUpdates.filter(u => u.task === 'User Research').map((update) => (
+                      <div 
+                        key={update.id}
+                        className="ml-6 border-l-2 pl-3 pb-2 animate-in fade-in slide-in-from-left-4 duration-500 border-primary"
+                      >
+                        <div className="flex items-start gap-2 mb-1">
+                          <Avatar className="h-6 w-6 border border-border">
+                            <AvatarFallback className="bg-emerald-100 text-emerald-600 text-[10px]">AS</AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <p className="font-medium text-xs">Alice Smith</p>
                               <Badge 
-                                className="bg-green-500/10 text-green-700 border-green-500/20 text-[10px] px-1.5 h-5 flex items-center gap-1"
+                                className="bg-green-500/10 text-green-700 border-green-500/20 text-[9px] px-1.5 h-4 flex items-center gap-1"
                                 variant="outline"
                               >
-                                <Activity className="h-3 w-3" />
+                                <Activity className="h-2.5 w-2.5" />
                                 <span>update</span>
                               </Badge>
+                              <span className="text-[10px] text-muted-foreground ml-auto">{update.time}</span>
                             </div>
-                            <span className="text-xs text-muted-foreground">Just now</span>
+                            <p className="text-xs text-muted-foreground">{update.message}</p>
                           </div>
-                          <p className="text-sm text-muted-foreground">Started implementation of the authentication flow.</p>
                         </div>
                       </div>
-                    </div>
+                    ))}
                   </div>
+
+                  {/* Task 3: API Integration */}
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-3 p-2 rounded-lg bg-background border border-border">
+                      <Circle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm">API Integration</p>
+                        <p className="text-xs text-muted-foreground">Assignee: John Doe</p>
+                      </div>
+                      <Badge variant="outline" className="text-xs">In Progress</Badge>
+                    </div>
+                    {/* Progress updates for API Integration */}
+                    {visibleUpdates.filter(u => u.task === 'API Integration').map((update) => (
+                      <div 
+                        key={update.id}
+                        className="ml-6 border-l-2 pl-3 pb-2 animate-in fade-in slide-in-from-left-4 duration-500 border-primary"
+                      >
+                        <div className="flex items-start gap-2 mb-1">
+                          <Avatar className="h-6 w-6 border border-border">
+                            <AvatarFallback className="bg-indigo-100 text-indigo-600 text-[10px]">JD</AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <p className="font-medium text-xs">John Doe</p>
+                              <Badge 
+                                className="bg-green-500/10 text-green-700 border-green-500/20 text-[9px] px-1.5 h-4 flex items-center gap-1"
+                                variant="outline"
+                              >
+                                <Activity className="h-2.5 w-2.5" />
+                                <span>update</span>
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground ml-auto">{update.time}</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">{update.message}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                    </div>
+                  </ScrollArea>
                 </CardContent>
               </Card>
               <div className="order-1 lg:order-2">
@@ -390,53 +786,111 @@ export default function Home() {
               <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">
                 <div className="bg-background border-b p-4 flex items-center justify-between">
                   <div className="flex items-center space-x-3">
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage src="/logo.png" alt="lean" />
-                      <AvatarFallback>L</AvatarFallback>
-                    </Avatar>
+                    <div className="flex -space-x-2">
+                      <Avatar className="h-8 w-8 border-2 border-background">
+                        <AvatarFallback className="bg-indigo-100 text-indigo-600 text-xs">JD</AvatarFallback>
+                      </Avatar>
+                      <Avatar className="h-8 w-8 border-2 border-background">
+                        <AvatarFallback className="bg-emerald-100 text-emerald-600 text-xs">AS</AvatarFallback>
+                      </Avatar>
+                      <Avatar className="h-8 w-8 border-2 border-background">
+                        <AvatarImage src="/logo.png" alt="lean" />
+                        <AvatarFallback className="bg-primary/10 text-primary">L</AvatarFallback>
+                      </Avatar>
+                    </div>
                     <div>
-                      <h4 className="font-semibold text-sm">Lean</h4>
-                      <span className="text-xs text-muted-foreground">AI Project Manager</span>
+                      <h4 className="font-semibold text-sm">Team Chat</h4>
+                      <span className="text-xs text-muted-foreground">
+                        {chatDemoState === 'ai-helping' ? 'AI is helping...' : '3 members'}
+                      </span>
                     </div>
                   </div>
                 </div>
-                <ScrollArea className="h-[300px] bg-background p-4">
-                  <div className="space-y-6">
-                    {/* User Message */}
-                    <div className="flex gap-3 justify-end">
-                      <div className="flex flex-col items-end max-w-[80%]">
-                        <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words">
-                          <p className="text-sm font-medium">What's the status of the Q3 marketing campaign?</p>
-                        </div>
-                        <span className="text-xs text-muted-foreground mt-1">10:23 AM</span>
+                <ScrollArea className="h-[400px] bg-background p-4">
+                  <div className="space-y-4">
+                    {chatMessages.length === 0 && chatDemoState === 'initial' && (
+                      <div className="text-center py-8 text-sm text-muted-foreground">
+                        <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                        <p>Group conversation will appear here</p>
                       </div>
-                      <Avatar className="h-8 w-8">
-                        <AvatarFallback className="bg-indigo-100 text-indigo-600">JD</AvatarFallback>
-                      </Avatar>
-                    </div>
+                    )}
+                    
+                    {chatMessages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={`flex gap-3 animate-in fade-in slide-in-from-bottom-4 duration-500 ${
+                          msg.isAI ? 'justify-start' : msg.sender === 'John Doe' ? 'justify-end' : 'justify-start'
+                        }`}
+                      >
+                        {!msg.isAI && msg.sender === 'John Doe' && (
+                          <>
+                            <div className="flex flex-col items-end max-w-[75%]">
+                              <div className="rounded-lg px-4 py-2 bg-primary text-primary-foreground break-words">
+                                <p className="text-sm font-medium">{msg.message}</p>
+                              </div>
+                              <span className="text-xs text-muted-foreground mt-1">{msg.time}</span>
+                            </div>
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-indigo-100 text-indigo-600 text-xs">JD</AvatarFallback>
+                            </Avatar>
+                          </>
+                        )}
+                        
+                        {!msg.isAI && msg.sender === 'Alice Smith' && (
+                          <>
+                            <Avatar className="h-8 w-8 flex-shrink-0">
+                              <AvatarFallback className="bg-emerald-100 text-emerald-600 text-xs">AS</AvatarFallback>
+                            </Avatar>
+                            <div className="flex flex-col items-start max-w-[75%]">
+                              <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words">
+                                <p className="text-sm font-medium">{msg.message}</p>
+                              </div>
+                              <span className="text-xs text-muted-foreground mt-1">{msg.time}</span>
+                            </div>
+                          </>
+                        )}
 
-                    {/* Lean Message */}
-                    <div className="flex gap-3 justify-start">
-                      <Avatar className="h-8 w-8">
-                        <AvatarImage src="/logo.png" alt="lean" />
-                        <AvatarFallback>L</AvatarFallback>
-                      </Avatar>
-                      <div className="flex flex-col items-start max-w-[85%]">
-                        <div className="rounded-lg px-4 py-2 bg-muted border border-border break-words w-full">
-                          <p className="text-sm font-medium mb-2">Here is the current status for Q3 Marketing Campaign:</p>
-                          <div className="flex flex-wrap gap-2 mb-3">
-                             <Badge variant="outline" className="bg-background">
-                               Social Media: Completed
-                             </Badge>
-                             <Badge variant="outline" className="bg-background">
-                               Email Drip: In Review
-                             </Badge>
-                          </div>
-                          <p className="text-sm font-medium">Would you like me to draft an update for the team?</p>
-                        </div>
-                        <span className="text-xs text-muted-foreground mt-1">10:24 AM</span>
+                        {msg.isAI && (
+                          <>
+                            <Avatar className="h-8 w-8 flex-shrink-0 border-2 border-primary/20">
+                              <AvatarImage src="/logo.png" alt="lean" />
+                              <AvatarFallback className="bg-primary/10 text-primary">L</AvatarFallback>
+                            </Avatar>
+                            <div className="flex flex-col items-start max-w-[80%]">
+                              <div className={`rounded-lg px-4 py-2 break-words w-full ${
+                                msg.isSummary 
+                                  ? 'bg-primary/5 border-2 border-primary/20' 
+                                  : 'bg-muted border border-border'
+                              }`}>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <p className="text-xs font-semibold text-primary">Lean</p>
+                                  <Badge variant="outline" className="text-[9px] px-1.5 h-4 bg-primary/10 text-primary border-primary/20">
+                                    AI Assistant
+                                  </Badge>
+                                </div>
+                                <p className={`text-sm ${msg.isSummary ? 'font-medium whitespace-pre-line' : ''}`}>
+                                  {msg.message}
+                                </p>
+                              </div>
+                              <span className="text-xs text-muted-foreground mt-1">{msg.time}</span>
+                            </div>
+                          </>
+                        )}
                       </div>
-                    </div>
+                    ))}
+                    
+                    {showThinking && (
+                      <div className="flex gap-3 justify-start animate-in fade-in slide-in-from-bottom-4 duration-300">
+                        <Avatar className="h-8 w-8 flex-shrink-0 border-2 border-primary/20">
+                          <AvatarImage src="/logo.png" alt="lean" />
+                          <AvatarFallback className="bg-primary/10 text-primary">L</AvatarFallback>
+                        </Avatar>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Brain className="h-3 w-3 animate-pulse text-primary" />
+                          <span>Lean is thinking...</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </ScrollArea>
                 <div className="p-3 bg-background border-t flex items-center space-x-2">
@@ -555,64 +1009,153 @@ export default function Home() {
               <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">
                 <CardHeader className="pb-2 border-b bg-muted/30">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-xl">My Docs</CardTitle>
-                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
-                      <Plus className="h-4 w-4" />
-                    </Button>
+                    <CardTitle className="text-xl">Notes & AI Analysis</CardTitle>
+                    {docDemoState === 'adding-notes' && (
+                      <span className="text-xs text-primary flex items-center gap-1">
+                        <Plus className="h-3 w-3 animate-pulse" />
+                        Adding to context...
+                      </span>
+                    )}
+                    {docDemoState === 'ai-analyzing' && (
+                      <span className="text-xs text-primary flex items-center gap-1">
+                        <Brain className="h-3 w-3 animate-pulse" />
+                        Analyzing...
+                      </span>
+                    )}
                   </div>
                 </CardHeader>
-                <CardContent className="p-4 bg-background/50 space-y-3">
-                  {/* Doc 1: Pinned */}
-                  <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer">
-                    <div className="flex items-start gap-2 mb-2">
-                      <Pin className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-semibold text-sm mb-1">Q4 Planning Meeting</h4>
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          Discussed roadmap priorities, resource allocation, and key milestones for Q4...
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Planning</Badge>
-                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Q4</Badge>
-                      <span className="text-[10px] text-muted-foreground ml-auto">2 days ago</span>
-                    </div>
-                  </div>
+                <CardContent className="p-4 bg-background/50">
+                  <ScrollArea className="h-[450px]">
+                    <div className="space-y-4">
+                      {/* Available Notes Section */}
+                      {docDemoState === 'adding-notes' && availableNotes.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 mb-2">
+                            <FileText className="h-4 w-4 text-muted-foreground" />
+                            <h4 className="text-sm font-semibold">Available Notes</h4>
+                            <Badge variant="outline" className="text-[10px] px-1.5 h-5">
+                              {availableNotes.length}
+                            </Badge>
+                          </div>
+                          {availableNotes.map((note) => {
+                            const isInContext = notesInContext.some(n => n.id === note.id);
+                            return (
+                              <div
+                                key={note.id}
+                                className={`p-3 rounded-lg border transition-all duration-500 ${
+                                  isInContext 
+                                    ? 'bg-primary/5 border-primary/30 opacity-50' 
+                                    : 'bg-background border-border'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <FileText className={`h-4 w-4 flex-shrink-0 ${
+                                    isInContext ? 'text-primary' : 'text-muted-foreground'
+                                  }`} />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <h5 className="font-semibold text-xs">{note.title}</h5>
+                                      {isInContext && (
+                                        <CheckCircle2 className="h-3 w-3 text-primary flex-shrink-0" />
+                                      )}
+                                    </div>
+                                    {!isInContext && (
+                                      <p className="text-xs text-muted-foreground line-clamp-1 mt-1">{note.content}</p>
+                                    )}
+                                    {isInContext && (
+                                      <div className="flex items-center gap-1 mt-1">
+                                        <ArrowRight className="h-3 w-3 text-primary" />
+                                        <span className="text-[10px] text-primary">Added to context</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
 
-                  {/* Doc 2 */}
-                  <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer">
-                    <div className="flex items-start gap-2 mb-2">
-                      <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-semibold text-sm mb-1">API Integration Ideas</h4>
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          Research docs on potential third-party integrations for the platform...
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Research</Badge>
-                      <span className="text-[10px] text-muted-foreground ml-auto">1 week ago</span>
-                    </div>
-                  </div>
+                      {/* Notes in Context Section */}
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 mb-2">
+                          <FileText className="h-4 w-4 text-primary" />
+                          <h4 className="text-sm font-semibold">Notes in Context</h4>
+                          {notesInContext.length > 0 && (
+                            <Badge variant="outline" className="text-[10px] px-1.5 h-5 bg-primary/10 text-primary border-primary/20">
+                              {notesInContext.length}
+                            </Badge>
+                          )}
+                        </div>
+                        
+                        {notesInContext.length === 0 && docDemoState === 'initial' && (
+                          <div className="text-center py-4 text-xs text-muted-foreground">
+                            <FileText className="h-6 w-6 mx-auto mb-2 opacity-50" />
+                            <p>Add notes to context to analyze patterns</p>
+                          </div>
+                        )}
 
-                  {/* Doc 3 */}
-                  <div className="p-3 rounded-lg bg-background border border-border hover:border-primary/50 transition-colors cursor-pointer opacity-60">
-                    <div className="flex items-start gap-2 mb-2">
-                      <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-semibold text-sm mb-1">Design System Updates</h4>
-                        <p className="text-xs text-muted-foreground line-clamp-2">
-                          Docs on component library improvements and accessibility enhancements...
-                        </p>
+                        {notesInContext.map((note) => (
+                          <div
+                            key={note.id}
+                            className="p-3 rounded-lg bg-primary/5 border-2 border-primary/20 animate-in fade-in slide-in-from-left-4 duration-500"
+                          >
+                            <h5 className="font-semibold text-xs mb-1">{note.title}</h5>
+                            <p className="text-xs text-muted-foreground line-clamp-2">{note.content}</p>
+                          </div>
+                        ))}
                       </div>
+
+                      {/* User Question Section */}
+                      {(docDemoState === 'asking-ai' || docDemoState === 'ai-analyzing' || docDemoState === 'complete') && (
+                        <div className="space-y-2 pt-4 border-t border-border">
+                          <div className="flex items-center gap-2 mb-2">
+                            <MessageSquare className="h-4 w-4 text-primary" />
+                            <h4 className="text-sm font-semibold">Your Question</h4>
+                          </div>
+                          <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
+                            <p className="text-sm">
+                              {userQuestion}
+                              {docDemoState === 'asking-ai' && (
+                                <span className="animate-pulse">|</span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* AI Response Section */}
+                      {aiResponse.visible && (
+                        <div className="space-y-2 pt-4 border-t border-border">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Brain className="h-4 w-4 text-primary" />
+                            <h4 className="text-sm font-semibold">AI Pattern Analysis</h4>
+                            <Badge variant="outline" className="text-[9px] px-1.5 h-4 bg-primary/10 text-primary border-primary/20">
+                              AI
+                            </Badge>
+                          </div>
+                          <div className="p-3 rounded-lg bg-primary/5 border-2 border-primary/20 space-y-2">
+                            {aiResponse.patterns.length === 0 && (
+                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                <Brain className="h-3 w-3 animate-pulse text-primary" />
+                                <span>Analyzing patterns...</span>
+                              </div>
+                            )}
+                            {aiResponse.patterns.map((pattern, index) => (
+                              <div
+                                key={index}
+                                className="flex items-start gap-2 text-xs animate-in fade-in slide-in-from-left-4 duration-500"
+                                style={{ animationDelay: `${index * 0.1}s` }}
+                              >
+                                <div className="h-1.5 w-1.5 rounded-full bg-primary mt-1.5 flex-shrink-0" />
+                                <span className="text-muted-foreground">{pattern}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <Badge variant="outline" className="text-[10px] px-1.5 h-5">Design</Badge>
-                      <span className="text-[10px] text-muted-foreground ml-auto">2 weeks ago</span>
-                    </div>
-                  </div>
+                  </ScrollArea>
                 </CardContent>
               </Card>
             </div>
