@@ -388,7 +388,7 @@ export default function Tasks() {
               <div className="flex flex-col sm:flex-row gap-3">
                 {/* Main Task Card */}
                 <Card 
-                  className="relative flex-1 bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer group-hover:border-primary/30"
+                  className="relative flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
                   onClick={() => handleTaskClick(task.id)}
                 >
                 {/* Mobile-only hover popover for progress update */}
@@ -745,7 +745,7 @@ export default function Tasks() {
                     <div className="w-0.5 h-full min-h-[100px] bg-border group-hover:bg-primary/50 transition-colors rounded-full" />
                   </div>
                   <Card 
-                    className="flex-1 bg-gradient-card border-border shadow-card group-hover:border-primary/30 transition-all"
+                    className="flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <CardHeader className="pb-3">
