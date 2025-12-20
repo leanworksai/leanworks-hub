@@ -21,7 +21,7 @@ import { Plus, Users, Calendar, Trash2, Sparkles, Share2, Edit, X } from "lucide
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { useNavigate } from "react-router-dom";
 import { useUserProjects, useDeleteProject, useUpdateProject } from "@/hooks/useProjects";
-import { useUpdateSummaries } from "@/hooks/useUpdateSummaries";
+import { ProjectUpdateSummaryCard } from "@/components/ProjectUpdateSummary";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { useToast } from "@/hooks/use-toast";
@@ -42,7 +42,6 @@ export default function Projects() {
   const { formatDateForDisplay } = useDateSelection();
   const { toggleProject, isProjectSelected, selectedProjects } = useSelectedProjects();
   const { data: projects = [], isLoading } = useUserProjects();
-  const { data: updateSummaries = {}, isLoading: isLoadingSummaries } = useUpdateSummaries();
   const deleteProject = useDeleteProject();
   const updateProject = useUpdateProject();
   const { toast } = useToast();
@@ -86,7 +85,7 @@ export default function Projects() {
     }
   };
 
-  if (isLoading || isLoadingSummaries) {
+  if (isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
         <div className="text-center py-12">
@@ -116,9 +115,6 @@ export default function Projects() {
 
       <div className="space-y-3">
         {projects.map((project) => {
-          const hasUpdateSummary = updateSummaries[project.id]?.updateSummary;
-          const updateSummary = updateSummaries[project.id];
-
           return (
             <div key={project.id} className="group">
               {/* Mobile: Single card, Desktop: Side-by-side cards */}
@@ -129,58 +125,7 @@ export default function Projects() {
                   onClick={() => handleCardClick(project.id)}
                 >
                   {/* Mobile-only hover popover for progress update */}
-                  {hasUpdateSummary && (
-                    <div className="absolute top-2 left-2 z-10 sm:hidden">
-                      <Popover open={hoveredProject === project.id} onOpenChange={(open) => setHoveredProject(open ? project.id : null)}>
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                            onClick={(e) => e.stopPropagation()}
-                            onMouseEnter={() => setHoveredProject(project.id)}
-                            onMouseLeave={() => setHoveredProject(null)}
-                            title="AI Progress Summary"
-                          >
-                            <Sparkles className="h-4 w-4" />
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent 
-                          className="w-[calc(100vw-2rem)] max-w-sm max-h-[500px] overflow-y-auto" 
-                          onClick={(e) => e.stopPropagation()}
-                          onMouseEnter={() => setHoveredProject(project.id)}
-                          onMouseLeave={() => setHoveredProject(null)}
-                          align="start"
-                        >
-                          <div className="space-y-4">
-                            {/* Progress Summary */}
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between">
-                                <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
-                                {updateSummary?.dateId && (
-                                  <p className="text-xs text-muted-foreground/60">
-                                    {updateSummary.dateId}
-                                  </p>
-                                )}
-                              </div>
-                              <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
-                                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                                  {updateSummary.updateSummary}
-                                </p>
-                                {isFreePlan && (
-                                  <div className="absolute inset-0 flex items-center justify-center">
-                                    <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                      Upgrade to view progress summary
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-                    </div>
-                  )}
+                  <ProjectUpdateSummaryCard projectId={project.id} />
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-3 flex-1 min-w-0">
@@ -247,43 +192,7 @@ export default function Projects() {
                 </Card>
 
                 {/* Latest Progress Update Card - Desktop only */}
-                {hasUpdateSummary && (
-                  <div className="hidden sm:flex items-center gap-3 flex-1">
-                    {/* Visual Connector Line */}
-                    <div className="flex items-center justify-center w-4 flex-shrink-0">
-                      <div className="w-0.5 h-full min-h-[100px] bg-border group-hover:bg-primary/50 transition-colors rounded-full" />
-                    </div>
-                    <Card 
-                      className="flex-1 bg-gradient-card border-border shadow-card group-hover:border-primary/30 transition-all"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <CardHeader className="pb-3">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
-                            {updateSummary?.dateId && (
-                              <p className="text-xs text-muted-foreground/60">
-                                {updateSummary.dateId}
-                              </p>
-                            )}
-                          </div>
-                          <div className={cn("relative max-h-[80px] overflow-y-auto", isFreePlan && "blur-sm pointer-events-none")}>
-                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                              {updateSummary.updateSummary}
-                            </p>
-                            {isFreePlan && (
-                              <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                  Upgrade to view progress summary
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </CardHeader>
-                    </Card>
-                  </div>
-                )}
+                <ProjectUpdateSummaryCard projectId={project.id} desktopOnly />
               </div>
             </div>
           );

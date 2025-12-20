@@ -1240,6 +1240,7 @@ export interface UpdateSummary {
   projectId: string;
   dateId: string;
   updateSummary: string;
+  generatedAt?: string;
 }
 
 export const updateSummariesService = {
@@ -1257,6 +1258,16 @@ export const updateSummariesService = {
     const response = await authenticatedFetch(url);
     if (response.status === 404) return null;
     if (!response.ok) throw new Error('Failed to fetch update summary');
+    return response.json();
+  },
+
+  async getAllByProjectId(projectId: string): Promise<UpdateSummary[]> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/update-summaries?projectId=${encodeURIComponent(projectId)}&all=true` 
+      : `${API_BASE}/update-summaries?projectId=${encodeURIComponent(projectId)}&all=true`;
+    const response = await authenticatedFetch(url);
+    if (response.status === 404) return [];
+    if (!response.ok) throw new Error('Failed to fetch update summaries');
     return response.json();
   },
 };

@@ -27,3 +27,15 @@ export const useUpdateSummary = (projectId: string) => {
   });
 };
 
+export const useAllUpdateSummaries = (projectId: string) => {
+  const { user, loading } = useAuth();
+  const { currentOrg, loading: orgLoading } = useOrg();
+  
+  return useQuery({
+    queryKey: ['allUpdateSummaries', projectId, currentOrg?.id],
+    queryFn: () => updateSummariesService.getAllByProjectId(projectId),
+    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId,
+    staleTime: 1000 * 60 * 5,
+  });
+};
+

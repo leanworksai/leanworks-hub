@@ -5750,6 +5750,7 @@ app.get('/api/update-summaries', authenticateUser, requireOrgMembership, async (
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const projectId = req.query.projectId as string | undefined;
+    const all = req.query.all === 'true'; // If all=true, return all summaries for the project
     const pool = await getOrgPool(orgId);
     
     let query = `
@@ -5770,6 +5771,18 @@ app.get('/api/update-summaries', authenticateUser, requireOrgMembership, async (
     query += ` ORDER BY us.date_id DESC, us.project_id`;
     
     const result = await pool.query(query, params);
+    
+    // If projectId was specified and all=true, return array of all summaries
+    if (projectId && all) {
+      const summaries = result.rows.map(row => ({
+        projectId: row.project_id,
+        dateId: row.date_id ? new Date(row.date_id).toISOString().split('T')[0] : '',
+        updateSummary: row.update_summary || '',
+        generatedAt: row.generated_at ? new Date(row.generated_at).toISOString() : null
+      }));
+      res.json(summaries);
+      return;
+    }
     
     // Transform to the format expected by frontend
     // Frontend expects: Record<string, { dateId: string; updateSummary: string }>

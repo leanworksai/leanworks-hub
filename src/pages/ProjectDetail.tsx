@@ -15,7 +15,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2 } from "lucide-react";
+import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2, Sparkles } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember, useUpdateProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
 import { projectsService } from "@/services/api";
@@ -30,6 +30,7 @@ import { TaskTooltip } from "@/components/TaskTooltip";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
+import { useAllUpdateSummaries } from "@/hooks/useUpdateSummaries";
 import {
   Dialog,
   DialogContent,
@@ -114,6 +115,7 @@ export default function ProjectDetail() {
   const { user } = useAuth();
   const { data: users = [] } = useUsers();
   const userTimezone = useUserTimezone();
+  const { data: allSummaries = [] } = useAllUpdateSummaries(projectId || '');
   
   const isLoading = isLoadingProject;
   
@@ -355,7 +357,7 @@ export default function ProjectDetail() {
     }
   };
 
-  // Combine and sort activities (updates and comments) by date
+  // Combine and sort activities (updates, comments, and summaries) by date
   const getActivities = () => {
     if (!project) return [];
     
@@ -375,6 +377,15 @@ export default function ProjectDetail() {
         memberAvatar: comment.memberAvatar,
         date: comment.date,
         content: comment.comment,
+      })),
+      ...allSummaries.map((summary, index) => ({
+        id: `summary-${summary.projectId}-${summary.dateId}-${index}`,
+        type: "summary" as const,
+        memberName: "AI Assistant",
+        memberAvatar: "AI",
+        date: summary.generatedAt || summary.dateId,
+        content: summary.updateSummary,
+        dateId: summary.dateId,
       })),
     ];
     
@@ -672,6 +683,8 @@ export default function ProjectDetail() {
                         className={`border-l-2 pl-4 pb-4 last:pb-0 ${
                           activity.type === "update" 
                             ? "border-primary" 
+                            : activity.type === "summary"
+                            ? "border-purple-500/50"
                             : "border-muted-foreground/20"
                         }`}
                       >
@@ -703,6 +716,15 @@ export default function ProjectDetail() {
                                     <span>update</span>
                                   </Badge>
                                 )}
+                                {activity.type === "summary" && (
+                                  <Badge 
+                                    className="bg-purple-500/10 text-purple-700  border-purple-500/20 text-xs flex items-center gap-1"
+                                    variant="outline"
+                                  >
+                                    <Sparkles className="h-3 w-3" />
+                                    <span>AI summary</span>
+                                  </Badge>
+                                )}
                               </div>
                               <span className="text-xs text-muted-foreground">
                                 {typeof activity.date === 'string' 
@@ -710,7 +732,16 @@ export default function ProjectDetail() {
                                   : formatDate(activity.date)}
                               </span>
                             </div>
-                            <p className="text-sm text-muted-foreground">{activity.content}</p>
+                            <div className={cn("relative", isFreePlan && activity.type === "summary" && "blur-sm pointer-events-none")}>
+                              <p className="text-sm text-muted-foreground whitespace-pre-wrap">{activity.content}</p>
+                              {isFreePlan && activity.type === "summary" && (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                  <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                                    Upgrade to view AI summary
+                                  </span>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
