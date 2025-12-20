@@ -29,6 +29,8 @@ import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ContextBadges } from "@/components/ContextBadges";
+import { Badge } from "@/components/ui/badge";
+import { trackSidebarNavigation, trackOrgSwitch, trackAIChat, trackContextSelect } from "@/lib/analytics";
 
 const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
@@ -46,9 +48,12 @@ export function AppSidebar() {
   const { selectedDocs, toggleDoc } = useSelectedDocs();
   
   // Close mobile sidebar when a navigation item is clicked
-  const handleNavClick = () => {
+  const handleNavClick = (itemName?: string, url?: string) => {
     if (isMobile) {
       setOpenMobile(false);
+    }
+    if (itemName && url) {
+      trackSidebarNavigation(itemName, url);
     }
   };
 
@@ -106,7 +111,10 @@ export function AppSidebar() {
                 {organizations.map(org => (
                   <DropdownMenuItem 
                     key={org.id}
-                    onClick={() => switchOrg(org.id)}
+                    onClick={() => {
+                      switchOrg(org.id);
+                      trackOrgSwitch(org.id, org.name, org.type || 'personal');
+                    }}
                     className={`flex items-center justify-between gap-2 py-2.5 px-3 cursor-pointer ${
                       currentOrg?.id === org.id 
                         ? 'bg-primary/10 border-l-2 border-primary' 
@@ -170,7 +178,7 @@ export function AppSidebar() {
                   <SidebarMenuButton asChild>
                     <NavLink
                       to={item.url}
-                      onClick={handleNavClick}
+                      onClick={() => handleNavClick(item.title, item.url)}
                       className={({ isActive }) =>
                         isActive
                           ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -203,6 +211,8 @@ export function AppSidebar() {
                 if (isMobile) {
                   setOpenMobile(false);
                 }
+                // Track AI chat open from sidebar
+                trackAIChat('open', { source: 'sidebar_context' });
                 // Dispatch custom event to open chat with AI assistant
                 window.dispatchEvent(new CustomEvent('openChatWithAI'));
               }}

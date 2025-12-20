@@ -14,6 +14,7 @@ import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase-client';
 import { getCurrentOrgSlug } from '@/services/api';
+import { trackVoiceCall } from '@/lib/analytics';
 
 interface VoiceCallButtonProps {
   chatId: string;
@@ -580,6 +581,13 @@ export function VoiceCallButton({
       isCreatingCallRef.current = false; // Call creation is complete
       setPendingCallData(null); // Clear pending call data
       console.log('Call setup complete', { callId, roomName, isCalling: true });
+      
+      // Track call initiation
+      trackVoiceCall('initiate', isGroupCall ? 'group' : 'direct', {
+        call_id: callId,
+        chat_id: chatId,
+        has_recording: enableRecording,
+      });
       } catch (livekitError) {
         // If LiveKit connection fails, mark call as ended in Firestore
         console.error('❌ VoiceCall: LiveKit connection failed:', livekitError);
@@ -680,6 +688,11 @@ export function VoiceCallButton({
       setIsCalling(false);
       processedAnswerRef.current = null; // Reset processed answer tracking
       setCallSignal(null); // Clear call signal state
+      
+      // Track call end
+      trackVoiceCall('end', isGroupCall ? 'group' : 'direct', {
+        call_id: callIdToUse,
+      });
       
       console.log('Call ended/left successfully');
     } catch (err) {
@@ -995,6 +1008,12 @@ export function IncomingCallDialog({
         callId: callSignal.callId,
       });
       
+      // Track call answer
+      trackVoiceCall('answer', 'direct', {
+        call_id: callSignal.callId,
+        chat_id: callSignal.chatId,
+      });
+      
       // Update call status to 'active' if it's still 'ringing' (caller may have already updated it)
       if (callSignal.callId && db) {
         try {
@@ -1106,6 +1125,8 @@ export function IncomingCallDialog({
   };
 
   const handleReject = async () => {
+    const callIdToTrack = callIdRef.current || callSignal?.callId;
+    
     if (callIdRef.current) {
       try {
         await callSignalingService.endCall(callIdRef.current);
@@ -1120,6 +1141,13 @@ export function IncomingCallDialog({
       } catch (err) {
         console.error('Error ending call on reject:', err);
       }
+    }
+    
+    // Track call rejection
+    if (callIdToTrack) {
+      trackVoiceCall('reject', 'direct', {
+        call_id: callIdToTrack,
+      });
     }
     
     endCall();

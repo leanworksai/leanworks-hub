@@ -6,6 +6,7 @@ import { Task } from "@/data/tasksData";
 import { Team } from "@/data/teamsData";
 import { Doc } from "@/data/docsData";
 import { cn } from "@/lib/utils";
+import { trackContextSelect } from "@/lib/analytics";
 
 export interface ContextBadgeItem {
   id: string;
@@ -70,7 +71,10 @@ export function ContextBadges({
                       variant="ghost"
                       size="icon"
                       className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={() => onRemoveProject(project)}
+                      onClick={() => {
+                        trackContextSelect('project', project.id, 'deselect');
+                        onRemoveProject(project);
+                      }}
                     >
                       <X className="h-3 w-3" />
                     </Button>
@@ -100,7 +104,10 @@ export function ContextBadges({
                       variant="ghost"
                       size="icon"
                       className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={() => onRemoveTask(task)}
+                      onClick={() => {
+                        trackContextSelect('task', task.id, 'deselect');
+                        onRemoveTask(task);
+                      }}
                     >
                       <X className="h-3 w-3" />
                     </Button>
@@ -130,7 +137,10 @@ export function ContextBadges({
                       variant="ghost"
                       size="icon"
                       className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={() => onRemoveTeam(team)}
+                      onClick={() => {
+                        trackContextSelect('team', team.id || team.name, 'deselect');
+                        onRemoveTeam(team);
+                      }}
                     >
                       <X className="h-3 w-3" />
                     </Button>
@@ -160,7 +170,10 @@ export function ContextBadges({
                       variant="ghost"
                       size="icon"
                       className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={() => onRemoveDoc(doc)}
+                      onClick={() => {
+                        trackContextSelect('doc', doc.id, 'deselect');
+                        onRemoveDoc(doc);
+                      }}
                     >
                       <X className="h-3 w-3" />
                     </Button>

@@ -205,3 +205,118 @@ export function trackView(itemType: string, itemId?: string): void {
   });
 }
 
+/**
+ * Track sidebar navigation
+ */
+export function trackSidebarNavigation(itemName: string, url: string): void {
+  trackEvent('sidebar_navigation', {
+    item_name: itemName,
+    url: url,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track organization switch
+ */
+export function trackOrgSwitch(orgId: string, orgName: string, orgType: string): void {
+  trackEvent('org_switch', {
+    org_id: orgId,
+    org_name: orgName,
+    org_type: orgType,
+  });
+}
+
+/**
+ * Track context selection (projects, tasks, teams, docs)
+ */
+export function trackContextSelect(contextType: 'project' | 'task' | 'team' | 'doc', itemId: string, action: 'select' | 'deselect'): void {
+  trackEvent('context_select', {
+    context_type: contextType,
+    item_id: itemId,
+    action: action,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track AI chat interactions
+ */
+export function trackAIChat(action: 'open' | 'close' | 'send_message' | 'like_message' | 'use_context', additionalParams?: {
+  [key: string]: string | number | boolean | null | undefined;
+}): void {
+  trackEvent('ai_chat', {
+    action: action,
+    ...additionalParams,
+  });
+}
+
+/**
+ * Track voice call interactions
+ */
+export function trackVoiceCall(action: 'initiate' | 'answer' | 'end' | 'mute' | 'unmute' | 'reject', callType: 'direct' | 'group', additionalParams?: {
+  [key: string]: string | number | boolean | null | undefined;
+}): void {
+  trackEvent('voice_call', {
+    action: action,
+    call_type: callType,
+    ...additionalParams,
+  });
+}
+
+/**
+ * Track integration actions
+ */
+export function trackIntegration(action: 'connect' | 'disconnect' | 'configure', integrationName: string, success: boolean = true): void {
+  trackEvent('integration', {
+    action: action,
+    integration_name: integrationName,
+    success: success,
+  });
+}
+
+/**
+ * Track file/image uploads
+ */
+export function trackUpload(fileType: 'image' | 'document' | 'other', location?: string, success: boolean = true): void {
+  trackEvent('upload', {
+    file_type: fileType,
+    success: success,
+    location: location || window.location.pathname,
+  });
+}
+
+/**
+ * Track selection mode
+ */
+export function trackSelectionMode(action: 'enable' | 'disable', mode: 'single' | 'multiple'): void {
+  trackEvent('selection_mode', {
+    action: action,
+    mode: mode,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track filter/search interactions
+ */
+export function trackFilter(filterType: string, filterValue: string | number | boolean, location?: string): void {
+  trackEvent('filter', {
+    filter_type: filterType,
+    filter_value: String(filterValue),
+    location: location || window.location.pathname,
+  });
+}
+
+/**
+ * Track share actions
+ */
+export function trackShare(itemType: string, itemId: string, shareType: 'link' | 'email' | 'team', location?: string): void {
+  trackEvent('share', {
+    item_type: itemType,
+    item_id: itemId,
+    share_type: shareType,
+    location: location || window.location.pathname,
+  });
+}
+

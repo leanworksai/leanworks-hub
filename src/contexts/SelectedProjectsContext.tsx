@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 import { Project } from "@/data/projectsData";
+import { trackContextSelect } from "@/lib/analytics";
 
 interface SelectedProjectsContextType {
   selectedProjects: Project[];
@@ -17,8 +18,10 @@ export function SelectedProjectsProvider({ children }: { children: ReactNode }) 
     setSelectedProjects((prev) => {
       const isSelected = prev.some((p) => p.id === project.id);
       if (isSelected) {
+        trackContextSelect('project', project.id, 'deselect');
         return prev.filter((p) => p.id !== project.id);
       } else {
+        trackContextSelect('project', project.id, 'select');
         return [...prev, project];
       }
     });

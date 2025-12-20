@@ -55,6 +55,7 @@ import {
   isAIAssistantChatId 
 } from "@/hooks/useChatId";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { trackAIChat, trackVoiceCall } from "@/lib/analytics";
 
 interface Message {
   id: string;
@@ -439,7 +440,15 @@ export function Chatbot() {
   
   // Use active call's mute state if available, otherwise use local
   const isMuted = activeCallToggleMute ? activeCallMuted : localIsMuted;
-  const toggleMute = activeCallToggleMute || localToggleMute;
+  const toggleMute = useCallback(() => {
+    const muteFunction = activeCallToggleMute || localToggleMute;
+    const currentMuted = activeCallToggleMute ? activeCallMuted : localIsMuted;
+    muteFunction();
+    // Track mute/unmute action
+    trackVoiceCall(currentMuted ? 'unmute' : 'mute', 'direct', {
+      call_id: currentCallId || undefined,
+    });
+  }, [activeCallToggleMute, localToggleMute, activeCallMuted, localIsMuted, currentCallId]);
   
   // Use callStatus from WebRTC hook if active, otherwise use status from signaling service
   // If both are idle/ended, show idle
@@ -3735,6 +3744,16 @@ export function Chatbot() {
         }
         
         setIsSendingMessage(false);
+        
+        // Track message sent (especially for AI assistant)
+        if (selectedMember === "ai-assistant") {
+          trackAIChat('send_message', {
+            chat_id: chatId,
+            has_images: imageUrls.length > 0,
+            has_cited_context: !!citedContext,
+            message_length: messageContent.length,
+          });
+        }
 
         // Check if lean is mentioned and generate AI response (skip for free tier)
         if (isLeanMentioned(messageContent) && !isFreePlan) {
@@ -4407,6 +4426,7 @@ export function Chatbot() {
       setIsOpen(true);
       setSelectedMember("ai-assistant");
       setMemberSearchQuery("");
+      trackAIChat('open', { source: 'sidebar_button' });
       if (isMobile) {
         setShowMobileConversation(true);
         setIsMobileSidebarOpen(false);
@@ -4427,7 +4447,13 @@ export function Chatbot() {
       <div className="fixed bottom-6 left-0 right-0 flex justify-center z-50 pointer-events-none">
         <button
           onClick={() => {
+            const wasOpen = isOpen;
             setIsOpen(!isOpen);
+            if (!wasOpen) {
+              trackAIChat('open', { source: 'floating_button' });
+            } else {
+              trackAIChat('close', { source: 'floating_button' });
+            }
             // When opening on mobile, show contact list first
             if (!isOpen) {
               if (isMobile) {
@@ -4510,6 +4536,7 @@ export function Chatbot() {
                     }
                   }
                   setIsOpen(false);
+                  trackAIChat('close', { source: 'close_button' });
                   // Reset mobile state when closing
                   if (isMobile) {
                     setShowMobileConversation(false);

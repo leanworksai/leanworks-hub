@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 import { Doc } from "@/data/docsData";
+import { trackContextSelect } from "@/lib/analytics";
 
 interface SelectedDocsContextType {
   selectedDocs: Doc[];
@@ -17,8 +18,10 @@ export function SelectedDocsProvider({ children }: { children: ReactNode }) {
     setSelectedDocs((prev) => {
       const isSelected = prev.some((d) => d.id === doc.id);
       if (isSelected) {
+        trackContextSelect('doc', doc.id, 'deselect');
         return prev.filter((d) => d.id !== doc.id);
       } else {
+        trackContextSelect('doc', doc.id, 'select');
         return [...prev, doc];
       }
     });

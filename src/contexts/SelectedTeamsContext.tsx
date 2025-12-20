@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 import { Team } from "@/data/teamsData";
+import { trackContextSelect } from "@/lib/analytics";
 
 interface SelectedTeamsContextType {
   selectedTeams: Team[];
@@ -17,8 +18,10 @@ export function SelectedTeamsProvider({ children }: { children: ReactNode }) {
     setSelectedTeams((prev) => {
       const isSelected = prev.some((t) => t.name === team.name);
       if (isSelected) {
+        trackContextSelect('team', team.id || team.name, 'deselect');
         return prev.filter((t) => t.name !== team.name);
       } else {
+        trackContextSelect('team', team.id || team.name, 'select');
         return [...prev, team];
       }
     });

@@ -54,26 +54,53 @@ const AppRoutesContent = () => {
 
   // Helper function to get page name from path
   const getPageName = (pathname: string): string => {
-    if (pathname === '/') return 'Home';
-    if (pathname === '/team') return 'Team';
+    // Authentication pages
     if (pathname === '/login') return 'Login';
     if (pathname === '/signup') return 'Signup';
     if (pathname === '/verify-email') return 'Verify Email';
-    if (pathname.startsWith('/projects/')) return 'Project Detail';
+    
+    // Main pages
+    if (pathname === '/') return 'Home';
+    if (pathname === '/team') return 'Team';
+    
+    // Projects
     if (pathname === '/projects') return 'Projects';
-    if (pathname.startsWith('/tasks/')) return 'Task Detail';
+    if (pathname.startsWith('/projects/')) {
+      const projectId = pathname.split('/projects/')[1];
+      return `Project Detail - ${projectId}`;
+    }
+    
+    // Tasks
     if (pathname === '/tasks') return 'Tasks';
-    if (pathname.startsWith('/docs/')) return 'Doc Detail';
+    if (pathname.startsWith('/tasks/')) {
+      const taskId = pathname.split('/tasks/')[1];
+      return `Task Detail - ${taskId}`;
+    }
+    
+    // Docs
     if (pathname === '/docs') return 'Docs';
-    // if (pathname.startsWith('/teams/')) return 'Team Detail';
-    // if (pathname === '/teams') return 'Teams';
+    if (pathname.startsWith('/docs/')) {
+      const docId = pathname.split('/docs/')[1];
+      return `Doc Detail - ${docId}`;
+    }
+    
+    // Teams (redirected but track for completeness)
+    if (pathname === '/teams') return 'Teams';
+    if (pathname.startsWith('/teams/')) {
+      const teamId = pathname.split('/teams/')[1];
+      return `Team Detail - ${teamId}`;
+    }
+    
+    // Settings & Profile
     if (pathname === '/users') return 'Users';
     if (pathname === '/integrations') return 'Integrations';
     if (pathname === '/organizations') return 'Organizations';
     if (pathname === '/profile') return 'Profile';
     if (pathname === '/settings') return 'Settings';
     if (pathname === '/subscription') return 'Subscription';
-    return 'Unknown Page';
+    
+    // 404 page
+    return 'Not Found';
   };
 
   return (

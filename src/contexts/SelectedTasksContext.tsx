@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode } from "react";
 import { Task } from "@/data/tasksData";
+import { trackContextSelect } from "@/lib/analytics";
 
 interface SelectedTasksContextType {
   selectedTasks: Task[];
@@ -17,8 +18,10 @@ export function SelectedTasksProvider({ children }: { children: ReactNode }) {
     setSelectedTasks((prev) => {
       const isSelected = prev.some((t) => t.id === task.id);
       if (isSelected) {
+        trackContextSelect('task', task.id, 'deselect');
         return prev.filter((t) => t.id !== task.id);
       } else {
+        trackContextSelect('task', task.id, 'select');
         return [...prev, task];
       }
     });
