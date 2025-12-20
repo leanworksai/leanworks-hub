@@ -15,11 +15,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2, Sparkles } from "lucide-react";
+import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2, Sparkles, MoreVertical } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember, useUpdateProject } from "@/hooks/useProjects";
 import { useAuth } from "@/contexts/AuthContext";
 import { projectsService } from "@/services/api";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
@@ -419,23 +425,26 @@ export default function ProjectDetail() {
           Back
         </Button>
         {isOwner && (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShowLimitVisibilityDialog(true)}
-            >
-              <Share2 className="mr-2 h-4 w-4" />
-              Limit Visibility
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setShowDeleteDialog(true)}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
+                <Share2 className="mr-2 h-4 w-4" />
+                Limit Visibility
+              </DropdownMenuItem>
+              <DropdownMenuItem 
+                onClick={() => setShowDeleteDialog(true)}
+                className="text-destructive focus:text-destructive"
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
 

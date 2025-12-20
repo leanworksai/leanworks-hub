@@ -388,7 +388,10 @@ export default function Tasks() {
               <div className="flex flex-col sm:flex-row gap-3">
                 {/* Main Task Card */}
                 <Card 
-                  className="relative flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
+                  className={cn(
+                    "relative cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden",
+                    hasProgressUpdate ? "flex-1" : ""
+                  )}
                   onClick={() => handleTaskClick(task.id)}
                 >
                 {/* Mobile-only hover popover for progress update */}

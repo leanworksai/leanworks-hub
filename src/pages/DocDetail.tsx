@@ -2,7 +2,7 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
-import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
+import { useDoc, useCreateDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Save, Share2, Edit, Download, File, MoreVertical, Paperclip, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
@@ -41,6 +41,7 @@ export default function DocDetail() {
   const { data: doc, isLoading } = useDoc(docId || "");
   const createDoc = useCreateDoc();
   const updateDoc = useUpdateDoc();
+  const deleteDoc = useDeleteDoc();
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -53,6 +54,7 @@ export default function DocDetail() {
   const [filesDialogOpen, setFilesDialogOpen] = useState(false);
   const [files, setFiles] = useState<DocFile[]>([]);
   const [fileToDelete, setFileToDelete] = useState<DocFile | null>(null);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   // Check if edit query parameter is present, otherwise default to read-only for existing docs
   const shouldStartInEditMode = searchParams.get('edit') === 'true' || isNew;
   const [isEditMode, setIsEditMode] = useState(shouldStartInEditMode);
@@ -165,6 +167,27 @@ export default function DocDetail() {
     }
   };
 
+  const handleDelete = async () => {
+    if (!docId || docId === "new") {
+      return;
+    }
+
+    try {
+      await deleteDoc.mutateAsync(docId);
+      toast({
+        title: "Doc deleted",
+        description: `"${title || doc?.title || 'Doc'}" has been deleted successfully.`,
+      });
+      navigate('/docs');
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete doc",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleSave = async () => {
     if (!title.trim()) {
       toast({
@@ -261,16 +284,16 @@ export default function DocDetail() {
 
   return (
     <div className="space-y-4 sm:space-y-6 animate-fade-in max-w-full overflow-x-hidden">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/docs")} className="self-start">
+      <div className="flex items-center justify-between gap-2 sm:gap-4">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/docs")}>
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
-        <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
+        <div className="flex items-center gap-2">
           {!isNew && doc && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="flex-1 sm:flex-initial">
+                <Button variant="ghost" size="sm">
                   <MoreVertical className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -285,16 +308,25 @@ export default function DocDetail() {
                   <Paperclip className="mr-2 h-4 w-4" />
                   Attached Files {files.length > 0 && `(${files.length})`}
                 </DropdownMenuItem>
+                {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                  <DropdownMenuItem 
+                    onClick={() => setShowDeleteDialog(true)}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
           {isEditMode ? (
-            <Button onClick={handleSave} disabled={isSaving} className="flex-1 sm:flex-initial">
+            <Button onClick={handleSave} disabled={isSaving} size="sm">
               <Save className="mr-2 h-4 w-4" />
               {isSaving ? "Saving..." : "Save"}
             </Button>
           ) : (
-            <Button onClick={() => setIsEditMode(true)} className="flex-1 sm:flex-initial">
+            <Button onClick={() => setIsEditMode(true)} size="sm">
               <Edit className="mr-2 h-4 w-4" />
               Edit
             </Button>
@@ -389,6 +421,24 @@ export default function DocDetail() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleRemoveFile} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Doc Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Document</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{doc?.title || title || 'this document'}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

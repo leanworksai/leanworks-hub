@@ -57,7 +57,8 @@ import {
   Check,
   ChevronsUpDown,
   Trash2,
-  Share2
+  Share2,
+  MoreVertical
 } from "lucide-react";
 import { Task } from "@/data/tasksData";
 import { useTask, useUpdateTask, useDeleteTask } from "@/hooks/useTasks";
@@ -73,6 +74,12 @@ import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { tasksService } from "@/services/api";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
@@ -508,23 +515,26 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
             Back
           </Button>
           {isCreator && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowLimitVisibilityDialog(true)}
-              >
-                <Share2 className="mr-2 h-4 w-4" />
-                Limit Visibility
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setShowDeleteDialog(true)}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
+                  <Share2 className="mr-2 h-4 w-4" />
+                  Limit Visibility
+                </DropdownMenuItem>
+                <DropdownMenuItem 
+                  onClick={() => setShowDeleteDialog(true)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       )}

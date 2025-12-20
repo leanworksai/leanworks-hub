@@ -31,11 +31,124 @@ import { cn } from "@/lib/utils";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUpdateSummary } from "@/hooks/useUpdateSummaries";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
   return text.substring(0, maxLength) + "...";
 };
+
+interface ProjectCardProps {
+  project: any;
+  formatDateForDisplay: (date: string | null | undefined) => string;
+  handleCardClick: (projectId: string) => void;
+  handleDeleteClick: (e: React.MouseEvent, projectId: string, projectName: string) => void;
+  isProjectSelected: (projectId: string) => boolean;
+  toggleProject: (project: any) => void;
+  navigate: (path: string) => void;
+  setProjectToLimitVisibility: (value: { id: string; project: any } | null) => void;
+  user: any;
+}
+
+function ProjectCard({
+  project,
+  formatDateForDisplay,
+  handleCardClick,
+  handleDeleteClick,
+  isProjectSelected,
+  toggleProject,
+  navigate,
+  setProjectToLimitVisibility,
+  user,
+}: ProjectCardProps) {
+  const { data: updateSummary } = useUpdateSummary(project.id);
+  const hasUpdate = updateSummary?.updateSummary;
+
+  return (
+    <div className="group">
+      {/* Mobile: Single card, Desktop: Side-by-side cards */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        {/* Main Project Card */}
+        <Card 
+          className={cn(
+            "relative cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden",
+            hasUpdate ? "flex-1" : ""
+          )}
+          onClick={() => handleCardClick(project.id)}
+        >
+          {/* Mobile-only hover popover for progress update */}
+          {hasUpdate && <ProjectUpdateSummaryCard projectId={project.id} />}
+          <CardHeader className="pb-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                    <CardTitle className="text-base">{project.name}</CardTitle>
+                  </div>
+                  
+                  {/* Project Meta Info */}
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <Users className="h-3.5 w-3.5" />
+                      <span>{project.team} members</span>
+                    </div>
+                    {project.dueDate && (
+                      <div className="flex items-center gap-1">
+                        <Calendar className="h-3.5 w-3.5" />
+                        <span>{formatDateForDisplay(project.dueDate)}</span>
+                      </div>
+                    )}
+                  </div>
+                  {project.description && (
+                    <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">
+                      {project.description}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <MoreOptionsMenu
+                items={[
+                  {
+                    icon: isProjectSelected(project.id) ? X : Plus,
+                    label: isProjectSelected(project.id) ? "Remove from Context" : "Add to Context",
+                    onClick: (e) => {
+                      toggleProject(project);
+                    },
+                  },
+                  {
+                    icon: Edit,
+                    label: "Edit",
+                    onClick: () => {
+                      navigate(`/projects/${project.id}`);
+                    },
+                  },
+                  {
+                    icon: Share2,
+                    label: "Limit Visibility",
+                    onClick: (e) => {
+                      setProjectToLimitVisibility({ id: project.id, project });
+                    },
+                    show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
+                  },
+                  {
+                    icon: Trash2,
+                    label: "Delete",
+                    onClick: (e) => handleDeleteClick(e, project.id, project.name),
+                    isDestructive: true,
+                    show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
+                  },
+                ]}
+              />
+            </div>
+          </CardHeader>
+        </Card>
+
+        {/* Latest Progress Update Card - Desktop only */}
+        {hasUpdate && <ProjectUpdateSummaryCard projectId={project.id} desktopOnly />}
+      </div>
+    </div>
+  );
+}
 
 export default function Projects() {
   const navigate = useNavigate();
@@ -114,89 +227,20 @@ export default function Projects() {
       </div>
 
       <div className="space-y-3">
-        {projects.map((project) => {
-          return (
-            <div key={project.id} className="group">
-              {/* Mobile: Single card, Desktop: Side-by-side cards */}
-              <div className="flex flex-col sm:flex-row gap-3">
-                {/* Main Project Card */}
-                <Card 
-                  className="relative flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
-                  onClick={() => handleCardClick(project.id)}
-                >
-                  {/* Mobile-only hover popover for progress update */}
-                  <ProjectUpdateSummaryCard projectId={project.id} />
-                  <CardHeader className="pb-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3 flex-1 min-w-0">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                            <CardTitle className="text-base">{project.name}</CardTitle>
-                          </div>
-                          
-                          {/* Project Meta Info */}
-                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
-                            <div className="flex items-center gap-1">
-                              <Users className="h-3.5 w-3.5" />
-                              <span>{project.team} members</span>
-                            </div>
-                            {project.dueDate && (
-                              <div className="flex items-center gap-1">
-                                <Calendar className="h-3.5 w-3.5" />
-                                <span>{formatDateForDisplay(project.dueDate)}</span>
-                              </div>
-                            )}
-                          </div>
-                          {project.description && (
-                            <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">
-                              {project.description}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <MoreOptionsMenu
-                        items={[
-                          {
-                            icon: isProjectSelected(project.id) ? X : Plus,
-                            label: isProjectSelected(project.id) ? "Remove from Context" : "Add to Context",
-                            onClick: (e) => {
-                              toggleProject(project);
-                            },
-                          },
-                          {
-                            icon: Edit,
-                            label: "Edit",
-                            onClick: () => {
-                              navigate(`/projects/${project.id}`);
-                            },
-                          },
-                          {
-                            icon: Share2,
-                            label: "Limit Visibility",
-                            onClick: (e) => {
-                              setProjectToLimitVisibility({ id: project.id, project });
-                            },
-                            show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
-                          },
-                          {
-                            icon: Trash2,
-                            label: "Delete",
-                            onClick: (e) => handleDeleteClick(e, project.id, project.name),
-                            isDestructive: true,
-                            show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
-                          },
-                        ]}
-                      />
-                    </div>
-                  </CardHeader>
-                </Card>
-
-                {/* Latest Progress Update Card - Desktop only */}
-                <ProjectUpdateSummaryCard projectId={project.id} desktopOnly />
-              </div>
-            </div>
-          );
-        })}
+        {projects.map((project) => (
+          <ProjectCard
+            key={project.id}
+            project={project}
+            formatDateForDisplay={formatDateForDisplay}
+            handleCardClick={handleCardClick}
+            handleDeleteClick={handleDeleteClick}
+            isProjectSelected={isProjectSelected}
+            toggleProject={toggleProject}
+            navigate={navigate}
+            setProjectToLimitVisibility={setProjectToLimitVisibility}
+            user={user}
+          />
+        ))}
       </div>
 
       <NewProjectDialog 
