@@ -2,7 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { getAvatarColor } from "@/lib/utils";
 import {
@@ -381,8 +381,8 @@ export default function ProjectDetail() {
       ...allSummaries.map((summary, index) => ({
         id: `summary-${summary.projectId}-${summary.dateId}-${index}`,
         type: "summary" as const,
-        memberName: "AI Assistant",
-        memberAvatar: "AI",
+        memberName: "Lean",
+        memberAvatar: "L",
         date: summary.generatedAt || summary.dateId,
         content: summary.updateSummary,
         dateId: summary.dateId,
@@ -690,9 +690,18 @@ export default function ProjectDetail() {
                       >
                         <div className="flex items-start gap-3 mb-2">
                           <Avatar className="h-8 w-8">
-                            <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                              {activity.memberAvatar}
-                            </AvatarFallback>
+                            {activity.type === "summary" ? (
+                              <>
+                                <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                                <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                  {activity.memberAvatar}
+                                </AvatarFallback>
+                              </>
+                            ) : (
+                              <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                {activity.memberAvatar}
+                              </AvatarFallback>
+                            )}
                           </Avatar>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between mb-1 flex-wrap gap-2">

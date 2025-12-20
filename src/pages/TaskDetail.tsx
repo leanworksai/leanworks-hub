@@ -2,7 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -468,8 +468,9 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       ...(task.progressUpdates || []).map(update => ({
         id: update.id,
         type: "update" as const,
-        memberName: update.memberName,
-        memberAvatar: update.memberAvatar,
+        memberName: "Lean",
+        memberAvatar: "L",
+        originalMemberName: update.memberName, // Store original member who made the update
         date: update.date,
         content: update.update,
         updateType: update.type,
@@ -1023,9 +1024,18 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                         }`} />
                         <div className="flex items-start gap-3 mb-2">
                           <Avatar className="h-8 w-8">
-                            <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                              {activity.memberAvatar}
-                            </AvatarFallback>
+                            {activity.type === "update" ? (
+                              <>
+                                <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                                <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                  {activity.memberAvatar}
+                                </AvatarFallback>
+                              </>
+                            ) : (
+                              <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                                {activity.memberAvatar}
+                              </AvatarFallback>
+                            )}
                           </Avatar>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
@@ -1056,6 +1066,11 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                                   : activity.date}
                               </span>
                             </div>
+                            {activity.type === "update" && (activity as any).originalMemberName && (
+                              <p className="text-xs text-muted-foreground mb-1">
+                                via {(activity as any).originalMemberName}
+                              </p>
+                            )}
                             <p className="text-sm text-muted-foreground leading-relaxed">
                               {activity.content}
                             </p>
