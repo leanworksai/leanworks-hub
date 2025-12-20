@@ -238,6 +238,9 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create New Project</DialogTitle>
+          <DialogDescription>
+            Create a new project to organize and track your work
+          </DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">

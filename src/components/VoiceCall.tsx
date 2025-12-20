@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogOverlay } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogOverlay } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -1166,6 +1166,9 @@ export function IncomingCallDialog({
         >
           <DialogHeader>
             <DialogTitle>Incoming Call</DialogTitle>
+            <DialogDescription>
+              {callerName || 'Someone'} is calling you
+            </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col items-center space-y-4 py-4">
             <Avatar className="h-20 w-20">
