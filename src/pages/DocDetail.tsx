@@ -4,12 +4,34 @@ import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Share2, Edit, Download, File } from "lucide-react";
+import { ArrowLeft, Save, Share2, Edit, Download, File, MoreVertical, Paperclip, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { fileUploadService } from "@/services/api";
 import type { DocFile } from "@/data/docsData";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export default function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
@@ -28,7 +50,9 @@ export default function DocDetail() {
   const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
   const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [filesDialogOpen, setFilesDialogOpen] = useState(false);
   const [files, setFiles] = useState<DocFile[]>([]);
+  const [fileToDelete, setFileToDelete] = useState<DocFile | null>(null);
   // Check if edit query parameter is present, otherwise default to read-only for existing docs
   const shouldStartInEditMode = searchParams.get('edit') === 'true' || isNew;
   const [isEditMode, setIsEditMode] = useState(shouldStartInEditMode);
@@ -103,6 +127,41 @@ export default function DocDetail() {
       });
     } catch (error) {
       throw error; // Re-throw to let RichTextEditor handle the error
+    }
+  };
+
+  const handleRemoveFile = async () => {
+    if (!fileToDelete || !docId || docId === "new") {
+      return;
+    }
+
+    try {
+      // Remove file from local state
+      const updatedFiles = files.filter(f => f.fileId !== fileToDelete.fileId);
+      setFiles(updatedFiles);
+
+      // Update doc metadata
+      await updateDoc.mutateAsync({
+        docId,
+        updates: {
+          metadata: {
+            files: updatedFiles,
+          },
+        },
+      });
+
+      toast({
+        title: "File removed",
+        description: `"${fileToDelete.fileName}" has been removed from the document.`,
+      });
+
+      setFileToDelete(null);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to remove file",
+        variant: "destructive",
+      });
     }
   };
 
@@ -208,17 +267,26 @@ export default function DocDetail() {
           Back
         </Button>
         <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
-          {!isNew && doc && user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setShareDialogOpen(true)}
-              className="flex-1 sm:flex-initial"
-            >
-              <Share2 className="mr-2 h-4 w-4" />
-              <span className="hidden sm:inline">Limit Visibility</span>
-              <span className="sm:hidden">Visibility</span>
-            </Button>
+          {!isNew && doc && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="flex-1 sm:flex-initial">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                  <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
+                    <Share2 className="mr-2 h-4 w-4" />
+                    Limit Visibility
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={() => setFilesDialogOpen(true)}>
+                  <Paperclip className="mr-2 h-4 w-4" />
+                  Attached Files {files.length > 0 && `(${files.length})`}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           {isEditMode ? (
             <Button onClick={handleSave} disabled={isSaving} className="flex-1 sm:flex-initial">
@@ -252,39 +320,79 @@ export default function DocDetail() {
         />
       )}
 
-      {/* Display uploaded files */}
-      {files.length > 0 && (
-        <div className="border rounded-lg p-4 space-y-2">
-          <h3 className="text-sm font-semibold mb-3">Attached Files</h3>
-          <div className="space-y-2">
-            {files.map((file) => (
-              <div
-                key={file.fileId}
-                className="flex items-center justify-between p-2 border rounded hover:bg-muted/50 transition-colors"
-              >
-                <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <File className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                  <span className="text-sm truncate" title={file.fileName}>
-                    {file.fileName}
-                  </span>
-                  <span className="text-xs text-muted-foreground flex-shrink-0">
-                    ({(file.fileSize / 1024).toFixed(1)} KB)
-                  </span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => window.open(file.fileUrl, '_blank')}
-                  className="flex-shrink-0"
+      {/* Attached Files Dialog */}
+      <Dialog open={filesDialogOpen} onOpenChange={setFilesDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Attached Files</DialogTitle>
+          </DialogHeader>
+          {files.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">
+              <Paperclip className="h-12 w-12 mx-auto mb-4 opacity-50" />
+              <p>No files attached to this document.</p>
+            </div>
+          ) : (
+            <div className="space-y-2 mt-4">
+              {files.map((file) => (
+                <div
+                  key={file.fileId}
+                  className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors"
                 >
-                  <Download className="h-4 w-4 mr-1" />
-                  Download
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <File className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate" title={file.fileName}>
+                        {file.fileName}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {(file.fileSize / 1024).toFixed(1)} KB
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => window.open(file.fileUrl, '_blank')}
+                    >
+                      <Download className="h-4 w-4 mr-2" />
+                      Download
+                    </Button>
+                    {!isNew && doc && user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setFileToDelete(file)}
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete File Confirmation Dialog */}
+      <AlertDialog open={!!fileToDelete} onOpenChange={(open) => !open && setFileToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove File</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove "{fileToDelete?.fileName}" from this document? This will remove the file reference, but the file will remain in storage.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleRemoveFile} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Limit Visibility Dialog */}
       {!isNew && doc && (
