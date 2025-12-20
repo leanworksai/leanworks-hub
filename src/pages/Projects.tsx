@@ -50,7 +50,7 @@ export default function Projects() {
   const { user } = useAuth();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
-  const [hoveredProject, setHoveredProject] = useState<string | null>(null); // Stores project ID
+  const [hoveredProject, setHoveredProject] = useState<string | null>(null); // Stores project ID for mobile hover
   const [projectToLimitVisibility, setProjectToLimitVisibility] = useState<{ id: string; project: any } | null>(null);
 
   const handleCardClick = (projectId: string) => {
@@ -114,117 +114,180 @@ export default function Projects() {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2">
-        {projects.map((project) => (
-          <Card 
-            key={project.id} 
-            className="relative bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow"
-            onClick={() => handleCardClick(project.id)}
-          >
-            {updateSummaries[project.id]?.updateSummary && (
-              <div className="absolute top-2 left-2 z-10">
-                <Popover open={hoveredProject === project.id} onOpenChange={(open) => setHoveredProject(open ? project.id : null)}>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                      onClick={(e) => e.stopPropagation()}
-                      onMouseEnter={() => setHoveredProject(project.id)}
-                      onMouseLeave={() => setHoveredProject(null)}
-                      title="AI Progress Summary"
-                    >
-                      <Sparkles className="h-4 w-4" />
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent 
-                    className="w-[calc(100vw-2rem)] sm:w-80 max-w-sm" 
-                    onClick={(e) => e.stopPropagation()}
-                    onMouseEnter={() => setHoveredProject(project.id)}
-                    onMouseLeave={() => setHoveredProject(null)}
-                    align="start"
-                  >
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
-                        {updateSummaries[project.id]?.dateId && (
-                          <p className="text-xs text-muted-foreground/60">
-                            {updateSummaries[project.id].dateId}
-                          </p>
-                        )}
-                      </div>
-                      <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
-                        <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                          {updateSummaries[project.id].updateSummary}
-                        </p>
-                        {isFreePlan && (
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                              Upgrade to view progress summary
-                            </span>
+      <div className="space-y-3">
+        {projects.map((project) => {
+          const hasUpdateSummary = updateSummaries[project.id]?.updateSummary;
+          const updateSummary = updateSummaries[project.id];
+
+          return (
+            <div key={project.id} className="group">
+              {/* Mobile: Single card, Desktop: Side-by-side cards */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                {/* Main Project Card */}
+                <Card 
+                  className="relative flex-1 bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer group-hover:border-primary/30"
+                  onClick={() => handleCardClick(project.id)}
+                >
+                  {/* Mobile-only hover popover for progress update */}
+                  {hasUpdateSummary && (
+                    <div className="absolute top-2 left-2 z-10 sm:hidden">
+                      <Popover open={hoveredProject === project.id} onOpenChange={(open) => setHoveredProject(open ? project.id : null)}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseEnter={() => setHoveredProject(project.id)}
+                            onMouseLeave={() => setHoveredProject(null)}
+                            title="AI Progress Summary"
+                          >
+                            <Sparkles className="h-4 w-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent 
+                          className="w-[calc(100vw-2rem)] max-w-sm max-h-[500px] overflow-y-auto" 
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseEnter={() => setHoveredProject(project.id)}
+                          onMouseLeave={() => setHoveredProject(null)}
+                          align="start"
+                        >
+                          <div className="space-y-4">
+                            {/* Progress Summary */}
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
+                                {updateSummary?.dateId && (
+                                  <p className="text-xs text-muted-foreground/60">
+                                    {updateSummary.dateId}
+                                  </p>
+                                )}
+                              </div>
+                              <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                  {updateSummary.updateSummary}
+                                </p>
+                                {isFreePlan && (
+                                  <div className="absolute inset-0 flex items-center justify-center">
+                                    <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                                      Upgrade to view progress summary
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        )}
-                      </div>
+                        </PopoverContent>
+                      </Popover>
                     </div>
-                  </PopoverContent>
-                </Popover>
+                  )}
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 flex-1 min-w-0">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                            <CardTitle className="text-base">{project.name}</CardTitle>
+                          </div>
+                          
+                          {/* Project Meta Info */}
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-1">
+                              <Users className="h-3.5 w-3.5" />
+                              <span>{project.team} members</span>
+                            </div>
+                            {project.dueDate && (
+                              <div className="flex items-center gap-1">
+                                <Calendar className="h-3.5 w-3.5" />
+                                <span>{formatDateForDisplay(project.dueDate)}</span>
+                              </div>
+                            )}
+                          </div>
+                          {project.description && (
+                            <p className="text-xs text-muted-foreground mt-1.5 line-clamp-2">
+                              {project.description}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <MoreOptionsMenu
+                        items={[
+                          {
+                            icon: isProjectSelected(project.id) ? X : Plus,
+                            label: isProjectSelected(project.id) ? "Remove from Context" : "Add to Context",
+                            onClick: (e) => {
+                              toggleProject(project);
+                            },
+                          },
+                          {
+                            icon: Edit,
+                            label: "Edit",
+                            onClick: () => {
+                              navigate(`/projects/${project.id}`);
+                            },
+                          },
+                          {
+                            icon: Share2,
+                            label: "Limit Visibility",
+                            onClick: (e) => {
+                              setProjectToLimitVisibility({ id: project.id, project });
+                            },
+                            show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
+                          },
+                          {
+                            icon: Trash2,
+                            label: "Delete",
+                            onClick: (e) => handleDeleteClick(e, project.id, project.name),
+                            isDestructive: true,
+                            show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
+                          },
+                        ]}
+                      />
+                    </div>
+                  </CardHeader>
+                </Card>
+
+                {/* Latest Progress Update Card - Desktop only */}
+                {hasUpdateSummary && (
+                  <div className="hidden sm:flex items-center gap-3 flex-1">
+                    {/* Visual Connector Line */}
+                    <div className="flex items-center justify-center w-4 flex-shrink-0">
+                      <div className="w-0.5 h-full min-h-[100px] bg-border group-hover:bg-primary/50 transition-colors rounded-full" />
+                    </div>
+                    <Card 
+                      className="flex-1 bg-gradient-card border-border shadow-card group-hover:border-primary/30 transition-all"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-medium text-muted-foreground/70">PROGRESS SUMMARY</p>
+                            {updateSummary?.dateId && (
+                              <p className="text-xs text-muted-foreground/60">
+                                {updateSummary.dateId}
+                              </p>
+                            )}
+                          </div>
+                          <div className={cn("relative max-h-[80px] overflow-y-auto", isFreePlan && "blur-sm pointer-events-none")}>
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                              {updateSummary.updateSummary}
+                            </p>
+                            {isFreePlan && (
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                                  Upgrade to view progress summary
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </CardHeader>
+                    </Card>
+                  </div>
+                )}
               </div>
-            )}
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="space-y-1 flex-1 mr-2">
-                  <CardTitle className="text-xl">{project.name}</CardTitle>
-                  <CardDescription className="line-clamp-2 text-foreground">{project.description}</CardDescription>
-                </div>
-                <MoreOptionsMenu
-                  items={[
-                    {
-                      icon: isProjectSelected(project.id) ? X : Plus,
-                      label: isProjectSelected(project.id) ? "Remove from Context" : "Add to Context",
-                      onClick: (e) => {
-                        toggleProject(project);
-                      },
-                    },
-                    {
-                      icon: Edit,
-                      label: "Edit",
-                      onClick: () => {
-                        navigate(`/projects/${project.id}`);
-                      },
-                    },
-                    {
-                      icon: Share2,
-                      label: "Limit Visibility",
-                      onClick: (e) => {
-                        setProjectToLimitVisibility({ id: project.id, project });
-                      },
-                      show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
-                    },
-                    {
-                      icon: Trash2,
-                      label: "Delete",
-                      onClick: (e) => handleDeleteClick(e, project.id, project.name),
-                      isDestructive: true,
-                      show: user && project.ownerEmail?.toLowerCase() === user.email?.toLowerCase(),
-                    },
-                  ]}
-                />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between text-sm">
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Users className="h-4 w-4" />
-                  <span>{project.team} members</span>
-                </div>
-                <div className="flex items-center gap-1 text-muted-foreground">
-                  <Calendar className="h-4 w-4" />
-                  <span>{formatDateForDisplay(project.dueDate)}</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+            </div>
+          );
+        })}
       </div>
 
       <NewProjectDialog 
