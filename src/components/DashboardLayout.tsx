@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown } from "lucide-react";
+import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown, FileText, FolderKanban, CheckSquare } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -15,7 +15,21 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
-import { useEffect, useState } from "react";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "./ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "./ui/popover";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
@@ -26,6 +40,9 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation, useSystemNotifications, useMarkNotificationRead, useDismissNotification } from "@/hooks/useTeams";
+import { useProjects } from "@/hooks/useProjects";
+import { useTasks } from "@/hooks/useTasks";
+import { useDocs } from "@/hooks/useDocs";
 import type { TeamJoinRequest, TeamInvitation } from "@/data/teamsData";
 
 interface DashboardLayoutProps {
@@ -40,6 +57,9 @@ interface UserProfile {
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations, acceptInvitation: acceptOrgInvitation, declineInvitation: declineOrgInvitation } = useOrg();
@@ -56,6 +76,11 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const rejectRequestMutation = useRejectJoinRequest();
   const acceptInvitationMutation = useAcceptInvitation();
   const declineInvitationMutation = useDeclineInvitation();
+  
+  // Fetch data for search
+  const { data: projects = [] } = useProjects();
+  const { data: tasks = [] } = useTasks();
+  const { data: docs = [] } = useDocs();
 
   // Filter requests where current user is the owner (can manage)
   const manageableRequests = joinRequests.filter(
@@ -94,6 +119,25 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     };
     fetchProfile();
   }, [user]);
+
+  // Keyboard shortcut for search (Cmd+K / Ctrl+K)
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setSearchOpen((open) => {
+          if (!open) {
+            setTimeout(() => {
+              searchInputRef.current?.focus();
+            }, 0);
+          }
+          return !open;
+        });
+      }
+    };
+    document.addEventListener('keydown', down);
+    return () => document.removeEventListener('keydown', down);
+  }, []);
 
 
   const handleLogout = async () => {
@@ -192,6 +236,50 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     }
   };
 
+  // Search functionality
+  const handleSearchSelect = (type: 'project' | 'task' | 'doc', id: string) => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    if (type === 'project') {
+      navigate(`/projects/${id}`);
+    } else if (type === 'task') {
+      navigate(`/tasks/${id}`);
+    } else if (type === 'doc') {
+      navigate(`/docs/${id}`);
+    }
+  };
+
+  // Filter results based on search query
+  const filteredProjects = projects.filter((project) => {
+    if (!searchQuery.trim()) return false;
+    const query = searchQuery.toLowerCase();
+    return (
+      project.name.toLowerCase().includes(query) ||
+      (project.description || '').toLowerCase().includes(query)
+    );
+  });
+
+  const filteredTasks = tasks.filter((task) => {
+    if (!searchQuery.trim()) return false;
+    const query = searchQuery.toLowerCase();
+    return (
+      task.title.toLowerCase().includes(query) ||
+      (task.description || '').toLowerCase().includes(query)
+    );
+  });
+
+  const filteredDocs = docs.filter((doc) => {
+    if (!searchQuery.trim()) return false;
+    const query = searchQuery.toLowerCase();
+    const textContent = doc.content.replace(/<[^>]*>/g, '').toLowerCase();
+    return (
+      doc.title.toLowerCase().includes(query) ||
+      textContent.includes(query)
+    );
+  });
+
+  const hasResults = filteredProjects.length > 0 || filteredTasks.length > 0 || filteredDocs.length > 0;
+
   return (
     <SidebarProvider>
       <div className="flex min-h-screen w-full">
@@ -202,13 +290,159 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               <SidebarTrigger className="-ml-2" />
               
               <div className="flex-1 flex items-center gap-2 sm:gap-4 min-w-0">
-                <div className="relative w-full max-w-md hidden sm:block">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="Search projects, teams..."
-                    className="pl-9 bg-secondary/50 border-border"
-                  />
-                </div>
+                <Popover open={searchOpen} onOpenChange={(open) => {
+                  setSearchOpen(open);
+                  if (!open && searchQuery) {
+                    // Clear search when closing (with delay to allow navigation)
+                    setTimeout(() => setSearchQuery(""), 150);
+                  }
+                }}>
+                  <PopoverTrigger asChild>
+                    <div className="relative w-full max-w-md hidden sm:block">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none z-10" />
+                      <Input
+                        ref={searchInputRef}
+                        data-search-input
+                        placeholder="Search projects, tasks, docs... (⌘K)"
+                        className="pl-9 pr-20 bg-secondary/50 border-border"
+                        value={searchQuery}
+                        onChange={(e) => {
+                          setSearchQuery(e.target.value);
+                          setSearchOpen(true);
+                        }}
+                        onFocus={() => {
+                          if (searchQuery.trim()) {
+                            setSearchOpen(true);
+                          }
+                        }}
+                        onClick={() => {
+                          if (searchQuery.trim()) {
+                            setSearchOpen(true);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            setSearchOpen(false);
+                            setSearchQuery("");
+                          }
+                        }}
+                      />
+                      <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 hidden h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex">
+                        <span className="text-xs">⌘</span>K
+                      </kbd>
+                    </div>
+                  </PopoverTrigger>
+                  <PopoverContent 
+                    className="w-[var(--radix-popover-trigger-width)] max-w-md p-0" 
+                    align="start"
+                    side="bottom"
+                    onOpenAutoFocus={(e) => e.preventDefault()}
+                  >
+                    <Command shouldFilter={false} className="rounded-lg">
+                      <CommandList className="max-h-[400px] overflow-y-auto">
+                        {!hasResults && searchQuery.trim() ? (
+                          <div className="py-8 text-center">
+                            <div className="text-sm text-muted-foreground">No results found</div>
+                            <div className="text-xs text-muted-foreground/70 mt-1">Try a different search term</div>
+                          </div>
+                        ) : !searchQuery.trim() ? (
+                          <div className="py-8 text-center">
+                            <Search className="h-8 w-8 text-muted-foreground/50 mx-auto mb-2" />
+                            <div className="text-sm text-muted-foreground">Start typing to search</div>
+                            <div className="text-xs text-muted-foreground/70 mt-1">Search across projects, tasks, and docs</div>
+                          </div>
+                        ) : null}
+                        
+                        {/* Projects */}
+                        {filteredProjects.length > 0 && (
+                          <>
+                            <CommandGroup heading={`Projects (${filteredProjects.length})`}>
+                              {filteredProjects.map((project) => (
+                                <CommandItem
+                                  key={project.id}
+                                  value={`${project.name} ${project.description || ''}`}
+                                  onSelect={() => handleSearchSelect('project', project.id)}
+                                  className="cursor-pointer px-3 py-2.5 mx-1 rounded-md aria-selected:bg-accent"
+                                >
+                                  <FolderKanban className="mr-3 h-4 w-4 shrink-0 text-muted-foreground" />
+                                  <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                                    <span className="font-medium text-sm truncate">{project.name}</span>
+                                    {project.description && (
+                                      <span className="text-xs text-muted-foreground truncate">
+                                        {project.description}
+                                      </span>
+                                    )}
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                            {(filteredTasks.length > 0 || filteredDocs.length > 0) && (
+                              <CommandSeparator className="my-1" />
+                            )}
+                          </>
+                        )}
+                        
+                        {/* Tasks */}
+                        {filteredTasks.length > 0 && (
+                          <>
+                            <CommandGroup heading={`Tasks (${filteredTasks.length})`}>
+                              {filteredTasks.map((task) => (
+                                <CommandItem
+                                  key={task.id}
+                                  value={`${task.title} ${task.description || ''}`}
+                                  onSelect={() => handleSearchSelect('task', task.id)}
+                                  className="cursor-pointer px-3 py-2.5 mx-1 rounded-md aria-selected:bg-accent"
+                                >
+                                  <CheckSquare className="mr-3 h-4 w-4 shrink-0 text-muted-foreground" />
+                                  <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                                    <span className="font-medium text-sm truncate">{task.title}</span>
+                                    {task.description && (
+                                      <span className="text-xs text-muted-foreground truncate">
+                                        {task.description}
+                                      </span>
+                                    )}
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                            {filteredDocs.length > 0 && (
+                              <CommandSeparator className="my-1" />
+                            )}
+                          </>
+                        )}
+                        
+                        {/* Docs */}
+                        {filteredDocs.length > 0 && (
+                          <CommandGroup heading={`Docs (${filteredDocs.length})`}>
+                            {filteredDocs.map((doc) => {
+                              // Remove HTML tags for display
+                              const textContent = doc.content.replace(/<[^>]*>/g, '').trim();
+                              return (
+                                <CommandItem
+                                  key={doc.id}
+                                  value={`${doc.title} ${textContent}`}
+                                  onSelect={() => handleSearchSelect('doc', doc.id)}
+                                  className="cursor-pointer px-3 py-2.5 mx-1 rounded-md aria-selected:bg-accent"
+                                >
+                                  <FileText className="mr-3 h-4 w-4 shrink-0 text-muted-foreground" />
+                                  <div className="flex flex-col min-w-0 flex-1 gap-0.5">
+                                    <span className="font-medium text-sm truncate">{doc.title}</span>
+                                    {textContent && (
+                                      <span className="text-xs text-muted-foreground line-clamp-2">
+                                        {textContent.substring(0, 80)}
+                                        {textContent.length > 80 ? '...' : ''}
+                                      </span>
+                                    )}
+                                  </div>
+                                </CommandItem>
+                              );
+                            })}
+                          </CommandGroup>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               </div>
               <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
                 <DropdownMenu>

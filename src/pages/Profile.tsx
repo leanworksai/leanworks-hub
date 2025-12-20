@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { usersService } from '@/services/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { getAvatarColor } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
+import { useUserTimezone } from '@/hooks/useUserTimezone';
 
 // Common timezones list (shared with Signup)
 const TIMEZONES = [
@@ -57,7 +58,7 @@ interface UserProfile {
 }
 
 export default function Profile() {
-  const { user } = useAuth();
+  const { user, userDomain } = useAuth();
   const { toast } = useToast();
   const userTimezone = useUserTimezone();
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -71,30 +72,48 @@ export default function Profile() {
     responsibilities: '',
   });
 
-  useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        const profileData = await usersService.getProfile();
-        setProfile(profileData);
-        setFormData({
-          jobTitle: profileData.jobTitle || '',
-          timezone: profileData.timezone || '',
-          responsibilities: profileData.responsibilities || '',
-        });
-      } catch (err: any) {
-        console.error('Failed to fetch profile:', err);
-        setError(err.message || 'Failed to load profile');
-      } finally {
-        setLoading(false);
-      }
-    };
 
+  const mergeProfileData = useCallback((profileData: any): UserProfile => {
+    return {
+      email: user?.email || profileData.email || '',
+      firstName: profileData.firstName || '',
+      lastName: profileData.lastName || '',
+      jobTitle: profileData.jobTitle || '',
+      timezone: profileData.timezone,
+      responsibilities: profileData.responsibilities,
+      domain: userDomain || profileData.domain || (user?.email ? user.email.split('@')[1]?.toLowerCase() : '') || 'N/A',
+      createdAt: profileData.createdAt || '',
+    };
+  }, [user, userDomain]);
+
+  const fetchProfile = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const profileData = await usersService.getProfile();
+      
+      // Merge profile data from API with user data from AuthContext
+      const mergedProfile = mergeProfileData(profileData);
+      
+      setProfile(mergedProfile);
+      setFormData({
+        jobTitle: mergedProfile.jobTitle || '',
+        timezone: mergedProfile.timezone || '',
+        responsibilities: mergedProfile.responsibilities || '',
+      });
+    } catch (err: any) {
+      console.error('Failed to fetch profile:', err);
+      setError(err.message || 'Failed to load profile');
+    } finally {
+      setLoading(false);
+    }
+  }, [user, userDomain, mergeProfileData]);
+
+  useEffect(() => {
     if (user) {
       fetchProfile();
     }
-  }, [user]);
+  }, [user, userDomain, fetchProfile]);
 
   const handleSave = async () => {
     if (!profile) return;
@@ -121,13 +140,21 @@ export default function Profile() {
         responsibilities: formData.responsibilities.trim() || undefined,
       });
 
-      // Update local profile state
-      setProfile({
-        ...profile,
-        jobTitle: formData.jobTitle.trim(),
-        timezone: formData.timezone,
-        responsibilities: formData.responsibilities.trim() || undefined,
-      });
+      // Refetch profile to get the latest merged data from server
+      // Don't show loading state during refetch after save
+      try {
+        const profileData = await usersService.getProfile();
+        const mergedProfile = mergeProfileData(profileData);
+        setProfile(mergedProfile);
+        setFormData({
+          jobTitle: mergedProfile.jobTitle || '',
+          timezone: mergedProfile.timezone || '',
+          responsibilities: mergedProfile.responsibilities || '',
+        });
+      } catch (refetchErr) {
+        // If refetch fails, just log it - don't show error since save was successful
+        console.warn('Failed to refetch profile after save:', refetchErr);
+      }
 
       setIsEditing(false);
       toast({
@@ -264,7 +291,8 @@ export default function Profile() {
           <div className="grid gap-6 md:grid-cols-2">
             <div className="space-y-2">
               <Label className="text-sm font-medium text-muted-foreground">Email</Label>
-              <div className="text-base font-medium">{profile?.email || 'N/A'}</div>
+              <div className="text-base font-medium text-muted-foreground">{profile?.email || 'N/A'}</div>
+              <p className="text-xs text-muted-foreground mt-1">Email cannot be changed</p>
             </div>
             <div className="space-y-2">
               <Label className="text-sm font-medium text-muted-foreground">Domain</Label>

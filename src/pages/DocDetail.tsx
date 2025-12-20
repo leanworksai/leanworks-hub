@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Pin, PinOff, Share2 } from "lucide-react";
+import { ArrowLeft, Save, Share2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
@@ -21,7 +21,6 @@ export default function DocDetail() {
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [isPinned, setIsPinned] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
   const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
@@ -33,7 +32,6 @@ export default function DocDetail() {
       setTitle(doc.title || "");
       // Preserve content even if it's empty string, only default to empty if it's null/undefined
       setContent(doc.content !== null && doc.content !== undefined ? doc.content : "");
-      setIsPinned(doc.isPinned || false);
       setVisibility(doc.visibility || 'all_members');
       // Ensure visibleToMembers is always an array before creating Set
       const membersArray = Array.isArray(doc.visibleToMembers) ? doc.visibleToMembers : [];
@@ -42,7 +40,6 @@ export default function DocDetail() {
       // Reset form for new doc
       setTitle("");
       setContent("");
-      setIsPinned(false);
       setVisibility('all_members');
       setVisibleToMembers(new Set());
     }
@@ -88,7 +85,6 @@ export default function DocDetail() {
           ownerEmail: user?.email || "",
           projectId: null,
           teamId: null,
-          isPinned,
           visibility,
           visibleToMembers: Array.from(visibleToMembers),
           createdAt: new Date().toISOString(),
@@ -106,7 +102,6 @@ export default function DocDetail() {
           updates: {
             title: title.trim(),
             content,
-            isPinned,
             visibility,
             visibleToMembers: Array.from(visibleToMembers),
           },
@@ -158,24 +153,6 @@ export default function DocDetail() {
               <span className="sm:hidden">Visibility</span>
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setIsPinned(!isPinned)}
-            className={`${isPinned ? "bg-accent" : ""} flex-1 sm:flex-initial`}
-          >
-            {isPinned ? (
-              <>
-                <PinOff className="mr-2 h-4 w-4" />
-                <span className="hidden sm:inline">Unpin</span>
-              </>
-            ) : (
-              <>
-                <Pin className="mr-2 h-4 w-4" />
-                <span className="hidden sm:inline">Pin</span>
-              </>
-            )}
-          </Button>
           <Button onClick={handleSave} disabled={isSaving} className="flex-1 sm:flex-initial">
             <Save className="mr-2 h-4 w-4" />
             {isSaving ? "Saving..." : "Save"}

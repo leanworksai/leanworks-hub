@@ -19,7 +19,7 @@ import { usersService } from "@/services/api";
 import { Trash2, AlertTriangle, Loader2 } from "lucide-react";
 
 export default function Settings() {
-  const { user, logout } = useAuth();
+  const { logout } = useAuth();
   const { toast } = useToast();
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -65,28 +65,6 @@ export default function Settings() {
       </div>
 
       <div className="grid gap-6">
-        <Card className="bg-gradient-card border-border shadow-card">
-          <CardHeader>
-            <CardTitle>Profile Information</CardTitle>
-            <CardDescription>
-              Update your personal details and contact information
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-2">
-              <Label htmlFor="name">Full Name</Label>
-              <Input id="name" defaultValue="John Doe" />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" defaultValue={user?.email || "john@leanworks.ai"} disabled />
-            </div>
-            <Button className="bg-primary hover:bg-primary/90">
-              Save Changes
-            </Button>
-          </CardContent>
-        </Card>
-
         {/* Danger Zone - Delete Account */}
         <Card className="bg-gradient-card border-destructive/50 shadow-card">
           <CardHeader>
