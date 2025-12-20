@@ -862,54 +862,6 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
               </div>
             </div>
           )}
-          {task.estimatedHours && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Clock className="h-4 w-4" />
-              <span className="mr-2">Time:</span>
-              {editingField === 'hours' && editedTask ? (
-                <div className="flex items-center gap-1">
-                  <Input
-                    type="number"
-                    value={editedTask.actualHours || ''}
-                    onChange={(e) => setEditedTask({ ...editedTask, actualHours: e.target.value ? parseInt(e.target.value) : undefined })}
-                    onBlur={() => handleFieldSave('actualHours', editedTask.actualHours)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        handleFieldSave('actualHours', editedTask.actualHours);
-                      } else if (e.key === 'Escape') {
-                        handleFieldCancel();
-                      }
-                    }}
-                    autoFocus
-                    className="w-16"
-                  />
-                  <span>/</span>
-                  <Input
-                    type="number"
-                    value={editedTask.estimatedHours || ''}
-                    onChange={(e) => setEditedTask({ ...editedTask, estimatedHours: e.target.value ? parseInt(e.target.value) : undefined })}
-                    onBlur={() => handleFieldSave('estimatedHours', editedTask.estimatedHours)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        handleFieldSave('estimatedHours', editedTask.estimatedHours);
-                      } else if (e.key === 'Escape') {
-                        handleFieldCancel();
-                      }
-                    }}
-                    className="w-16"
-                  />
-                  <span>h</span>
-                </div>
-              ) : (
-                <span 
-                  className="text-foreground font-medium cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
-                  onClick={() => handleFieldClick('hours')}
-                >
-                  {task.actualHours || 0}h / {task.estimatedHours}h
-                </span>
-              )}
-            </div>
-          )}
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <span className="mr-2">Project:</span>
             <button

@@ -119,7 +119,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
     status: Task["status"];
     priority: Task["priority"];
     dueDate: string;
-    estimatedHours: string;
     tags: string;
   };
 
@@ -132,7 +131,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       status: "todo",
       priority: "medium",
       dueDate: "",
-      estimatedHours: "",
       tags: "",
     },
     mode: "onChange",
@@ -303,9 +301,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       if (currentFormData.priority) {
         requestBody.priority = currentFormData.priority;
       }
-      if (currentFormData.estimatedHours) {
-        requestBody.estimated_hours = parseInt(currentFormData.estimatedHours, 10);
-      }
       if (currentFormData.dueDate) {
         requestBody.due_date = currentFormData.dueDate;
       }
@@ -362,9 +357,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       }
       if (generatedTask.priority) {
         form.setValue("priority", generatedTask.priority as Task["priority"]);
-      }
-      if (generatedTask.estimated_hours !== undefined && generatedTask.estimated_hours !== null) {
-        form.setValue("estimatedHours", generatedTask.estimated_hours.toString());
       }
       if (generatedTask.due_date) {
         // Convert YYYY-MM-DD to date input format
@@ -552,7 +544,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         dueDate: formattedDueDate,
         createdDate: formatDate(now),
         createdAt: now.getTime(), // Timestamp in milliseconds for sorting
-        estimatedHours: data.estimatedHours ? parseInt(data.estimatedHours, 10) : undefined,
         tags: tags,
         progressUpdates: [],
         comments: [],
@@ -862,50 +853,26 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <FormField
-                control={form.control}
-                name="dueDate"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Due Date</FormLabel>
-                    <FormControl>
-                      <Input 
-                        type="date" 
-                        {...field}
-                        value={field.value || ""}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      Set a target completion date
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="estimatedHours"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Estimated Hours</FormLabel>
-                    <FormControl>
-                      <Input 
-                        type="number" 
-                        placeholder="e.g., 40"
-                        {...field}
-                        min="0"
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      Estimated time to complete
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
+            <FormField
+              control={form.control}
+              name="dueDate"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Due Date</FormLabel>
+                  <FormControl>
+                    <Input 
+                      type="date" 
+                      {...field}
+                      value={field.value || ""}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Set a target completion date
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <FormField
               control={form.control}
