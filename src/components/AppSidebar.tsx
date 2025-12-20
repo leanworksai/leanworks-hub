@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -13,7 +13,6 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,6 +28,7 @@ import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ContextBadges } from "@/components/ContextBadges";
 
 const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
@@ -211,119 +211,18 @@ export function AppSidebar() {
             </Button>
           </div>
           <ScrollArea className="max-h-[200px]">
-            <div className="p-2 space-y-2">
-              {selectedProjects.length > 0 && (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-1.5 px-2 py-1">
-                    <FolderOpen className="h-3 w-3 text-sidebar-foreground/70" />
-                    <span className="text-xs font-medium text-sidebar-foreground/70">Projects</span>
-                  </div>
-                  <div className="space-y-1">
-                    {selectedProjects.map((project) => (
-                      <div
-                        key={project.id}
-                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
-                      >
-                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
-                          {project.name}
-                        </Badge>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => toggleProject(project)}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {selectedTasks.length > 0 && (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-1.5 px-2 py-1">
-                    <CheckSquare className="h-3 w-3 text-sidebar-foreground/70" />
-                    <span className="text-xs font-medium text-sidebar-foreground/70">Tasks</span>
-                  </div>
-                  <div className="space-y-1">
-                    {selectedTasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
-                      >
-                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
-                          {task.title}
-                        </Badge>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => toggleTask(task)}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {selectedTeams.length > 0 && (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-1.5 px-2 py-1">
-                    <Users className="h-3 w-3 text-sidebar-foreground/70" />
-                    <span className="text-xs font-medium text-sidebar-foreground/70">Teams</span>
-                  </div>
-                  <div className="space-y-1">
-                    {selectedTeams.map((team) => (
-                      <div
-                        key={team.id || team.name}
-                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
-                      >
-                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
-                          {team.name}
-                        </Badge>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => toggleTeam(team)}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {selectedDocs.length > 0 && (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-1.5 px-2 py-1">
-                    <StickyNote className="h-3 w-3 text-sidebar-foreground/70" />
-                    <span className="text-xs font-medium text-sidebar-foreground/70">Docs</span>
-                  </div>
-                  <div className="space-y-1">
-                    {selectedDocs.map((doc) => (
-                      <div
-                        key={doc.id}
-                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
-                      >
-                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
-                          {doc.title}
-                        </Badge>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => toggleDoc(doc)}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <div className="p-2">
+              <ContextBadges
+                projects={selectedProjects}
+                tasks={selectedTasks}
+                teams={selectedTeams}
+                docs={selectedDocs}
+                onRemoveProject={toggleProject}
+                onRemoveTask={toggleTask}
+                onRemoveTeam={toggleTeam}
+                onRemoveDoc={toggleDoc}
+                variant="sidebar"
+              />
             </div>
           </ScrollArea>
         </div>

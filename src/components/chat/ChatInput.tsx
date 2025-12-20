@@ -1,8 +1,7 @@
 import { useRef, useState, useCallback, KeyboardEvent, ChangeEvent } from "react";
-import { X, Send, Image as ImageIcon, Smile, FolderOpen, CheckSquare, Users, StickyNote } from "lucide-react";
+import { X, Send, Image as ImageIcon, Smile } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -12,6 +11,7 @@ import { Project } from "@/data/projectsData";
 import { Task } from "@/data/tasksData";
 import { Team } from "@/data/teamsData";
 import { Doc } from "@/data/docsData";
+import { ContextBadges } from "@/components/ContextBadges";
 
 export interface ChatInputProps {
   onSend: (message: string, imageUrls: string[]) => void;
@@ -35,6 +35,10 @@ export interface ChatInputProps {
   selectedTasks?: Task[];
   selectedTeams?: Team[];
   selectedDocs?: Doc[];
+  onRemoveProject?: (project: Project) => void;
+  onRemoveTask?: (task: Task) => void;
+  onRemoveTeam?: (team: Team) => void;
+  onRemoveDoc?: (doc: Doc) => void;
   
   // Image handling
   imagePreviewUrls?: string[];
@@ -64,6 +68,10 @@ export function ChatInput({
   selectedTasks = [],
   selectedTeams = [],
   selectedDocs = [],
+  onRemoveProject,
+  onRemoveTask,
+  onRemoveTeam,
+  onRemoveDoc,
   imagePreviewUrls = [],
   onImageSelect,
   onImageRemove,
@@ -142,65 +150,17 @@ export function ChatInput({
 
   return (
     <div className="border-t bg-background">
-      {/* Cited Projects Section */}
-      {selectedProjects.length > 0 && (
-        <div className="px-4 pt-3 pb-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <FolderOpen className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-            <span className="text-xs font-medium text-primary">Cited Projects:</span>
-            {selectedProjects.map((project) => (
-              <Badge key={project.id} variant="secondary" className="text-xs">
-                {project.name}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
-      
-      {/* Cited Tasks Section */}
-      {selectedTasks.length > 0 && (
-        <div className="px-4 pt-3 pb-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <CheckSquare className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-            <span className="text-xs font-medium text-primary">Cited Tasks:</span>
-            {selectedTasks.map((task) => (
-              <Badge key={task.id} variant="secondary" className="text-xs">
-                {task.title}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
-      
-      {/* Cited Teams Section */}
-      {selectedTeams.length > 0 && (
-        <div className="px-4 pt-3 pb-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Users className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-            <span className="text-xs font-medium text-primary">Cited Teams:</span>
-            {selectedTeams.map((team) => (
-              <Badge key={team.name} variant="secondary" className="text-xs">
-                {team.name}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
-      
-      {/* Cited Docs Section */}
-      {selectedDocs.length > 0 && (
-        <div className="px-4 pt-3 pb-2">
-          <div className="flex items-center gap-2 flex-wrap">
-            <StickyNote className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-            <span className="text-xs font-medium text-primary">Cited Docs:</span>
-            {selectedDocs.map((doc) => (
-              <Badge key={doc.id} variant="secondary" className="text-xs">
-                {doc.title}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
+      <ContextBadges
+        projects={selectedProjects}
+        tasks={selectedTasks}
+        teams={selectedTeams}
+        docs={selectedDocs}
+        onRemoveProject={onRemoveProject}
+        onRemoveTask={onRemoveTask}
+        onRemoveTeam={onRemoveTeam}
+        onRemoveDoc={onRemoveDoc}
+        variant="inline"
+      />
       
       <div className="p-4 relative">
         {/* Image Preview Section */}

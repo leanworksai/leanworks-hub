@@ -13,6 +13,7 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
+import { ContextBadges } from "@/components/ContextBadges";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -110,10 +111,10 @@ interface SearchResult {
 // Chat ID helper functions are now imported from @/hooks/useChatId
 
 export function Chatbot() {
-  const { selectedProjects, clearSelection: clearSelectedProjects } = useSelectedProjects();
-  const { selectedTasks, clearSelection: clearSelectedTasks } = useSelectedTasks();
-  const { selectedTeams, clearSelection: clearSelectedTeams } = useSelectedTeams();
-  const { selectedDocs, clearSelection: clearSelectedDocs } = useSelectedDocs();
+  const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
+  const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
+  const { selectedTeams, toggleTeam, clearSelection: clearSelectedTeams } = useSelectedTeams();
+  const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
@@ -4488,7 +4489,9 @@ export function Chatbot() {
             // OR when sidebar is explicitly opened (for search/back button)
             isMobile 
               ? (!showMobileConversation ? "translate-x-0" : "-translate-x-full")
-              : (isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full")
+              : (isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full"),
+            // Mobile: add bottom padding for navigation bar
+            isMobile && !showMobileConversation && "pb-12"
           )}>
             {/* Sidebar Header */}
             <div className="p-4 border-b flex items-center justify-between">
@@ -5135,62 +5138,17 @@ export function Chatbot() {
 
             {/* Input Area */}
             <div className="border-t bg-background">
-              {/* Cited Projects Section */}
-              {selectedProjects.length > 0 && (
-                <div className="px-4 pt-3 pb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <FolderOpen className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                    <span className="text-xs font-medium text-primary">Cited Projects:</span>
-                    {selectedProjects.map((project) => (
-                      <Badge key={project.id} variant="secondary" className="text-xs">
-                        {project.name}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Cited Tasks Section */}
-              {selectedTasks.length > 0 && (
-                <div className="px-4 pt-3 pb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <CheckSquare className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                    <span className="text-xs font-medium text-primary">Cited Tasks:</span>
-                    {selectedTasks.map((task) => (
-                      <Badge key={task.id} variant="secondary" className="text-xs">
-                        {task.title}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Cited Teams Section */}
-              {selectedTeams.length > 0 && (
-                <div className="px-4 pt-3 pb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Users className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                    <span className="text-xs font-medium text-primary">Cited Teams:</span>
-                    {selectedTeams.map((team) => (
-                      <Badge key={team.name} variant="secondary" className="text-xs">
-                        {team.name}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Cited Docs Section */}
-              {selectedDocs.length > 0 && (
-                <div className="px-4 pt-3 pb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <StickyNote className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                    <span className="text-xs font-medium text-primary">Cited Docs:</span>
-                    {selectedDocs.map((doc) => (
-                      <Badge key={doc.id} variant="secondary" className="text-xs">
-                        {doc.title}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <ContextBadges
+                projects={selectedProjects}
+                tasks={selectedTasks}
+                teams={selectedTeams}
+                docs={selectedDocs}
+                onRemoveProject={toggleProject}
+                onRemoveTask={toggleTask}
+                onRemoveTeam={toggleTeam}
+                onRemoveDoc={toggleDoc}
+                variant="inline"
+              />
               <div className="p-3 sm:p-4 relative">
                 {/* Image Preview Section */}
                 {imagePreviewUrls.length > 0 && (
@@ -5344,6 +5302,49 @@ export function Chatbot() {
             </div>
           </div>
         </div>
+        
+        {/* Mobile Bottom Navigation Bar */}
+        {isMobile && (
+          <div className="sm:hidden border-t bg-background z-50">
+            <div className="flex">
+              <button
+                onClick={() => {
+                  setShowMobileConversation(false);
+                  setIsMobileSidebarOpen(true);
+                }}
+                className={cn(
+                  "flex-1 flex flex-col items-center justify-center gap-0.5 py-2 px-2 transition-colors",
+                  !showMobileConversation
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                )}
+              >
+                <Users className="h-4 w-4" />
+                <span className="text-[10px] font-medium">Contacts</span>
+              </button>
+              <button
+                onClick={() => {
+                  if (selectedMember) {
+                    setShowMobileConversation(true);
+                    setIsMobileSidebarOpen(false);
+                  }
+                }}
+                disabled={!selectedMember}
+                className={cn(
+                  "flex-1 flex flex-col items-center justify-center gap-0.5 py-2 px-2 transition-colors",
+                  showMobileConversation && selectedMember
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground",
+                  !selectedMember && "opacity-50 cursor-not-allowed",
+                  selectedMember && !showMobileConversation && "hover:text-foreground hover:bg-muted/50"
+                )}
+              >
+                <MessageSquare className="h-4 w-4" />
+                <span className="text-[10px] font-medium">Messages</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Incoming Call Dialog - Only for group calls, 1:1 calls use "Join Call" button */}
