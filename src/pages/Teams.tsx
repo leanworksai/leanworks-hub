@@ -3,14 +3,12 @@ import { useQueries } from "@tanstack/react-query";
 import { teamsService } from "@/services/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Plus, Search, Mail, Briefcase, Check, ChevronsUpDown, Edit, Trash2, Bell, UserPlus, X } from "lucide-react";
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
-import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import {
   Dialog,
   DialogContent,
@@ -57,7 +55,6 @@ import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 export default function Teams() {
   const navigate = useNavigate();
   const { toggleTeam, isTeamSelected, selectedTeams } = useSelectedTeams();
-  const { isSelectionMode } = useSelectionMode();
   const { data: allTeams = [], isLoading: isLoadingAllTeams } = useTeams(); // All teams in domain
   const { data: userTeams = [], isLoading: isLoadingUserTeams } = useUserTeams(); // Teams user is member of
   const { data: users = [], isLoading: isLoadingUsers } = useUsers();
@@ -407,13 +404,6 @@ export default function Teams() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Teams</h1>
-          {selectedTeams.length > 0 && (
-            <p className="text-muted-foreground text-sm sm:text-base">
-              <span className="text-primary">
-                ({selectedTeams.length} selected)
-              </span>
-            </p>
-          )}
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           {pendingRequestsCount > 0 && (
@@ -456,56 +446,48 @@ export default function Teams() {
               return (
                 <Card 
                   key={team.name} 
-                  className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] min-h-[180px] ${
-                    isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
-                  }`}
+                  className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] min-h-[180px]"
                     onClick={() => {
-                      // Don't navigate if in selection mode
-                      if (!isSelectionMode) {
-                        if (isMember) {
-                          navigate(`/teams/${team.id}`);
-                        }
+                      if (isMember) {
+                        navigate(`/teams/${team.id}`);
                       }
                     }}
                 >
                   <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-4 px-6 pt-6">
                     <div className="flex items-start gap-3 flex-1 min-w-0 pr-2">
-                      {isSelectionMode && (
-                        <Checkbox
-                          checked={isTeamSelected(team.name)}
-                          onCheckedChange={() => toggleTeam(team)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="flex-shrink-0 mt-1"
-                        />
-                      )}
                       <div className="flex-1 min-w-0">
                         <CardTitle className="text-lg font-semibold leading-tight break-words">{team.name}</CardTitle>
                       </div>
                     </div>
-                    {!isSelectionMode && (
-                      <MoreOptionsMenu
-                        items={[
-                          {
-                            label: "View Details",
-                            onClick: () => navigate(`/teams/${team.id}`),
-                            show: isMember,
+                    <MoreOptionsMenu
+                      items={[
+                        {
+                          icon: isTeamSelected(team.name) ? X : Plus,
+                          label: isTeamSelected(team.name) ? "Remove from Context" : "Add to Context",
+                          onClick: (e) => {
+                            toggleTeam(team);
                           },
-                          {
-                            icon: Edit,
-                            label: "Edit",
-                            onClick: (e) => handleEditClick(e, team),
-                            show: isMember,
-                          },
-                          {
-                            icon: Trash2,
-                            label: "Delete",
-                            onClick: (e) => handleDeleteClick(e, team.id),
-                            isDestructive: true,
-                            show: isMember,
-                          },
-                        ]}
-                      />
-                    )}
+                        },
+                        {
+                          label: "View Details",
+                          onClick: () => navigate(`/teams/${team.id}`),
+                          show: isMember,
+                        },
+                        {
+                          icon: Edit,
+                          label: "Edit",
+                          onClick: (e) => handleEditClick(e, team),
+                          show: isMember,
+                        },
+                        {
+                          icon: Trash2,
+                          label: "Delete",
+                          onClick: (e) => handleDeleteClick(e, team.id),
+                          isDestructive: true,
+                          show: isMember,
+                        },
+                      ]}
+                    />
                   </CardHeader>
                   <CardContent className="px-6 pb-6">
                     <div className="flex justify-between items-start gap-6 mb-4">
@@ -518,7 +500,7 @@ export default function Teams() {
                         <p className="text-2xl font-bold">{team.projects}</p>
                       </div>
                     </div>
-                    {!isMember && !isSelectionMode && (
+                    {!isMember && (
                       <div className="mt-4">
                         {hasPending ? (
                           <Button 
@@ -564,51 +546,43 @@ export default function Teams() {
                 return (
                   <Card 
                     key={team.name} 
-                    className={`bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] min-h-[180px] ${
-                      isTeamSelected(team.name) ? 'ring-2 ring-primary' : ''
-                    }`}
+                    className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:scale-[1.02] min-h-[180px]"
                     onClick={() => {
-                      // Don't navigate if in selection mode
-                      if (!isSelectionMode) {
-                        navigate(`/teams/${team.id}`);
-                      }
+                      navigate(`/teams/${team.id}`);
                     }}
                   >
                     <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-4 px-6 pt-6">
                       <div className="flex items-start gap-3 flex-1 min-w-0 pr-2">
-                        {isSelectionMode && (
-                          <Checkbox
-                            checked={isTeamSelected(team.name)}
-                            onCheckedChange={() => toggleTeam(team)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="flex-shrink-0 mt-1"
-                          />
-                        )}
                         <div className="flex-1 min-w-0">
                           <CardTitle className="text-lg font-semibold leading-tight break-words">{team.name}</CardTitle>
                         </div>
                       </div>
-                      {!isSelectionMode && (
-                        <MoreOptionsMenu
-                          items={[
-                            {
-                              label: "View Details",
-                              onClick: () => navigate(`/teams/${team.id}`),
+                      <MoreOptionsMenu
+                        items={[
+                          {
+                            icon: isTeamSelected(team.name) ? X : Plus,
+                            label: isTeamSelected(team.name) ? "Remove from Context" : "Add to Context",
+                            onClick: (e) => {
+                              toggleTeam(team);
                             },
-                            {
-                              icon: Edit,
-                              label: "Edit",
-                              onClick: (e) => handleEditClick(e, team),
-                            },
-                            {
-                              icon: Trash2,
-                              label: "Delete",
-                              onClick: (e) => handleDeleteClick(e, team.id),
-                              isDestructive: true,
-                            },
-                          ]}
-                        />
-                      )}
+                          },
+                          {
+                            label: "View Details",
+                            onClick: () => navigate(`/teams/${team.id}`),
+                          },
+                          {
+                            icon: Edit,
+                            label: "Edit",
+                            onClick: (e) => handleEditClick(e, team),
+                          },
+                          {
+                            icon: Trash2,
+                            label: "Delete",
+                            onClick: (e) => handleDeleteClick(e, team.id),
+                            isDestructive: true,
+                          },
+                        ]}
+                      />
                     </CardHeader>
                     <CardContent className="px-6 pb-6">
                       <div className="flex justify-between items-start gap-6 mb-4">

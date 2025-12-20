@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -23,7 +23,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useOrg } from "@/contexts/OrgContext";
+import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
+import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
+import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { cn } from "@/lib/utils";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
@@ -35,6 +39,9 @@ const menuItems = [
 export function AppSidebar() {
   const { open, isMobile, setOpenMobile } = useSidebar();
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations } = useOrg();
+  const { selectedProjects, toggleProject } = useSelectedProjects();
+  const { selectedTasks, toggleTask } = useSelectedTasks();
+  const { selectedTeams, toggleTeam } = useSelectedTeams();
   
   // Close mobile sidebar when a navigation item is clicked
   const handleNavClick = () => {
@@ -42,6 +49,8 @@ export function AppSidebar() {
       setOpenMobile(false);
     }
   };
+
+  const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0;
 
   return (
     <Sidebar>
@@ -177,14 +186,116 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <div className="px-2 py-1.5 text-xs text-sidebar-foreground/70">
-              LeanWorks Hub
+      {hasSelectedContexts && (
+        <div className="border-t border-sidebar-border">
+          <div className="px-3 py-2 border-b border-sidebar-border flex items-center justify-between">
+            <span className="text-xs font-semibold text-sidebar-foreground/70 uppercase tracking-wide">
+              Current Context
+            </span>
+            <Button
+              variant="default"
+              size="sm"
+              className="h-7 px-3 text-xs font-medium bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+              onClick={() => {
+                // Dispatch custom event to open chat with AI assistant
+                window.dispatchEvent(new CustomEvent('openChatWithAI'));
+              }}
+            >
+              Ask AI
+            </Button>
+          </div>
+          <ScrollArea className="max-h-[200px]">
+            <div className="p-2 space-y-2">
+              {selectedProjects.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-2 py-1">
+                    <FolderOpen className="h-3 w-3 text-sidebar-foreground/70" />
+                    <span className="text-xs font-medium text-sidebar-foreground/70">Projects</span>
+                  </div>
+                  <div className="space-y-1">
+                    {selectedProjects.map((project) => (
+                      <div
+                        key={project.id}
+                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
+                      >
+                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
+                          {project.name}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() => toggleProject(project)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedTasks.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-2 py-1">
+                    <CheckSquare className="h-3 w-3 text-sidebar-foreground/70" />
+                    <span className="text-xs font-medium text-sidebar-foreground/70">Tasks</span>
+                  </div>
+                  <div className="space-y-1">
+                    {selectedTasks.map((task) => (
+                      <div
+                        key={task.id}
+                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
+                      >
+                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
+                          {task.title}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() => toggleTask(task)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedTeams.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-2 py-1">
+                    <Users className="h-3 w-3 text-sidebar-foreground/70" />
+                    <span className="text-xs font-medium text-sidebar-foreground/70">Teams</span>
+                  </div>
+                  <div className="space-y-1">
+                    {selectedTeams.map((team) => (
+                      <div
+                        key={team.id || team.name}
+                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
+                      >
+                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
+                          {team.name}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() => toggleTeam(team)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          </SidebarMenuItem>
-        </SidebarMenu>
+          </ScrollArea>
+        </div>
+      )}
+
+      <SidebarFooter>
       </SidebarFooter>
     </Sidebar>
   );

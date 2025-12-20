@@ -4365,6 +4365,34 @@ export function Chatbot() {
     }
   };
 
+  // Listen for custom event to open chat with AI assistant
+  useEffect(() => {
+    const handleOpenChatWithAI = (event: Event) => {
+      if (isFreePlan) {
+        toast({
+          title: "Upgrade Required",
+          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
+          variant: "default",
+        });
+        return;
+      }
+      setIsOpen(true);
+      setSelectedMember("ai-assistant");
+      setMemberSearchQuery("");
+      if (isMobile) {
+        setShowMobileConversation(true);
+        setIsMobileSidebarOpen(false);
+      } else {
+        setIsMobileSidebarOpen(false);
+      }
+    };
+
+    window.addEventListener('openChatWithAI', handleOpenChatWithAI as EventListener);
+    return () => {
+      window.removeEventListener('openChatWithAI', handleOpenChatWithAI as EventListener);
+    };
+  }, [isFreePlan, isMobile, toast]);
+
   return (
     <>
       {/* Floating Chat Button */}

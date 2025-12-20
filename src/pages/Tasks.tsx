@@ -1,7 +1,6 @@
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Popover,
   PopoverContent,
@@ -49,14 +48,14 @@ import {
   Check,
   ChevronsUpDown,
   Share2,
-  Edit
+  Edit,
+  X
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
 import { useState } from "react";
 import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
@@ -170,7 +169,6 @@ const getInitials = (name: string): string => {
 export default function Tasks() {
   const navigate = useNavigate();
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
-  const { isSelectionMode } = useSelectionMode();
   const { data: tasks = [], isLoading } = useUserTasks();
   const deleteTask = useDeleteTask();
   const updateTaskMutation = useUpdateTask();
@@ -232,8 +230,6 @@ export default function Tasks() {
     });
 
   const handleTaskClick = (taskId: string) => {
-    // Don't navigate if in selection mode
-    if (isSelectionMode) return;
     navigate(`/tasks/${taskId}`);
   };
 
@@ -242,9 +238,6 @@ export default function Tasks() {
     navigate(`/projects/${projectId}`);
   };
 
-  const handleCheckboxClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-  };
 
   const handleDeleteClick = (e: React.MouseEvent, taskId: string) => {
     e.stopPropagation();
@@ -315,13 +308,6 @@ export default function Tasks() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Tasks</h1>
-          {selectedTasks.length > 0 && (
-            <p className="text-muted-foreground text-sm sm:text-base">
-              <span className="text-primary">
-                ({selectedTasks.length} selected)
-              </span>
-            </p>
-          )}
         </div>
         <Button 
           className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
@@ -389,9 +375,7 @@ export default function Tasks() {
         {filteredTasks.map((task) => (
           <Card 
             key={task.id} 
-            className={`relative bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer ${
-              isTaskSelected(task.id) ? 'ring-2 ring-primary' : ''
-            }`}
+            className="relative bg-gradient-card border-border shadow-card hover:shadow-lg transition-all cursor-pointer"
             onClick={() => handleTaskClick(task.id)}
           >
             <div className="absolute top-2 left-2 z-10 flex gap-1">
@@ -481,14 +465,6 @@ export default function Tasks() {
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-start gap-3 flex-1 min-w-0">
-                  {isSelectionMode && (
-                    <Checkbox
-                      checked={isTaskSelected(task.id)}
-                      onCheckedChange={() => toggleTask(task)}
-                      onClick={handleCheckboxClick}
-                      className="mt-1 flex-shrink-0"
-                    />
-                  )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2 flex-wrap">
                       <CardTitle className="text-lg">{task.title}</CardTitle>
@@ -734,6 +710,13 @@ export default function Tasks() {
                 </div>
                 <MoreOptionsMenu
                   items={[
+                    {
+                      icon: isTaskSelected(task.id) ? X : Plus,
+                      label: isTaskSelected(task.id) ? "Remove from Context" : "Add to Context",
+                      onClick: (e) => {
+                        toggleTask(task);
+                      },
+                    },
                     {
                       icon: Edit,
                       label: "Edit",

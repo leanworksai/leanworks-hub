@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, X, CheckSquare, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown } from "lucide-react";
+import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -25,7 +25,6 @@ import { usersService } from "@/services/api";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
-import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation, useSystemNotifications, useMarkNotificationRead, useDismissNotification } from "@/hooks/useTeams";
 import type { TeamJoinRequest, TeamInvitation } from "@/data/teamsData";
 
@@ -48,7 +47,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
   const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
-  const { isSelectionMode, toggleSelectionMode } = useSelectionMode();
   const { data: joinRequests = [], isLoading: isLoadingRequests } = useJoinRequests();
   const { data: invitations = [], isLoading: isLoadingInvitations } = useInvitations();
   const { data: systemNotifications = [], isLoading: isLoadingSystemNotifications } = useSystemNotifications();
@@ -97,21 +95,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     fetchProfile();
   }, [user]);
 
-  const totalSelections = selectedProjects.length + selectedTasks.length + selectedTeams.length;
-
-  const handleClearAllSelections = () => {
-    clearProjects();
-    clearTasks();
-    clearTeams();
-  };
-
-  const handleToggleSelectionMode = () => {
-    toggleSelectionMode();
-    // If disabling selection mode, clear all selections
-    if (isSelectionMode) {
-      handleClearAllSelections();
-    }
-  };
 
   const handleLogout = async () => {
     try {
@@ -228,45 +211,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </div>
               </div>
               <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
-                <Button
-                  variant={isSelectionMode ? "default" : "outline"}
-                  size="sm"
-                  onClick={handleToggleSelectionMode}
-                  className="hidden sm:inline-flex"
-                >
-                  <CheckSquare className="mr-2 h-4 w-4" />
-                  Select
-                </Button>
-                <Button
-                  variant={isSelectionMode ? "default" : "outline"}
-                  size="icon"
-                  onClick={handleToggleSelectionMode}
-                  className="sm:hidden"
-                >
-                  <CheckSquare className="h-4 w-4" />
-                </Button>
-                {isSelectionMode && totalSelections > 0 && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleClearAllSelections}
-                    className="hover:bg-destructive/10 hover:text-destructive hover:border-destructive hidden sm:inline-flex"
-                  >
-                    <X className="mr-2 h-4 w-4" />
-                    Clear All ({totalSelections})
-                  </Button>
-                )}
-                {isSelectionMode && totalSelections > 0 && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={handleClearAllSelections}
-                    className="hover:bg-destructive/10 hover:text-destructive hover:border-destructive sm:hidden"
-                    title={`Clear All (${totalSelections})`}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="relative">

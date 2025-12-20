@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Popover,
   PopoverContent,
@@ -18,13 +17,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Users, Calendar, Trash2, Sparkles, Share2, Edit } from "lucide-react";
+import { Plus, Users, Calendar, Trash2, Sparkles, Share2, Edit, X } from "lucide-react";
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { useNavigate } from "react-router-dom";
 import { useUserProjects, useDeleteProject, useUpdateProject } from "@/hooks/useProjects";
 import { useUpdateSummaries } from "@/hooks/useUpdateSummaries";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
-import { useSelectionMode } from "@/contexts/SelectionModeContext";
 import { NewProjectDialog } from "@/components/NewProjectDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -43,7 +41,6 @@ export default function Projects() {
   const navigate = useNavigate();
   const { formatDateForDisplay } = useDateSelection();
   const { toggleProject, isProjectSelected, selectedProjects } = useSelectedProjects();
-  const { isSelectionMode } = useSelectionMode();
   const { data: projects = [], isLoading } = useUserProjects();
   const { data: updateSummaries = {}, isLoading: isLoadingSummaries } = useUpdateSummaries();
   const deleteProject = useDeleteProject();
@@ -57,15 +54,10 @@ export default function Projects() {
   const [projectToLimitVisibility, setProjectToLimitVisibility] = useState<{ id: string; project: any } | null>(null);
 
   const handleCardClick = (projectId: string) => {
-    // Don't navigate if in selection mode
-    if (isSelectionMode) return;
     trackView('project', projectId);
     navigate(`/projects/${projectId}`);
   };
 
-  const handleCheckboxClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-  };
 
   const handleDeleteClick = (e: React.MouseEvent, projectId: string, projectName: string) => {
     e.stopPropagation();
@@ -109,13 +101,6 @@ export default function Projects() {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Projects</h1>
-          {selectedProjects.length > 0 && (
-            <p className="text-muted-foreground text-sm sm:text-base">
-              <span className="text-primary">
-                ({selectedProjects.length} selected)
-              </span>
-            </p>
-          )}
         </div>
         <Button 
           className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
@@ -133,9 +118,7 @@ export default function Projects() {
         {projects.map((project) => (
           <Card 
             key={project.id} 
-            className={`relative bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow ${
-              isProjectSelected(project.id) ? 'ring-2 ring-primary' : ''
-            }`}
+            className="relative bg-gradient-card border-border shadow-card cursor-pointer hover:shadow-lg transition-shadow"
             onClick={() => handleCardClick(project.id)}
           >
             {updateSummaries[project.id]?.updateSummary && (
@@ -190,21 +173,18 @@ export default function Projects() {
             <CardHeader>
               <div className="flex items-start justify-between">
                 <div className="space-y-1 flex-1 mr-2">
-                  <div className="flex items-center gap-3">
-                    {isSelectionMode && (
-                      <Checkbox
-                        checked={isProjectSelected(project.id)}
-                        onCheckedChange={() => toggleProject(project)}
-                        onClick={handleCheckboxClick}
-                        className="mt-1"
-                      />
-                    )}
-                    <CardTitle className="text-xl">{project.name}</CardTitle>
-                  </div>
-                  <CardDescription className={`line-clamp-2 text-foreground ${isSelectionMode ? 'ml-7' : ''}`}>{project.description}</CardDescription>
+                  <CardTitle className="text-xl">{project.name}</CardTitle>
+                  <CardDescription className="line-clamp-2 text-foreground">{project.description}</CardDescription>
                 </div>
                 <MoreOptionsMenu
                   items={[
+                    {
+                      icon: isProjectSelected(project.id) ? X : Plus,
+                      label: isProjectSelected(project.id) ? "Remove from Context" : "Add to Context",
+                      onClick: (e) => {
+                        toggleProject(project);
+                      },
+                    },
                     {
                       icon: Edit,
                       label: "Edit",
@@ -232,7 +212,7 @@ export default function Projects() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className={`flex items-center justify-between text-sm ${isSelectionMode ? 'ml-7' : ''}`}>
+              <div className="flex items-center justify-between text-sm">
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Users className="h-4 w-4" />
                   <span>{project.team} members</span>
