@@ -2,6 +2,7 @@ import React from "react";
 import { User, Phone } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn, getAvatarColor } from "@/lib/utils";
 import { LikeButton } from "./LikeButton";
 import { DraftResponseButton } from "./DraftResponseButton";
@@ -275,6 +276,7 @@ export function ChatMessage({
   const userId = 'userId' in message ? message.userId : undefined;
   const role = 'role' in message ? message.role : (isLean ? 'assistant' : 'user');
   const userTimezone = useUserTimezone();
+  const [selectedImage, setSelectedImage] = React.useState<string | null>(null);
   
   const handleImageError = (e: React.SyntheticEvent<HTMLImageElement>, imageUrls: string[], idx: number) => {
     if (onImageError) {
@@ -414,22 +416,20 @@ export function ChatMessage({
           {message.imageUrls && message.imageUrls.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-2">
               {message.imageUrls.map((imageUrl, idx) => (
-                <a
+                <div
                   key={idx}
-                  href={imageUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block"
+                  onClick={() => setSelectedImage(imageUrl)}
+                  className="block cursor-pointer"
                 >
                   <img
                     src={imageUrl}
                     alt={`Image ${idx + 1}`}
                     loading="lazy"
                     decoding="async"
-                    className="max-w-[200px] max-h-[200px] object-cover rounded-md border cursor-pointer hover:opacity-90 transition-opacity"
+                    className="max-w-[200px] max-h-[200px] object-cover rounded-md border hover:opacity-90 transition-opacity"
                     onError={(e) => handleImageError(e, message.imageUrls || [], idx)}
                   />
-                </a>
+                </div>
               ))}
             </div>
           )}
@@ -449,6 +449,21 @@ export function ChatMessage({
           </AvatarFallback>
         </Avatar>
       )}
+      
+      {/* Image Modal */}
+      <Dialog open={selectedImage !== null} onOpenChange={(open) => !open && setSelectedImage(null)}>
+        <DialogContent className="max-w-[95vw] max-h-[95vh] p-2 bg-background/95 border">
+          {selectedImage && (
+            <div className="flex items-center justify-center w-full h-full">
+              <img
+                src={selectedImage}
+                alt="Full size image"
+                className="max-w-full max-h-[90vh] w-auto h-auto object-contain rounded-md"
+              />
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
