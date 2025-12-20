@@ -156,11 +156,11 @@ export default function Docs() {
                 <Pin className="h-4 w-4" />
                 Pinned
               </h2>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                 {pinnedDocs.map((doc) => (
                   <Card
                     key={doc.id}
-                    className="cursor-pointer hover:shadow-md transition-shadow relative"
+                    className="cursor-pointer hover:shadow-md transition-shadow relative overflow-hidden"
                     onClick={() => {
                       trackView('doc', doc.id);
                       navigate(`/docs/${doc.id}`);
@@ -171,10 +171,10 @@ export default function Docs() {
                         <Lock className="h-4 w-4 text-muted-foreground" />
                       </div>
                     )}
-                    <CardHeader>
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <CardTitle className="line-clamp-2">{doc.title}</CardTitle>
+                    <CardHeader className="pb-3">
+                      <div className="flex items-start justify-between gap-2 min-w-0">
+                        <div className="flex-1 min-w-0">
+                          <CardTitle className="line-clamp-2 break-words">{doc.title}</CardTitle>
                         </div>
                         <MoreOptionsMenu
                           size="sm"
@@ -199,10 +199,10 @@ export default function Docs() {
                           ]}
                         />
                       </div>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
-                        <span>{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 gap-2">
+                        <span className="truncate">{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
                         {doc.ownerEmail && (
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
                             <Avatar className="h-4 w-4">
                               <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
                                 {getUserInitials(doc.ownerEmail)}
@@ -230,11 +230,11 @@ export default function Docs() {
               {pinnedDocs.length > 0 && (
                 <h2 className="text-lg font-semibold">All Docs</h2>
               )}
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                 {unpinnedDocs.map((doc) => (
                   <Card
                     key={doc.id}
-                    className="cursor-pointer hover:shadow-md transition-shadow relative"
+                    className="cursor-pointer hover:shadow-md transition-shadow relative overflow-hidden"
                     onClick={() => {
                       trackView('doc', doc.id);
                       navigate(`/docs/${doc.id}`);
@@ -245,10 +245,10 @@ export default function Docs() {
                         <Lock className="h-4 w-4 text-muted-foreground" />
                       </div>
                     )}
-                    <CardHeader>
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <CardTitle className="line-clamp-2">{doc.title}</CardTitle>
+                    <CardHeader className="pb-3">
+                      <div className="flex items-start justify-between gap-2 min-w-0">
+                        <div className="flex-1 min-w-0">
+                          <CardTitle className="line-clamp-2 break-words">{doc.title}</CardTitle>
                         </div>
                         <MoreOptionsMenu
                           size="sm"
@@ -273,10 +273,10 @@ export default function Docs() {
                           ]}
                         />
                       </div>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 -mx-6 px-6">
-                        <span>{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 gap-2">
+                        <span className="truncate">{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
                         {doc.ownerEmail && (
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
                             <Avatar className="h-4 w-4">
                               <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
                                 {getUserInitials(doc.ownerEmail)}

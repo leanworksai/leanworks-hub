@@ -24,7 +24,9 @@ import {
   Users,
   UserMinus,
   Loader2,
-  Mail
+  Mail,
+  Copy,
+  Check
 } from 'lucide-react';
 
 export default function Organizations() {
@@ -57,6 +59,7 @@ export default function Organizations() {
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [removingMember, setRemovingMember] = useState<string | null>(null);
+  const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
 
   const handleCreateOrg = async () => {
     if (!newOrgName.trim()) {
@@ -185,6 +188,18 @@ export default function Organizations() {
     setIsInviteDialogOpen(true);
   };
 
+  const handleCopySlug = async (slug: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent card click when clicking copy button
+    try {
+      await navigator.clipboard.writeText(slug);
+      setCopiedSlug(slug);
+      toast({ title: 'Copied!', description: 'Organization slug copied to clipboard' });
+      setTimeout(() => setCopiedSlug(null), 2000);
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to copy slug', variant: 'destructive' });
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -281,6 +296,22 @@ export default function Organizations() {
                         )}
                       </CardTitle>
                       <CardDescription>Your personal workspace</CardDescription>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-xs text-muted-foreground font-mono">{personalOrg.slug}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          onClick={(e) => handleCopySlug(personalOrg.slug, e)}
+                          title="Copy slug"
+                        >
+                          {copiedSlug === personalOrg.slug ? (
+                            <Check className="h-3 w-3 text-green-600" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                   {currentOrg?.id !== personalOrg.id && (
@@ -351,6 +382,22 @@ export default function Organizations() {
                             </span>
                           )}
                         </CardDescription>
+                        <div className="flex items-center gap-2 mt-1.5">
+                          <span className="text-xs text-muted-foreground font-mono">{org.slug}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0"
+                            onClick={(e) => handleCopySlug(org.slug, e)}
+                            title="Copy slug"
+                          >
+                            {copiedSlug === org.slug ? (
+                              <Check className="h-3 w-3 text-green-600" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </CardHeader>

@@ -139,42 +139,44 @@ export default function DocDetail() {
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/docs")}>
+    <div className="space-y-4 sm:space-y-6 animate-fade-in max-w-full overflow-x-hidden">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/docs")} className="self-start">
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap">
           {!isNew && doc && user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
             <Button
               variant="outline"
               size="sm"
               onClick={() => setShareDialogOpen(true)}
+              className="flex-1 sm:flex-initial"
             >
               <Share2 className="mr-2 h-4 w-4" />
-              Limit Visibility
+              <span className="hidden sm:inline">Limit Visibility</span>
+              <span className="sm:hidden">Visibility</span>
             </Button>
           )}
           <Button
             variant="outline"
             size="sm"
             onClick={() => setIsPinned(!isPinned)}
-            className={isPinned ? "bg-accent" : ""}
+            className={`${isPinned ? "bg-accent" : ""} flex-1 sm:flex-initial`}
           >
             {isPinned ? (
               <>
                 <PinOff className="mr-2 h-4 w-4" />
-                Unpin
+                <span className="hidden sm:inline">Unpin</span>
               </>
             ) : (
               <>
                 <Pin className="mr-2 h-4 w-4" />
-                Pin
+                <span className="hidden sm:inline">Pin</span>
               </>
             )}
           </Button>
-          <Button onClick={handleSave} disabled={isSaving}>
+          <Button onClick={handleSave} disabled={isSaving} className="flex-1 sm:flex-initial">
             <Save className="mr-2 h-4 w-4" />
             {isSaving ? "Saving..." : "Save"}
           </Button>

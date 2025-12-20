@@ -128,8 +128,8 @@ export function RichTextEditor({
     },
     editorProps: {
       attributes: {
-        class: 'w-full focus:outline-none min-h-[300px]',
-        style: 'white-space: pre-wrap !important; margin: 0;',
+        class: 'w-full focus:outline-none min-h-[300px] max-w-full overflow-x-hidden',
+        style: 'white-space: pre-wrap !important; margin: 0; word-wrap: break-word; overflow-wrap: break-word;',
       },
       transformPastedHTML(html) {
         // Preserve formatting by returning the HTML as-is
@@ -232,21 +232,21 @@ export function RichTextEditor({
   };
 
   return (
-    <div className="border rounded-lg">
+    <div className="border rounded-lg overflow-hidden max-w-full">
       {/* Title Input */}
       {onTitleChange && (
-        <div className="px-3 sm:px-5 pt-4 pb-2">
+        <div className="px-3 sm:px-5 pt-4 pb-2 overflow-x-hidden">
           <input
             type="text"
             placeholder={titlePlaceholder}
             value={title || ''}
             onChange={(e) => onTitleChange(e.target.value)}
-            className="w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-snug border-none bg-transparent outline-none placeholder:text-muted-foreground/50"
+            className="w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-snug border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words"
           />
         </div>
       )}
       {/* Toolbar */}
-      <div className="border-y p-2 flex flex-wrap items-center gap-1">
+      <div className="border-y p-2 flex flex-wrap items-center gap-1 overflow-x-auto">
         {/* Text Formatting */}
         <Button
           type="button"
@@ -406,7 +406,7 @@ export function RichTextEditor({
               <LinkIcon className="h-4 w-4" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent className="w-80">
+          <PopoverContent className="w-[calc(100vw-2rem)] sm:w-80 max-w-sm">
             <div className="space-y-2">
               <Label htmlFor="link-url">URL</Label>
               <Input
@@ -470,7 +470,7 @@ export function RichTextEditor({
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[500px] overflow-y-auto px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug" 
+        className="min-h-[500px] overflow-y-auto overflow-x-hidden px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_*]:max-w-full [&_.ProseMirror_*]:overflow-x-auto [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words" 
       />
     </div>
   );
