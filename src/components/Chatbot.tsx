@@ -4952,6 +4952,30 @@ export function Chatbot() {
                     )}
                   </>
                 )}
+                {/* Exit button - only visible on mobile */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="sm:hidden"
+                  onClick={() => {
+                    // Save current selected member before closing
+                    if (user?.email) {
+                      try {
+                        const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+                        localStorage.setItem(storageKey, selectedMember);
+                      } catch (error) {
+                        console.error('Failed to save last selected member:', error);
+                      }
+                    }
+                    setIsOpen(false);
+                    // Reset mobile state when closing
+                    setShowMobileConversation(false);
+                    setIsMobileSidebarOpen(false);
+                  }}
+                  title="Close chat"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
               </div>
             </div>
 
