@@ -1116,6 +1116,21 @@ export const messagesService = {
       }
     };
   },
+
+  async getRecentConversations(limit: number = 50): Promise<Array<{
+    chatId: string;
+    lastMessage: string;
+    lastMessageTimestamp: string;
+    lastMessageRole: string;
+    lastMessageUserId: string | null;
+  }>> {
+    const url = import.meta.env.DEV 
+      ? `${API_BASE}/api/conversations/recent?limit=${limit}` 
+      : `${API_BASE}/conversations/recent?limit=${limit}`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch recent conversations');
+    return response.json();
+  },
 };
 
 // Image Upload Service

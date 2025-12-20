@@ -41,6 +41,7 @@ import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
 import { 
   ChatMessage as ChatMessageComponent,
   ChatMessageList,
+  ConversationList,
   LikeButton,
   CitedContextBadges,
   type LikedByUser,
@@ -151,6 +152,14 @@ export function Chatbot() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const isMobile = useIsMobile();
   const [showMobileConversation, setShowMobileConversation] = useState(false);
+  const [showConversationList, setShowConversationList] = useState(false);
+  
+  // Reset conversation list when switching to desktop
+  useEffect(() => {
+    if (!isMobile) {
+      setShowConversationList(false);
+    }
+  }, [isMobile]);
   
   // Clear old cache entries that don't have orgId (from domain-based system)
   const clearLegacyMessageCaches = useCallback(() => {
@@ -4494,6 +4503,16 @@ export function Chatbot() {
       >
         <div className="flex flex-1 min-h-0 overflow-hidden flex-col sm:flex-row relative">
           {/* Mobile Sidebar Overlay - only needed for desktop sidebar toggle */}
+          {isMobile && (showMobileConversation || showConversationList) && (
+            <div 
+              className="fixed inset-0 bg-black/50 z-40 sm:hidden"
+              onClick={() => {
+                setShowMobileConversation(false);
+                setShowConversationList(false);
+                setIsMobileSidebarOpen(false);
+              }}
+            />
+          )}
           {!isMobile && isMobileSidebarOpen && (
             <div 
               className="fixed inset-0 bg-black/50 z-40 sm:hidden"
@@ -4507,17 +4526,18 @@ export function Chatbot() {
             // Mobile: absolute positioning with slide animation
             "absolute sm:relative",
             "inset-y-0 left-0",
-            "z-50 sm:z-auto",
+            // Mobile: lower z-index so main chat area can appear above it
+            "z-40 sm:z-auto",
             "transform transition-transform duration-300",
             // Desktop: always visible, no transform
             "sm:transform-none sm:translate-x-0",
-            // Mobile: show when NOT showing conversation (contact list view)
+            // Mobile: show when NOT showing conversation or conversation list (contact list view)
             // OR when sidebar is explicitly opened (for search/back button)
             isMobile 
-              ? (!showMobileConversation ? "translate-x-0" : "-translate-x-full")
+              ? (!showMobileConversation && !showConversationList ? "translate-x-0" : "-translate-x-full")
               : (isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full"),
             // Mobile: add bottom padding for navigation bar
-            isMobile && !showMobileConversation && "pb-12"
+            isMobile && !showMobileConversation && !showConversationList && "pb-12"
           )}>
             {/* Sidebar Header */}
             <div className="p-4 border-b flex items-center justify-between">
@@ -4783,22 +4803,72 @@ export function Chatbot() {
           {/* Main Chat Area */}
           <div className={cn(
             "flex-1 flex flex-col min-w-0 overflow-hidden",
-            // Mobile: hide if showing contact list
-            isMobile && !showMobileConversation ? "hidden" : "flex"
+            // Mobile: hide if showing contact list, show if showing conversation or conversation list
+            isMobile && !showMobileConversation && !showConversationList ? "hidden" : "flex",
+            // Ensure it appears above sidebar on mobile
+            isMobile && (showMobileConversation || showConversationList) && "relative z-50 bg-background"
           )}>
-            {/* Chat Header */}
-            <div className="flex items-center justify-between p-3 sm:p-4 border-b bg-primary/5">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="sm:hidden mr-2 flex-shrink-0"
-                onClick={() => {
-                  setShowMobileConversation(false);
-                  setIsMobileSidebarOpen(true);
-                }}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
+            {/* Show Conversation List (mobile only) or Chat Header */}
+            {showConversationList && isMobile ? (
+              <>
+                {/* Conversation List Header */}
+                <div className="flex items-center justify-between p-3 sm:p-4 border-b bg-primary/5">
+                  <h2 className="font-semibold text-lg flex-1">Recent Conversations</h2>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => {
+                      // Save current selected member before closing
+                      if (user?.email) {
+                        try {
+                          const storageKey = `chat_lastSelectedMember_${user.email.toLowerCase()}`;
+                          localStorage.setItem(storageKey, selectedMember);
+                        } catch (error) {
+                          console.error('Failed to save last selected member:', error);
+                        }
+                      }
+                      setIsOpen(false);
+                      trackAIChat('close', { source: 'conversation_list_close_button' });
+                      // Reset mobile state when closing
+                      setShowConversationList(false);
+                      setShowMobileConversation(false);
+                      setIsMobileSidebarOpen(false);
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+                {/* Conversation List */}
+                <ConversationList
+                  userEmail={user?.email || ''}
+                  allTeamMembers={allTeamMembers}
+                  projects={projects}
+                  teams={userTeams}
+                  onSelectConversation={(chatId, selectedMember) => {
+                    setSelectedMember(selectedMember);
+                    setShowConversationList(false);
+                    setShowMobileConversation(true);
+                    setIsMobileSidebarOpen(false);
+                  }}
+                  className="flex-1"
+                />
+              </>
+            ) : (
+              <>
+                {/* Chat Header */}
+                <div className="flex items-center justify-between p-3 sm:p-4 border-b bg-primary/5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="sm:hidden mr-2 flex-shrink-0"
+                    onClick={() => {
+                      setShowMobileConversation(false);
+                      setIsMobileSidebarOpen(true);
+                    }}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
               <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
                 <Avatar className="h-7 w-7 sm:h-8 sm:w-8 flex-shrink-0">
                   {selectedMember === "ai-assistant" ? (
@@ -5327,6 +5397,8 @@ export function Chatbot() {
                 )}
               </div>
             </div>
+              </>
+            )}
           </div>
         </div>
         
@@ -5337,11 +5409,12 @@ export function Chatbot() {
               <button
                 onClick={() => {
                   setShowMobileConversation(false);
+                  setShowConversationList(false);
                   setIsMobileSidebarOpen(true);
                 }}
                 className={cn(
                   "flex-1 flex flex-col items-center justify-center gap-0.5 py-2 px-2 transition-colors",
-                  !showMobileConversation
+                  !showMobileConversation && !showConversationList
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                 )}
@@ -5351,19 +5424,25 @@ export function Chatbot() {
               </button>
               <button
                 onClick={() => {
-                  if (selectedMember) {
-                    setShowMobileConversation(true);
+                  // Only show conversation list on mobile
+                  if (isMobile) {
+                    setShowConversationList(true);
+                    setShowMobileConversation(false);
                     setIsMobileSidebarOpen(false);
+                  } else {
+                    // Desktop: show conversation if member is selected
+                    if (selectedMember) {
+                      setShowMobileConversation(true);
+                      setIsMobileSidebarOpen(false);
+                    }
                   }
                 }}
-                disabled={!selectedMember}
                 className={cn(
                   "flex-1 flex flex-col items-center justify-center gap-0.5 py-2 px-2 transition-colors",
-                  showMobileConversation && selectedMember
+                  (isMobile ? showConversationList : showMobileConversation && selectedMember)
                     ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground",
-                  !selectedMember && "opacity-50 cursor-not-allowed",
-                  selectedMember && !showMobileConversation && "hover:text-foreground hover:bg-muted/50"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+                  !isMobile && !selectedMember && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <MessageSquare className="h-4 w-4" />

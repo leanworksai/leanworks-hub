@@ -36,6 +36,7 @@ import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
+import { setupMessageEndpoints } from './endpoints/messages.js';
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail } from './services/email.js';
@@ -5721,6 +5722,12 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 
 setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
+
+// ============================================================================
+// MESSAGE ENDPOINTS (Firestore)
+// ============================================================================
+
+setupMessageEndpoints(app, authenticateUser, db, storage);
 
 // ============================================================================
 // TURN SERVER ENDPOINTS (Twilio TURN credentials)

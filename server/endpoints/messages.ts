@@ -391,5 +391,264 @@ export function setupMessageEndpoints(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // GET recent conversations - Returns list of conversations with last message info
+  app.get('/api/conversations/recent', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Use org slug for Firestore path
+      let messagesPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          messagesPath = `orgs/${orgSlug}/messages`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          messagesPath = `orgs/default/messages`;
+        }
+      } else {
+        messagesPath = `orgs/default/messages`;
+      }
+
+      // Get all messages for this user (they can see messages where they're the sender or in channels they have access to)
+      // We'll group by chatId and get the most recent message for each
+      const messagesRef = db.collection(messagesPath);
+      
+      // For AI assistant, filter by userId
+      // For DMs, filter by userId (user is participant)
+      // For channels, we'll need to check access separately
+      
+      // Get messages where user is the sender (covers DMs and AI assistant)
+      const userMessagesQuery = messagesRef
+        .where('userId', '==', userEmail)
+        .orderBy('timestamp', 'desc')
+        .limit(500); // Get more to group by chatId
+      
+      let userMessagesSnapshot;
+      try {
+        userMessagesSnapshot = await userMessagesQuery.get();
+      } catch (error: any) {
+        // If index error, fetch without orderBy
+        if (error.code === 9 || error.message?.includes('index')) {
+          const snapshot = await messagesRef.where('userId', '==', userEmail).limit(500).get();
+          const docs = snapshot.docs.sort((a, b) => {
+            const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
+            const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
+            return bTime - aTime; // Descending
+          });
+          userMessagesSnapshot = { docs, empty: docs.length === 0 } as any;
+        } else {
+          throw error;
+        }
+      }
+
+      // Group messages by chatId and get the most recent one for each
+      const conversationsMap = new Map<string, any>();
+      
+      userMessagesSnapshot.docs.forEach((doc: any) => {
+        const data = doc.data();
+        const chatId = data.chatId;
+        if (!chatId) return;
+        
+        const timestamp = data.timestamp?.toDate?.()?.getTime() || 
+                         (typeof data.timestamp === 'number' ? data.timestamp : 0);
+        
+        if (!conversationsMap.has(chatId)) {
+          conversationsMap.set(chatId, {
+            chatId,
+            lastMessage: data.content || '',
+            lastMessageTimestamp: timestamp,
+            lastMessageRole: data.role || 'user',
+            lastMessageUserId: data.userId || null,
+          });
+        } else {
+          const existing = conversationsMap.get(chatId)!;
+          if (timestamp > existing.lastMessageTimestamp) {
+            existing.lastMessage = data.content || '';
+            existing.lastMessageTimestamp = timestamp;
+            existing.lastMessageRole = data.role || 'user';
+            existing.lastMessageUserId = data.userId || null;
+          }
+        }
+      });
+
+      // Also get messages in DMs where user is the recipient (other user sent)
+      // For DMs, chatId format is dm-{email1}-{email2} where emails are sorted alphabetically
+      // We need to get all messages and filter for DMs where the user is a participant
+      const allMessagesQuery = messagesRef
+        .orderBy('timestamp', 'desc')
+        .limit(1000); // Get more to filter DMs
+      
+      let allMessagesSnapshot;
+      try {
+        allMessagesSnapshot = await allMessagesQuery.get();
+      } catch (error: any) {
+        if (error.code === 9 || error.message?.includes('index')) {
+          const snapshot = await messagesRef.limit(1000).get();
+          const docs = snapshot.docs.sort((a, b) => {
+            const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
+            const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
+            return bTime - aTime;
+          });
+          allMessagesSnapshot = { docs, empty: docs.length === 0 } as any;
+        } else {
+          throw error;
+        }
+      }
+
+      // Process DM messages where user is recipient
+      // DM format: dm-{email1}-{email2} where emails are sorted alphabetically
+      // We check if the chatId contains the user's email (normalized, without @)
+      const userEmailNormalized = userEmail.replace('@', '').replace(/\./g, '');
+      
+      allMessagesSnapshot.docs.forEach((doc: any) => {
+        const data = doc.data();
+        const chatId = data.chatId;
+        if (!chatId || !chatId.startsWith('dm-')) return;
+        
+        // Skip if we already have this conversation (user was the sender)
+        if (conversationsMap.has(chatId)) return;
+        
+        // Check if this DM involves the current user
+        // The chatId format is dm-{email1}-{email2} where emails are sorted
+        // We normalize both the chatId and userEmail to compare
+        const chatIdNormalized = chatId.toLowerCase().replace(/[@\.-]/g, '');
+        if (!chatIdNormalized.includes(userEmailNormalized)) {
+          return; // User is not a participant in this DM
+        }
+        
+        const timestamp = data.timestamp?.toDate?.()?.getTime() || 
+                         (typeof data.timestamp === 'number' ? data.timestamp : 0);
+        
+        conversationsMap.set(chatId, {
+          chatId,
+          lastMessage: data.content || '',
+          lastMessageTimestamp: timestamp,
+          lastMessageRole: data.role || 'user',
+          lastMessageUserId: data.userId || null,
+        });
+      });
+
+      // Filter conversations to only include those the user has access to
+      const filteredConversations: any[] = [];
+      
+      for (const conv of conversationsMap.values()) {
+        const chatId = conv.chatId;
+        
+        // AI assistant conversations - user always has access (already filtered by userId)
+        if (chatId.startsWith('ai-assistant-')) {
+          // Verify it's the user's own AI assistant conversation
+          if (chatId.endsWith(`-${userEmail}`)) {
+            filteredConversations.push(conv);
+          }
+          continue;
+        }
+        
+        // Project channels - check if user has access
+        if (chatId.startsWith('project-') && orgId) {
+          const projectId = chatId.replace('project-', '');
+          const hasAccess = await isProjectMember(orgId, userEmail, projectId);
+          if (hasAccess) {
+            filteredConversations.push(conv);
+          }
+          continue;
+        }
+        
+        // Team channels - check if user has access
+        if (chatId.startsWith('team-') && orgId) {
+          const teamId = chatId.replace('team-', '');
+          const hasAccess = await isTeamMember(orgId, userEmail, teamId);
+          if (hasAccess) {
+            filteredConversations.push(conv);
+          }
+          continue;
+        }
+        
+        // Direct messages - verify the other user is in the same org
+        if (chatId.startsWith('dm-') && orgId) {
+          try {
+            // Extract the other user's email from the DM chatId
+            // Format: dm-{email1}-{email2} where emails are sorted
+            const dmPart = chatId.replace('dm-', '');
+            
+            // Try to extract emails - look for @ symbols
+            const atIndices: number[] = [];
+            for (let i = 0; i < dmPart.length; i++) {
+              if (dmPart[i] === '@') {
+                atIndices.push(i);
+              }
+            }
+            
+            if (atIndices.length >= 2) {
+              // Find the split point (hyphen between domains)
+              const firstDomainEnd = dmPart.indexOf('-', atIndices[0]);
+              if (firstDomainEnd > atIndices[0]) {
+                const email1 = dmPart.substring(0, firstDomainEnd);
+                const email2 = dmPart.substring(firstDomainEnd + 1);
+                const otherUserEmail = email1.toLowerCase() === userEmail 
+                  ? email2.toLowerCase() 
+                  : email1.toLowerCase();
+                
+                // Check if the other user is in the same org
+                const pool = await getOrgPool(orgId);
+                const userCheck = await pool.query(
+                  `SELECT 1 FROM users WHERE email = $1`,
+                  [otherUserEmail]
+                );
+                
+                if (userCheck.rows.length > 0) {
+                  filteredConversations.push(conv);
+                }
+              }
+            } else {
+              // Fallback: if we can't parse, check if any org member's email appears in the chatId
+              const pool = await getOrgPool(orgId);
+              const orgMembers = await pool.query(
+                `SELECT email FROM users WHERE email != $1`,
+                [userEmail]
+              );
+              
+              const memberEmails = orgMembers.rows.map((row: any) => row.email.toLowerCase());
+              const chatIdLower = chatId.toLowerCase();
+              const hasOrgMember = memberEmails.some((email: string) => 
+                chatIdLower.includes(email.replace('@', '').replace(/\./g, ''))
+              );
+              
+              if (hasOrgMember) {
+                filteredConversations.push(conv);
+              }
+            }
+          } catch (error) {
+            console.error('Error checking DM access:', error);
+            // Skip this conversation if we can't verify access
+          }
+          continue;
+        }
+        
+        // Unknown conversation type - skip it for safety
+      }
+
+      // Sort by last message timestamp and limit
+      const conversations = filteredConversations
+        .sort((a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp)
+        .slice(0, limit)
+        .map(conv => ({
+          ...conv,
+          lastMessageTimestamp: new Date(conv.lastMessageTimestamp).toISOString(),
+        }));
+
+      res.json(conversations);
+    } catch (error) {
+      console.error('Get recent conversations error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
 }
 
