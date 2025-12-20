@@ -34,6 +34,7 @@ import {
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
+import { setupFileEndpoints } from './endpoints/files.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
 import { setupMessageEndpoints } from './endpoints/messages.js';
@@ -3873,27 +3874,59 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
     // Filter docs based on visibility:
     // - 'all_members': visible to all org members (default)
     // - 'specific_members': visible to owner and members in visible_to_members array (limited visibility)
-    const result = await pool.query(`
-      SELECT 
-        id,
-        title,
-        content,
-        owner_email,
-        project_id,
-        team_id,
-        tags,
-        is_pinned,
-        visibility,
-        visible_to_members,
-        created_at,
-        updated_at
-      FROM docs
-      WHERE 
-        visibility = 'all_members'
-        OR owner_email = $1
-        OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
-      ORDER BY is_pinned DESC, created_at DESC
-    `, [normalizedEmail, JSON.stringify([normalizedEmail])]);
+    // Check if metadata column exists, then query accordingly
+    let result;
+    try {
+      result = await pool.query(`
+        SELECT 
+          id,
+          title,
+          content,
+          owner_email,
+          project_id,
+          team_id,
+          tags,
+          COALESCE(metadata, '{}'::jsonb) as metadata,
+          is_pinned,
+          visibility,
+          visible_to_members,
+          created_at,
+          updated_at
+        FROM docs
+        WHERE 
+          visibility = 'all_members'
+          OR owner_email = $1
+          OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
+        ORDER BY is_pinned DESC, created_at DESC
+      `, [normalizedEmail, JSON.stringify([normalizedEmail])]);
+    } catch (error: any) {
+      // If metadata column doesn't exist, query without it
+      if (error.message?.includes('column "metadata" does not exist') || error.message?.includes('column docs.metadata does not exist')) {
+        result = await pool.query(`
+          SELECT 
+            id,
+            title,
+            content,
+            owner_email,
+            project_id,
+            team_id,
+            tags,
+            is_pinned,
+            visibility,
+            visible_to_members,
+            created_at,
+            updated_at
+          FROM docs
+          WHERE 
+            visibility = 'all_members'
+            OR owner_email = $1
+            OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
+          ORDER BY is_pinned DESC, created_at DESC
+        `, [normalizedEmail, JSON.stringify([normalizedEmail])]);
+      } else {
+        throw error;
+      }
+    }
     
     console.log(`📚 GET /api/docs - Returning ${result.rows.length} docs for org ${orgId} (user: ${userEmail})`);
     
@@ -3917,6 +3950,24 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
       }
       return [];
     };
+
+    // Helper function to safely parse metadata JSONB field
+    const parseMetadata = (value: any): any => {
+      if (value === null || value === undefined) {
+        return {};
+      }
+      if (typeof value === 'object') {
+        return value;
+      }
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return {};
+        }
+      }
+      return {};
+    };
     
     // Transform to camelCase
     const transformed = result.rows.map(row => {
@@ -3925,6 +3976,8 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
         // PostgreSQL JSONB fields are already parsed, but handle both cases
         doc.tags = parseJsonbField(doc.tags);
         doc.visibleToMembers = parseJsonbField(doc.visibleToMembers);
+        // Metadata might not exist if column doesn't exist yet
+        doc.metadata = doc.metadata !== undefined ? parseMetadata(doc.metadata) : {};
         doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
         doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
         return doc;
@@ -3981,25 +4034,70 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
       }
       return [];
     };
+
+    // Helper function to safely parse metadata JSONB field
+    const parseMetadata = (value: any): any => {
+      if (value === null || value === undefined) {
+        return {};
+      }
+      if (typeof value === 'object') {
+        return value;
+      }
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return {};
+        }
+      }
+      return {};
+    };
     
     // Get doc and check visibility
-    const result = await pool.query(`
-      SELECT 
-        id,
-        title,
-        content,
-        owner_email,
-        project_id,
-        team_id,
-        tags,
-        is_pinned,
-        visibility,
-        visible_to_members,
-        created_at,
-        updated_at
-      FROM docs
-      WHERE id = $1
-    `, [docId]);
+    let result;
+    try {
+      result = await pool.query(`
+        SELECT 
+          id,
+          title,
+          content,
+          owner_email,
+          project_id,
+          team_id,
+          tags,
+          COALESCE(metadata, '{}'::jsonb) as metadata,
+          is_pinned,
+          visibility,
+          visible_to_members,
+          created_at,
+          updated_at
+        FROM docs
+        WHERE id = $1
+      `, [docId]);
+    } catch (error: any) {
+      // If metadata column doesn't exist, query without it
+      if (error.message?.includes('column "metadata" does not exist') || error.message?.includes('column docs.metadata does not exist')) {
+        result = await pool.query(`
+          SELECT 
+            id,
+            title,
+            content,
+            owner_email,
+            project_id,
+            team_id,
+            tags,
+            is_pinned,
+            visibility,
+            visible_to_members,
+            created_at,
+            updated_at
+          FROM docs
+          WHERE id = $1
+        `, [docId]);
+      } else {
+        throw error;
+      }
+    }
     
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Doc not found' });
@@ -4027,6 +4125,8 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     const doc = transformRow(row);
     doc.tags = parseJsonbField(doc.tags);
     doc.visibleToMembers = parseJsonbField(doc.visibleToMembers);
+    // Metadata might not exist if column doesn't exist yet
+    doc.metadata = doc.metadata !== undefined ? parseMetadata(doc.metadata) : {};
     doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
     doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
     
@@ -4046,7 +4146,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    const { id, title, content, projectId, teamId, tags, isPinned, visibility, visibleToMembers } = req.body;
+    const { id, title, content, projectId, teamId, tags, isPinned, visibility, visibleToMembers, metadata } = req.body;
     
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required' });
@@ -4068,21 +4168,46 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     const normalizedEmail = userEmail.toLowerCase();
     const docId = id || crypto.randomBytes(16).toString('hex');
     
-    await pool.query(`
-      INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, visibility, visible_to_members, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-    `, [
-      docId,
-      title,
-      content,
-      normalizedEmail,
-      projectId || null,
-      teamId || null,
-      tags ? JSON.stringify(tags) : '[]',
-      isPinned || false,
-      docVisibility,
-      JSON.stringify(visibleToMembersArray)
-    ]);
+    // Check if metadata column exists, if not, insert without it
+    try {
+      await pool.query(`
+        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, metadata, is_pinned, visibility, visible_to_members, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+      `, [
+        docId,
+        title,
+        content,
+        normalizedEmail,
+        projectId || null,
+        teamId || null,
+        tags ? JSON.stringify(tags) : '[]',
+        metadata ? JSON.stringify(metadata) : '{}',
+        isPinned || false,
+        docVisibility,
+        JSON.stringify(visibleToMembersArray)
+      ]);
+    } catch (error: any) {
+      // If metadata column doesn't exist, insert without it
+      if (error.message?.includes('column "metadata" does not exist')) {
+        await pool.query(`
+          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, visibility, visible_to_members, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        `, [
+          docId,
+          title,
+          content,
+          normalizedEmail,
+          projectId || null,
+          teamId || null,
+          tags ? JSON.stringify(tags) : '[]',
+          isPinned || false,
+          docVisibility,
+          JSON.stringify(visibleToMembersArray)
+        ]);
+      } else {
+        throw error;
+      }
+    }
     
     res.status(201).json({ 
       id: docId, 
@@ -4160,6 +4285,10 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
       } else if (key === 'visibleToMembers' && Array.isArray(value)) {
         setClauses.push(`visible_to_members = $${paramIndex}::jsonb`);
         values.push(JSON.stringify(value.map((email: string) => email.toLowerCase())));
+        paramIndex++;
+      } else if (key === 'metadata' && typeof value === 'object') {
+        setClauses.push(`metadata = $${paramIndex}::jsonb`);
+        values.push(JSON.stringify(value));
         paramIndex++;
       }
     });
@@ -5722,6 +5851,7 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 
 setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
+setupFileEndpoints(app, authenticateUser, storage);
 
 // ============================================================================
 // MESSAGE ENDPOINTS (Firestore)

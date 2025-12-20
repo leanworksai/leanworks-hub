@@ -289,6 +289,7 @@ CREATE TABLE IF NOT EXISTS docs (
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
   team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
   tags JSONB DEFAULT '[]'::jsonb,
+  metadata JSONB DEFAULT '{}'::jsonb,
   is_pinned BOOLEAN DEFAULT FALSE,
   visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
   visible_to_members JSONB DEFAULT '[]'::jsonb,

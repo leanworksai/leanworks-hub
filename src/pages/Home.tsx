@@ -171,12 +171,13 @@ export default function Home() {
                 <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
                   <FolderKanban className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">AI-Powered Project Management</h2>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">AI-Assisted Ticket Creation</h2>
                 <p className="text-lg text-muted-foreground leading-relaxed">
-                  Manage teams, projects, and tasks together through an intuitive interface designed for 
-                  seamless collaboration. Our AI assists you during ticket creation by automatically 
-                  drafting detailed descriptions, suggesting relevant information, and helping you create 
-                  comprehensive task details faster.
+                  Create perfect tickets that follow industry best practices with minimal effort. Simply provide 
+                  a title, and our AI automatically generates a comprehensive ticket with detailed descriptions, 
+                  proper formatting, and all the essential information your team needs. Our AI intelligently 
+                  assigns each ticket to the right person based on their expertise and current workload. 
+                  No more struggling with blank forms or wondering what to include—just a title, and you're done.
                 </p>
               </div>
               <Card className="order-1 w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card">
@@ -354,12 +355,13 @@ export default function Home() {
                 <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
                   <BarChart3 className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Intelligent Progress Tracking</h2>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Your Tasks Are Your Progress</h2>
                 <p className="text-lg text-muted-foreground leading-relaxed">
-                  Automatically track progress for each task as your team works, eliminating the need for 
-                  manual updates. Our AI proactively provides progress summaries that give you instant 
-                  visibility into what's been completed, what's in progress, and what needs attention. 
-                  Stay informed without constantly checking in.
+                  Every task you create automatically becomes a progress tracker. Our AI continuously captures 
+                  updates, changes, and milestones as your team works, then displays them side by side with 
+                  your tasks. See exactly what's been completed, what's in progress, and what needs attention—all 
+                  in one unified view. No manual updates needed, no switching between views. Your tasks and 
+                  their progress, perfectly aligned.
                 </p>
               </div>
             </div>
@@ -376,12 +378,13 @@ export default function Home() {
                 <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
                   <MessageSquare className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Smart Messaging & Communication</h2>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Chat With Your Teams, AI, and Everyone Together</h2>
                 <p className="text-lg text-muted-foreground leading-relaxed">
-                  Chat with everything on our platform—from your teammates to Lean, our AI project manager, 
-                  to any project, task, or team. Ask Lean questions about your projects, get instant updates 
-                  on progress, or collaborate with your team members all in one unified messaging interface. 
-                  Everything is connected and accessible through conversation.
+                  Experience a new way of collaboration where humans and AI work seamlessly together. Chat directly 
+                  with your teammates for real-time coordination, consult with Lean—our AI assistant—for instant 
+                  insights and recommendations, or bring everyone together in group conversations where AI can 
+                  participate, summarize, and facilitate discussions. Whether you need human expertise, AI 
+                  analysis, or a blend of both, all your collaboration happens in one unified space.
                 </p>
               </div>
               <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">
@@ -517,13 +520,13 @@ export default function Home() {
                 <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
                   <Phone className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Voice Meetings & Calls</h2>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Your Meetings Are Your Notes</h2>
                 <p className="text-lg text-muted-foreground leading-relaxed">
-                  Start instant voice meetings directly from any conversation. Connect with your teammates 
-                  with crystal-clear audio quality. No need to switch apps or schedule separate calls—just 
-                  click to start a meeting and collaborate in real-time. Our AI automatically transcribes 
-                  your audio and summarizes meeting docs, so you never miss important details. Perfect for 
-                  quick syncs, brainstorming sessions, or urgent discussions.
+                  Every voice call automatically becomes a comprehensive note. Start instant meetings directly 
+                  from any conversation and focus on the discussion—our AI seamlessly transcribes everything 
+                  in real-time with remarkable accuracy. After your call, the AI instantly generates a clear, 
+                  organized summary highlighting key decisions, action items, and important points. No manual 
+                  note-taking, no missed details. Just talk, and your meeting notes are ready.
                 </p>
               </div>
             </div>
@@ -540,12 +543,13 @@ export default function Home() {
                 <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
                   <FileText className="h-7 w-7 text-primary" />
                 </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Easy Documentation</h2>
+                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Write or Drop Any Document, and AI Helps You Manage Them</h2>
                 <p className="text-lg text-muted-foreground leading-relaxed">
-                  Capture your thoughts, ideas, and important information with our powerful documentation feature. 
-                  Create rich text docs, organize them with tags, and link them to projects or teams for better 
-                  context. Pin important docs for quick access, and let our AI help you organize and find your 
-                  docs effortlessly. Perfect for meeting docs, project documentation, or personal reminders.
+                  Write a new document or drop any file—PDFs, images, text files, or anything else. Our AI 
+                  automatically reads, understands, and organizes everything for you. It sorts your documents 
+                  into the right categories, extracts key information, and makes everything searchable. Ask the 
+                  AI any question about your documents and get instant answers with references. No manual 
+                  organization needed—just drop it, and AI takes care of the rest.
                 </p>
               </div>
               <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">

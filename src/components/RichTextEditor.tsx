@@ -6,7 +6,7 @@ import { TextAlign } from '@tiptap/extension-text-align';
 import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -24,6 +24,7 @@ import {
   AlignRight,
   Link as LinkIcon,
   Eraser,
+  Paperclip,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Input } from '@/components/ui/input';
@@ -45,6 +46,8 @@ interface RichTextEditorProps {
   onTitleChange?: (title: string) => void;
   titlePlaceholder?: string;
   readOnly?: boolean;
+  onFileUpload?: (file: File) => Promise<void>;
+  docId?: string;
 }
 
 export function RichTextEditor({ 
@@ -54,13 +57,17 @@ export function RichTextEditor({
   title,
   onTitleChange,
   titlePlaceholder = 'Untitled',
-  readOnly = false
+  readOnly = false,
+  onFileUpload,
+  docId
 }: RichTextEditorProps) {
   const initialContent = content || '<p></p>';
   const contentRef = useRef<string>(initialContent);
   const isUpdatingRef = useRef<boolean>(false);
   const editorInitializedRef = useRef<boolean>(false);
   const lastContentPropRef = useRef<string>(initialContent);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const baseToolbarClasses = 'text-muted-foreground';
   const activeToolbarClasses = 'bg-primary text-primary-foreground hover:bg-primary/90';
@@ -457,6 +464,53 @@ export function RichTextEditor({
             </div>
           </PopoverContent>
         </Popover>
+
+        <Separator orientation="vertical" className="h-6" />
+
+        {/* File Upload */}
+        {onFileUpload && docId && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                // Validate file size (10MB max)
+                if (file.size > 10 * 1024 * 1024) {
+                  alert('File size exceeds 10MB limit');
+                  return;
+                }
+
+                setIsUploading(true);
+                try {
+                  await onFileUpload(file);
+                } catch (error) {
+                  console.error('File upload error:', error);
+                  alert(error instanceof Error ? error.message : 'Failed to upload file');
+                } finally {
+                  setIsUploading(false);
+                  // Reset input
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                  }
+                }
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              title="Upload file (max 10MB)"
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+          </>
+        )}
 
         <Separator orientation="vertical" className="h-6" />
 

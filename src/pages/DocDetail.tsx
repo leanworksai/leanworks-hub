@@ -4,10 +4,12 @@ import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Share2, Edit } from "lucide-react";
+import { ArrowLeft, Save, Share2, Edit, Download, File } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { fileUploadService } from "@/services/api";
+import type { DocFile } from "@/data/docsData";
 
 export default function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
@@ -26,6 +28,7 @@ export default function DocDetail() {
   const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
   const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [files, setFiles] = useState<DocFile[]>([]);
   // Check if edit query parameter is present, otherwise default to read-only for existing docs
   const shouldStartInEditMode = searchParams.get('edit') === 'true' || isNew;
   const [isEditMode, setIsEditMode] = useState(shouldStartInEditMode);
@@ -40,6 +43,9 @@ export default function DocDetail() {
       // Ensure visibleToMembers is always an array before creating Set
       const membersArray = Array.isArray(doc.visibleToMembers) ? doc.visibleToMembers : [];
       setVisibleToMembers(new Set(membersArray));
+      // Load files from metadata
+      const docFiles = doc.metadata?.files || [];
+      setFiles(Array.isArray(docFiles) ? docFiles : []);
       // Set edit mode based on query parameter, default to read-only
       const shouldEdit = searchParams.get('edit') === 'true';
       setIsEditMode(shouldEdit);
@@ -49,10 +55,56 @@ export default function DocDetail() {
       setContent("");
       setVisibility('all_members');
       setVisibleToMembers(new Set());
+      setFiles([]);
       // New docs start in edit mode
       setIsEditMode(true);
     }
   }, [doc, isNew, searchParams]);
+
+  const handleFileUpload = async (file: File) => {
+    if (!docId || docId === "new") {
+      toast({
+        title: "Error",
+        description: "Please save the document first before uploading files",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const result = await fileUploadService.uploadFile(docId, file);
+      
+      // Add file to local state
+      const newFile: DocFile = {
+        fileId: result.fileId,
+        fileName: result.fileName,
+        fileUrl: result.fileUrl,
+        fileSize: result.fileSize,
+        mimeType: result.mimeType,
+        uploadedAt: new Date().toISOString(),
+      };
+      
+      const updatedFiles = [...files, newFile];
+      setFiles(updatedFiles);
+
+      // Update doc metadata with new file
+      await updateDoc.mutateAsync({
+        docId,
+        updates: {
+          metadata: {
+            files: updatedFiles,
+          },
+        },
+      });
+
+      toast({
+        title: "File uploaded",
+        description: `"${result.fileName}" has been uploaded successfully.`,
+      });
+    } catch (error) {
+      throw error; // Re-throw to let RichTextEditor handle the error
+    }
+  };
 
   const handleSave = async () => {
     if (!title.trim()) {
@@ -96,6 +148,9 @@ export default function DocDetail() {
           teamId: null,
           visibility,
           visibleToMembers: Array.from(visibleToMembers),
+          metadata: {
+            files: files,
+          },
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -113,6 +168,9 @@ export default function DocDetail() {
             content,
             visibility,
             visibleToMembers: Array.from(visibleToMembers),
+            metadata: {
+              files: files,
+            },
           },
         });
         toast({
@@ -189,7 +247,43 @@ export default function DocDetail() {
           onTitleChange={setTitle}
           titlePlaceholder="Doc title..."
           readOnly={!isEditMode}
+          onFileUpload={handleFileUpload}
+          docId={docId || undefined}
         />
+      )}
+
+      {/* Display uploaded files */}
+      {files.length > 0 && (
+        <div className="border rounded-lg p-4 space-y-2">
+          <h3 className="text-sm font-semibold mb-3">Attached Files</h3>
+          <div className="space-y-2">
+            {files.map((file) => (
+              <div
+                key={file.fileId}
+                className="flex items-center justify-between p-2 border rounded hover:bg-muted/50 transition-colors"
+              >
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <File className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <span className="text-sm truncate" title={file.fileName}>
+                    {file.fileName}
+                  </span>
+                  <span className="text-xs text-muted-foreground flex-shrink-0">
+                    ({(file.fileSize / 1024).toFixed(1)} KB)
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => window.open(file.fileUrl, '_blank')}
+                  className="flex-shrink-0"
+                >
+                  <Download className="h-4 w-4 mr-1" />
+                  Download
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Limit Visibility Dialog */}

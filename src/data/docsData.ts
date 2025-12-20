@@ -1,3 +1,12 @@
+export interface DocFile {
+  fileId: string;
+  fileName: string;
+  fileUrl: string;
+  fileSize: number;
+  mimeType: string;
+  uploadedAt: string;
+}
+
 export interface Doc {
   id: string;
   title: string;
@@ -8,6 +17,10 @@ export interface Doc {
   isPinned: boolean;
   visibility?: 'all_members' | 'specific_members';
   visibleToMembers?: string[]; // Array of member emails who can view this doc
+  metadata?: {
+    files?: DocFile[];
+    [key: string]: any;
+  };
   createdAt: string;
   updatedAt: string;
 }

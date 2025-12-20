@@ -1235,6 +1235,109 @@ export const imageUploadService = {
   },
 };
 
+// File Upload Service
+export const fileUploadService = {
+  async uploadFile(docId: string, file: File): Promise<{
+    fileUrl: string;
+    fileId: string;
+    fileName: string;
+    fileSize: number;
+    mimeType: string;
+  }> {
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('Authentication required');
+    }
+
+    // Validate file size (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      throw new Error('File size exceeds 10MB limit');
+    }
+
+    // Get org slug for storage path
+    const orgSlug = getCurrentOrgSlug();
+
+    // Create FormData
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('docId', docId);
+
+    // Upload to backend API
+    const url = import.meta.env.DEV ? `${API_BASE}/api/files/upload` : `${API_BASE}/files/upload`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+    };
+    
+    // Include org slug header if available
+    if (orgSlug) {
+      headers['X-Org-Slug'] = orgSlug;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to upload file' }));
+      throw new Error(error.error || 'Failed to upload file');
+    }
+
+    const data = await response.json();
+    if (!data.fileUrl || !data.fileId) {
+      throw new Error('Invalid response: fileUrl or fileId is missing');
+    }
+
+    return {
+      fileUrl: data.fileUrl,
+      fileId: data.fileId,
+      fileName: data.fileName || file.name,
+      fileSize: data.fileSize || file.size,
+      mimeType: data.mimeType || file.type || 'application/octet-stream',
+    };
+  },
+
+  async refreshFileUrls(docId: string, fileUrls: string[]): Promise<string[]> {
+    const token = await getAuthToken();
+    if (!token) {
+      throw new Error('Authentication required');
+    }
+
+    // Get org slug for storage path
+    const orgSlug = getCurrentOrgSlug();
+
+    const url = import.meta.env.DEV ? `${API_BASE}/api/files/refresh` : `${API_BASE}/files/refresh`;
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+    
+    // Include org slug header if available
+    if (orgSlug) {
+      headers['X-Org-Slug'] = orgSlug;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ fileUrls, docId }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to refresh file URLs' }));
+      throw new Error(error.error || 'Failed to refresh file URLs');
+    }
+
+    const data = await response.json();
+    if (!data.fileUrls || !Array.isArray(data.fileUrls)) {
+      throw new Error('Invalid response: fileUrls array is missing');
+    }
+
+    return data.fileUrls;
+  },
+};
+
 // Update Summaries Service
 export interface UpdateSummary {
   projectId: string;
