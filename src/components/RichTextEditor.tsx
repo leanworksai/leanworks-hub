@@ -470,7 +470,7 @@ export function RichTextEditor({
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[500px] overflow-y-auto overflow-x-hidden px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_*]:max-w-full [&_.ProseMirror_*]:overflow-x-auto [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words" 
+        className="min-h-[500px] overflow-y-auto overflow-x-hidden px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words" 
       />
     </div>
   );
