@@ -12,6 +12,7 @@ import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
+import { SelectedDocsProvider } from "@/contexts/SelectedDocsContext";
 import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
@@ -250,9 +251,11 @@ const App = () => {
                 <SelectedProjectsProvider>
                   <SelectedTasksProvider>
                     <SelectedTeamsProvider>
+                      <SelectedDocsProvider>
                       <Toaster />
                       <Sonner />
                       <AppRoutes />
+                      </SelectedDocsProvider>
                     </SelectedTeamsProvider>
                   </SelectedTasksProvider>
                 </SelectedProjectsProvider>

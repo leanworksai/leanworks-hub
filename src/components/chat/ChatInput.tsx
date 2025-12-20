@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, KeyboardEvent, ChangeEvent } from "react";
-import { X, Send, Image as ImageIcon, Smile, FolderOpen, CheckSquare, Users } from "lucide-react";
+import { X, Send, Image as ImageIcon, Smile, FolderOpen, CheckSquare, Users, StickyNote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { CitedContext, TeamMember } from "./types";
 import { Project } from "@/data/projectsData";
 import { Task } from "@/data/tasksData";
 import { Team } from "@/data/teamsData";
+import { Doc } from "@/data/docsData";
 
 export interface ChatInputProps {
   onSend: (message: string, imageUrls: string[]) => void;
@@ -33,6 +34,7 @@ export interface ChatInputProps {
   selectedProjects?: Project[];
   selectedTasks?: Task[];
   selectedTeams?: Team[];
+  selectedDocs?: Doc[];
   
   // Image handling
   imagePreviewUrls?: string[];
@@ -61,6 +63,7 @@ export function ChatInput({
   selectedProjects = [],
   selectedTasks = [],
   selectedTeams = [],
+  selectedDocs = [],
   imagePreviewUrls = [],
   onImageSelect,
   onImageRemove,
@@ -178,6 +181,21 @@ export function ChatInput({
             {selectedTeams.map((team) => (
               <Badge key={team.name} variant="secondary" className="text-xs">
                 {team.name}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {/* Cited Docs Section */}
+      {selectedDocs.length > 0 && (
+        <div className="px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <StickyNote className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+            <span className="text-xs font-medium text-primary">Cited Docs:</span>
+            {selectedDocs.map((doc) => (
+              <Badge key={doc.id} variant="secondary" className="text-xs">
+                {doc.title}
               </Badge>
             ))}
           </div>

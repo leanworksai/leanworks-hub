@@ -1,4 +1,4 @@
-import { FolderOpen, CheckSquare, Users } from "lucide-react";
+import { FolderOpen, CheckSquare, Users, StickyNote } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CitedContext } from "./types";
 
@@ -11,8 +11,9 @@ export function CitedContextBadges({ citedContext, className }: CitedContextBadg
   const hasProjects = citedContext.projects && citedContext.projects.length > 0;
   const hasTasks = citedContext.tasks && citedContext.tasks.length > 0;
   const hasTeams = citedContext.teams && citedContext.teams.length > 0;
+  const hasDocs = citedContext.docs && citedContext.docs.length > 0;
 
-  if (!hasProjects && !hasTasks && !hasTeams) {
+  if (!hasProjects && !hasTasks && !hasTeams && !hasDocs) {
     return null;
   }
 
@@ -53,6 +54,19 @@ export function CitedContextBadges({ citedContext, className }: CitedContextBadg
           {citedContext.teams!.map((team) => (
             <Badge key={team.id} variant="secondary" className="text-xs">
               {team.name}
+            </Badge>
+          ))}
+        </div>
+      )}
+      {hasDocs && (
+        <div className="flex items-center gap-2 flex-wrap min-w-0 w-full">
+          <StickyNote className="h-3 w-3 text-primary flex-shrink-0" />
+          <span className="text-xs font-medium text-primary flex-shrink-0 whitespace-nowrap">
+            Cited Docs:
+          </span>
+          {citedContext.docs!.map((doc) => (
+            <Badge key={doc.id} variant="secondary" className="text-xs">
+              {doc.title}
             </Badge>
           ))}
         </div>

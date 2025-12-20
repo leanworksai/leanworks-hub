@@ -26,6 +26,7 @@ import { useOrg } from "@/contexts/OrgContext";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
+import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
@@ -42,6 +43,7 @@ export function AppSidebar() {
   const { selectedProjects, toggleProject } = useSelectedProjects();
   const { selectedTasks, toggleTask } = useSelectedTasks();
   const { selectedTeams, toggleTeam } = useSelectedTeams();
+  const { selectedDocs, toggleDoc } = useSelectedDocs();
   
   // Close mobile sidebar when a navigation item is clicked
   const handleNavClick = () => {
@@ -50,7 +52,7 @@ export function AppSidebar() {
     }
   };
 
-  const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0;
+  const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
 
   return (
     <Sidebar>
@@ -197,6 +199,10 @@ export function AppSidebar() {
               size="sm"
               className="h-7 px-3 text-xs font-medium bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
               onClick={() => {
+                // Close sidebar on mobile
+                if (isMobile) {
+                  setOpenMobile(false);
+                }
                 // Dispatch custom event to open chat with AI assistant
                 window.dispatchEvent(new CustomEvent('openChatWithAI'));
               }}
@@ -282,6 +288,34 @@ export function AppSidebar() {
                           size="icon"
                           className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
                           onClick={() => toggleTeam(team)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {selectedDocs.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-2 py-1">
+                    <StickyNote className="h-3 w-3 text-sidebar-foreground/70" />
+                    <span className="text-xs font-medium text-sidebar-foreground/70">Docs</span>
+                  </div>
+                  <div className="space-y-1">
+                    {selectedDocs.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group"
+                      >
+                        <Badge variant="secondary" className="text-xs flex-1 justify-start">
+                          {doc.title}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() => toggleDoc(doc)}
                         >
                           <X className="h-3 w-3" />
                         </Button>

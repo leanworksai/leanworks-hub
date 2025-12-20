@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
-import { X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, ChevronLeft, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp } from "lucide-react";
+import { X, Send, Bot, User, FolderOpen, CheckSquare, ChevronDown, ChevronLeft, Search, Users, Hash, Activity, Filter, MessageSquare, AtSign, Mic, MicOff, Image as ImageIcon, Smile, ThumbsUp, StickyNote } from "lucide-react";
 import { VoiceCallButton, IncomingCallDialog } from "./VoiceCall";
 import { callSignalingService, type CallSignal } from "@/services/api";
 import { CallStatus } from "@/hooks/useWebRTC";
@@ -12,6 +12,7 @@ import { cn, getUserById, getUserDisplayName, getUserInitials, getAvatarColor } 
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
+import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
@@ -112,6 +113,7 @@ export function Chatbot() {
   const { selectedProjects, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedTeams, clearSelection: clearSelectedTeams } = useSelectedTeams();
+  const { selectedDocs, clearSelection: clearSelectedDocs } = useSelectedDocs();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
@@ -1607,7 +1609,7 @@ export function Chatbot() {
         }
       }, 100);
     }
-  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, isProjectChannel, isTeamChannel, isSearching, selectedMember, user?.email, allTeamMembers, lastReadTimestamps, selectedProjectId, selectedTeamId]);
+  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, selectedDocs, isProjectChannel, isTeamChannel, isSearching, selectedMember, user?.email, allTeamMembers, lastReadTimestamps, selectedProjectId, selectedTeamId]);
 
   // Calculate unread counts for all chats when chatbot opens or when user/projects/teams change
   useEffect(() => {
@@ -3111,8 +3113,8 @@ export function Chatbot() {
       }
     }
 
-    // Add selected projects, tasks, and teams if any
-    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) {
+    // Add selected projects, tasks, teams, and docs if any
+    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) {
       if (selectedProjects.length > 0) {
         contextParts.push("Selected Projects:");
         selectedProjects.forEach((project) => {
@@ -3141,6 +3143,16 @@ export function Chatbot() {
         selectedTeams.forEach((team) => {
           contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
           contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
+        });
+      }
+
+      if (selectedDocs.length > 0) {
+        contextParts.push("Selected Docs:");
+        selectedDocs.forEach((doc) => {
+          // Remove HTML tags for context
+          const textContent = doc.content.replace(/<[^>]*>/g, '').substring(0, 500);
+          contextParts.push(`- ${doc.title} (ID: ${doc.id})`);
+          contextParts.push(`  Content: ${textContent}${doc.content.length > 500 ? '...' : ''}`);
         });
       }
     }
@@ -3242,9 +3254,9 @@ export function Chatbot() {
       throw new Error('Authentication token not found. Please sign in again.');
     }
 
-    // Build context from selected projects, tasks, and teams for cited_context
+    // Build context from selected projects, tasks, teams, and docs for cited_context
     let citedContext = "";
-    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) {
+    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) {
       const contextParts: string[] = [];
       
       if (selectedProjects.length > 0) {
@@ -3275,6 +3287,16 @@ export function Chatbot() {
         selectedTeams.forEach((team) => {
           contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
           contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
+        });
+      }
+
+      if (selectedDocs.length > 0) {
+        contextParts.push("Selected Docs:");
+        selectedDocs.forEach((doc) => {
+          // Remove HTML tags for context
+          const textContent = doc.content.replace(/<[^>]*>/g, '').substring(0, 500);
+          contextParts.push(`- ${doc.title} (ID: ${doc.id})`);
+          contextParts.push(`  Content: ${textContent}${doc.content.length > 500 ? '...' : ''}`);
         });
       }
 
@@ -3621,10 +3643,11 @@ export function Chatbot() {
       const userInitials = currentUserDisplayInfo.initials;
       
       // Capture cited context before clearing (for display purposes)
-      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
+      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) ? {
         projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
         tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
         teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
+        docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
       } : undefined;
       
       // Create message and add to state immediately (optimistic update)
@@ -3707,6 +3730,7 @@ export function Chatbot() {
           clearSelectedProjects();
           clearSelectedTasks();
           clearSelectedTeams();
+          clearSelectedDocs();
         }
         
         setIsSendingMessage(false);
@@ -3810,10 +3834,11 @@ export function Chatbot() {
       const userInitials = currentUserDisplayInfo.initials;
       
       // Capture cited context before clearing (for display purposes)
-      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
+      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) ? {
         projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
         tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
         teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
+        docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
       } : undefined;
       
       // Create message and add to state immediately (optimistic update)
@@ -3898,6 +3923,7 @@ export function Chatbot() {
           clearSelectedProjects();
           clearSelectedTasks();
           clearSelectedTeams();
+          clearSelectedDocs();
         }
         
         setIsSendingMessage(false);
@@ -4071,7 +4097,7 @@ export function Chatbot() {
     setIsLoading(true);
 
       // Capture selection state before API call to ensure we clear the correct selections
-      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0;
+      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
 
       try {
         const response = await generateResponse(userMessage.content, chatId);
@@ -4081,6 +4107,7 @@ export function Chatbot() {
           clearSelectedProjects();
           clearSelectedTasks();
           clearSelectedTeams();
+          clearSelectedDocs();
         }
         
         // Create assistant message and add to state immediately (optimistic update)
@@ -4397,7 +4424,7 @@ export function Chatbot() {
     <>
       {/* Floating Chat Button */}
       <div className="fixed bottom-6 left-0 right-0 flex justify-center z-50 pointer-events-none">
-        <Button
+        <button
           onClick={() => {
             setIsOpen(!isOpen);
             // When opening on mobile, show contact list first
@@ -4413,17 +4440,16 @@ export function Chatbot() {
             }
           }}
           className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl hover:scale-110 hover:rotate-12 transition-all duration-300 relative pointer-events-auto p-0",
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-300 relative pointer-events-auto bg-primary hover:bg-primary/90 flex items-center justify-center border-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
             isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
           )}
-          size="icon"
         >
-        <img src="/logo.png" alt="Logo" className="h-14 w-14 rounded-full object-contain" />
+        <MessageSquare className="text-primary-foreground" style={{ width: '1.75rem', height: '1.75rem' }} />
         {/* Unread indicator - red dot */}
         {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
           <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background" />
         )}
-        </Button>
+        </button>
       </div>
 
       {/* Chat Window - Slack-like Layout */}
@@ -5122,6 +5148,20 @@ export function Chatbot() {
                     {selectedTeams.map((team) => (
                       <Badge key={team.name} variant="secondary" className="text-xs">
                         {team.name}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Cited Docs Section */}
+              {selectedDocs.length > 0 && (
+                <div className="px-4 pt-3 pb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <StickyNote className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+                    <span className="text-xs font-medium text-primary">Cited Docs:</span>
+                    {selectedDocs.map((doc) => (
+                      <Badge key={doc.id} variant="secondary" className="text-xs">
+                        {doc.title}
                       </Badge>
                     ))}
                   </div>

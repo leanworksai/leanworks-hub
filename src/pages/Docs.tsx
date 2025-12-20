@@ -11,7 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Pin, Trash2, Edit, User, Share2, Lock } from "lucide-react";
+import { Plus, Pin, Trash2, Edit, User, Share2, Lock, X } from "lucide-react";
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { useNavigate } from "react-router-dom";
 import { useDocs, useDeleteDoc, useUpdateDoc } from "@/hooks/useDocs";
@@ -23,6 +23,7 @@ import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 
 const truncateText = (html: string, maxLength: number) => {
   // Remove HTML tags for truncation
@@ -40,6 +41,7 @@ export default function Docs() {
   const { toast } = useToast();
   const { user } = useAuth();
   const userTimezone = useUserTimezone();
+  const { toggleDoc, isDocSelected } = useSelectedDocs();
   const [docToDelete, setDocToDelete] = useState<string | null>(null);
   const [docToShare, setDocToShare] = useState<{ id: string; doc: any } | null>(null);
 
@@ -180,6 +182,13 @@ export default function Docs() {
                           size="sm"
                           items={[
                             {
+                              icon: isDocSelected(doc.id) ? X : Plus,
+                              label: isDocSelected(doc.id) ? "Remove from Context" : "Add to Context",
+                              onClick: (e) => {
+                                toggleDoc(doc);
+                              },
+                            },
+                            {
                               icon: Edit,
                               label: "Edit",
                               onClick: () => navigate(`/docs/${doc.id}`),
@@ -253,6 +262,13 @@ export default function Docs() {
                         <MoreOptionsMenu
                           size="sm"
                           items={[
+                            {
+                              icon: isDocSelected(doc.id) ? X : Plus,
+                              label: isDocSelected(doc.id) ? "Remove from Context" : "Add to Context",
+                              onClick: (e) => {
+                                toggleDoc(doc);
+                              },
+                            },
                             {
                               icon: Edit,
                               label: "Edit",
