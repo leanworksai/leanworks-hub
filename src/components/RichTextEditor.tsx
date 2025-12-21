@@ -139,7 +139,7 @@ export function RichTextEditor({
     editorProps: {
       attributes: {
         class: 'w-full focus:outline-none min-h-[300px] max-w-full overflow-x-hidden',
-        style: 'white-space: pre-wrap !important; margin: 0; word-wrap: break-word; overflow-wrap: break-word;',
+        style: 'white-space: pre-wrap !important; margin: 0; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; max-width: 100%; width: 100%; box-sizing: border-box;',
       },
       transformPastedHTML(html) {
         // Preserve formatting by returning the HTML as-is
@@ -248,10 +248,10 @@ export function RichTextEditor({
   };
 
   return (
-    <div className="border rounded-lg overflow-hidden max-w-full">
+    <div className="border rounded-lg overflow-hidden w-full max-w-full">
       {/* Title Input */}
       {onTitleChange && (
-        <div className="px-3 sm:px-5 pt-4 pb-2 overflow-x-hidden">
+        <div className="px-3 sm:px-5 pt-4 pb-2 overflow-x-hidden w-full max-w-full">
           <input
             type="text"
             placeholder={titlePlaceholder}
@@ -539,7 +539,8 @@ export function RichTextEditor({
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[500px] overflow-y-auto overflow-x-hidden px-3 sm:px-5 py-4 [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-none [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words" 
+        className="min-h-[500px] overflow-y-auto overflow-x-hidden px-3 sm:px-5 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere" 
+        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       />
     </div>
   );

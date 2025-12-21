@@ -283,7 +283,7 @@ export default function DocDetail() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6 animate-fade-in max-w-full overflow-x-hidden">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in w-full max-w-full overflow-x-hidden">
       <div className="flex items-center justify-between gap-2 sm:gap-4">
         <Button variant="ghost" size="sm" onClick={() => navigate("/docs")}>
           <ArrowLeft className="mr-2 h-4 w-4" />
