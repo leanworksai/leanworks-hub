@@ -154,6 +154,26 @@ export function Chatbot() {
   const [showMobileConversation, setShowMobileConversation] = useState(false);
   const [showConversationList, setShowConversationList] = useState(false);
   
+  // Draggable chat button position state
+  const [buttonPosition, setButtonPosition] = useState<{ x: number; y: number }>(() => {
+    // Load saved position from localStorage
+    const saved = localStorage.getItem('chatButtonPosition');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return { x: parsed.x || 0, y: parsed.y || 0 };
+      } catch {
+        return { x: 0, y: 0 };
+      }
+    }
+    return { x: 0, y: 0 }; // Default: centered at bottom
+  });
+  
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [hasDragged, setHasDragged] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  
   // Reset conversation list when switching to desktop
   useEffect(() => {
     if (!isMobile) {
@@ -4450,40 +4470,182 @@ export function Chatbot() {
     };
   }, [isFreePlan, isMobile, toast]);
 
+  // Handle drag start (both mouse and touch)
+  const handleDragStart = useCallback((clientX: number, clientY: number) => {
+    if (isOpen) return; // Don't drag when chat is open
+    setIsDragging(true);
+    setHasDragged(false);
+    
+    // Calculate current button position on screen
+    const button = buttonRef.current;
+    if (button) {
+      const rect = button.getBoundingClientRect();
+      setDragStart({
+        x: clientX - rect.left - rect.width / 2,
+        y: clientY - rect.top - rect.height / 2,
+      });
+    } else {
+      // Fallback: use stored position or center
+      const currentX = buttonPosition.x === 0 ? window.innerWidth / 2 : buttonPosition.x;
+      const currentY = buttonPosition.y === 0 ? window.innerHeight - 24 - 28 : buttonPosition.y; // bottom-6 (24px) + half button height (28px)
+      setDragStart({
+        x: clientX - currentX,
+        y: clientY - currentY,
+      });
+    }
+  }, [isOpen, buttonPosition]);
+
+  // Handle drag move
+  const handleDragMove = useCallback((clientX: number, clientY: number) => {
+    if (!isDragging) return;
+    
+    const newX = clientX - dragStart.x;
+    const newY = clientY - dragStart.y;
+    
+    // Constrain to viewport bounds
+    const buttonSize = 56; // h-14 = 56px
+    const halfButton = buttonSize / 2;
+    const maxX = window.innerWidth - halfButton;
+    const maxY = window.innerHeight - halfButton;
+    
+    const constrainedX = Math.max(halfButton, Math.min(newX, maxX));
+    const constrainedY = Math.max(halfButton, Math.min(newY, maxY));
+    
+    // Check if we actually moved (more than 5px)
+    const moved = Math.abs(constrainedX - (buttonPosition.x || window.innerWidth / 2)) > 5 ||
+                  Math.abs(constrainedY - (buttonPosition.y || window.innerHeight - 24 - 28)) > 5;
+    
+    if (moved) {
+      setHasDragged(true);
+    }
+    
+    setButtonPosition({
+      x: constrainedX - halfButton, // Store as top-left position
+      y: constrainedY - halfButton,
+    });
+  }, [isDragging, dragStart, buttonPosition]);
+
+  // Handle drag end
+  const handleDragEnd = useCallback(() => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    // Save position to localStorage
+    localStorage.setItem('chatButtonPosition', JSON.stringify(buttonPosition));
+  }, [isDragging, buttonPosition]);
+
+  // Mouse event handlers
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      e.preventDefault();
+      handleDragMove(e.clientX, e.clientY);
+    };
+
+    const handleMouseUp = () => {
+      handleDragEnd();
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging, handleDragMove, handleDragEnd]);
+
+  // Touch event handlers
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      if (touch) {
+        handleDragMove(touch.clientX, touch.clientY);
+      }
+    };
+
+    const handleTouchEnd = () => {
+      handleDragEnd();
+    };
+
+    window.addEventListener('touchmove', handleTouchMove, { passive: false });
+    window.addEventListener('touchend', handleTouchEnd);
+
+    return () => {
+      window.removeEventListener('touchmove', handleTouchMove);
+      window.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [isDragging, handleDragMove, handleDragEnd]);
+
   return (
     <>
       {/* Floating Chat Button */}
-      <div className="fixed bottom-6 left-0 right-0 flex justify-center z-50 pointer-events-none">
+      <div 
+        className="fixed z-50 pointer-events-none"
+        style={{
+          left: buttonPosition.x === 0 ? '50%' : `${buttonPosition.x}px`,
+          top: buttonPosition.y === 0 ? 'auto' : `${buttonPosition.y}px`,
+          bottom: buttonPosition.y === 0 ? '24px' : 'auto',
+          right: buttonPosition.x === 0 ? 'auto' : 'auto',
+          transform: buttonPosition.x === 0 && buttonPosition.y === 0 ? 'translateX(-50%)' : 'none',
+        }}
+      >
         <button
-          onClick={() => {
-            const wasOpen = isOpen;
-            setIsOpen(!isOpen);
-            if (!wasOpen) {
-              trackAIChat('open', { source: 'floating_button' });
-            } else {
-              trackAIChat('close', { source: 'floating_button' });
-            }
-            // When opening on mobile, show contact list first
-            if (!isOpen) {
-              if (isMobile) {
-                setShowMobileConversation(false);
-                setIsMobileSidebarOpen(true);
-              } else {
-                // Desktop: restore the last selected member
-                const lastMember = getLastSelectedMember();
-                setSelectedMember(lastMember);
-              }
+          ref={buttonRef}
+          onMouseDown={(e) => {
+            if (e.button === 0) { // Left mouse button only
+              handleDragStart(e.clientX, e.clientY);
             }
           }}
+          onTouchStart={(e) => {
+            const touch = e.touches[0];
+            if (touch) {
+              handleDragStart(touch.clientX, touch.clientY);
+            }
+          }}
+          onClick={(e) => {
+            // Only trigger click if we didn't drag
+            if (!hasDragged) {
+              const wasOpen = isOpen;
+              setIsOpen(!isOpen);
+              if (!wasOpen) {
+                trackAIChat('open', { source: 'floating_button' });
+              } else {
+                trackAIChat('close', { source: 'floating_button' });
+              }
+              // When opening on mobile, show contact list first
+              if (!isOpen) {
+                if (isMobile) {
+                  setShowMobileConversation(false);
+                  setIsMobileSidebarOpen(true);
+                } else {
+                  // Desktop: restore the last selected member
+                  const lastMember = getLastSelectedMember();
+                  setSelectedMember(lastMember);
+                }
+              }
+            }
+            // Reset drag flag after a short delay
+            setTimeout(() => setHasDragged(false), 100);
+          }}
           className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-300 relative pointer-events-auto bg-primary hover:bg-primary/90 flex items-center justify-center border-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
-            isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100"
+            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto bg-primary hover:bg-primary/90 flex items-center justify-center border-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 cursor-move touch-none",
+            isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100",
+            isDragging && "scale-110 shadow-2xl"
           )}
+          style={{
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+            WebkitTouchCallout: 'none',
+          }}
         >
-        <MessageSquare className="text-primary-foreground" style={{ width: '1.75rem', height: '1.75rem' }} />
+        <MessageSquare className="text-primary-foreground" style={{ width: '1.75rem', height: '1.75rem', pointerEvents: 'none' }} />
         {/* Unread indicator - red dot */}
         {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
-          <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background" />
+          <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background pointer-events-none" />
         )}
         </button>
       </div>
