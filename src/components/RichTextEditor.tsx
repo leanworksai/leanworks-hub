@@ -67,12 +67,17 @@ export function RichTextEditor({
   const editorInitializedRef = useRef<boolean>(false);
   const lastContentPropRef = useRef<string>(initialContent);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarContainerRef = useRef<HTMLDivElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isToolbarSticky, setIsToolbarSticky] = useState(false);
+  const [toolbarHeight, setToolbarHeight] = useState(0);
+  const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
 
-  const baseToolbarClasses = 'text-muted-foreground';
-  const activeToolbarClasses = 'bg-primary text-primary-foreground hover:bg-primary/90';
+  const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground';
+  const activeToolbarClasses = 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm';
   const getButtonClasses = (isActive: boolean) =>
-    cn('transition-colors', baseToolbarClasses, isActive && activeToolbarClasses);
+    cn('transition-all duration-150 rounded-md', baseToolbarClasses, isActive && activeToolbarClasses);
 
   const editor = useEditor({
     extensions: [
@@ -212,11 +217,28 @@ export function RichTextEditor({
     lastContentPropRef.current = normalizedContent;
 
     try {
+      // Save selection state before updating content
+      const selection = editor.state.selection;
+      const { from, to } = selection;
+      
       // Use a timeout to ensure editor is ready and to batch updates
       const timeoutId = setTimeout(() => {
         if (editor && !editor.isDestroyed) {
           editor.commands.setContent(normalizedContent, false);
           contentRef.current = normalizedContent;
+          
+          // Try to restore selection if still valid
+          // This helps preserve cursor position when content updates
+          try {
+            const docSize = editor.state.doc.content.size;
+            // Only restore if selection positions are still within document bounds
+            if (from <= docSize && to <= docSize && from >= 0 && to >= 0) {
+              editor.commands.setTextSelection({ from, to });
+            }
+          } catch {
+            // Selection invalid (e.g., document structure changed significantly)
+            // Editor will handle default cursor position
+          }
         }
         isUpdatingRef.current = false;
       }, 100);
@@ -226,6 +248,67 @@ export function RichTextEditor({
       isUpdatingRef.current = false;
     }
   }, [content, editor]);
+
+  // Handle toolbar sticky positioning on scroll
+  useEffect(() => {
+    if (!toolbarRef.current || !toolbarContainerRef.current || readOnly) return;
+
+    const updateStickyState = () => {
+      const container = toolbarContainerRef.current;
+      const toolbar = toolbarRef.current;
+      if (!container) return;
+
+      // Update toolbar height for spacer
+      if (toolbar) {
+        setToolbarHeight(toolbar.offsetHeight);
+      }
+
+      const rect = container.getBoundingClientRect();
+      const headerHeight = 64; // Header is h-16 (64px)
+      const toolbarTop = rect.top;
+      const shouldBeSticky = toolbarTop <= headerHeight;
+      
+      // If toolbar would scroll past the header, make it sticky
+      setIsToolbarSticky(shouldBeSticky);
+
+      // Update toolbar style
+      if (shouldBeSticky) {
+        setToolbarStyle({
+          position: 'fixed',
+          top: '64px',
+          left: `${rect.left}px`,
+          width: `${rect.width}px`,
+        });
+      } else {
+        setToolbarStyle({});
+      }
+    };
+
+    // Use requestAnimationFrame for smoother performance
+    let ticking = false;
+    const onScroll = () => {
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          updateStickyState();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    const onResize = () => {
+      updateStickyState();
+    };
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize, { passive: true });
+    updateStickyState(); // Check initial position
+
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [readOnly]);
 
   if (!editor) {
     return null;
@@ -248,10 +331,10 @@ export function RichTextEditor({
   };
 
   return (
-    <div className="border rounded-lg overflow-hidden w-full max-w-full">
+    <div className="border border-border/30 rounded-lg w-full max-w-full bg-background shadow-sm">
       {/* Title Input */}
       {onTitleChange && (
-        <div className="px-3 sm:px-5 pt-4 pb-2 overflow-x-hidden w-full max-w-full">
+        <div className="px-4 sm:px-6 pt-6 pb-3 overflow-x-hidden w-full max-w-full border-b border-border/20">
           <input
             type="text"
             placeholder={titlePlaceholder}
@@ -259,15 +342,26 @@ export function RichTextEditor({
             onChange={(e) => onTitleChange(e.target.value)}
             readOnly={readOnly}
             className={cn(
-              "w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-snug border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words",
+              "w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words focus:placeholder:text-muted-foreground/30 transition-colors",
               readOnly && "cursor-default"
             )}
           />
         </div>
       )}
-      {/* Toolbar */}
+      {/* Toolbar Container - used to detect scroll position */}
       {!readOnly && (
-      <div className="border-y p-2 flex flex-wrap items-center gap-1 overflow-x-auto">
+        <div ref={toolbarContainerRef}>
+          {/* Spacer to prevent layout shift when toolbar becomes fixed */}
+          {isToolbarSticky && toolbarHeight > 0 && <div style={{ height: `${toolbarHeight}px` }} />}
+          {/* Toolbar - Fixed position when scrolling past header */}
+          <div 
+            ref={toolbarRef}
+            className={cn(
+              "z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm p-2.5 flex flex-wrap items-center gap-1 overflow-x-auto shadow-md transition-all",
+              isToolbarSticky && "fixed"
+            )}
+            style={toolbarStyle}
+          >
         {/* Text Formatting */}
         <Button
           type="button"
@@ -320,7 +414,7 @@ export function RichTextEditor({
           <Eraser className="h-4 w-4" />
         </Button>
 
-        <Separator orientation="vertical" className="h-6" />
+        <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Headings */}
         <Button
@@ -351,7 +445,7 @@ export function RichTextEditor({
           H3
         </Button>
 
-        <Separator orientation="vertical" className="h-6" />
+        <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Lists */}
         <Button
@@ -382,7 +476,7 @@ export function RichTextEditor({
           <Quote className="h-4 w-4" />
         </Button>
 
-        <Separator orientation="vertical" className="h-6" />
+        <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Alignment */}
         <Button
@@ -413,7 +507,7 @@ export function RichTextEditor({
           <AlignRight className="h-4 w-4" />
         </Button>
 
-        <Separator orientation="vertical" className="h-6" />
+        <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Link */}
         <Popover>
@@ -465,7 +559,7 @@ export function RichTextEditor({
           </PopoverContent>
         </Popover>
 
-        <Separator orientation="vertical" className="h-6" />
+        <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* File Upload */}
         {onFileUpload && docId && (
@@ -512,7 +606,7 @@ export function RichTextEditor({
           </>
         )}
 
-        <Separator orientation="vertical" className="h-6" />
+        <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Undo/Redo */}
         <Button
@@ -533,13 +627,14 @@ export function RichTextEditor({
         >
           <Redo className="h-4 w-4" />
         </Button>
-      </div>
+          </div>
+        </div>
       )}
 
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[500px] overflow-y-auto overflow-x-hidden px-3 sm:px-5 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-snug [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-snug [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere" 
+        className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere" 
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       />
     </div>

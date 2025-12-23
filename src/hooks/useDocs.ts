@@ -35,11 +35,32 @@ export const useCreateDoc = () => {
   
   return useMutation({
     mutationFn: (doc: Doc) => docsService.create(doc),
-    onSuccess: (createdDoc) => {
-      // Invalidate and refetch to show the new doc immediately
-      queryClient.invalidateQueries({ queryKey: ['docs'] });
-      queryClient.refetchQueries({ queryKey: ['docs'] });
+    onMutate: async (newDoc) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['docs'] });
+      
+      // Snapshot the previous value
+      const previousDocs = queryClient.getQueryData<Doc[]>(['docs']);
+      
+      // Optimistically update the cache
+      if (previousDocs) {
+        queryClient.setQueryData<Doc[]>(['docs'], [...previousDocs, newDoc]);
+      }
+      
       // Set the created doc in cache so it's immediately available
+      queryClient.setQueryData(['docs', newDoc.id], newDoc);
+      
+      return { previousDocs };
+    },
+    onError: (err, newDoc, context) => {
+      // Rollback on error
+      if (context?.previousDocs) {
+        queryClient.setQueryData(['docs'], context.previousDocs);
+      }
+    },
+    onSuccess: (createdDoc) => {
+      // Invalidate and refetch to ensure consistency
+      queryClient.invalidateQueries({ queryKey: ['docs'] });
       queryClient.setQueryData(['docs', createdDoc.id], createdDoc);
     },
   });
@@ -51,11 +72,61 @@ export const useUpdateDoc = () => {
   return useMutation({
     mutationFn: ({ docId, updates }: { docId: string; updates: Partial<Doc> }) =>
       docsService.update(docId, updates),
+    onMutate: async ({ docId, updates }) => {
+      // Cancel any outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['docs', docId] });
+      await queryClient.cancelQueries({ queryKey: ['docs'] });
+      
+      // Snapshot the previous values
+      const previousDoc = queryClient.getQueryData<Doc>(['docs', docId]);
+      const previousDocs = queryClient.getQueryData<Doc[]>(['docs']);
+      
+      // Optimistically update the cache
+      if (previousDoc) {
+        const optimisticDoc = { ...previousDoc, ...updates, updatedAt: new Date().toISOString() };
+        queryClient.setQueryData<Doc>(['docs', docId], optimisticDoc);
+        
+        // Also update in the docs list
+        if (previousDocs) {
+          const updatedDocs = previousDocs.map(doc => 
+            doc.id === docId ? optimisticDoc : doc
+          );
+          queryClient.setQueryData<Doc[]>(['docs'], updatedDocs);
+        }
+      }
+      
+      return { previousDoc, previousDocs };
+    },
+    onError: (err, variables, context) => {
+      // Rollback on error
+      if (context?.previousDoc) {
+        queryClient.setQueryData(['docs', variables.docId], context.previousDoc);
+      }
+      if (context?.previousDocs) {
+        queryClient.setQueryData(['docs'], context.previousDocs);
+      }
+    },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['docs'] });
-      queryClient.invalidateQueries({ queryKey: ['docs', variables.docId] });
-      // Refetch the specific doc to ensure fresh data
-      queryClient.refetchQueries({ queryKey: ['docs', variables.docId] });
+      // Update cache directly with the data we just saved - no refetch needed
+      // This prevents cursor reset in the editor
+      const currentDoc = queryClient.getQueryData<Doc>(['docs', variables.docId]);
+      if (currentDoc) {
+        queryClient.setQueryData(['docs', variables.docId], {
+          ...currentDoc,
+          ...variables.updates,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      
+      // Only invalidate the docs list query, not the current document query
+      // Invalidating the current doc causes refetch which resets cursor position
+      queryClient.invalidateQueries({ 
+        queryKey: ['docs'],
+        predicate: (query) => {
+          // Only invalidate list queries (['docs']), not individual doc queries (['docs', docId])
+          return query.queryKey[0] === 'docs' && query.queryKey.length === 1;
+        }
+      });
     },
   });
 };

@@ -1,15 +1,20 @@
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Share2, Edit, Download, File, MoreVertical, Paperclip, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Share2, Edit, Download, File, MoreVertical, Paperclip, Trash2, WifiOff } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { fileUploadService } from "@/services/api";
 import type { DocFile } from "@/data/docsData";
+import { useAutoSave } from "@/hooks/useAutoSave";
+import { DocSaveStatus } from "@/components/DocSaveStatus";
+import { DraftRecoveryDialog } from "@/components/DraftRecoveryDialog";
+import { getDraft, removeDraft, isDraftNewer } from "@/services/draftService";
+import { initOfflineQueue, isOnline } from "@/services/offlineQueue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,7 +52,6 @@ export default function DocDetail() {
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
   const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
   const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
@@ -55,9 +59,76 @@ export default function DocDetail() {
   const [files, setFiles] = useState<DocFile[]>([]);
   const [fileToDelete, setFileToDelete] = useState<DocFile | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [draftRecoveryOpen, setDraftRecoveryOpen] = useState(false);
+  const [hasCheckedDraft, setHasCheckedDraft] = useState(false);
   // Check if edit query parameter is present, otherwise default to read-only for existing docs
   const shouldStartInEditMode = searchParams.get('edit') === 'true' || isNew;
   const [isEditMode, setIsEditMode] = useState(shouldStartInEditMode);
+  
+  // Auto-save hook
+  const autoSave = useAutoSave({
+    docId: docId || 'new',
+    title,
+    content,
+    visibility,
+    visibleToMembers: Array.from(visibleToMembers),
+    files,
+    enabled: isEditMode,
+    onSaveSuccess: () => {
+      // Show success toast only for manual saves or first-time saves
+      if (docId === 'new') {
+        toast({
+          title: "Doc created",
+          description: `"${title}" has been created successfully.`,
+        });
+      }
+    },
+    onSaveError: (error) => {
+      // Errors are handled by the hook's status
+      console.error('Auto-save error:', error);
+    },
+  });
+
+  // Initialize offline queue monitoring
+  useEffect(() => {
+    const cleanup = initOfflineQueue();
+    return cleanup;
+  }, []);
+
+  // Check for draft recovery on mount
+  useEffect(() => {
+    if (hasCheckedDraft || !user?.email) return;
+    
+    const checkDraft = () => {
+      const draft = getDraft(docId || 'new', user.email);
+      
+      if (draft) {
+        // Check if draft is newer than server version
+        const serverUpdatedAt = doc?.updatedAt;
+        if (isDraftNewer(docId || 'new', user.email, serverUpdatedAt)) {
+          setDraftRecoveryOpen(true);
+        } else {
+          // Draft is older, discard it
+          removeDraft(docId || 'new', user.email);
+        }
+      }
+      
+      setHasCheckedDraft(true);
+    };
+
+    // Wait for doc to load before checking draft
+    if (isNew || (doc && !isLoading)) {
+      checkDraft();
+    }
+  }, [doc, isNew, isLoading, user?.email, docId, hasCheckedDraft]);
+
+  // Track if we were in edit mode before doc loads (to preserve after first save)
+  const wasInEditModeRef = useRef(isEditMode);
+
+  // Update ref when edit mode changes
+  useEffect(() => {
+    wasInEditModeRef.current = isEditMode;
+  }, [isEditMode]);
 
   // Load doc data when editing
   useEffect(() => {
@@ -72,8 +143,8 @@ export default function DocDetail() {
       // Load files from metadata
       const docFiles = doc.metadata?.files || [];
       setFiles(Array.isArray(docFiles) ? docFiles : []);
-      // Set edit mode based on query parameter, default to read-only
-      const shouldEdit = searchParams.get('edit') === 'true';
+      // Preserve edit mode if we were already editing, otherwise check query parameter
+      const shouldEdit = wasInEditModeRef.current || searchParams.get('edit') === 'true';
       setIsEditMode(shouldEdit);
     } else if (isNew) {
       // Reset form for new doc
@@ -188,88 +259,38 @@ export default function DocDetail() {
     }
   };
 
+  // Manual save handler (fallback for explicit save button)
   const handleSave = async () => {
-    if (!title.trim()) {
-      toast({
-        title: "Error",
-        description: "Title is required",
-        variant: "destructive",
-      });
-      return;
-    }
+    await autoSave.manualSave();
+  };
 
-    if (!content.trim() || content === "<p></p>") {
-      toast({
-        title: "Error",
-        description: "Content is required",
-        variant: "destructive",
-      });
-      return;
+  // Handle draft recovery
+  const handleDraftRestore = () => {
+    if (!user?.email) return;
+    
+    const draft = getDraft(docId || 'new', user.email);
+    if (draft) {
+      setTitle(draft.title);
+      setContent(draft.content);
+      setVisibility(draft.visibility);
+      setVisibleToMembers(new Set(draft.visibleToMembers));
+      setFiles(draft.files || []);
+      removeDraft(docId || 'new', user.email);
     }
+    
+    setDraftRecoveryOpen(false);
+  };
 
-    // Validate specific_members visibility
-    if (visibility === 'specific_members' && visibleToMembers.size === 0) {
-      toast({
-        title: "Error",
-        description: "Please select at least one member when visibility is set to 'Specific Members'",
-        variant: "destructive",
-      });
-      return;
-    }
+  const handleDraftDiscard = () => {
+    if (!user?.email) return;
+    removeDraft(docId || 'new', user.email);
+    setDraftRecoveryOpen(false);
+  };
 
-    setIsSaving(true);
-
-    try {
-      if (isNew) {
-        const newDoc = {
-          id: uuidv4(),
-          title: title.trim(),
-          content,
-          ownerEmail: user?.email || "",
-          projectId: null,
-          teamId: null,
-          visibility,
-          visibleToMembers: Array.from(visibleToMembers),
-          metadata: {
-            files: files,
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        const createdDoc = await createDoc.mutateAsync(newDoc);
-        toast({
-          title: "Doc created",
-          description: `"${createdDoc.title}" has been created successfully.`,
-        });
-        navigate('/docs');
-      } else if (docId) {
-        await updateDoc.mutateAsync({
-          docId,
-          updates: {
-            title: title.trim(),
-            content,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: {
-              files: files,
-            },
-          },
-        });
-        toast({
-          title: "Doc updated",
-          description: `"${title}" has been updated successfully.`,
-        });
-        navigate('/docs');
-      }
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to save doc",
-        variant: "destructive",
-      });
-    } finally {
-      setIsSaving(false);
-    }
+  const handleUseServerVersion = () => {
+    if (!user?.email) return;
+    removeDraft(docId || 'new', user.email);
+    setDraftRecoveryOpen(false);
   };
 
   if (isLoading && !isNew) {
@@ -283,13 +304,35 @@ export default function DocDetail() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6 animate-fade-in w-full max-w-full overflow-x-hidden">
-      <div className="flex items-center justify-between gap-2 sm:gap-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/docs")}>
+    <div className="space-y-4 sm:space-y-6 animate-fade-in w-full overflow-x-hidden">
+      <div className="flex items-center justify-between gap-3 sm:gap-4 pb-2 border-b border-border/30 px-4 sm:px-6">
+        <Button 
+          variant="ghost" 
+          size="sm" 
+          onClick={() => navigate("/docs")}
+          className="hover:bg-muted/50"
+        >
           <ArrowLeft className="mr-2 h-4 w-4" />
           Back
         </Button>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
+          {/* Offline indicator */}
+          {!isOnline() && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-amber-50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-800/30">
+              <WifiOff className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+              <span className="text-xs font-medium text-amber-700 dark:text-amber-300">Offline</span>
+            </div>
+          )}
+          
+          {/* Save status */}
+          {isEditMode && (
+            <DocSaveStatus
+              status={autoSave.saveStatus}
+              lastSavedAt={autoSave.lastSavedAt}
+              onRetry={autoSave.manualSave}
+            />
+          )}
+          
           {!isNew && doc && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -321,12 +364,21 @@ export default function DocDetail() {
             </DropdownMenu>
           )}
           {isEditMode ? (
-            <Button onClick={handleSave} disabled={isSaving} size="sm">
+            <Button 
+              onClick={handleSave} 
+              disabled={autoSave.saveStatus === 'saving'} 
+              size="sm"
+              className="shadow-sm hover:shadow transition-shadow"
+            >
               <Save className="mr-2 h-4 w-4" />
-              {isSaving ? "Saving..." : "Save"}
+              {autoSave.saveStatus === 'saving' ? "Saving..." : "Save"}
             </Button>
           ) : (
-            <Button onClick={() => setIsEditMode(true)} size="sm">
+            <Button 
+              onClick={() => setIsEditMode(true)} 
+              size="sm"
+              className="shadow-sm hover:shadow transition-shadow"
+            >
               <Edit className="mr-2 h-4 w-4" />
               Edit
             </Button>
@@ -335,21 +387,23 @@ export default function DocDetail() {
       </div>
 
       {(!isNew && isLoading && !doc) ? (
-        <div className="min-h-[500px] border rounded-lg flex items-center justify-center">
+        <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center -mx-4 sm:-mx-6">
           <p className="text-muted-foreground">Loading content...</p>
         </div>
       ) : (
-        <RichTextEditor 
-          key={docId || "new"}
-          content={content || ""} 
-          onChange={setContent}
-          title={title}
-          onTitleChange={setTitle}
-          titlePlaceholder="Doc title..."
-          readOnly={!isEditMode}
-          onFileUpload={handleFileUpload}
-          docId={docId || undefined}
-        />
+        <div className="-mx-4 sm:-mx-6">
+          <RichTextEditor 
+            key={docId || "new"}
+            content={content || ""} 
+            onChange={setContent}
+            title={title}
+            onTitleChange={setTitle}
+            titlePlaceholder="Doc title..."
+            readOnly={!isEditMode}
+            onFileUpload={handleFileUpload}
+            docId={docId || undefined}
+          />
+        </div>
       )}
 
       {/* Attached Files Dialog */}
@@ -368,7 +422,7 @@ export default function DocDetail() {
               {files.map((file) => (
                 <div
                   key={file.fileId}
-                  className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted/50 transition-colors"
+                  className="flex items-center justify-between p-3 border border-border/30 rounded-lg hover:bg-muted/50 transition-colors"
                 >
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <File className="h-5 w-5 text-muted-foreground flex-shrink-0" />
@@ -470,6 +524,19 @@ export default function DocDetail() {
               description: "Document visibility has been updated successfully.",
             });
           }}
+        />
+      )}
+
+      {/* Draft Recovery Dialog */}
+      {user?.email && (
+        <DraftRecoveryDialog
+          open={draftRecoveryOpen}
+          onOpenChange={setDraftRecoveryOpen}
+          draft={user.email ? getDraft(docId || 'new', user.email) : null}
+          serverUpdatedAt={doc?.updatedAt}
+          onRestore={handleDraftRestore}
+          onDiscard={handleDraftDiscard}
+          onUseServer={handleUseServerVersion}
         />
       )}
     </div>
