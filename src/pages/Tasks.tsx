@@ -390,7 +390,7 @@ export default function Tasks() {
                 <Card 
                   className={cn(
                     "relative cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden",
-                    hasProgressUpdate ? "flex-1" : ""
+                    "flex-1" // Always use flex-1 to maintain consistent container size
                   )}
                   onClick={() => handleTaskClick(task.id)}
                 >
@@ -741,43 +741,61 @@ export default function Tasks() {
               </Card>
 
               {/* Latest Progress Update Card - Desktop only */}
-              {hasProgressUpdate && (
-                <div className="hidden sm:flex items-center gap-3 flex-1">
-                  {/* Visual Connector Line */}
-                  <div className="flex items-center justify-center w-4 flex-shrink-0">
-                    <div className="w-0.5 h-full min-h-[100px] bg-border group-hover:bg-primary/50 transition-colors rounded-full" />
-                  </div>
-                  <Card 
-                    className="flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <CardHeader className="pb-3">
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
-                          {latestUpdate.date && (
-                            <p className="text-xs text-muted-foreground/60">
-                              {latestUpdate.date}
+              <div className="hidden sm:flex items-center gap-3 flex-1">
+                {hasProgressUpdate ? (
+                  <>
+                    {/* Visual Connector Line */}
+                    <div className="flex items-center justify-center w-4 flex-shrink-0">
+                      <div className="w-0.5 h-full min-h-[100px] bg-border group-hover:bg-primary/50 transition-colors rounded-full" />
+                    </div>
+                    <Card 
+                      className="flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
+                            {latestUpdate.date && (
+                              <p className="text-xs text-muted-foreground/60">
+                                {latestUpdate.date}
+                              </p>
+                            )}
+                          </div>
+                          <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                            <p className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-4">
+                              {latestUpdate.update}
                             </p>
-                          )}
+                            {isFreePlan && (
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                                  Upgrade to view progress update
+                                </span>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                        <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
-                          <p className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-4">
-                            {latestUpdate.update}
-                          </p>
-                          {isFreePlan && (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                Upgrade to view progress update
-                              </span>
-                            </div>
-                          )}
+                      </CardHeader>
+                    </Card>
+                  </>
+                ) : (
+                  <>
+                    {/* Empty placeholder to maintain consistent container size */}
+                    <div className="flex items-center justify-center w-4 flex-shrink-0">
+                      <div className="w-0.5 h-full min-h-[100px] bg-transparent" />
+                    </div>
+                    <Card className="flex-1 opacity-0 pointer-events-none">
+                      <CardHeader className="pb-3">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
+                          </div>
                         </div>
-                      </div>
-                    </CardHeader>
-                  </Card>
-                </div>
-              )}
+                      </CardHeader>
+                    </Card>
+                  </>
+                )}
+              </div>
               </div>
             </div>
           );

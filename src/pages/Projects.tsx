@@ -72,7 +72,7 @@ function ProjectCard({
         <Card 
           className={cn(
             "relative cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden",
-            hasUpdate ? "flex-1" : ""
+            "flex-1" // Always use flex-1 to maintain consistent container size
           )}
           onClick={() => handleCardClick(project.id)}
         >
@@ -144,7 +144,25 @@ function ProjectCard({
         </Card>
 
         {/* Latest Progress Update Card - Desktop only */}
-        {hasUpdate && <ProjectUpdateSummaryCard projectId={project.id} desktopOnly />}
+        {hasUpdate ? (
+          <ProjectUpdateSummaryCard projectId={project.id} desktopOnly />
+        ) : (
+          <div className="hidden sm:flex items-center gap-3 flex-1">
+            {/* Empty placeholder to maintain consistent container size */}
+            <div className="flex items-center justify-center w-4 flex-shrink-0">
+              <div className="w-0.5 h-full min-h-[100px] bg-transparent" />
+            </div>
+            <Card className="flex-1 opacity-0 pointer-events-none">
+              <CardHeader className="pb-3">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS SUMMARY</p>
+                  </div>
+                </div>
+              </CardHeader>
+            </Card>
+          </div>
+        )}
       </div>
     </div>
   );
