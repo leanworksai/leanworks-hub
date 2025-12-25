@@ -116,7 +116,7 @@ export function useAutoSave({
     }
 
     // Validate visibility
-    if (visibility === 'specific_members' && visibleToMembers.size === 0) {
+    if (visibility === 'specific_members' && visibleToMembers.length === 0) {
       setError(new Error('Please select at least one member when visibility is set to Specific Members'));
       setSaveStatus('error');
       return;
@@ -339,6 +339,68 @@ export function useAutoSave({
       }
     };
   }, [title, content, visibility, visibleToMembers, files, enabled, debounceDelay, hasChanges, performSave, saveDraftLocally]);
+
+  // Store performSave in a ref to avoid stale closures in cleanup effects
+  const performSaveRef = useRef(performSave);
+  useEffect(() => {
+    performSaveRef.current = performSave;
+  }, [performSave]);
+
+  // Flush pending saves on component unmount (navigation)
+  useEffect(() => {
+    return () => {
+      // On component unmount (navigation), flush pending saves
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+        
+        // If there are unsaved changes, save them now
+        // Fire-and-forget: don't block navigation
+        // Draft is already saved, so this is just syncing to server
+        if (enabled && hasChanges() && !isSavingRef.current) {
+          performSaveRef.current().catch(() => {
+            // Silently fail - draft is already in localStorage
+          });
+        }
+      }
+    };
+  }, [enabled, hasChanges]);
+
+  // Handle page visibility changes and unload (browser close/refresh)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      // When page becomes hidden (tab switch, minimize, etc.)
+      // Try to save if there are pending changes
+      if (document.visibilityState === 'hidden') {
+        if (debounceTimerRef.current && enabled && hasChanges() && !isSavingRef.current) {
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+          // Fire-and-forget save
+          performSaveRef.current().catch(() => {
+            // Silently fail - draft is already saved
+          });
+        }
+      }
+    };
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Only warn if there are significant unsaved changes
+      // AND we're not currently saving (which means changes might be lost)
+      if (enabled && hasChanges() && !isSavingRef.current && isDirty) {
+        // Modern browsers ignore custom messages, but still show warning
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [enabled, hasChanges, isDirty]);
 
   // Initialize saved state when doc loads
   useEffect(() => {

@@ -33,10 +33,9 @@ import { useToast } from "@/hooks/use-toast";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone } from "@/lib/dateTimeUtils";
-import { Check, ChevronsUpDown, Sparkles, Lock, Share2 } from "lucide-react";
+import { Check, ChevronsUpDown, Sparkles, Lock } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 import { getAuthToken } from "@/services/api";
-import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { cn } from "@/lib/utils";
 
 interface NewTaskDialogProps {
@@ -107,9 +106,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const isSettingAIAssignee = useRef(false);
-  const [showLimitVisibilityDialog, setShowLimitVisibilityDialog] = useState(false);
-  const [taskVisibility, setTaskVisibility] = useState<'all_members' | 'specific_members'>('all_members');
-  const [taskVisibleToMembers, setTaskVisibleToMembers] = useState<Set<string>>(new Set());
 
   type FormData = {
     title: string;
@@ -547,8 +543,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         tags: tags,
         progressUpdates: [],
         comments: [],
-        visibility: taskVisibility,
-        visibleToMembers: Array.from(taskVisibleToMembers),
       };
 
       await createTask.mutateAsync(task);
@@ -559,8 +553,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       });
 
       form.reset();
-      setTaskVisibility('all_members');
-      setTaskVisibleToMembers(new Set());
       onOpenChange(false);
     } catch (error) {
       toast({
@@ -576,16 +568,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setShowLimitVisibilityDialog(true)}
-          className="absolute right-16 top-4 z-10 h-8"
-        >
-          <Share2 className="h-4 w-4 mr-2" />
-          Limit Visibility
-        </Button>
         <DialogHeader>
           <DialogTitle>Create New Task</DialogTitle>
           <DialogDescription>
@@ -914,20 +896,6 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
           </form>
         </Form>
       </DialogContent>
-
-      <LimitVisibilityDialog
-        open={showLimitVisibilityDialog}
-        onOpenChange={setShowLimitVisibilityDialog}
-        title="Limit Task Visibility"
-        itemName={form.watch('title') || undefined}
-        currentVisibility={taskVisibility}
-        currentVisibleToMembers={Array.from(taskVisibleToMembers)}
-        onSave={(visibility, visibleToMembers) => {
-          setTaskVisibility(visibility);
-          setTaskVisibleToMembers(new Set(visibleToMembers));
-          setShowLimitVisibilityDialog(false);
-        }}
-      />
     </Dialog>
   );
 }

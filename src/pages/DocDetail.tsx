@@ -1,20 +1,19 @@
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Share2, Edit, Download, File, MoreVertical, Paperclip, Trash2, WifiOff } from "lucide-react";
+import { ArrowLeft, Share2, Download, File, MoreVertical, Paperclip, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { fileUploadService } from "@/services/api";
 import type { DocFile } from "@/data/docsData";
 import { useAutoSave } from "@/hooks/useAutoSave";
-import { DocSaveStatus } from "@/components/DocSaveStatus";
 import { DraftRecoveryDialog } from "@/components/DraftRecoveryDialog";
 import { getDraft, removeDraft, isDraftNewer } from "@/services/draftService";
-import { initOfflineQueue, isOnline } from "@/services/offlineQueue";
+import { initOfflineQueue } from "@/services/offlineQueue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,7 +40,6 @@ import {
 export default function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const isNew = docId === "new";
   const { data: doc, isLoading } = useDoc(docId || "");
   const createDoc = useCreateDoc();
@@ -61,11 +59,8 @@ export default function DocDetail() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [draftRecoveryOpen, setDraftRecoveryOpen] = useState(false);
   const [hasCheckedDraft, setHasCheckedDraft] = useState(false);
-  // Check if edit query parameter is present, otherwise default to read-only for existing docs
-  const shouldStartInEditMode = searchParams.get('edit') === 'true' || isNew;
-  const [isEditMode, setIsEditMode] = useState(shouldStartInEditMode);
   
-  // Auto-save hook
+  // Auto-save hook - always enabled since we're always in edit mode
   const autoSave = useAutoSave({
     docId: docId || 'new',
     title,
@@ -73,7 +68,7 @@ export default function DocDetail() {
     visibility,
     visibleToMembers: Array.from(visibleToMembers),
     files,
-    enabled: isEditMode,
+    enabled: true,
     onSaveSuccess: () => {
       // Show success toast only for manual saves or first-time saves
       if (docId === 'new') {
@@ -122,15 +117,7 @@ export default function DocDetail() {
     }
   }, [doc, isNew, isLoading, user?.email, docId, hasCheckedDraft]);
 
-  // Track if we were in edit mode before doc loads (to preserve after first save)
-  const wasInEditModeRef = useRef(isEditMode);
-
-  // Update ref when edit mode changes
-  useEffect(() => {
-    wasInEditModeRef.current = isEditMode;
-  }, [isEditMode]);
-
-  // Load doc data when editing
+  // Load doc data
   useEffect(() => {
     if (doc && !isNew) {
       setTitle(doc.title || "");
@@ -143,9 +130,6 @@ export default function DocDetail() {
       // Load files from metadata
       const docFiles = doc.metadata?.files || [];
       setFiles(Array.isArray(docFiles) ? docFiles : []);
-      // Preserve edit mode if we were already editing, otherwise check query parameter
-      const shouldEdit = wasInEditModeRef.current || searchParams.get('edit') === 'true';
-      setIsEditMode(shouldEdit);
     } else if (isNew) {
       // Reset form for new doc
       setTitle("");
@@ -153,10 +137,8 @@ export default function DocDetail() {
       setVisibility('all_members');
       setVisibleToMembers(new Set());
       setFiles([]);
-      // New docs start in edit mode
-      setIsEditMode(true);
     }
-  }, [doc, isNew, searchParams]);
+  }, [doc, isNew]);
 
   const handleFileUpload = async (file: File) => {
     if (!docId || docId === "new") {
@@ -259,11 +241,6 @@ export default function DocDetail() {
     }
   };
 
-  // Manual save handler (fallback for explicit save button)
-  const handleSave = async () => {
-    await autoSave.manualSave();
-  };
-
   // Handle draft recovery
   const handleDraftRestore = () => {
     if (!user?.email) return;
@@ -304,94 +281,13 @@ export default function DocDetail() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6 animate-fade-in w-full overflow-x-hidden">
-      <div className="flex items-center justify-between gap-3 sm:gap-4 pb-2 border-b border-border/30 px-4 sm:px-6">
-        <Button 
-          variant="ghost" 
-          size="sm" 
-          onClick={() => navigate("/docs")}
-          className="hover:bg-muted/50"
-        >
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back
-        </Button>
-        <div className="flex items-center gap-2.5">
-          {/* Offline indicator */}
-          {!isOnline() && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-amber-50 dark:bg-amber-950/20 border border-amber-200/50 dark:border-amber-800/30">
-              <WifiOff className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-              <span className="text-xs font-medium text-amber-700 dark:text-amber-300">Offline</span>
-            </div>
-          )}
-          
-          {/* Save status */}
-          {isEditMode && (
-            <DocSaveStatus
-              status={autoSave.saveStatus}
-              lastSavedAt={autoSave.lastSavedAt}
-              onRetry={autoSave.manualSave}
-            />
-          )}
-          
-          {!isNew && doc && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm">
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
-                  <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
-                    <Share2 className="mr-2 h-4 w-4" />
-                    Limit Visibility
-                  </DropdownMenuItem>
-                )}
-                <DropdownMenuItem onClick={() => setFilesDialogOpen(true)}>
-                  <Paperclip className="mr-2 h-4 w-4" />
-                  Attached Files {files.length > 0 && `(${files.length})`}
-                </DropdownMenuItem>
-                {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
-                  <DropdownMenuItem 
-                    onClick={() => setShowDeleteDialog(true)}
-                    className="text-destructive focus:text-destructive"
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          {isEditMode ? (
-            <Button 
-              onClick={handleSave} 
-              disabled={autoSave.saveStatus === 'saving'} 
-              size="sm"
-              className="shadow-sm hover:shadow transition-shadow"
-            >
-              <Save className="mr-2 h-4 w-4" />
-              {autoSave.saveStatus === 'saving' ? "Saving..." : "Save"}
-            </Button>
-          ) : (
-            <Button 
-              onClick={() => setIsEditMode(true)} 
-              size="sm"
-              className="shadow-sm hover:shadow transition-shadow"
-            >
-              <Edit className="mr-2 h-4 w-4" />
-              Edit
-            </Button>
-          )}
-        </div>
-      </div>
-
+    <div className="animate-fade-in w-full overflow-x-hidden">
       {(!isNew && isLoading && !doc) ? (
         <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center -mx-4 sm:-mx-6">
           <p className="text-muted-foreground">Loading content...</p>
         </div>
       ) : (
-        <div className="-mx-4 sm:-mx-6">
+        <div className="-mx-4 sm:-mx-6 -mt-2">
           <RichTextEditor 
             key={docId || "new"}
             content={content || ""} 
@@ -399,9 +295,51 @@ export default function DocDetail() {
             title={title}
             onTitleChange={setTitle}
             titlePlaceholder="Doc title..."
-            readOnly={!isEditMode}
+            readOnly={false}
             onFileUpload={handleFileUpload}
             docId={docId || undefined}
+            titleRightActions={
+              <>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => navigate("/docs")}
+                  className="hover:bg-muted/50"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Button>
+                {!isNew && doc && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="sm">
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                        <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
+                          <Share2 className="mr-2 h-4 w-4" />
+                          Limit Visibility
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem onClick={() => setFilesDialogOpen(true)}>
+                        <Paperclip className="mr-2 h-4 w-4" />
+                        Attached Files {files.length > 0 && `(${files.length})`}
+                      </DropdownMenuItem>
+                      {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                        <DropdownMenuItem 
+                          onClick={() => setShowDeleteDialog(true)}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </>
+            }
           />
         </div>
       )}

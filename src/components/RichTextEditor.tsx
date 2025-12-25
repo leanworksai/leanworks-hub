@@ -48,6 +48,7 @@ interface RichTextEditorProps {
   readOnly?: boolean;
   onFileUpload?: (file: File) => Promise<void>;
   docId?: string;
+  titleRightActions?: React.ReactNode;
 }
 
 export function RichTextEditor({ 
@@ -59,7 +60,8 @@ export function RichTextEditor({
   titlePlaceholder = 'Untitled',
   readOnly = false,
   onFileUpload,
-  docId
+  docId,
+  titleRightActions
 }: RichTextEditorProps) {
   const initialContent = content || '<p></p>';
   const contentRef = useRef<string>(initialContent);
@@ -334,18 +336,25 @@ export function RichTextEditor({
     <div className="border border-border/30 rounded-lg w-full max-w-full bg-background shadow-sm">
       {/* Title Input */}
       {onTitleChange && (
-        <div className="px-4 sm:px-6 pt-6 pb-3 overflow-x-hidden w-full max-w-full border-b border-border/20">
-          <input
-            type="text"
-            placeholder={titlePlaceholder}
-            value={title || ''}
-            onChange={(e) => onTitleChange(e.target.value)}
-            readOnly={readOnly}
-            className={cn(
-              "w-full text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words focus:placeholder:text-muted-foreground/30 transition-colors",
-              readOnly && "cursor-default"
+        <div className="px-4 sm:px-6 pt-0 pb-3 overflow-x-hidden w-full max-w-full border-b border-border/20">
+          <div className="flex items-center gap-2 w-full">
+            <input
+              type="text"
+              placeholder={titlePlaceholder}
+              value={title || ''}
+              onChange={(e) => onTitleChange(e.target.value)}
+              readOnly={readOnly}
+              className={cn(
+                "flex-1 min-w-0 text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words focus:placeholder:text-muted-foreground/30 transition-colors",
+                readOnly && "cursor-default"
+              )}
+            />
+            {titleRightActions && (
+              <div className="flex items-center gap-1 flex-shrink-0">
+                {titleRightActions}
+              </div>
             )}
-          />
+          </div>
         </div>
       )}
       {/* Toolbar Container - used to detect scroll position */}
