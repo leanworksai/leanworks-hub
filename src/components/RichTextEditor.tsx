@@ -350,7 +350,7 @@ export function RichTextEditor({
               )}
             />
             {titleRightActions && (
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
                 {titleRightActions}
               </div>
             )}

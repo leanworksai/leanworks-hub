@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { fileUploadService } from "@/services/api";
+import { DetailPageHeader } from "@/components/DetailPageHeader";
 import type { DocFile } from "@/data/docsData";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { DraftRecoveryDialog } from "@/components/DraftRecoveryDialog";
@@ -280,14 +281,43 @@ export default function DocDetail() {
     );
   }
 
+  const docActions = !isNew && doc ? [
+    ...(user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() ? [{
+      label: "Limit Visibility",
+      icon: <Share2 className="h-4 w-4" />,
+      onClick: () => setShareDialogOpen(true),
+    }] : []),
+    {
+      label: `Attached Files ${files.length > 0 ? `(${files.length})` : ''}`,
+      icon: <Paperclip className="h-4 w-4" />,
+      onClick: () => setFilesDialogOpen(true),
+    },
+    ...(user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() ? [{
+      label: "Delete",
+      icon: <Trash2 className="h-4 w-4" />,
+      onClick: () => setShowDeleteDialog(true),
+      destructive: true,
+    }] : []),
+  ] : [];
+
   return (
-    <div className="animate-fade-in w-full overflow-x-hidden">
+    <div className="animate-fade-in w-full overflow-x-hidden -mt-2 sm:-mt-4">
+      {/* Mobile buttons at top - using DetailPageHeader for consistency */}
+      <div className="sm:hidden mb-4">
+        <DetailPageHeader
+          title={title || "Untitled"}
+          backHref="/docs"
+          actions={docActions}
+          showActions={!isNew && !!doc}
+        />
+      </div>
+
       {(!isNew && isLoading && !doc) ? (
         <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center -mx-4 sm:-mx-6">
           <p className="text-muted-foreground">Loading content...</p>
         </div>
       ) : (
-        <div className="-mx-4 sm:-mx-6 -mt-2">
+        <div className="-mx-4 sm:-mx-6">
           <RichTextEditor 
             key={docId || "new"}
             content={content || ""} 

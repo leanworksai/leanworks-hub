@@ -60,6 +60,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { DetailPageHeader } from "@/components/DetailPageHeader";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -433,44 +434,29 @@ export default function ProjectDetail() {
     });
   };
 
+  const headerActions = isOwner && project ? [
+    {
+      label: "Limit Visibility",
+      icon: <Share2 className="h-4 w-4" />,
+      onClick: () => setShowLimitVisibilityDialog(true),
+    },
+    {
+      label: "Delete",
+      icon: <Trash2 className="h-4 w-4" />,
+      onClick: () => setShowDeleteDialog(true),
+      destructive: true,
+    },
+  ] : [];
+
   return (
-    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+    <div className="space-y-4 sm:space-y-6 animate-fade-in -mt-2 sm:-mt-4">
       <div>
-        <div className="flex items-center gap-2 w-full mb-2">
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight flex-1 min-w-0">{project.name}</h1>
-          <div className="flex items-center gap-1 flex-shrink-0">
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={() => navigate("/projects")}
-              className="hover:bg-muted/50"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
-            {isOwner && project && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm">
-                    <MoreVertical className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
-                    <Share2 className="mr-2 h-4 w-4" />
-                    Limit Visibility
-                  </DropdownMenuItem>
-                  <DropdownMenuItem 
-                    onClick={() => setShowDeleteDialog(true)}
-                    className="text-destructive focus:text-destructive"
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </div>
-        </div>
+        <DetailPageHeader
+          title={project.name}
+          backHref="/projects"
+          actions={headerActions}
+          showActions={isOwner && !!project}
+        />
         <p className="text-foreground text-base sm:text-lg mb-4">{project.description}</p>
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 text-sm text-muted-foreground">
           <div className="flex items-center gap-2">

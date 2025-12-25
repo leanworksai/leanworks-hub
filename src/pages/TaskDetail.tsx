@@ -83,6 +83,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
+import { DetailPageHeader } from "@/components/DetailPageHeader";
 
 const getInitials = (name: string): string => {
   return name
@@ -518,70 +519,43 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const userEmail = user?.email?.toLowerCase();
   const isCreator = !task.createdBy || (taskCreatorEmail && userEmail && taskCreatorEmail === userEmail);
 
+  const headerActions = isCreator && task ? [
+    {
+      label: "Limit Visibility",
+      icon: <Share2 className="h-4 w-4" />,
+      onClick: () => setShowLimitVisibilityDialog(true),
+    },
+    {
+      label: "Delete",
+      icon: <Trash2 className="h-4 w-4" />,
+      onClick: () => setShowDeleteDialog(true),
+      destructive: true,
+    },
+  ] : [];
+
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className={`space-y-6 animate-fade-in ${!isDialog ? '-mt-2 sm:-mt-4' : ''}`}>
       <div>
-        <div className="flex items-center gap-2 w-full mb-2">
-          <div className="flex-1 min-w-0">
-            {editingField === 'title' && editedTask ? (
-              <Input
-                value={editedTask.title}
-                onChange={(e) => setEditedTask({ ...editedTask, title: e.target.value })}
-                onBlur={() => handleFieldSave('title', editedTask.title)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleFieldSave('title', editedTask.title);
-                  } else if (e.key === 'Escape') {
-                    handleFieldCancel();
-                  }
-                }}
-                autoFocus
-                className="text-3xl font-bold h-auto py-2"
-              />
-            ) : (
-              <h1 
-                className="text-3xl font-bold tracking-tight cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
-                onClick={() => handleFieldClick('title')}
-              >
-                {task.title}
-              </h1>
-            )}
-          </div>
-          {!isDialog && (
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <Button 
-                variant="ghost" 
-                size="sm" 
-                onClick={handleBack}
-                className="hover:bg-muted/50"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-              {isCreator && task && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="sm">
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
-                      <Share2 className="mr-2 h-4 w-4" />
-                      Limit Visibility
-                    </DropdownMenuItem>
-                    <DropdownMenuItem 
-                      onClick={() => setShowDeleteDialog(true)}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </div>
-          )}
-        </div>
+        <DetailPageHeader
+          title={editingField === 'title' && editedTask ? editedTask.title : task.title}
+          onTitleChange={editingField === 'title' && editedTask ? (newTitle) => setEditedTask({ ...editedTask, title: newTitle }) : undefined}
+          onTitleBlur={editingField === 'title' && editedTask ? () => handleFieldSave('title', editedTask.title) : undefined}
+          onTitleKeyDown={editingField === 'title' && editedTask ? (e) => {
+            if (e.key === 'Enter') {
+              handleFieldSave('title', editedTask.title);
+            } else if (e.key === 'Escape') {
+              handleFieldCancel();
+            }
+          } : undefined}
+          isEditingTitle={editingField === 'title' && !!editedTask}
+          titleClassName={editingField !== 'title' ? "text-3xl" : "text-3xl"}
+          onTitleClick={editingField !== 'title' ? () => handleFieldClick('title') : undefined}
+          backHref="/tasks"
+          actions={headerActions}
+          showActions={isCreator && !!task}
+          isDialog={isDialog}
+          onBack={handleBack}
+        />
         {editingField === 'description' && editedTask ? (
           <Textarea
             value={editedTask.description}
