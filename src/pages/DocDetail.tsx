@@ -309,6 +309,7 @@ export default function DocDetail() {
           backHref="/docs"
           actions={docActions}
           showActions={!isNew && !!doc}
+          hideTitle={true}
         />
       </div>
 
