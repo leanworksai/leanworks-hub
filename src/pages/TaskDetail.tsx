@@ -332,9 +332,13 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       <div className="space-y-6 animate-fade-in">
         {!isDialog && (
           <div className="flex items-center justify-between">
-            <Button variant="ghost" size="sm" onClick={handleBack}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={handleBack}
+              className="hover:bg-muted/50"
+            >
+              <ArrowLeft className="h-4 w-4" />
             </Button>
           </div>
         )}
@@ -350,9 +354,13 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       <div className="space-y-6 animate-fade-in">
         {!isDialog && (
           <div className="flex items-center justify-between">
-            <Button variant="ghost" size="sm" onClick={handleBack}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={handleBack}
+              className="hover:bg-muted/50"
+            >
+              <ArrowLeft className="h-4 w-4" />
             </Button>
           </div>
         )}
@@ -369,9 +377,13 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       <div className="space-y-6 animate-fade-in">
         {!isDialog && (
           <div className="flex items-center justify-between">
-            <Button variant="ghost" size="sm" onClick={handleBack}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={handleBack}
+              className="hover:bg-muted/50"
+            >
+              <ArrowLeft className="h-4 w-4" />
             </Button>
           </div>
         )}
@@ -508,66 +520,67 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {!isDialog && (
-        <div className="flex items-center justify-between">
-          <Button variant="ghost" size="sm" onClick={handleBack}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
-          {isCreator && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm">
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
-                  <Share2 className="mr-2 h-4 w-4" />
-                  Limit Visibility
-                </DropdownMenuItem>
-                <DropdownMenuItem 
-                  onClick={() => setShowDeleteDialog(true)}
-                  className="text-destructive focus:text-destructive"
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </div>
-      )}
-
       <div>
-        <div className="flex items-start justify-between mb-2">
-          <div className="flex items-start gap-3 flex-1">
-            <div className="flex-1">
-              {editingField === 'title' && editedTask ? (
-                <Input
-                  value={editedTask.title}
-                  onChange={(e) => setEditedTask({ ...editedTask, title: e.target.value })}
-                  onBlur={() => handleFieldSave('title', editedTask.title)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleFieldSave('title', editedTask.title);
-                    } else if (e.key === 'Escape') {
-                      handleFieldCancel();
-                    }
-                  }}
-                  autoFocus
-                  className="text-3xl font-bold h-auto py-2"
-                />
-              ) : (
-                <h1 
-                  className="text-3xl font-bold tracking-tight cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
-                  onClick={() => handleFieldClick('title')}
-                >
-                  {task.title}
-                </h1>
+        <div className="flex items-center gap-2 w-full mb-2">
+          <div className="flex-1 min-w-0">
+            {editingField === 'title' && editedTask ? (
+              <Input
+                value={editedTask.title}
+                onChange={(e) => setEditedTask({ ...editedTask, title: e.target.value })}
+                onBlur={() => handleFieldSave('title', editedTask.title)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleFieldSave('title', editedTask.title);
+                  } else if (e.key === 'Escape') {
+                    handleFieldCancel();
+                  }
+                }}
+                autoFocus
+                className="text-3xl font-bold h-auto py-2"
+              />
+            ) : (
+              <h1 
+                className="text-3xl font-bold tracking-tight cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
+                onClick={() => handleFieldClick('title')}
+              >
+                {task.title}
+              </h1>
+            )}
+          </div>
+          {!isDialog && (
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={handleBack}
+                className="hover:bg-muted/50"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+              {isCreator && task && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm">
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
+                      <Share2 className="mr-2 h-4 w-4" />
+                      Limit Visibility
+                    </DropdownMenuItem>
+                    <DropdownMenuItem 
+                      onClick={() => setShowDeleteDialog(true)}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
-          </div>
+          )}
         </div>
         {editingField === 'description' && editedTask ? (
           <Textarea

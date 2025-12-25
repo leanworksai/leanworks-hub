@@ -198,9 +198,13 @@ export default function ProjectDetail() {
   if (!projectId) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
+        <Button 
+          variant="ghost" 
+          size="sm"
+          onClick={() => navigate("/projects")}
+          className="hover:bg-muted/50"
+        >
+          <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="text-center py-12">
           <h1 className="text-2xl font-bold">Invalid project URL</h1>
@@ -215,9 +219,13 @@ export default function ProjectDetail() {
   if (isLoading) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
+        <Button 
+          variant="ghost" 
+          size="sm"
+          onClick={() => navigate("/projects")}
+          className="hover:bg-muted/50"
+        >
+          <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="text-center py-12">
           <p className="text-muted-foreground">Loading project...</p>
@@ -230,9 +238,13 @@ export default function ProjectDetail() {
   if (projectError) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
+        <Button 
+          variant="ghost" 
+          size="sm"
+          onClick={() => navigate("/projects")}
+          className="hover:bg-muted/50"
+        >
+          <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="text-center py-12 space-y-4">
           <h1 className="text-2xl font-bold text-destructive">Error loading project</h1>
@@ -248,9 +260,13 @@ export default function ProjectDetail() {
   if (!project) {
     return (
       <div className="space-y-6 animate-fade-in">
-        <Button variant="ghost" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back to Projects
+        <Button 
+          variant="ghost" 
+          size="sm"
+          onClick={() => navigate("/projects")}
+          className="hover:bg-muted/50"
+        >
+          <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="text-center py-12 space-y-4">
           <h1 className="text-2xl font-bold">Project not found</h1>
@@ -419,38 +435,41 @@ export default function ProjectDetail() {
 
   return (
     <div className="space-y-4 sm:space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate("/projects")}>
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          Back
-        </Button>
-        {isOwner && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm">
-                <MoreVertical className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
-                <Share2 className="mr-2 h-4 w-4" />
-                Limit Visibility
-              </DropdownMenuItem>
-              <DropdownMenuItem 
-                onClick={() => setShowDeleteDialog(true)}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
-
       <div>
-        <div className="flex items-start justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2 w-full mb-2">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight flex-1 min-w-0">{project.name}</h1>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => navigate("/projects")}
+              className="hover:bg-muted/50"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            {isOwner && project && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm">
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setShowLimitVisibilityDialog(true)}>
+                    <Share2 className="mr-2 h-4 w-4" />
+                    Limit Visibility
+                  </DropdownMenuItem>
+                  <DropdownMenuItem 
+                    onClick={() => setShowDeleteDialog(true)}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
         </div>
         <p className="text-foreground text-base sm:text-lg mb-4">{project.description}</p>
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 text-sm text-muted-foreground">
