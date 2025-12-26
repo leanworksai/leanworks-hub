@@ -68,6 +68,7 @@ export function RichTextEditor({
   const isUpdatingRef = useRef<boolean>(false);
   const editorInitializedRef = useRef<boolean>(false);
   const lastContentPropRef = useRef<string>(initialContent);
+  const isUndoRedoRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarContainerRef = useRef<HTMLDivElement>(null);
@@ -76,10 +77,10 @@ export function RichTextEditor({
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
 
-  const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground';
-  const activeToolbarClasses = 'bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm';
+  const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-75';
+  const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
   const getButtonClasses = (isActive: boolean) =>
-    cn('transition-all duration-150 rounded-md', baseToolbarClasses, isActive && activeToolbarClasses);
+    cn('rounded-md', isActive ? activeToolbarClasses : baseToolbarClasses);
 
   const editor = useEditor({
     extensions: [
@@ -119,10 +120,21 @@ export function RichTextEditor({
       if (!isUpdatingRef.current) {
         const html = editor.getHTML();
         contentRef.current = html;
-        // Update lastContentPropRef to match what the user just typed
-        // This prevents the useEffect from triggering an update when content prop changes
-        lastContentPropRef.current = html;
-        onChange(html);
+        
+        if (isUndoRedoRef.current) {
+          // During undo/redo, update lastContentPropRef to prevent useEffect from interfering
+          // but still call onChange to keep parent state in sync
+          lastContentPropRef.current = html;
+          onChange(html);
+          // Reset the flag after a short delay to allow undo/redo to complete
+          setTimeout(() => {
+            isUndoRedoRef.current = false;
+          }, 0);
+        } else {
+          // Normal update - update refs and call onChange
+          lastContentPropRef.current = html;
+          onChange(html);
+        }
       }
     },
     onCreate: ({ editor }) => {
@@ -155,6 +167,19 @@ export function RichTextEditor({
       },
       handleDOMEvents: {
         keydown: (view, event) => {
+          // Handle undo/redo keyboard shortcuts
+          const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+          const isUndo = (isMac && event.metaKey && event.key === 'z' && !event.shiftKey) ||
+                        (!isMac && event.ctrlKey && event.key === 'z' && !event.shiftKey);
+          const isRedo = (isMac && (event.metaKey && event.key === 'z' && event.shiftKey) || (event.metaKey && event.key === 'y')) ||
+                        (!isMac && ((event.ctrlKey && event.key === 'y') || (event.ctrlKey && event.shiftKey && event.key === 'z')));
+          
+          if (isUndo || isRedo) {
+            isUndoRedoRef.current = true;
+            // Let TipTap handle the undo/redo, we just set the flag
+            return false;
+          }
+          
           // Preserve trailing spaces when space is pressed at end of line
           if (event.key === ' ' || event.keyCode === 32) {
             const { state } = view;
@@ -189,6 +214,11 @@ export function RichTextEditor({
   // Only update when loading a new note, not during user editing
   useEffect(() => {
     if (!editor || !editorInitializedRef.current) {
+      return;
+    }
+
+    // Skip updates during undo/redo operations to preserve history
+    if (isUndoRedoRef.current) {
       return;
     }
 
@@ -366,7 +396,7 @@ export function RichTextEditor({
           <div 
             ref={toolbarRef}
             className={cn(
-              "z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm p-2.5 flex flex-wrap items-center gap-1 overflow-x-auto shadow-md transition-all",
+              "z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm pl-3.5 pr-2.5 py-2.5 flex flex-wrap items-center gap-1 overflow-x-auto overflow-y-visible shadow-md transition-all",
               isToolbarSticky && "fixed"
             )}
             style={toolbarStyle}
@@ -622,7 +652,10 @@ export function RichTextEditor({
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => editor.chain().focus().undo().run()}
+          onClick={() => {
+            isUndoRedoRef.current = true;
+            editor.chain().focus().undo().run();
+          }}
           disabled={!editor.can().chain().focus().undo().run()}
         >
           <Undo className="h-4 w-4" />
@@ -631,7 +664,10 @@ export function RichTextEditor({
           type="button"
           variant="ghost"
           size="sm"
-          onClick={() => editor.chain().focus().redo().run()}
+          onClick={() => {
+            isUndoRedoRef.current = true;
+            editor.chain().focus().redo().run();
+          }}
           disabled={!editor.can().chain().focus().redo().run()}
         >
           <Redo className="h-4 w-4" />
