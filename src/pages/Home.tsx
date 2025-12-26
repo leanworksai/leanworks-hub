@@ -396,7 +396,7 @@ export default function Home() {
         <div className="max-w-4xl mx-auto text-center">
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight mb-6">
             <span className="bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-              All-in-one Project Collaboration Platform
+              AI-native Project Collaboration Platform
             </span>
           </h1>
           <p className="text-xl sm:text-2xl text-muted-foreground mb-10 max-w-2xl mx-auto">
