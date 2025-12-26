@@ -237,7 +237,9 @@ export function useLiveKit(
         throw new Error(`Invalid URL: expected string, got ${typeof url}. URL: ${JSON.stringify(url)}`);
       }
       
-      console.log('📞 Connecting to LiveKit:', { url, tokenLength: token.length, tokenPreview: token.substring(0, 20) + '...' });
+      if (import.meta.env.DEV) {
+        console.log('📞 Connecting to LiveKit:', { url, tokenLength: token.length });
+      }
 
       // Create room
       const room = new Room();

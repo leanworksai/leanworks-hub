@@ -73,11 +73,15 @@ export function GlobalCallListener() {
 
         const userEmail = (auth?.currentUser?.email || user?.email || '').toLowerCase();
         if (!userEmail) {
-          console.warn('⚠️ GlobalCallListener: No user email available');
+          if (import.meta.env.DEV) {
+            console.warn('⚠️ GlobalCallListener: No user email available');
+          }
           return;
         }
         
-        console.log('📞 GlobalCallListener: Setting up incoming call listener', { userEmail });
+        if (import.meta.env.DEV) {
+          console.log('📞 GlobalCallListener: Setting up incoming call listener');
+        }
         
         // Use the new criteria-based subscribeToIncomingOffers function
         // The subscribeToIncomingOffers now has its own retry logic built-in
@@ -131,7 +135,9 @@ export function GlobalCallListener() {
 
             // Only update if this is a new call
             if (callId !== lastCallIdRef.current) {
-              console.log('📞 GlobalCallListener: New incoming call!', { callId, callerEmail: signal.callerEmail });
+              if (import.meta.env.DEV) {
+                console.log('📞 GlobalCallListener: New incoming call!', { callId });
+              }
               lastCallIdRef.current = callId;
               processedCallIdsRef.current.add(callId);
               setIncomingCallSignal(signal);
@@ -153,11 +159,15 @@ export function GlobalCallListener() {
 
         const userEmail = (auth?.currentUser?.email || user?.email || '').toLowerCase();
         if (!userEmail) {
-          console.warn('⚠️ GlobalCallListener: No user email available for invitation listener');
+          if (import.meta.env.DEV) {
+            console.warn('⚠️ GlobalCallListener: No user email available for invitation listener');
+          }
           return;
         }
 
-        console.log('📞 GlobalCallListener: Setting up group call invitation listener', { userEmail });
+        if (import.meta.env.DEV) {
+          console.log('📞 GlobalCallListener: Setting up group call invitation listener');
+        }
 
         (async () => {
           try {

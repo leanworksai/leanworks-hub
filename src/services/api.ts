@@ -1684,13 +1684,17 @@ export const callSignalingService = {
 
       // Check if Firestore is available
       if (!db) {
-        console.warn('📞 subscribeToIncomingOffers: Firestore not ready, will retry...');
+        if (import.meta.env.DEV) {
+          console.warn('📞 subscribeToIncomingOffers: Firestore not ready, will retry...');
+        }
         return;
       }
 
       // Check auth - wait for it to be ready
       if (!auth?.currentUser?.email) {
-        console.warn('📞 subscribeToIncomingOffers: Auth not ready, will retry...');
+        if (import.meta.env.DEV) {
+          console.warn('📞 subscribeToIncomingOffers: Auth not ready, will retry...');
+        }
         return;
       }
 
@@ -1713,19 +1717,25 @@ export const callSignalingService = {
             // Decode token to check if email is present
             const payload = JSON.parse(atob(idToken.split('.')[1]));
             if (!payload.email) {
-              console.error('❌ ID token missing email claim. Please sign out and sign back in.');
-              console.error('Token payload:', { uid: payload.uid, hasEmail: !!payload.email });
+              if (import.meta.env.DEV) {
+                console.error('❌ ID token missing email claim. Please sign out and sign back in.');
+                console.error('Token payload:', { hasEmail: !!payload.email });
+              }
               // Force token refresh
               await auth.currentUser.getIdToken(true);
             }
           } catch (tokenError) {
-            console.warn('⚠️ Could not verify token email claim:', tokenError);
+            if (import.meta.env.DEV) {
+              console.warn('⚠️ Could not verify token email claim:', tokenError);
+            }
           }
         }
 
         const orgSlug = getCurrentOrgSlug();
         if (!orgSlug) {
-          console.warn('📞 subscribeToIncomingOffers: No orgSlug available yet, will retry...');
+          if (import.meta.env.DEV) {
+            console.warn('📞 subscribeToIncomingOffers: No orgSlug available yet, will retry...');
+          }
           return;
         }
         
@@ -1736,16 +1746,14 @@ export const callSignalingService = {
 
         // Criteria-based query
         // Note: Firestore doesn't support != null queries, so we filter offer existence in the callback
-        console.log('📞 subscribeToIncomingOffers: Setting up query', {
-          userEmail,
-          orgSlug,
-          collectionPath: `orgs/${orgSlug}/calls`,
-          queryFilters: {
-            calleeEmail: userEmail,
-            status: 'ringing',
-            createdAt: `> ${cutoffTime.toMillis()}`,
-          },
-        });
+        if (import.meta.env.DEV) {
+          console.log('📞 subscribeToIncomingOffers: Setting up query', {
+            collectionPath: `orgs/${orgSlug}/calls`,
+            queryFilters: {
+              status: 'ringing',
+            },
+          });
+        }
         
         const q = query(
           callsRef,
@@ -1768,7 +1776,9 @@ export const callSignalingService = {
             // Mark listener as established on first successful callback
             if (!isListenerEstablished) {
               isListenerEstablished = true;
-              console.log('✅ subscribeToIncomingOffers: Firestore listener established successfully');
+              if (import.meta.env.DEV) {
+                console.log('✅ subscribeToIncomingOffers: Firestore listener established successfully');
+              }
               // Clear retry interval once listener is established
               if (retryInterval) {
                 clearInterval(retryInterval);
@@ -1777,55 +1787,65 @@ export const callSignalingService = {
             }
 
             // Log snapshot details for debugging
-            console.log('📞 subscribeToIncomingOffers: Snapshot received', {
-              empty: snapshot.empty,
-              size: snapshot.size,
-              fromCache: snapshot.metadata.fromCache,
-              hasPendingWrites: snapshot.metadata.hasPendingWrites,
-            });
+            if (import.meta.env.DEV) {
+              console.log('📞 subscribeToIncomingOffers: Snapshot received', {
+                empty: snapshot.empty,
+                size: snapshot.size,
+                fromCache: snapshot.metadata.fromCache,
+                hasPendingWrites: snapshot.metadata.hasPendingWrites,
+              });
+            }
 
             // Skip cache-only empty snapshots
             if (snapshot.metadata.fromCache && snapshot.empty) {
-              console.log('📞 subscribeToIncomingOffers: Skipping cache-only empty snapshot');
+              if (import.meta.env.DEV) {
+                console.log('📞 subscribeToIncomingOffers: Skipping cache-only empty snapshot');
+              }
               return;
             }
 
             if (snapshot.empty) {
               // Only clear if this is a server snapshot
               if (!snapshot.metadata.fromCache) {
-                console.log('📞 subscribeToIncomingOffers: Empty server snapshot, clearing callback');
+                if (import.meta.env.DEV) {
+                  console.log('📞 subscribeToIncomingOffers: Empty server snapshot, clearing callback');
+                }
                 callback(null);
               }
               return;
             }
 
             // Process document changes (new or modified documents)
-            console.log('📞 subscribeToIncomingOffers: Processing document changes', {
-              changesCount: snapshot.docChanges().length,
-            });
+            if (import.meta.env.DEV) {
+              console.log('📞 subscribeToIncomingOffers: Processing document changes', {
+                changesCount: snapshot.docChanges().length,
+              });
+            }
             
             snapshot.docChanges().forEach((change) => {
-              console.log('📞 subscribeToIncomingOffers: Document change', {
-                type: change.type,
-                docId: change.doc.id,
-              });
+              if (import.meta.env.DEV) {
+                console.log('📞 subscribeToIncomingOffers: Document change', {
+                  type: change.type,
+                });
+              }
               
               if (change.type === 'added' || change.type === 'modified') {
                 const data = change.doc.data();
                 const callId = change.doc.id || data.callId;
 
-                console.log('📞 subscribeToIncomingOffers: Processing call document', {
-                  callId,
-                  callerEmail: data.callerEmail,
-                  calleeEmail: data.calleeEmail,
-                  status: data.status,
-                  hasOffer: !!data.offer,
-                  createdAt: data.createdAt?.toMillis?.() || data.createdAt?.seconds * 1000 || 0,
-                });
+                if (import.meta.env.DEV) {
+                  console.log('📞 subscribeToIncomingOffers: Processing call document', {
+                    callId,
+                    status: data.status,
+                    hasOffer: !!data.offer,
+                  });
+                }
 
                 // Skip if already processed
                 if (processedSet.has(callId)) {
-                  console.log('📞 subscribeToIncomingOffers: Call already processed, skipping', { callId });
+                  if (import.meta.env.DEV) {
+                    console.log('📞 subscribeToIncomingOffers: Call already processed, skipping');
+                  }
                   return;
                 }
 
@@ -1833,24 +1853,24 @@ export const callSignalingService = {
                 const hasOffer = !!data.offer;
                 const hasRoomName = !!data.roomName;
                 if ((!hasOffer && !hasRoomName) || data.status !== 'ringing') {
-                  console.log('📞 subscribeToIncomingOffers: Call missing offer/roomName or wrong status', {
-                    callId,
-                    hasOffer,
-                    hasRoomName,
-                    status: data.status,
-                  });
+                  if (import.meta.env.DEV) {
+                    console.log('📞 subscribeToIncomingOffers: Call missing offer/roomName or wrong status', {
+                      hasOffer,
+                      hasRoomName,
+                      status: data.status,
+                    });
+                  }
                   return;
                 }
 
                 // Verify email matching
                 const calleeEmailLower = (data.calleeEmail || '').toLowerCase();
                 if (calleeEmailLower !== userEmail) {
-                  console.log('📞 subscribeToIncomingOffers: Email mismatch', {
-                    callId,
-                    calleeEmail: data.calleeEmail,
-                    calleeEmailLower,
-                    userEmail,
-                  });
+                  if (import.meta.env.DEV) {
+                    console.log('📞 subscribeToIncomingOffers: Email mismatch', {
+                      callId,
+                    });
+                  }
                   return;
                 }
 
@@ -1865,7 +1885,9 @@ export const callSignalingService = {
                 return;
               }
 
-              console.log('📞 Incoming call detected:', { callId, callerEmail: data.callerEmail });
+              if (import.meta.env.DEV) {
+                console.log('📞 Incoming call detected:', { callId });
+              }
               
               // NOTE: Don't mark as processed here - let the callback handle it
               // This allows the callback to decide whether to process the call
@@ -1893,31 +1915,27 @@ export const callSignalingService = {
           (error) => {
             if (!isActive) return;
             
-            console.error('❌ subscribeToIncomingOffers: Error in listener', {
-              error: error,
-              code: (error as any)?.code,
-              message: (error as any)?.message,
-              stack: (error as any)?.stack,
-            });
-            
-            // Handle index errors gracefully
-            if ((error as any)?.code === 9 || (error as any)?.message?.includes('index')) {
-              console.error('Firestore index error. Please create the composite index for database "leanworks-prod":', {
-                database: 'leanworks-prod',
-                indexFields: ['calleeEmail', 'status', 'createdAt'],
+            if (import.meta.env.DEV) {
+              console.error('❌ subscribeToIncomingOffers: Error in listener', {
+                code: (error as any)?.code,
+                message: (error as any)?.message,
               });
-            } else if ((error as any)?.code === 'permission-denied') {
-              console.error('❌ subscribeToIncomingOffers: Permission denied', {
-                userEmail,
-                orgSlug,
-                note: 'Check Firestore security rules and ensure email matches',
-              });
-            } else {
-              console.error('Error listening to incoming offers:', error);
-              // Reset listener state so retry can re-establish
-              isListenerEstablished = false;
-              unsubscribeFn = null;
+              
+              // Handle index errors gracefully
+              if ((error as any)?.code === 9 || (error as any)?.message?.includes('index')) {
+                console.error('Firestore index error. Please create the composite index for database "leanworks-prod":', {
+                  database: 'leanworks-prod',
+                  indexFields: ['calleeEmail', 'status', 'createdAt'],
+                });
+              } else if ((error as any)?.code === 'permission-denied') {
+                console.error('❌ subscribeToIncomingOffers: Permission denied');
+              } else {
+                console.error('Error listening to incoming offers:', error);
+              }
             }
+            // Reset listener state so retry can re-establish
+            isListenerEstablished = false;
+            unsubscribeFn = null;
           }
         );
       } catch (error) {
@@ -1951,15 +1969,19 @@ export const callSignalingService = {
 
       retryCount++;
       if (retryCount > maxRetries) {
-        console.error('📞 subscribeToIncomingOffers: Max retries reached, giving up');
+        if (import.meta.env.DEV) {
+          console.error('📞 subscribeToIncomingOffers: Max retries reached, giving up');
+        }
         if (retryInterval) {
           clearInterval(retryInterval);
           retryInterval = null;
         }
         return;
       }
-
-      console.log(`📞 subscribeToIncomingOffers: Retry attempt ${retryCount}/${maxRetries}`);
+      
+      if (import.meta.env.DEV) {
+        console.log(`📞 subscribeToIncomingOffers: Retry attempt ${retryCount}/${maxRetries}`);
+      }
       setupListener();
     }, 2000);
 
@@ -1997,15 +2019,18 @@ export const callSignalingService = {
     let idToken: string | null = null;
     try {
       idToken = await auth.currentUser.getIdToken();
-      console.log('✅ createCallOffer: Got ID token', {
-        tokenLength: idToken?.length,
-        tokenPrefix: idToken?.substring(0, 20),
-      });
+      if (import.meta.env.DEV) {
+        console.log('✅ createCallOffer: Got ID token', {
+          tokenLength: idToken?.length,
+        });
+      }
     } catch (tokenError: any) {
-      console.error('❌ createCallOffer: Failed to get ID token', {
-        error: tokenError.message,
-        code: tokenError.code,
-      });
+      if (import.meta.env.DEV) {
+        console.error('❌ createCallOffer: Failed to get ID token', {
+          error: tokenError.message,
+          code: tokenError.code,
+        });
+      }
       throw new Error('Failed to get authentication token. Please refresh the page and log in again.');
     }
 

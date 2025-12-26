@@ -343,7 +343,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
               if (!resolved) {
                 if (firebaseUser?.email) {
-                  console.log('✅ Firebase Auth currentUser is ready after sign-in:', firebaseUser.email);
+                  if (import.meta.env.DEV) {
+                    console.log('✅ Firebase Auth currentUser is ready after sign-in');
+                  }
                   resolved = true;
                   clearTimeout(timeout);
                   unsubscribe();

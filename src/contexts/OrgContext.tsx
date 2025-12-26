@@ -183,7 +183,9 @@ export function OrgProvider({ children }: { children: ReactNode }) {
 
   // Set current org and persist to storage
   const setCurrentOrg = useCallback((org: Organization | null) => {
-    console.log('OrgContext: setCurrentOrg called with:', org ? `${org.name} (${org.id})` : 'null');
+    if (import.meta.env.DEV) {
+      console.log('OrgContext: setCurrentOrg called with:', org ? `${org.name} (${org.id})` : 'null');
+    }
     setCurrentOrgState(org);
     if (org) {
       try {
@@ -194,14 +196,20 @@ export function OrgProvider({ children }: { children: ReactNode }) {
           type: org.type,
         };
         localStorage.setItem(CURRENT_ORG_KEY, JSON.stringify(orgData));
-        console.log('OrgContext: Saved to localStorage:', orgData);
+        if (import.meta.env.DEV) {
+          console.log('OrgContext: Saved to localStorage:', orgData);
+        }
       } catch (e) {
-        console.warn('Failed to persist current org:', e);
+        if (import.meta.env.DEV) {
+          console.warn('Failed to persist current org:', e);
+        }
       }
     } else {
       try {
         localStorage.removeItem(CURRENT_ORG_KEY);
-        console.log('OrgContext: Removed org from localStorage');
+        if (import.meta.env.DEV) {
+          console.log('OrgContext: Removed org from localStorage');
+        }
       } catch (e) {
         // ignore
       }
@@ -238,7 +246,9 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     // Wait for token to be available
     const token = await getAuthToken();
     if (!token) {
-      console.log('OrgContext: No token available yet, waiting...');
+      if (import.meta.env.DEV) {
+        console.log('OrgContext: No token available yet, waiting...');
+      }
       setLoading(false);
       return;
     }
@@ -255,14 +265,20 @@ export function OrgProvider({ children }: { children: ReactNode }) {
         let savedOrgData: any = null;
         try {
           const saved = localStorage.getItem(CURRENT_ORG_KEY);
-          console.log('OrgContext: Reading from localStorage:', saved);
+          if (import.meta.env.DEV) {
+            console.log('OrgContext: Reading from localStorage:', saved);
+          }
           if (saved) {
             savedOrgData = JSON.parse(saved);
             savedOrgId = savedOrgData?.id || null;
-            console.log('OrgContext: Parsed saved org data:', savedOrgData);
+            if (import.meta.env.DEV) {
+              console.log('OrgContext: Parsed saved org data:', savedOrgData);
+            }
           }
         } catch (e) {
-          console.error('OrgContext: Error parsing saved org:', e);
+          if (import.meta.env.DEV) {
+            console.error('OrgContext: Error parsing saved org:', e);
+          }
           // ignore
         }
         
@@ -277,23 +293,23 @@ export function OrgProvider({ children }: { children: ReactNode }) {
           
         if (savedOrg) {
             // Found saved org in the list - always use it (this preserves user's selection)
-            console.log('OrgContext: ✅ Restoring saved org:', savedOrg.name, savedOrg.id);
+            if (import.meta.env.DEV) {
+              console.log('OrgContext: ✅ Restoring saved org:', savedOrg.name, savedOrg.id);
+            }
           setCurrentOrg(savedOrg);
             return; // Early return to avoid fallback logic
           } else {
-            console.warn('OrgContext: ⚠️ Saved org ID not found in fetched orgs:', {
-              savedOrgId: normalizedSavedId,
-              savedOrgIdLength: normalizedSavedId.length,
-              availableOrgs: orgs.map(o => ({ 
-                id: o.id, 
-                idLength: o.id.length,
-                name: o.name,
-                matches: o.id.trim() === normalizedSavedId
-              }))
-            });
+            if (import.meta.env.DEV) {
+              console.warn('OrgContext: ⚠️ Saved org ID not found in fetched orgs:', {
+                savedOrgIdLength: normalizedSavedId.length,
+                availableOrgsCount: orgs.length,
+              });
+            }
           }
         } else {
-          console.log('OrgContext: ℹ️ No saved org ID found in localStorage');
+          if (import.meta.env.DEV) {
+            console.log('OrgContext: ℹ️ No saved org ID found in localStorage');
+          }
         }
         
         // If no saved org or saved org not found, check if current org is still valid
@@ -305,11 +321,15 @@ export function OrgProvider({ children }: { children: ReactNode }) {
             // Current org is still valid - but update it with full data if it matches saved org
             if (savedOrgId && normalizedCurrentId === savedOrgId.trim()) {
               // Current org matches saved org, update with full org data
-              console.log('OrgContext: ✅ Current org matches saved org, updating with full data:', currentOrgStillValid.name);
+              if (import.meta.env.DEV) {
+                console.log('OrgContext: ✅ Current org matches saved org, updating with full data');
+              }
               setCurrentOrg(currentOrgStillValid);
             } else {
               // Current org is valid but doesn't match saved org - keep it
-              console.log('OrgContext: ✅ Keeping current org:', currentOrgRef.current.name, currentOrgRef.current.id);
+              if (import.meta.env.DEV) {
+                console.log('OrgContext: ✅ Keeping current org');
+              }
             }
             return;
           }
@@ -319,7 +339,9 @@ export function OrgProvider({ children }: { children: ReactNode }) {
         // BUT only if there's no saved org preference (if saved org exists but wasn't found, don't override)
         const personalOrg = orgs.find(o => o.type === 'personal');
         const fallbackOrg = personalOrg || orgs[0];
-        console.log('OrgContext: ⚠️ Falling back to:', fallbackOrg.name, fallbackOrg.id, '(saved org not found or no saved org)');
+        if (import.meta.env.DEV) {
+          console.log('OrgContext: ⚠️ Falling back to default org (saved org not found or no saved org)');
+        }
         setCurrentOrg(fallbackOrg);
       } else {
         setCurrentOrg(null);

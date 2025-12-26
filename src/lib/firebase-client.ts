@@ -234,49 +234,66 @@ async function initializeFirebase(forceRefresh = false): Promise<void> {
       // If this causes errors, the database might need to be configured for client access
       try {
         db = getFirestore(app, 'leanworks-prod');
-        console.log('✅ Firestore client: Using named database "leanworks-prod"');
+        if (import.meta.env.DEV) {
+          console.log('✅ Firestore client: Using named database "leanworks-prod"');
+        }
       } catch (dbError: any) {
-        console.warn('⚠️ Firestore client: Failed to use named database, falling back to default', {
-          error: dbError.message,
-        });
+        if (import.meta.env.DEV) {
+          console.warn('⚠️ Firestore client: Failed to use named database, falling back to default', {
+            error: dbError.message,
+          });
+        }
         db = getFirestore(app);
-        console.log('✅ Firestore client: Using default database');
+        if (import.meta.env.DEV) {
+          console.log('✅ Firestore client: Using default database');
+        }
       }
       
       // Ensure Firestore is online and wait for it to be ready
       try {
         const { enableNetwork, waitForPendingWrites } = await import('firebase/firestore');
         // Make sure we're online
-        console.log('🔄 Firestore: Enabling network...');
+        if (import.meta.env.DEV) {
+          console.log('🔄 Firestore: Enabling network...');
+        }
         try {
           await enableNetwork(db);
-          console.log('✅ Firestore: enableNetwork() succeeded');
+          if (import.meta.env.DEV) {
+            console.log('✅ Firestore: enableNetwork() succeeded');
+          }
         } catch (enableError: any) {
-          console.error('❌ Firestore: enableNetwork() failed', {
-            error: enableError,
-            code: enableError?.code,
-            message: enableError?.message,
-          });
+          if (import.meta.env.DEV) {
+            console.error('❌ Firestore: enableNetwork() failed', {
+              code: enableError?.code,
+              message: enableError?.message,
+            });
+          }
         }
         
         // Wait for any pending writes to complete
         try {
           await waitForPendingWrites(db);
-          console.log('✅ Firestore: waitForPendingWrites() succeeded');
+          if (import.meta.env.DEV) {
+            console.log('✅ Firestore: waitForPendingWrites() succeeded');
+          }
         } catch (waitError: any) {
-          console.warn('⚠️ Firestore: waitForPendingWrites() failed (might be OK if no pending writes)', {
-            error: waitError,
-            code: waitError?.code,
-            message: waitError?.message,
-          });
+          if (import.meta.env.DEV) {
+            console.warn('⚠️ Firestore: waitForPendingWrites() failed (might be OK if no pending writes)', {
+              code: waitError?.code,
+              message: waitError?.message,
+            });
+          }
         }
         
-        console.log('✅ Firestore: Network setup complete');
+        if (import.meta.env.DEV) {
+          console.log('✅ Firestore: Network setup complete');
+        }
       } catch (networkError: any) {
-        console.error('❌ Firestore: Network setup failed', {
-          error: networkError,
-          message: networkError?.message,
-        });
+        if (import.meta.env.DEV) {
+          console.error('❌ Firestore: Network setup failed', {
+            message: networkError?.message,
+          });
+        }
       }
       
       // Initialize Analytics
@@ -342,10 +359,11 @@ function checkExistingInvalidApps(): boolean {
     const existingApp = getApps()[0];
     const existingApiKey = existingApp.options?.apiKey;
     if (!isValidApiKey(existingApiKey)) {
-      console.error('❌ Detected existing Firebase app with invalid API key on page load');
-      console.error('❌ API key:', existingApiKey?.substring(0, 30) + '...');
-      console.error('❌ This is likely from a cached invalid config (common in Safari)');
-      console.error('❌ Attempting to clear invalid app...');
+      if (import.meta.env.DEV) {
+        console.error('❌ Detected existing Firebase app with invalid API key on page load');
+        console.error('❌ This is likely from a cached invalid config (common in Safari)');
+        console.error('❌ Attempting to clear invalid app...');
+      }
       
       // Try to delete the invalid app so we can re-initialize with valid config
       try {

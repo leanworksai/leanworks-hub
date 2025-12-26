@@ -264,9 +264,15 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
           const apiKeyData = await apiKeyResponse.json();
           headers['X-API-Key'] = apiKeyData.apiKey;
         } catch (error) {
-          console.error('Failed to fetch API key from backend, using fallback:', error);
-          const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-          headers['X-API-Key'] = fallbackKey;
+          if (import.meta.env.DEV) {
+            console.error('Failed to fetch API key from backend:', error);
+          }
+          const fallbackKey = import.meta.env.VITE_ASK_API_KEY;
+          if (fallbackKey) {
+            headers['X-API-Key'] = fallbackKey;
+          } else {
+            throw new Error('API key not available');
+          }
         }
       } else {
         headers['Authorization'] = `Bearer ${customToken}`;

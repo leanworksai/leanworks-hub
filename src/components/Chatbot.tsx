@@ -268,7 +268,9 @@ export function Chatbot() {
     const orgChanged = previousOrgId !== null && previousOrgId !== currentOrgId;
     
     if (orgChanged) {
-      console.log('🔄 Organization changed - resetting chat:', { previousOrgId, currentOrgId });
+      if (import.meta.env.DEV) {
+        console.log('🔄 Organization changed - resetting chat');
+      }
       
       // Clear all message states
       setMessages([]);
@@ -292,7 +294,9 @@ export function Chatbot() {
       setAllChatCaches(new Map());
       setCacheLoadedForSession(false);
       
-      console.log('✅ Chat reset complete for new organization');
+      if (import.meta.env.DEV) {
+        console.log('✅ Chat reset complete for new organization');
+      }
     }
     
     // Update the ref to track current org
@@ -2090,13 +2094,12 @@ export function Chatbot() {
       const cacheKey = getCacheKey(chatId);
       if (cacheKey && !cacheKey.includes(currentOrg.id)) {
         // Cache key doesn't match current org - don't use it
-        console.warn('⚠️ Cache key org mismatch - ignoring cached messages', { 
-          chatId, 
-          cacheKey, 
-          currentOrgId: currentOrg.id,
-          isProjectChannel: chatId.startsWith('project-'),
-          isTeamChannel: chatId.startsWith('team-'),
-        });
+        if (import.meta.env.DEV) {
+          console.warn('⚠️ Cache key org mismatch - ignoring cached messages', { 
+            isProjectChannel: chatId.startsWith('project-'),
+            isTeamChannel: chatId.startsWith('team-'),
+          });
+        }
         validCached = null;
       }
       
@@ -2108,11 +2111,11 @@ export function Chatbot() {
             msg => msg.projectId !== selectedProjectId
           );
           if (invalidMessages.length > 0) {
-            console.warn('⚠️ Found cached messages with wrong projectId - ignoring cache', {
-              chatId,
-              selectedProjectId,
-              invalidCount: invalidMessages.length,
-            });
+            if (import.meta.env.DEV) {
+              console.warn('⚠️ Found cached messages with wrong projectId - ignoring cache', {
+                invalidCount: invalidMessages.length,
+              });
+            }
             validCached = null;
           }
         } else if (isTeamChannel && selectedTeamId) {
@@ -2121,11 +2124,11 @@ export function Chatbot() {
             msg => msg.teamId !== selectedTeamId
           );
           if (invalidMessages.length > 0) {
-            console.warn('⚠️ Found cached messages with wrong teamId - ignoring cache', {
-              chatId,
-              selectedTeamId,
-              invalidCount: invalidMessages.length,
-            });
+            if (import.meta.env.DEV) {
+              console.warn('⚠️ Found cached messages with wrong teamId - ignoring cache', {
+                invalidCount: invalidMessages.length,
+              });
+            }
             validCached = null;
           }
         }
@@ -2261,13 +2264,8 @@ export function Chatbot() {
             // Filter out any messages that don't belong to this project (safety check)
             const filteredMessages = newMessages.filter(msg => {
               const belongsToProject = msg.projectId === selectedProjectId;
-              if (!belongsToProject) {
-                console.warn('⚠️ Filtered out message with wrong projectId', {
-                  messageId: msg.id,
-                  messageProjectId: msg.projectId,
-                  expectedProjectId: selectedProjectId,
-                  chatId,
-                });
+              if (!belongsToProject && import.meta.env.DEV) {
+                console.warn('⚠️ Filtered out message with wrong projectId');
               }
               return belongsToProject;
             });
@@ -2291,14 +2289,8 @@ export function Chatbot() {
           const channelMsgs: ChannelMessage[] = messagesWithRefreshedUrls
             .filter(msg => {
               const isValid = (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId;
-              if (!isValid && msg.projectId !== selectedProjectId) {
-                console.warn('⚠️ Filtered out channel message with wrong projectId', {
-                  messageId: msg.id,
-                  messageProjectId: msg.projectId,
-                  expectedProjectId: selectedProjectId,
-                  chatId,
-                  currentOrgId: currentOrg?.id,
-                });
+              if (!isValid && msg.projectId !== selectedProjectId && import.meta.env.DEV) {
+                console.warn('⚠️ Filtered out channel message with wrong projectId');
               }
               return isValid;
             })
@@ -2318,14 +2310,13 @@ export function Chatbot() {
           // Update state if it's initial load or chat has changed (to show fresh messages)
           // Otherwise, real-time listener will handle updates
           if (isInitialLoad || chatHasChanged) {
-            console.log('📨 Loading project channel messages', {
-              projectId: selectedProjectId,
-              messageCount: channelMsgs.length,
-              currentOrgId: currentOrg?.id,
-              chatId,
-              isInitialLoad,
-              chatHasChanged,
-            });
+            if (import.meta.env.DEV) {
+              console.log('📨 Loading project channel messages', {
+                messageCount: channelMsgs.length,
+                isInitialLoad,
+                chatHasChanged,
+              });
+            }
             setChannelMessages((prev) => {
               const newMap = new Map(prev);
               newMap.set(selectedProjectId, channelMsgs);
@@ -2641,12 +2632,11 @@ export function Chatbot() {
                 // The call button will show "Join Call" instead
                 setCallStatusFromSignal('ringing');
               } else {
-                console.warn('⚠️ Call signal mismatch:', {
-                  signalCallee: signal.calleeEmail,
-                  signalCaller: signal.callerEmail,
-                  currentUser: user.email,
-                  isGroupCall,
-                });
+                if (import.meta.env.DEV) {
+                  console.warn('⚠️ Call signal mismatch:', {
+                    isGroupCall,
+                  });
+                }
                 setCallStatusFromSignal('ringing');
               }
             } else if (signal.status === 'active') {
@@ -3226,9 +3216,15 @@ export function Chatbot() {
         const apiKeyData = await apiKeyResponse.json();
         headers['X-API-Key'] = apiKeyData.apiKey;
       } catch (error) {
-        console.error('Failed to fetch API key from backend, using fallback:', error);
-        const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-        headers['X-API-Key'] = fallbackKey;
+        if (import.meta.env.DEV) {
+          console.error('Failed to fetch API key from backend:', error);
+        }
+        const fallbackKey = import.meta.env.VITE_ASK_API_KEY;
+        if (fallbackKey) {
+          headers['X-API-Key'] = fallbackKey;
+        } else {
+          throw new Error('API key not available');
+        }
       }
     } else {
       headers['Authorization'] = `Bearer ${customToken}`;
