@@ -13,7 +13,7 @@ import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase-client';
 import { getCurrentOrgSlug } from '@/services/api';
-import { trackVoiceCall } from '@/lib/analytics';
+import { trackVoiceCall, trackConversion } from '@/lib/analytics';
 
 interface VoiceCallButtonProps {
   chatId: string;
@@ -587,6 +587,13 @@ export function VoiceCallButton({
         chat_id: chatId,
         has_recording: enableRecording,
       });
+      
+      // Track conversion for first voice call
+      const isFirstCall = !sessionStorage.getItem('voice_call_first_initiated');
+      if (isFirstCall) {
+        trackConversion('first_voice_call');
+        sessionStorage.setItem('voice_call_first_initiated', 'true');
+      }
       } catch (livekitError) {
         // If LiveKit connection fails, mark call as ended in Firestore
         console.error('❌ VoiceCall: LiveKit connection failed:', livekitError);

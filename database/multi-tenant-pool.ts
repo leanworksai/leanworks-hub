@@ -150,7 +150,12 @@ async function initializeSchemaForDatabase(
 // Check if a database exists (without creating it)
 export async function checkDatabaseExists(dbName: string): Promise<boolean> {
   const password = await getPostgresPassword();
-  const dbHost = process.env.DB_HOST || `/cloudsql/${projectId}:${region}:${instanceName}`;
+  // For local development, use localhost (Cloud SQL Proxy)
+  // For production, use Unix socket path
+  const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
+  const dbHost = process.env.DB_HOST || (isLocalDev 
+    ? 'localhost'  // Local development: use Cloud SQL Proxy on localhost
+    : `/cloudsql/${projectId}:${region}:${instanceName}`);  // Production: use Unix socket
   const dbPort = parseInt(process.env.DB_PORT || '5432', 10);
   
   const { Client } = await import('pg');
@@ -236,7 +241,12 @@ async function ensureDatabaseExists(
 // Create a connection pool for a specific database
 async function createPool(dbName: string): Promise<Pool> {
   const password = await getPostgresPassword();
-  const dbHost = process.env.DB_HOST || `/cloudsql/${projectId}:${region}:${instanceName}`;
+  // For local development, use localhost (Cloud SQL Proxy)
+  // For production, use Unix socket path
+  const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
+  const dbHost = process.env.DB_HOST || (isLocalDev 
+    ? 'localhost'  // Local development: use Cloud SQL Proxy on localhost
+    : `/cloudsql/${projectId}:${region}:${instanceName}`);  // Production: use Unix socket
   const dbPort = parseInt(process.env.DB_PORT || '5432');
 
   // Ensure database exists

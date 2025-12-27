@@ -319,49 +319,49 @@ export default function Tasks() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4">
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-muted-foreground whitespace-nowrap">Status:</label>
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Status:</label>
           <Select value={filterStatus} onValueChange={(value) => setFilterStatus(value as Task["status"] | "all")}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[93px] h-8 text-xs">
               <SelectValue placeholder="All statuses" />
             </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="todo">Todo</SelectItem>
-              <SelectItem value="in-progress">In Progress</SelectItem>
-              <SelectItem value="review">Review</SelectItem>
-              <SelectItem value="blocked">Blocked</SelectItem>
-              <SelectItem value="completed">Completed</SelectItem>
+            <SelectContent className="w-[93px] text-xs">
+              <SelectItem value="all" className="text-xs py-1.5">All</SelectItem>
+              <SelectItem value="todo" className="text-xs py-1.5">Todo</SelectItem>
+              <SelectItem value="in-progress" className="text-xs py-1.5">In Progress</SelectItem>
+              <SelectItem value="review" className="text-xs py-1.5">Review</SelectItem>
+              <SelectItem value="blocked" className="text-xs py-1.5">Blocked</SelectItem>
+              <SelectItem value="completed" className="text-xs py-1.5">Completed</SelectItem>
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-muted-foreground whitespace-nowrap">Priority:</label>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Priority:</label>
           <Select value={filterPriority} onValueChange={(value) => setFilterPriority(value as Task["priority"] | "all")}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[93px] h-8 text-xs">
               <SelectValue placeholder="All priorities" />
             </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="low">Low</SelectItem>
-              <SelectItem value="medium">Medium</SelectItem>
-              <SelectItem value="high">High</SelectItem>
-              <SelectItem value="urgent">Urgent</SelectItem>
+            <SelectContent className="w-[93px] text-xs">
+              <SelectItem value="all" className="text-xs py-1.5">All</SelectItem>
+              <SelectItem value="low" className="text-xs py-1.5">Low</SelectItem>
+              <SelectItem value="medium" className="text-xs py-1.5">Medium</SelectItem>
+              <SelectItem value="high" className="text-xs py-1.5">High</SelectItem>
+              <SelectItem value="urgent" className="text-xs py-1.5">Urgent</SelectItem>
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-muted-foreground whitespace-nowrap">Project:</label>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Project:</label>
           <Select value={filterProject} onValueChange={setFilterProject}>
-            <SelectTrigger className="w-[200px]">
+            <SelectTrigger className="w-[160px] h-8 text-xs">
               <SelectValue placeholder="All projects" />
             </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Projects</SelectItem>
-              <SelectItem value="none">No Project</SelectItem>
+            <SelectContent className="text-xs">
+              <SelectItem value="all" className="text-xs py-1.5">All Projects</SelectItem>
+              <SelectItem value="none" className="text-xs py-1.5">No Project</SelectItem>
               {projects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
+                <SelectItem key={project.id} value={project.id} className="text-xs py-1.5">
                   {project.name}
                 </SelectItem>
               ))}
@@ -460,10 +460,13 @@ export default function Tasks() {
                 )}
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 flex-1 min-w-0">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                          <CardTitle className="text-base">{task.title}</CardTitle>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                        <CardTitle className="text-base">{task.title}</CardTitle>
+                      </div>
+                      
+                      {/* Task Meta Info */}
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
                           <Popover 
                             open={isDropdownOpen(task.id, 'status')} 
                             onOpenChange={(open) => setDropdownOpen(task.id, 'status', open)}
@@ -508,10 +511,6 @@ export default function Tasks() {
                               </Command>
                             </PopoverContent>
                           </Popover>
-                        </div>
-                        
-                        {/* Task Meta Info */}
-                        <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
                           <Popover 
                             open={isDropdownOpen(task.id, 'assignee')} 
                             onOpenChange={(open) => setDropdownOpen(task.id, 'assignee', open)}
@@ -702,7 +701,6 @@ export default function Tasks() {
                             </button>
                           )}
                         </div>
-                      </div>
                     </div>
                     <MoreOptionsMenu
                       items={[

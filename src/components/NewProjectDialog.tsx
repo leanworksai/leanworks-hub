@@ -28,7 +28,7 @@ import type { Project, ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown, Calendar, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
-import { trackCreate, trackFormSubmit } from "@/lib/analytics";
+import { trackCreate, trackFormSubmit, trackConversion, trackClick, trackError } from "@/lib/analytics";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { cn } from "@/lib/utils";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
@@ -213,6 +213,7 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       await createProject.mutateAsync(project);
       trackCreate('project', '/projects');
       trackFormSubmit('new_project', true);
+      trackConversion('project_created');
       
       toast({
         title: "Project created",
@@ -223,6 +224,14 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       setSelectedMembers(new Set());
       onOpenChange(false);
     } catch (error) {
+      trackError(
+        'project_creation_error',
+        error instanceof Error ? error.message : 'Failed to create project',
+        {
+          form_name: 'new_project',
+          project_name: data.name,
+        }
+      );
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "Failed to create project",

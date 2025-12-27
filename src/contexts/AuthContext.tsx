@@ -7,7 +7,9 @@ import {
 } from 'firebase/auth';
 import { auth, initializeFirebase, checkAndWarnInvalidApiKey, isFirebaseConfigured } from '@/lib/firebase-client';
 import { useToast } from '@/hooks/use-toast';
-import { setAnalyticsUserId, setAnalyticsUserProperties, trackEvent } from '@/lib/analytics';
+import { setAnalyticsUserId, setAnalyticsUserProperties, trackEvent, trackJourneyStage } from '@/lib/analytics';
+import { getAuthToken } from '@/services/api';
+import { calculateJourneyStage, calculateDaysSinceSignup } from '@/lib/journey-tracker';
 
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
@@ -434,7 +436,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Track login
           trackEvent('login', { method: 'email' });
           setAnalyticsUserId(userData.uid);
-          setAnalyticsUserProperties({ email: userData.email || null });
+          
+          // Set comprehensive user properties
+          const defaultOrg = data.organizations?.find((org: any) => org.id === data.defaultOrgId) || data.organizations?.[0];
+          setComprehensiveUserProperties(
+            userData.email || '',
+            defaultOrg?.id,
+            defaultOrg?.type
+          );
         }
       } else {
         // Firebase Auth is not available or not properly configured
@@ -602,4 +611,64 @@ export function extractDomain(email: string): string {
 }
 
 // Email whitelist validation is now handled on the server
+
+/**
+ * Set comprehensive analytics user properties
+ */
+async function setComprehensiveUserProperties(userEmail: string, orgId?: string, orgType?: string): Promise<void> {
+  try {
+    // Fetch user profile to get subscription plan and created_at
+    const token = await getAuthToken();
+    if (!token) return;
+
+    const url = import.meta.env.DEV ? `${API_BASE}/api/users/profile` : `${API_BASE}/users/profile`;
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (response.ok) {
+      const profile = await response.json();
+      const signupDate = profile.createdAt ? new Date(profile.createdAt) : null;
+      const daysSinceSignup = calculateDaysSinceSignup(signupDate);
+
+      // Calculate journey stage (simplified - would need more data for accurate calculation)
+      const journeyStage = calculateJourneyStage({
+        signupDate,
+        firstProjectCreated: false, // Would need to check from API
+        firstTaskCreated: false,
+        firstAIChat: false,
+        firstVoiceCall: false,
+        projectsCount: 0,
+        tasksCount: 0,
+        daysSinceSignup,
+      });
+
+      // Set user properties
+      const properties: Record<string, string | null> = {
+        email: userEmail,
+        org_id: orgId || null,
+        org_type: orgType || null,
+        plan_type: 'standard', // Default - would need to fetch from profile if available
+        signup_date: signupDate ? signupDate.toISOString() : null,
+        days_since_signup: daysSinceSignup.toString(),
+        journey_stage: journeyStage,
+      };
+
+      setAnalyticsUserProperties(properties);
+      trackJourneyStage(journeyStage);
+    }
+  } catch (error) {
+    console.error('Failed to set comprehensive user properties:', error);
+    // Set basic properties even if profile fetch fails
+    setAnalyticsUserProperties({
+      email: userEmail,
+      org_id: orgId || null,
+      org_type: orgType || null,
+    });
+  }
+}
+
 

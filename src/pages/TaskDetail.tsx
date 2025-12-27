@@ -84,6 +84,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
+import { useScrollTracking } from "@/hooks/useScrollTracking";
 
 const getInitials = (name: string): string => {
   return name
@@ -231,6 +232,9 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const [showLimitVisibilityDialog, setShowLimitVisibilityDialog] = useState(false);
   
   const { data: task, isLoading } = useTask(taskId || '');
+  
+  // Track scroll depth for engagement
+  useScrollTracking(true);
   const { user } = useAuth();
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();

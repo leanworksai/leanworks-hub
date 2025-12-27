@@ -56,7 +56,7 @@ import {
   isAIAssistantChatId 
 } from "@/hooks/useChatId";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { trackAIChat, trackVoiceCall } from "@/lib/analytics";
+import { trackAIChat, trackVoiceCall, trackConversion, trackError } from "@/lib/analytics";
 
 interface Message {
   id: string;
@@ -3778,6 +3778,13 @@ export function Chatbot() {
             has_cited_context: !!citedContext,
             message_length: messageContent.length,
           });
+          
+          // Track conversion for first AI chat message
+          const isFirstMessage = !sessionStorage.getItem('ai_chat_first_message_sent');
+          if (isFirstMessage) {
+            trackConversion('first_ai_chat_message');
+            sessionStorage.setItem('ai_chat_first_message_sent', 'true');
+          }
         }
 
         // Check if lean is mentioned and generate AI response (skip for free tier)
@@ -4210,6 +4217,17 @@ export function Chatbot() {
       } catch (error) {
         console.error('Failed to generate response:', error);
         
+        // Track error
+        trackError(
+          'ai_chat_error',
+          error instanceof Error ? error.message : 'Unknown error',
+          {
+            chat_id: chatId,
+            selected_member: selectedMember,
+            message_length: messageContent.length,
+          }
+        );
+        
         // Show error message to user
         const errorMessage: Message = {
           id: `error-${Date.now()}`,
@@ -4231,6 +4249,7 @@ export function Chatbot() {
           });
         } catch (saveError) {
           console.error('Failed to save error message:', saveError);
+          trackError('ai_chat_save_error', saveError instanceof Error ? saveError.message : 'Unknown error');
         }
       } finally {
         setIsLoading(false);

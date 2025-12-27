@@ -37,6 +37,7 @@ import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 import { useAllUpdateSummaries } from "@/hooks/useUpdateSummaries";
+import { useScrollTracking } from "@/hooks/useScrollTracking";
 import {
   Dialog,
   DialogContent,
@@ -123,6 +124,9 @@ export default function ProjectDetail() {
   const { data: users = [] } = useUsers();
   const userTimezone = useUserTimezone();
   const { data: allSummaries = [] } = useAllUpdateSummaries(projectId || '');
+  
+  // Track scroll depth for engagement
+  useScrollTracking(true);
   
   const isLoading = isLoadingProject;
   

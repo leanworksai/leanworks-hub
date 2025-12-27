@@ -119,7 +119,13 @@ async function initializePool(): Promise<Pool> {
   }
 
   const password = await getPostgresPassword();
-  const dbHost = process.env.DB_HOST || `/cloudsql/${projectId}:${region}:${instanceName}`;
+  
+  // For local development, use localhost (Cloud SQL Proxy)
+  // For production, use Unix socket path
+  const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
+  const dbHost = process.env.DB_HOST || (isLocalDev 
+    ? 'localhost'  // Local development: use Cloud SQL Proxy on localhost
+    : `/cloudsql/${projectId}:${region}:${instanceName}`);  // Production: use Unix socket
   const dbPort = parseInt(process.env.DB_PORT || '5432');
   const targetDb = process.env.DB_NAME || 'leanworks-prod';
 

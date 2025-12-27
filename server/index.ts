@@ -1660,7 +1660,12 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
       const passwordSecretName = `projects/${serviceAccount.project_id}/secrets/postgresdb-password/versions/latest`;
       const [passwordVersion] = await secretManagerClient.accessSecretVersion({ name: passwordSecretName });
       const password = (passwordVersion.payload?.data?.toString() || '').trim();
-      const dbHost = process.env.DB_HOST || `/cloudsql/${serviceAccount.project_id}:us-west1:leanworks-prod`;
+      // For local development, use localhost (Cloud SQL Proxy)
+      // For production, use Unix socket path
+      const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
+      const dbHost = process.env.DB_HOST || (isLocalDev 
+        ? 'localhost'  // Local development: use Cloud SQL Proxy on localhost
+        : `/cloudsql/${serviceAccount.project_id}:us-west1:leanworks-prod`);  // Production: use Unix socket
       const dbPort = parseInt(process.env.DB_PORT || '5432');
       
       const { Client } = await import('pg');
@@ -5589,6 +5594,11 @@ let cachedFirebaseConfig: any = null;
 let firebaseConfigCacheTime: number = 0;
 const FIREBASE_CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+// Cache for GA4 Measurement ID to avoid repeated Secret Manager calls
+let cachedGA4MeasurementId: string | null = null;
+let ga4MeasurementIdCacheTime: number = 0;
+const GA4_CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 async function getApiKeyFromSecretManager(): Promise<string> {
   // Return cached key if still valid
   if (cachedApiKey && Date.now() - apiKeyCacheTime < API_KEY_CACHE_TTL) {
@@ -5737,6 +5747,86 @@ app.get('/api/firebase-config', async (req, res) => {
     console.error('Error fetching Firebase config:', error);
     res.status(500).json({ 
       error: 'Failed to fetch Firebase config',
+      message: error.message || 'Unknown error',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// ============================================================================
+// GA4 CONFIG ENDPOINT (Secret Manager)
+// ============================================================================
+
+async function getGA4MeasurementIdFromSecretManager(): Promise<string | null> {
+  // Return cached ID if still valid
+  if (cachedGA4MeasurementId && Date.now() - ga4MeasurementIdCacheTime < GA4_CONFIG_CACHE_TTL) {
+    return cachedGA4MeasurementId;
+  }
+
+  try {
+    const projectId = serviceAccount.project_id;
+    const secretName = `projects/${projectId}/secrets/ga4-measurement-id/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
+    
+    // Get the raw data - it might be a Buffer or Uint8Array
+    let measurementId: string;
+    if (version.payload?.data) {
+      if (Buffer.isBuffer(version.payload.data)) {
+        measurementId = version.payload.data.toString('utf8');
+      } else if (version.payload.data instanceof Uint8Array) {
+        measurementId = Buffer.from(version.payload.data).toString('utf8');
+      } else {
+        measurementId = String(version.payload.data);
+      }
+    } else {
+      throw new Error('GA4 Measurement ID secret has no data');
+    }
+    
+    // Trim whitespace
+    measurementId = measurementId.trim();
+    
+    // Validate format (should start with G-)
+    if (!measurementId || !measurementId.startsWith('G-')) {
+      throw new Error(`Invalid GA4 Measurement ID format: ${measurementId.substring(0, 20)}...`);
+    }
+    
+    cachedGA4MeasurementId = measurementId;
+    ga4MeasurementIdCacheTime = Date.now();
+    return measurementId;
+  } catch (error: any) {
+    console.error('❌ Failed to fetch GA4 Measurement ID from Secret Manager:', error);
+    
+    // Fallback to environment variable
+    const envMeasurementId = process.env.VITE_GA4_MEASUREMENT_ID || process.env.GA4_MEASUREMENT_ID;
+    if (envMeasurementId && envMeasurementId.startsWith('G-')) {
+      console.log('✅ Using GA4 Measurement ID from environment variable');
+      cachedGA4MeasurementId = envMeasurementId.trim();
+      ga4MeasurementIdCacheTime = Date.now();
+      return cachedGA4MeasurementId;
+    }
+    
+    // Return null if no valid measurement ID found
+    console.warn('⚠️ No valid GA4 Measurement ID available');
+    return null;
+  }
+}
+
+// Endpoint to get GA4 Measurement ID (public endpoint, no auth required for client-side use)
+app.get('/api/ga4-config', async (req, res) => {
+  try {
+    const measurementId = await getGA4MeasurementIdFromSecretManager();
+    if (measurementId) {
+      res.json({ measurementId });
+    } else {
+      res.status(404).json({ 
+        error: 'GA4 Measurement ID not configured',
+        message: 'GA4 Measurement ID not found in Secret Manager or environment variables'
+      });
+    }
+  } catch (error: any) {
+    console.error('Error fetching GA4 config:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch GA4 config',
       message: error.message || 'Unknown error',
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });

@@ -15,6 +15,7 @@ import { useAutoSave } from "@/hooks/useAutoSave";
 import { DraftRecoveryDialog } from "@/components/DraftRecoveryDialog";
 import { getDraft, removeDraft, isDraftNewer } from "@/services/draftService";
 import { initOfflineQueue } from "@/services/offlineQueue";
+import { useScrollTracking } from "@/hooks/useScrollTracking";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,6 +49,9 @@ export default function DocDetail() {
   const deleteDoc = useDeleteDoc();
   const { toast } = useToast();
   const { user } = useAuth();
+  
+  // Track scroll depth for engagement
+  useScrollTracking(true);
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");

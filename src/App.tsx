@@ -7,7 +7,8 @@ import { useEffect } from "react";
 import { initFirestore } from "@/services/api";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { OrgProvider } from "@/contexts/OrgContext";
-import { trackPageView } from "@/lib/analytics";
+import { trackPageView, setNavigationMethod } from "@/lib/analytics";
+import { useTimeOnPage } from "@/hooks/useTimeOnPage";
 import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
@@ -46,9 +47,23 @@ const AppRoutesContent = () => {
   const location = useLocation();
   const isHomePage = location.pathname === '/';
 
-  // Track page views
+  // Track time on page
+  useTimeOnPage();
+
+  // Track page views with navigation context
   useEffect(() => {
     const pageName = getPageName(location.pathname);
+    
+    // Detect navigation method
+    // Check if it's a back navigation
+    const navigationEntry = (window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming);
+    if (navigationEntry?.type === 'back_forward') {
+      setNavigationMethod('back');
+    } else {
+      // Default to 'link' for programmatic navigation
+      setNavigationMethod('link');
+    }
+    
     trackPageView(pageName, location.pathname);
   }, [location.pathname]);
 

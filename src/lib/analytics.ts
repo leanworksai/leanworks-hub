@@ -1,8 +1,157 @@
 import { getAnalytics, logEvent, Analytics, setUserId, setUserProperties, isSupported } from 'firebase/analytics';
 import { getApp } from 'firebase/app';
 
+// API base URL
+const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
+
+// Firebase Analytics
 let analytics: Analytics | null = null;
 let analyticsInitialized = false;
+
+// Google Analytics 4
+let ga4Initialized = false;
+let ga4MeasurementId: string | null = null;
+let ga4ConfigFetchPromise: Promise<string | null> | null = null;
+
+// Session management
+interface SessionData {
+  sessionId: string;
+  startTime: number;
+  eventCount: number;
+  lastActivity: number;
+}
+
+let currentSession: SessionData | null = null;
+const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+
+// Journey tracking state
+interface JourneyState {
+  previousPage: string | null;
+  previousPageStartTime: number | null;
+  navigationMethod: 'direct' | 'sidebar' | 'back' | 'link' | 'unknown';
+}
+
+let journeyState: JourneyState = {
+  previousPage: null,
+  previousPageStartTime: null,
+  navigationMethod: 'unknown',
+};
+
+/**
+ * Fetch GA4 Measurement ID from backend (Secret Manager) or fallback to env var
+ */
+async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
+  // Return cached ID if available and not forcing refresh
+  if (ga4MeasurementId && !forceRefresh) {
+    return ga4MeasurementId;
+  }
+
+  // If fetch is already in progress, return that promise
+  if (ga4ConfigFetchPromise && !forceRefresh) {
+    return ga4ConfigFetchPromise;
+  }
+
+  // Start fetching config
+  ga4ConfigFetchPromise = (async () => {
+    try {
+      // Try to fetch from backend API (Secret Manager)
+      const apiUrl = import.meta.env.DEV 
+        ? `${API_BASE}/api/ga4-config` 
+        : `${API_BASE}/ga4-config`;
+      
+      // Add cache-busting query param for Safari
+      const cacheBuster = forceRefresh ? `?t=${Date.now()}` : '';
+      const response = await fetch(`${apiUrl}${cacheBuster}`, {
+        method: 'GET',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const measurementId = data.measurementId?.trim();
+        
+        // Validate format (should start with G-)
+        if (measurementId && measurementId.startsWith('G-')) {
+          ga4MeasurementId = measurementId;
+          console.log('✅ GA4 Measurement ID fetched from backend');
+          return measurementId;
+        } else {
+          throw new Error(`Invalid GA4 Measurement ID format from backend: ${measurementId?.substring(0, 20)}`);
+        }
+      } else {
+        // If backend returns 404, it means GA4 is not configured (not an error)
+        if (response.status === 404) {
+          console.warn('⚠️ GA4 Measurement ID not configured in backend');
+        } else {
+          console.warn(`⚠️ Backend returned error ${response.status} for GA4 config`);
+        }
+        throw new Error(`Failed to fetch GA4 config: ${response.status}`);
+      }
+    } catch (error: any) {
+      // Fallback to environment variable for local development
+      const envMeasurementId = import.meta.env.VITE_GA4_MEASUREMENT_ID?.trim();
+      if (envMeasurementId && envMeasurementId.startsWith('G-')) {
+        console.warn('⚠️ Using GA4 Measurement ID from environment variable (backend fetch failed)');
+        ga4MeasurementId = envMeasurementId;
+        return envMeasurementId;
+      }
+      
+      // No valid measurement ID available
+      console.warn('⚠️ GA4 Measurement ID not available. Backend fetch failed and environment variable is also invalid or missing.');
+      return null;
+    } finally {
+      ga4ConfigFetchPromise = null;
+    }
+  })();
+
+  return ga4ConfigFetchPromise;
+}
+
+/**
+ * Initialize Google Analytics 4
+ */
+async function initializeGA4(): Promise<void> {
+  if (ga4Initialized) {
+    return;
+  }
+
+  try {
+    // Fetch GA4 Measurement ID from backend (or fallback to env var)
+    const measurementId = await fetchGA4Config();
+    
+    if (!measurementId) {
+      console.warn('⚠️ GA4 Measurement ID not found, skipping GA4 initialization');
+      return;
+    }
+
+    // Load gtag script dynamically
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${measurementId}`;
+    document.head.appendChild(script);
+
+    // Initialize dataLayer and gtag
+    (window as any).dataLayer = (window as any).dataLayer || [];
+    function gtag(...args: any[]) {
+      (window as any).dataLayer.push(args);
+    }
+    (window as any).gtag = gtag;
+
+    gtag('js', new Date());
+    gtag('config', measurementId, {
+      send_page_view: false, // We'll handle page views manually
+    });
+
+    ga4Initialized = true;
+    console.log('✅ Google Analytics 4 initialized');
+  } catch (error: any) {
+    console.error('❌ Failed to initialize Google Analytics 4:', error);
+  }
+}
 
 /**
  * Initialize Firebase Analytics
@@ -26,25 +175,169 @@ export async function initializeAnalytics(): Promise<void> {
   } catch (error: any) {
     console.error('❌ Failed to initialize Firebase Analytics:', error);
   }
+
+  // Also initialize GA4 (async, but don't wait for it)
+  initializeGA4().catch(error => {
+    console.error('Failed to initialize GA4:', error);
+  });
+  
+  // Initialize session
+  initializeSession();
+}
+
+/**
+ * Initialize or restore session
+ */
+function initializeSession(): void {
+  try {
+    const savedSession = sessionStorage.getItem('analytics_session');
+    const now = Date.now();
+
+    if (savedSession) {
+      const session: SessionData = JSON.parse(savedSession);
+      // Check if session is still valid (not expired)
+      if (now - session.lastActivity < SESSION_TIMEOUT) {
+        currentSession = {
+          ...session,
+          lastActivity: now,
+        };
+        sessionStorage.setItem('analytics_session', JSON.stringify(currentSession));
+        return;
+      }
+    }
+
+    // Create new session
+    const sessionId = `session_${now}_${Math.random().toString(36).substr(2, 9)}`;
+    currentSession = {
+      sessionId,
+      startTime: now,
+      eventCount: 0,
+      lastActivity: now,
+    };
+    sessionStorage.setItem('analytics_session', JSON.stringify(currentSession));
+
+    // Track session start
+    trackEventDual('session_start', {
+      session_id: sessionId,
+    });
+  } catch (error) {
+    console.error('Failed to initialize session:', error);
+  }
+}
+
+/**
+ * Update session activity
+ */
+function updateSessionActivity(): void {
+  if (currentSession) {
+    currentSession.lastActivity = Date.now();
+    currentSession.eventCount += 1;
+    try {
+      sessionStorage.setItem('analytics_session', JSON.stringify(currentSession));
+    } catch (error) {
+      // Ignore storage errors
+    }
+  }
+}
+
+/**
+ * Send event to Google Analytics 4
+ */
+function gtagEvent(eventName: string, eventParams?: Record<string, any>): void {
+  if (!ga4Initialized || !ga4MeasurementId) {
+    return;
+  }
+
+  try {
+    const gtag = (window as any).gtag;
+    if (gtag) {
+      gtag('event', eventName, {
+        ...eventParams,
+        session_id: currentSession?.sessionId,
+      });
+    }
+  } catch (error: any) {
+    console.error('Failed to send GA4 event:', error);
+  }
+}
+
+/**
+ * Send event to both Firebase Analytics and GA4
+ */
+function trackEventDual(
+  eventName: string,
+  eventParams?: {
+    [key: string]: string | number | boolean | null | undefined;
+  }
+): void {
+  // Update session activity
+  updateSessionActivity();
+
+  // Add journey context to event params
+  const enrichedParams = {
+    ...eventParams,
+    session_id: currentSession?.sessionId || 'unknown',
+    previous_page: journeyState.previousPage || null,
+    navigation_method: journeyState.navigationMethod,
+  };
+
+  // Send to Firebase Analytics
+  if (analytics) {
+    try {
+      logEvent(analytics, eventName, enrichedParams);
+    } catch (error: any) {
+      console.error('Failed to send Firebase event:', error);
+    }
+  }
+
+  // Send to GA4
+  gtagEvent(eventName, enrichedParams);
 }
 
 /**
  * Track a page view
  */
 export function trackPageView(pageName: string, pagePath?: string): void {
-  if (!analytics) {
-    console.warn('Analytics not initialized, skipping page view tracking');
-    return;
+  const pagePathValue = pagePath || window.location.pathname;
+  const now = Date.now();
+
+  // Calculate time on previous page
+  let timeOnPreviousPage: number | null = null;
+  if (journeyState.previousPageStartTime) {
+    timeOnPreviousPage = Math.round((now - journeyState.previousPageStartTime) / 1000);
   }
 
-  try {
-    logEvent(analytics, 'page_view', {
-      page_title: pageName,
-      page_location: pagePath || window.location.pathname,
-      page_path: pagePath || window.location.pathname,
-    });
-  } catch (error: any) {
-    console.error('Failed to track page view:', error);
+  // Track navigation if we have a previous page
+  if (journeyState.previousPage && journeyState.previousPage !== pagePathValue) {
+    trackNavigation(journeyState.previousPage, pagePathValue);
+  }
+
+  // Update journey state
+  journeyState.previousPage = pagePathValue;
+  journeyState.previousPageStartTime = now;
+
+  // Track page view to both platforms
+  trackEventDual('page_view', {
+    page_title: pageName,
+    page_location: pagePathValue,
+    page_path: pagePathValue,
+    time_on_previous_page: timeOnPreviousPage,
+  });
+
+  // Also send GA4 page_view event (standard GA4 event)
+  if (ga4Initialized && ga4MeasurementId) {
+    try {
+      const gtag = (window as any).gtag;
+      if (gtag) {
+        gtag('event', 'page_view', {
+          page_title: pageName,
+          page_location: window.location.href,
+          page_path: pagePathValue,
+        });
+      }
+    } catch (error) {
+      // Ignore
+    }
   }
 }
 
@@ -57,34 +350,38 @@ export function trackEvent(
     [key: string]: string | number | boolean | null | undefined;
   }
 ): void {
-  if (!analytics) {
-    console.warn('Analytics not initialized, skipping event tracking');
-    return;
-  }
-
-  try {
-    logEvent(analytics, eventName, eventParams);
-  } catch (error: any) {
-    console.error('Failed to track event:', error);
-  }
+  trackEventDual(eventName, eventParams);
 }
 
 /**
  * Set user ID for analytics
  */
 export function setAnalyticsUserId(userId: string | null): void {
-  if (!analytics) {
-    return;
+  // Firebase Analytics
+  if (analytics) {
+    try {
+      if (userId) {
+        setUserId(analytics, userId);
+      } else {
+        setUserId(analytics, null);
+      }
+    } catch (error: any) {
+      console.error('Failed to set Firebase Analytics user ID:', error);
+    }
   }
 
-  try {
-    if (userId) {
-      setUserId(analytics, userId);
-    } else {
-      setUserId(analytics, null);
+  // GA4
+  if (ga4Initialized && ga4MeasurementId) {
+    try {
+      const gtag = (window as any).gtag;
+      if (gtag) {
+        gtag('config', ga4MeasurementId, {
+          user_id: userId || undefined,
+        });
+      }
+    } catch (error: any) {
+      console.error('Failed to set GA4 user ID:', error);
     }
-  } catch (error: any) {
-    console.error('Failed to set analytics user ID:', error);
   }
 }
 
@@ -94,22 +391,45 @@ export function setAnalyticsUserId(userId: string | null): void {
 export function setAnalyticsUserProperties(properties: {
   [key: string]: string | null;
 }): void {
-  if (!analytics) {
-    return;
+  // Firebase Analytics
+  if (analytics) {
+    try {
+      setUserProperties(analytics, properties);
+    } catch (error: any) {
+      console.error('Failed to set Firebase Analytics user properties:', error);
+    }
   }
 
-  try {
-    setUserProperties(analytics, properties);
-  } catch (error: any) {
-    console.error('Failed to set analytics user properties:', error);
+  // GA4 - set as user properties
+  if (ga4Initialized && ga4MeasurementId) {
+    try {
+      const gtag = (window as any).gtag;
+      if (gtag) {
+        // GA4 uses set to update user properties
+        Object.entries(properties).forEach(([key, value]) => {
+          if (value !== null) {
+            gtag('set', { [key]: value });
+          }
+        });
+      }
+    } catch (error: any) {
+      console.error('Failed to set GA4 user properties:', error);
+    }
   }
+}
+
+/**
+ * Set navigation method for next page view
+ */
+export function setNavigationMethod(method: 'direct' | 'sidebar' | 'back' | 'link' | 'unknown'): void {
+  journeyState.navigationMethod = method;
 }
 
 /**
  * Track button clicks
  */
 export function trackClick(buttonName: string, location?: string): void {
-  trackEvent('click', {
+  trackEventDual('click', {
     button_name: buttonName,
     location: location || window.location.pathname,
   });
@@ -119,7 +439,7 @@ export function trackClick(buttonName: string, location?: string): void {
  * Track form submissions
  */
 export function trackFormSubmit(formName: string, success: boolean = true): void {
-  trackEvent('form_submit', {
+  trackEventDual('form_submit', {
     form_name: formName,
     success: success,
   });
@@ -129,9 +449,10 @@ export function trackFormSubmit(formName: string, success: boolean = true): void
  * Track navigation
  */
 export function trackNavigation(from: string, to: string): void {
-  trackEvent('navigation', {
+  trackEventDual('navigation', {
     from: from,
     to: to,
+    navigation_method: journeyState.navigationMethod,
   });
 }
 
@@ -139,7 +460,7 @@ export function trackNavigation(from: string, to: string): void {
  * Track modal interactions
  */
 export function trackModal(modalName: string, action: 'open' | 'close'): void {
-  trackEvent('modal', {
+  trackEventDual('modal', {
     modal_name: modalName,
     action: action,
   });
@@ -149,7 +470,7 @@ export function trackModal(modalName: string, action: 'open' | 'close'): void {
  * Track tab switches
  */
 export function trackTabSwitch(tabName: string, location?: string): void {
-  trackEvent('tab_switch', {
+  trackEventDual('tab_switch', {
     tab_name: tabName,
     location: location || window.location.pathname,
   });
@@ -159,7 +480,7 @@ export function trackTabSwitch(tabName: string, location?: string): void {
  * Track search
  */
 export function trackSearch(searchTerm: string, resultCount?: number): void {
-  trackEvent('search', {
+  trackEventDual('search', {
     search_term: searchTerm,
     result_count: resultCount,
   });
@@ -169,7 +490,7 @@ export function trackSearch(searchTerm: string, resultCount?: number): void {
  * Track item creation
  */
 export function trackCreate(itemType: string, location?: string): void {
-  trackEvent('create', {
+  trackEventDual('create', {
     item_type: itemType,
     location: location || window.location.pathname,
   });
@@ -179,7 +500,7 @@ export function trackCreate(itemType: string, location?: string): void {
  * Track item update
  */
 export function trackUpdate(itemType: string, itemId?: string): void {
-  trackEvent('update', {
+  trackEventDual('update', {
     item_type: itemType,
     item_id: itemId,
   });
@@ -189,7 +510,7 @@ export function trackUpdate(itemType: string, itemId?: string): void {
  * Track item deletion
  */
 export function trackDelete(itemType: string, itemId?: string): void {
-  trackEvent('delete', {
+  trackEventDual('delete', {
     item_type: itemType,
     item_id: itemId,
   });
@@ -199,7 +520,7 @@ export function trackDelete(itemType: string, itemId?: string): void {
  * Track item view
  */
 export function trackView(itemType: string, itemId?: string): void {
-  trackEvent('view', {
+  trackEventDual('view', {
     item_type: itemType,
     item_id: itemId,
   });
@@ -209,7 +530,8 @@ export function trackView(itemType: string, itemId?: string): void {
  * Track sidebar navigation
  */
 export function trackSidebarNavigation(itemName: string, url: string): void {
-  trackEvent('sidebar_navigation', {
+  setNavigationMethod('sidebar');
+  trackEventDual('sidebar_navigation', {
     item_name: itemName,
     url: url,
     location: window.location.pathname,
@@ -220,7 +542,7 @@ export function trackSidebarNavigation(itemName: string, url: string): void {
  * Track organization switch
  */
 export function trackOrgSwitch(orgId: string, orgName: string, orgType: string): void {
-  trackEvent('org_switch', {
+  trackEventDual('org_switch', {
     org_id: orgId,
     org_name: orgName,
     org_type: orgType,
@@ -231,7 +553,7 @@ export function trackOrgSwitch(orgId: string, orgName: string, orgType: string):
  * Track context selection (projects, tasks, teams, docs)
  */
 export function trackContextSelect(contextType: 'project' | 'task' | 'team' | 'doc', itemId: string, action: 'select' | 'deselect'): void {
-  trackEvent('context_select', {
+  trackEventDual('context_select', {
     context_type: contextType,
     item_id: itemId,
     action: action,
@@ -245,7 +567,7 @@ export function trackContextSelect(contextType: 'project' | 'task' | 'team' | 'd
 export function trackAIChat(action: 'open' | 'close' | 'send_message' | 'like_message' | 'use_context', additionalParams?: {
   [key: string]: string | number | boolean | null | undefined;
 }): void {
-  trackEvent('ai_chat', {
+  trackEventDual('ai_chat', {
     action: action,
     ...additionalParams,
   });
@@ -257,7 +579,7 @@ export function trackAIChat(action: 'open' | 'close' | 'send_message' | 'like_me
 export function trackVoiceCall(action: 'initiate' | 'answer' | 'end' | 'mute' | 'unmute' | 'reject', callType: 'direct' | 'group', additionalParams?: {
   [key: string]: string | number | boolean | null | undefined;
 }): void {
-  trackEvent('voice_call', {
+  trackEventDual('voice_call', {
     action: action,
     call_type: callType,
     ...additionalParams,
@@ -268,7 +590,7 @@ export function trackVoiceCall(action: 'initiate' | 'answer' | 'end' | 'mute' | 
  * Track integration actions
  */
 export function trackIntegration(action: 'connect' | 'disconnect' | 'configure', integrationName: string, success: boolean = true): void {
-  trackEvent('integration', {
+  trackEventDual('integration', {
     action: action,
     integration_name: integrationName,
     success: success,
@@ -279,7 +601,7 @@ export function trackIntegration(action: 'connect' | 'disconnect' | 'configure',
  * Track file/image uploads
  */
 export function trackUpload(fileType: 'image' | 'document' | 'other', location?: string, success: boolean = true): void {
-  trackEvent('upload', {
+  trackEventDual('upload', {
     file_type: fileType,
     success: success,
     location: location || window.location.pathname,
@@ -290,7 +612,7 @@ export function trackUpload(fileType: 'image' | 'document' | 'other', location?:
  * Track selection mode
  */
 export function trackSelectionMode(action: 'enable' | 'disable', mode: 'single' | 'multiple'): void {
-  trackEvent('selection_mode', {
+  trackEventDual('selection_mode', {
     action: action,
     mode: mode,
     location: window.location.pathname,
@@ -301,7 +623,7 @@ export function trackSelectionMode(action: 'enable' | 'disable', mode: 'single' 
  * Track filter/search interactions
  */
 export function trackFilter(filterType: string, filterValue: string | number | boolean, location?: string): void {
-  trackEvent('filter', {
+  trackEventDual('filter', {
     filter_type: filterType,
     filter_value: String(filterValue),
     location: location || window.location.pathname,
@@ -312,7 +634,7 @@ export function trackFilter(filterType: string, filterValue: string | number | b
  * Track share actions
  */
 export function trackShare(itemType: string, itemId: string, shareType: 'link' | 'email' | 'team', location?: string): void {
-  trackEvent('share', {
+  trackEventDual('share', {
     item_type: itemType,
     item_id: itemId,
     share_type: shareType,
@@ -320,3 +642,94 @@ export function trackShare(itemType: string, itemId: string, shareType: 'link' |
   });
 }
 
+/**
+ * Track journey stage
+ */
+export function trackJourneyStage(stage: 'onboarding' | 'active' | 'power_user'): void {
+  trackEventDual('journey_stage', {
+    stage: stage,
+  });
+  
+  // Also set as user property
+  setAnalyticsUserProperties({ journey_stage: stage });
+}
+
+/**
+ * Track time on page
+ */
+export function trackTimeOnPage(pagePath: string, timeSeconds: number): void {
+  trackEventDual('time_on_page', {
+    page_path: pagePath,
+    time_seconds: timeSeconds,
+  });
+}
+
+/**
+ * Track scroll depth
+ */
+export function trackScrollDepth(pagePath: string, depth: 25 | 50 | 75 | 100): void {
+  trackEventDual('scroll_depth', {
+    page_path: pagePath,
+    depth_percent: depth,
+  });
+}
+
+/**
+ * Track session end
+ */
+export function trackSessionEnd(): void {
+  if (currentSession) {
+    const duration = Math.round((Date.now() - currentSession.startTime) / 1000);
+    trackEventDual('session_end', {
+      session_id: currentSession.sessionId,
+      duration_seconds: duration,
+      event_count: currentSession.eventCount,
+    });
+    currentSession = null;
+    try {
+      sessionStorage.removeItem('analytics_session');
+    } catch (error) {
+      // Ignore
+    }
+  }
+}
+
+/**
+ * Track errors
+ */
+export function trackError(errorType: string, errorMessage: string, errorContext?: Record<string, any>): void {
+  trackEventDual('error', {
+    error_type: errorType,
+    error_message: errorMessage,
+    ...errorContext,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track conversion events
+ */
+export function trackConversion(conversionName: string, value?: number, currency?: string): void {
+  trackEventDual('conversion', {
+    conversion_name: conversionName,
+    value: value,
+    currency: currency || 'USD',
+  });
+}
+
+/**
+ * Track engagement score
+ */
+export function trackEngagement(score: number, factors: Record<string, number>): void {
+  trackEventDual('engagement', {
+    engagement_score: score,
+    ...factors,
+  });
+}
+
+// Track session end on page unload
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    trackSessionEnd();
+  });
+}
