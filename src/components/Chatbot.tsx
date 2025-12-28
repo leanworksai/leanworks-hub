@@ -1780,6 +1780,13 @@ export function Chatbot() {
             }
           }
         });
+        
+        // Broadcast total unread count to header
+        const totalUnread = Array.from(merged.values()).reduce((sum, count) => sum + count, 0);
+        window.dispatchEvent(new CustomEvent('chatUnreadCount', { 
+          detail: { totalUnread } 
+        }));
+        
         return merged;
       });
     };
@@ -4480,10 +4487,40 @@ export function Chatbot() {
     };
 
     window.addEventListener('openChatWithAI', handleOpenChatWithAI as EventListener);
+    
+    // Handle toggle chat event from header button
+    const handleToggleChat = () => {
+      if (isFreePlan) {
+        toast({
+          title: "Feature unavailable",
+          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
+          variant: "default",
+        });
+        return;
+      }
+      setIsOpen(prev => !prev);
+      if (!isOpen) {
+        setSelectedMember("ai-assistant");
+        setMemberSearchQuery("");
+        trackAIChat('open', { source: 'header_button' });
+      } else {
+        trackAIChat('close', { source: 'header_button' });
+      }
+      if (isMobile && !isOpen) {
+        setShowMobileConversation(true);
+        setIsMobileSidebarOpen(false);
+      } else if (isMobile && isOpen) {
+        setIsMobileSidebarOpen(false);
+      }
+    };
+    
+    window.addEventListener('toggleChat', handleToggleChat as EventListener);
+    
     return () => {
       window.removeEventListener('openChatWithAI', handleOpenChatWithAI as EventListener);
+      window.removeEventListener('toggleChat', handleToggleChat as EventListener);
     };
-  }, [isFreePlan, isMobile, toast]);
+  }, [isFreePlan, isMobile, toast, isOpen]);
 
   // Handle drag start (both mouse and touch)
   const handleDragStart = useCallback((clientX: number, clientY: number) => {
@@ -4597,73 +4634,8 @@ export function Chatbot() {
 
   return (
     <>
-      {/* Floating Chat Button */}
-      <div 
-        className="fixed z-50 pointer-events-none"
-        style={{
-          left: buttonPosition.x === 0 ? '50%' : `${buttonPosition.x}px`,
-          top: buttonPosition.y === 0 ? 'auto' : `${buttonPosition.y}px`,
-          bottom: buttonPosition.y === 0 ? '24px' : 'auto',
-          right: buttonPosition.x === 0 ? 'auto' : 'auto',
-          transform: buttonPosition.x === 0 && buttonPosition.y === 0 ? 'translateX(-50%)' : 'none',
-        }}
-      >
-        <button
-          ref={buttonRef}
-          onMouseDown={(e) => {
-            if (e.button === 0) { // Left mouse button only
-              handleDragStart(e.clientX, e.clientY);
-            }
-          }}
-          onTouchStart={(e) => {
-            const touch = e.touches[0];
-            if (touch) {
-              handleDragStart(touch.clientX, touch.clientY);
-            }
-          }}
-          onClick={(e) => {
-            // Only trigger click if we didn't drag
-            if (!hasDragged) {
-              const wasOpen = isOpen;
-              setIsOpen(!isOpen);
-              if (!wasOpen) {
-                trackAIChat('open', { source: 'floating_button' });
-              } else {
-                trackAIChat('close', { source: 'floating_button' });
-              }
-              // When opening on mobile, show contact list first
-              if (!isOpen) {
-                if (isMobile) {
-                  setShowMobileConversation(false);
-                  setIsMobileSidebarOpen(true);
-                } else {
-                  // Desktop: restore the last selected member
-                  const lastMember = getLastSelectedMember();
-                  setSelectedMember(lastMember);
-                }
-              }
-            }
-            // Reset drag flag after a short delay
-            setTimeout(() => setHasDragged(false), 100);
-          }}
-          className={cn(
-            "h-14 w-14 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 relative pointer-events-auto bg-primary hover:bg-primary/90 flex items-center justify-center border-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 cursor-move touch-none",
-            isOpen ? "scale-0 opacity-0" : "scale-100 opacity-100",
-            isDragging && "scale-110 shadow-2xl"
-          )}
-          style={{
-            userSelect: 'none',
-            WebkitUserSelect: 'none',
-            WebkitTouchCallout: 'none',
-          }}
-        >
-        <MessageSquare className="text-primary-foreground" style={{ width: '1.75rem', height: '1.75rem', pointerEvents: 'none' }} />
-        {/* Unread indicator - red dot */}
-        {Array.from(unreadCounts.values()).reduce((sum, count) => sum + count, 0) > 0 && (
-          <span className="absolute top-0 right-0 h-3 w-3 bg-red-500 rounded-full border-2 border-background pointer-events-none" />
-        )}
-        </button>
-      </div>
+      {/* Floating Chat Button - Hidden (moved to header) */}
+      {/* Removed floating button - now in header */}
 
       {/* Chat Window - Slack-like Layout */}
       <div

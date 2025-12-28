@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown, FileText, FolderKanban, CheckSquare } from "lucide-react";
+import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown, FileText, FolderKanban, CheckSquare, MessageSquare, Sparkles } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -81,6 +81,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { data: projects = [] } = useProjects();
   const { data: tasks = [] } = useTasks();
   const { data: docs = [] } = useDocs();
+  
+  // Chat unread count state
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
 
   // Filter requests where current user is the owner (can manage)
   const manageableRequests = joinRequests.filter(
@@ -119,6 +122,18 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     };
     fetchProfile();
   }, [user]);
+  
+  // Listen for chat unread count updates
+  useEffect(() => {
+    const handleChatUnreadCount = (event: CustomEvent<{ totalUnread: number }>) => {
+      setChatUnreadCount(event.detail.totalUnread);
+    };
+    
+    window.addEventListener('chatUnreadCount', handleChatUnreadCount as EventListener);
+    return () => {
+      window.removeEventListener('chatUnreadCount', handleChatUnreadCount as EventListener);
+    };
+  }, []);
 
   // Keyboard shortcut for search (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -445,12 +460,39 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                 </Popover>
               </div>
               <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+                {/* Chat Button */}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="relative group"
+                  onClick={() => {
+                    // Dispatch event to toggle chat
+                    window.dispatchEvent(new CustomEvent('toggleChat'));
+                  }}
+                >
+                  <div className="relative flex items-center justify-center w-5 h-5">
+                    {/* Chat Icon - main icon */}
+                    <MessageSquare className="h-5 w-5 transition-all group-hover:scale-110" />
+                    {/* AI Sparkles Badge - positioned outside the chat icon to avoid overlap */}
+                    <div className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 flex items-center justify-center z-10">
+                      <Sparkles className="h-2.5 w-2.5 text-purple-700" strokeWidth={2} />
+                    </div>
+                  </div>
+                  {/* Unread indicator - red badge with count, positioned at bottom-right of chat icon */}
+                  {chatUnreadCount > 0 && (
+                    <span className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 h-5 w-5 rounded-full bg-red-500 text-white text-[10px] flex items-center justify-center font-medium border-2 border-background shadow-sm z-10">
+                      {chatUnreadCount > 9 ? '9+' : chatUnreadCount}
+                    </span>
+                  )}
+                </Button>
+                
+                {/* Notifications */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="relative">
                       <Bell className="h-5 w-5" />
                       {totalNotificationsCount > 0 && (
-                        <span className="absolute top-1 right-1 h-5 w-5 rounded-full bg-destructive text-destructive-foreground text-xs flex items-center justify-center font-medium">
+                        <span className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-medium border-2 border-background shadow-sm z-10">
                           {totalNotificationsCount > 9 ? '9+' : totalNotificationsCount}
                         </span>
                       )}
