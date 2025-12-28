@@ -59,17 +59,20 @@ export function useAutoSave({
   const userIdRef = useRef<string | null>(null);
   // Track the created doc ID to prevent creating multiple new docs
   const createdDocIdRef = useRef<string | null>(null);
+  // Lock to prevent concurrent doc creation
+  const isCreatingRef = useRef(false);
 
   // Update userId ref when user changes
   useEffect(() => {
     userIdRef.current = user?.email || null;
   }, [user?.email]);
 
-  // Reset createdDocIdRef when docId changes from a real ID back to 'new'
+  // Reset createdDocIdRef and lock when docId changes from a real ID back to 'new'
   useEffect(() => {
     if (docId !== 'new' && docId !== createdDocIdRef.current) {
-      // We're viewing an existing doc, reset the ref
+      // We're viewing an existing doc, reset the refs
       createdDocIdRef.current = null;
+      isCreatingRef.current = false;
     }
   }, [docId]);
 
@@ -192,37 +195,49 @@ export function useAutoSave({
           // Update saved state immediately to prevent duplicate saves
           lastSavedContentRef.current = content;
           lastSavedTitleRef.current = title.trim();
+        } else if (isCreatingRef.current) {
+          // Another save is already creating the doc, skip this one
+          // The other save will handle it and set createdDocIdRef
+          isSavingRef.current = false;
+          return;
         } else {
-          // First time creating this doc
-          const newDoc: Doc = {
-            id: uuidv4(), // Generate ID for new doc
-            title: title.trim(),
-            content,
-            ownerEmail: user?.email || '',
-            projectId: null,
-            teamId: null,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
-            isPinned: false,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
+          // First time creating this doc - set lock immediately to prevent concurrent creation
+          isCreatingRef.current = true;
           
-          const createdDoc = await createDoc.mutateAsync(newDoc);
-          
-          // Store the created doc ID to prevent duplicate creation
-          createdDocIdRef.current = createdDoc.id;
-          
-          // Clear draft for new doc after successful creation
-          if (userIdRef.current) {
-            removeDraft('new', userIdRef.current);
+          try {
+            const newDoc: Doc = {
+              id: uuidv4(), // Generate ID for new doc
+              title: title.trim(),
+              content,
+              ownerEmail: user?.email || '',
+              projectId: null,
+              teamId: null,
+              visibility,
+              visibleToMembers: Array.from(visibleToMembers),
+              metadata: { files },
+              isPinned: false,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+            
+            const createdDoc = await createDoc.mutateAsync(newDoc);
+            
+            // Store the created doc ID to prevent duplicate creation
+            createdDocIdRef.current = createdDoc.id;
+            
+            // Clear draft for new doc after successful creation
+            if (userIdRef.current) {
+              removeDraft('new', userIdRef.current);
+            }
+            
+            // Update saved state immediately to prevent duplicate saves
+            // Use the actual saved content from the created doc if available
+            lastSavedContentRef.current = createdDoc?.content || content;
+            lastSavedTitleRef.current = createdDoc?.title || title.trim();
+          } finally {
+            // Always release the lock, even on error
+            isCreatingRef.current = false;
           }
-          
-          // Update saved state immediately to prevent duplicate saves
-          // Use the actual saved content from the created doc if available
-          lastSavedContentRef.current = createdDoc?.content || content;
-          lastSavedTitleRef.current = createdDoc?.title || title.trim();
         }
       } else {
         await updateDoc.mutateAsync({
@@ -265,21 +280,32 @@ export function useAutoSave({
       
       // Queue save for retry
       if (docId === 'new') {
-        const newDoc: Doc = {
-          id: uuidv4(), // Generate ID for queue
-          title: title.trim(),
-          content,
-          ownerEmail: user?.email || '',
-          projectId: null,
-          teamId: null,
-          visibility,
-          visibleToMembers: Array.from(visibleToMembers),
-          metadata: { files },
-          isPinned: false,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        queueSave('new', {}, 'create', newDoc);
+        // If we've already created a doc, queue an update instead of create
+        if (createdDocIdRef.current) {
+          queueSave(createdDocIdRef.current, {
+            title: title.trim(),
+            content,
+            visibility,
+            visibleToMembers: Array.from(visibleToMembers),
+            metadata: { files },
+          });
+        } else {
+          const newDoc: Doc = {
+            id: uuidv4(), // Generate ID for queue
+            title: title.trim(),
+            content,
+            ownerEmail: user?.email || '',
+            projectId: null,
+            teamId: null,
+            visibility,
+            visibleToMembers: Array.from(visibleToMembers),
+            metadata: { files },
+            isPinned: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          queueSave('new', {}, 'create', newDoc);
+        }
       } else {
         queueSave(docId, {
           title: title.trim(),

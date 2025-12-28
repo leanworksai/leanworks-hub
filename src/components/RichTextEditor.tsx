@@ -6,6 +6,10 @@ import { TextAlign } from '@tiptap/extension-text-align';
 import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableCell } from '@tiptap/extension-table-cell';
+import { TableHeader } from '@tiptap/extension-table-header';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -25,6 +29,13 @@ import {
   Link as LinkIcon,
   Eraser,
   Paperclip,
+  Table as TableIcon,
+  Plus,
+  Minus,
+  Trash2,
+  Columns,
+  Rows,
+  Heading,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Input } from '@/components/ui/input';
@@ -34,6 +45,17 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 // Note: Trailing spaces preservation is handled via keyboard handler and CSS
 // Removed complex plugin to avoid potential runtime errors
@@ -76,6 +98,7 @@ export function RichTextEditor({
   const [isToolbarSticky, setIsToolbarSticky] = useState(false);
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
+  const [hoveredTableSize, setHoveredTableSize] = useState<{ rows: number; cols: number } | null>(null);
 
   const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-75';
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
@@ -108,8 +131,17 @@ export function RichTextEditor({
         },
       }),
       TextAlign.configure({
-        types: ['heading', 'paragraph'],
+        types: ['heading', 'paragraph', 'tableCell'],
       }),
+      Table.configure({
+        resizable: true,
+        HTMLAttributes: {
+          class: 'table-wrapper',
+        },
+      }),
+      TableRow,
+      TableHeader,
+      TableCell,
       Color,
       TextStyle,
     ],
@@ -456,55 +488,71 @@ export function RichTextEditor({
         <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Headings */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-          className={getButtonClasses(editor.isActive('heading', { level: 1 }))}
-        >
-          H1
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-          className={getButtonClasses(editor.isActive('heading', { level: 2 }))}
-        >
-          H2
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-          className={getButtonClasses(editor.isActive('heading', { level: 3 }))}
-        >
-          H3
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={getButtonClasses(
+                editor.isActive('heading', { level: 1 }) ||
+                editor.isActive('heading', { level: 2 }) ||
+                editor.isActive('heading', { level: 3 })
+              )}
+              title="Headings"
+            >
+              <Heading className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            >
+              <span className="font-bold text-lg">H1</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            >
+              <span className="font-bold">H2</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+            >
+              <span className="font-semibold text-sm">H3</span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Lists */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().toggleBulletList().run()}
-          className={getButtonClasses(editor.isActive('bulletList'))}
-        >
-          <List className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().toggleOrderedList().run()}
-          className={getButtonClasses(editor.isActive('orderedList'))}
-        >
-          <ListOrdered className="h-4 w-4" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={getButtonClasses(
+                editor.isActive('bulletList') || editor.isActive('orderedList')
+              )}
+              title="Lists"
+            >
+              <List className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+            >
+              <List className="h-4 w-4" />
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            >
+              <ListOrdered className="h-4 w-4" />
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           type="button"
           variant="ghost"
@@ -517,34 +565,155 @@ export function RichTextEditor({
 
         <Separator orientation="vertical" className="h-6 opacity-30" />
 
+        {/* Table Menu */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={getButtonClasses(editor.isActive('table'))}
+              title="Table"
+            >
+              <TableIcon className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <TableIcon className="h-4 w-4" />
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-auto p-2">
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">Select table size</Label>
+                  <div className="grid grid-cols-8 gap-1">
+                    {Array.from({ length: 64 }).map((_, index) => {
+                      const row = Math.floor(index / 8) + 1;
+                      const col = (index % 8) + 1;
+                      const isSelected = hoveredTableSize
+                        ? row <= hoveredTableSize.rows && col <= hoveredTableSize.cols
+                        : false;
+                      
+                      return (
+                        <button
+                          key={index}
+                          type="button"
+                          className={cn(
+                            "w-6 h-6 border border-border rounded-sm transition-colors",
+                            isSelected
+                              ? "bg-primary border-primary"
+                              : "bg-muted hover:bg-muted/80"
+                          )}
+                          onMouseEnter={() => setHoveredTableSize({ rows: row, cols: col })}
+                          onClick={() => {
+                            editor
+                              .chain()
+                              .focus()
+                              .insertTable({ rows: row, cols: col, withHeaderRow: true })
+                              .run();
+                            setHoveredTableSize(null);
+                          }}
+                          aria-label={`${row} rows, ${col} columns`}
+                        />
+                      );
+                    })}
+                  </div>
+                  {hoveredTableSize && (
+                    <p className="text-xs text-center text-muted-foreground">
+                      {hoveredTableSize.rows} × {hoveredTableSize.cols}
+                    </p>
+                  )}
+                </div>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+
+            {editor.isActive('table') && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Rows</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().addRowBefore().run()}
+                >
+                  <Plus className="h-4 w-4" />
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().addRowAfter().run()}
+                >
+                  <Rows className="h-4 w-4" />
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().deleteRow().run()}
+                  disabled={!editor.can().deleteRow()}
+                >
+                  <Minus className="h-4 w-4" />
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Columns</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().addColumnBefore().run()}
+                >
+                  <Plus className="h-4 w-4" />
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().addColumnAfter().run()}
+                >
+                  <Columns className="h-4 w-4" />
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().deleteColumn().run()}
+                  disabled={!editor.can().deleteColumn()}
+                >
+                  <Minus className="h-4 w-4" />
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => editor.chain().focus().deleteTable().run()}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <Separator orientation="vertical" className="h-6 opacity-30" />
+
         {/* Alignment */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().setTextAlign('left').run()}
-          className={getButtonClasses(editor.isActive({ textAlign: 'left' }))}
-        >
-          <AlignLeft className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().setTextAlign('center').run()}
-          className={getButtonClasses(editor.isActive({ textAlign: 'center' }))}
-        >
-          <AlignCenter className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => editor.chain().focus().setTextAlign('right').run()}
-          className={getButtonClasses(editor.isActive({ textAlign: 'right' }))}
-        >
-          <AlignRight className="h-4 w-4" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={getButtonClasses(
+                editor.isActive({ textAlign: 'left' }) ||
+                editor.isActive({ textAlign: 'center' }) ||
+                editor.isActive({ textAlign: 'right' })
+              )}
+              title="Text Alignment"
+            >
+              <AlignLeft className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().setTextAlign('left').run()}
+            >
+              <AlignLeft className="h-4 w-4" />
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().setTextAlign('center').run()}
+            >
+              <AlignCenter className="h-4 w-4" />
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => editor.chain().focus().setTextAlign('right').run()}
+            >
+              <AlignRight className="h-4 w-4" />
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <Separator orientation="vertical" className="h-6 opacity-30" />
 
@@ -679,7 +848,7 @@ export function RichTextEditor({
       {/* Editor Content */}
       <EditorContent 
         editor={editor} 
-        className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere" 
+        className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:overflow-wrap-anywhere [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60" 
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       />
     </div>

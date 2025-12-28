@@ -144,9 +144,9 @@ export async function processQueue(): Promise<{ success: number; failed: number 
       continue;
     }
 
-    const success = await processQueuedSave(item);
+    const isSuccess = await processQueuedSave(item);
     
-    if (success) {
+    if (isSuccess) {
       // Successfully saved, remove from queue
       success++;
     } else {
