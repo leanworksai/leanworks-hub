@@ -11,9 +11,21 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { Firestore } from 'firebase-admin/firestore';
 import { Writable } from 'stream';
+import { audioLogger } from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Byte order configuration
+// Options: 'little-endian' | 'big-endian' | 'auto'
+// Default: 'little-endian' (LiveKit egress sends PCM16 in little-endian format)
+// 
+// LiveKit Format Documentation:
+// - LiveKit egress sends raw PCM16 audio at 48kHz
+// - PCM16 format uses little-endian byte order (standard)
+// - Opus codec (used by LiveKit) also uses little-endian
+// - Detection is disabled by default to prevent false positives
+const AUDIO_BYTE_ORDER = (process.env.AUDIO_BYTE_ORDER as 'little-endian' | 'big-endian' | 'auto') || 'little-endian';
 
 // Initialize clients (lazy initialization)
 let storageClient: Storage | null = null;
@@ -54,6 +66,13 @@ interface StreamingSession {
   currentChunkBytes: number; // Bytes written to current chunk
   overlapBuffer: Buffer; // Last CHUNK_OVERLAP_BYTES from previous chunk
   sampleRate: number; // Sample rate in Hz (immutable once set, e.g., 16000 or 48000)
+  // CRITICAL: Write queue to ensure sequential writes
+  writeQueue: Array<{ data: Buffer; resolve: () => void; reject: (error: Error) => void }>;
+  writing: boolean; // Whether a write is currently in progress
+  needsByteSwap: boolean | null; // null = not determined yet, true = swap BE to LE, false = no swap needed
+  // State machine for rotation coordination
+  state: 'idle' | 'writing' | 'rotating' | 'closing'; // Track current operation state
+  rotationLock?: Promise<void>; // Track in-progress rotation to prevent concurrent rotations
 }
 
 const streamingSessions = new Map<string, StreamingSession>();
@@ -761,26 +780,31 @@ async function createStreamingSession(
   // CRITICAL: Log sample rate to verify it's correct
   console.log(`📝 Created WAV file for ${participantEmail} with sample rate: ${sampleRate}Hz (header size: ${maxExpectedChunkSize} bytes placeholder)`);
   
-  const now = Date.now();
-  const session: StreamingSession = {
-    callId,
-    participantEmail,
-    orgSlug: resolvedOrgSlug,
-    orgId: orgInfo.orgId,
-    writeStream,
-    file,
-    storagePath,
-    startTime: now,
-    totalBytes: 0,
-    chunkCount: 0,
-    lastPublishTime: now,
-    segmentIndex: 0,
-    currentChunkIndex: initialChunkIndex,
-    currentChunkStartTime: now,
-    currentChunkBytes: 0,
-    overlapBuffer: Buffer.alloc(0), // Start with empty overlap buffer
-    sampleRate, // Store sample rate (immutable once set)
-  };
+    const now = Date.now();
+    const session: StreamingSession = {
+      callId,
+      participantEmail,
+      orgSlug: resolvedOrgSlug,
+      orgId: orgInfo.orgId,
+      writeStream,
+      file,
+      storagePath,
+      startTime: now,
+      totalBytes: 0,
+      chunkCount: 0,
+      lastPublishTime: now,
+      segmentIndex: 0,
+      currentChunkIndex: initialChunkIndex,
+      currentChunkStartTime: now,
+      currentChunkBytes: 0,
+      overlapBuffer: Buffer.alloc(0), // Start with empty overlap buffer
+      sampleRate, // Store sample rate (immutable once set)
+      writeQueue: [], // Initialize write queue
+      writing: false, // No write in progress initially
+      needsByteSwap: null, // Byte order not determined yet
+      state: 'idle', // Initialize state machine
+      rotationLock: undefined, // No rotation in progress initially
+    };
   
   // Handle stream errors (async, non-blocking)
   writeStream.on('error', async (error: any) => {
@@ -827,6 +851,9 @@ async function createStreamingSession(
         }
         
         // Remove broken session so new chunks can create a fresh one
+        // Reset state before deleting (in case session is referenced elsewhere)
+        session.state = 'idle';
+        session.rotationLock = undefined;
         streamingSessions.delete(sessionKey);
         sessionCreationLocks.delete(sessionKey);
         
@@ -890,275 +917,788 @@ async function publishAudioChunkReady(
 /**
  * Rotate to a new chunk file
  * Closes current chunk, publishes AudioChunkReady, and starts new chunk with overlap
+ * Implements hybrid approach: state machine + queue draining + promise coordination
  */
 async function rotateChunk(sessionKey: string, session: StreamingSession): Promise<void> {
-  return new Promise((resolve) => {
-    const currentChunkIndex = session.currentChunkIndex;
-    const currentChunkStartTime = session.currentChunkStartTime;
-    const currentChunkEndTime = Date.now();
-    const currentStoragePath = session.storagePath;
-    const currentStorageUrl = `gs://${getStorageBucket().name}/${currentStoragePath}`;
-    
-    // Use overlap buffer from session (maintained in memory as we write)
-    const overlapBuffer = session.overlapBuffer.length > 0 
-      ? Buffer.from(session.overlapBuffer) 
-      : Buffer.alloc(0);
-    
-    // Close current chunk file
-    let uploadCompleted = false;
-    let timeoutFired = false;
-    
-    session.writeStream.on('finish', async () => {
-      if (timeoutFired) return;
-      uploadCompleted = true;
+  // Prevent concurrent rotations - return existing lock if rotation in progress
+  if (session.state === 'rotating' && session.rotationLock) {
+    audioLogger.info({
+      event: 'rotation_already_in_progress',
+      participantEmail: session.participantEmail,
+      callId: session.callId,
+      currentChunkIndex: session.currentChunkIndex,
+    }, `Rotation already in progress for ${session.participantEmail}, awaiting existing rotation`);
+    return session.rotationLock;
+  }
+  
+  // Set state to rotating and create rotation lock
+  session.state = 'rotating';
+  const rotationStartTime = Date.now();
+  
+  session.rotationLock = (async (): Promise<void> => {
+    try {
+      audioLogger.info({
+        event: 'rotation_started',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        currentChunkIndex: session.currentChunkIndex,
+        queueLength: session.writeQueue.length,
+        writing: session.writing,
+      }, `Starting rotation for chunk ${session.currentChunkIndex} (queue: ${session.writeQueue.length} items, writing: ${session.writing})`);
       
-      try {
-        // Publish AudioChunkReady event for completed chunk
-        await publishAudioChunkReady(
-          session,
-          currentChunkIndex,
-          currentChunkStartTime,
-          currentChunkEndTime,
-          currentStorageUrl,
-          false
-        );
-        
-        // Start new chunk with overlap
-        const newChunkIndex = currentChunkIndex + 1;
-        const date = new Date();
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        const dateFolder = `${year}-${month}-${day}`;
-        const newStoragePath = `orgs/${session.orgSlug}/recordings/${dateFolder}/${session.callId}/${session.participantEmail}/chunk_${newChunkIndex}.wav`;
-        
-        const bucket = getStorageBucket();
-        const newFile = bucket.file(newStoragePath);
-        const newWriteStream = newFile.createWriteStream({
-          resumable: true,
-          timeout: 600000,
-          metadata: {
-            contentType: 'audio/wav',
-            metadata: {
-              callId: session.callId,
+      const currentChunkIndex = session.currentChunkIndex;
+      const currentChunkStartTime = session.currentChunkStartTime;
+      const currentChunkEndTime = Date.now();
+      const currentStoragePath = session.storagePath;
+      const currentStorageUrl = `gs://${getStorageBucket().name}/${currentStoragePath}`;
+      
+      // Use overlap buffer from session (maintained in memory as we write)
+      const overlapBuffer = session.overlapBuffer.length > 0 
+        ? Buffer.from(session.overlapBuffer) 
+        : Buffer.alloc(0);
+      
+      // Step 1: Wait for in-progress write to complete
+      const writeWaitStart = Date.now();
+      while (session.writing) {
+        await new Promise(resolve => setImmediate(resolve));
+        // Safety check: don't wait forever
+        if (Date.now() - writeWaitStart > 5000) {
+          audioLogger.warn({
+            event: 'rotation_write_wait_timeout',
+            participantEmail: session.participantEmail,
+            callId: session.callId,
+            waitDuration: Date.now() - writeWaitStart,
+          }, `Timeout waiting for write to complete during rotation`);
+          break;
+        }
+      }
+      
+      // Step 2: Drain write queue before closing stream
+      const queueDrainStart = Date.now();
+      const queuedItems = [...session.writeQueue];
+      session.writeQueue = [];
+      
+      audioLogger.info({
+        event: 'rotation_queue_drain_start',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        queuedItemsCount: queuedItems.length,
+      }, `Draining ${queuedItems.length} queued writes before closing stream`);
+      
+      // Write each queued item sequentially to current stream
+      for (let i = 0; i < queuedItems.length; i++) {
+        const item = queuedItems[i];
+        await new Promise<void>((resolve) => {
+          // Check if stream is still writable
+          if (session.writeStream.destroyed || session.writeStream.writableEnded) {
+            audioLogger.warn({
+              event: 'rotation_queue_drain_stream_closed',
               participantEmail: session.participantEmail,
-              chunkIndex: newChunkIndex.toString(),
-              timestamp: Date.now().toString(),
-            },
-          },
-          validation: false,
-        });
-        
-        // Handle errors on new stream
-        newWriteStream.on('error', async (error: any) => {
-          const isRetryable = error.code === 'ECONNRESET' || 
-                             error.code === 'ETIMEDOUT' || 
-                             error.code === 'EPIPE' ||
-                             error.code === 408 ||
-                             error.code === 429 ||
-                             (error.code >= 500 && error.code < 600);
-          
-          if (error.code === 408 && error.message?.includes('Retry limit exceeded')) {
-            console.error(`❌ Stream failed during rotation for ${session.participantEmail}, attempting recovery...`);
-            
-            // Try to publish the current chunk anyway (even if upload failed)
-            try {
-              await publishAudioChunkReady(
-                session,
-                currentChunkIndex,
-                currentChunkStartTime,
-                currentChunkEndTime,
-                currentStorageUrl,
-                false
-              );
-              console.log(`✅ Published chunk ${currentChunkIndex} after rotation failure recovery`);
-            } catch (pubError) {
-              console.error(`❌ Failed to publish chunk after rotation error:`, pubError);
-            }
-            
-            // Remove session so new chunks can create a fresh one
-            const sessionKey = `${session.callId}:${session.participantEmail}`;
-            streamingSessions.delete(sessionKey);
-            sessionCreationLocks.delete(sessionKey);
-            
-            // Resolve to allow continuation
+              callId: session.callId,
+              itemIndex: i,
+              totalItems: queuedItems.length,
+            }, `Stream closed during queue drain, rejecting remaining ${queuedItems.length - i} items`);
+            item.reject(new Error('Stream closed during rotation'));
             resolve();
-          } else if (!isRetryable) {
-            console.error(`❌ Non-retryable error in new chunk stream for ${session.participantEmail}:`, error);
+            return;
           }
-        });
-      
-      // Write WAV header before streaming PCM data
-      const maxExpectedChunkSize = 2 * 1024 * 1024; // 2MB placeholder
-      // Use session's sample rate (immutable, set at session creation)
-      const wavHeader = createWavHeader(maxExpectedChunkSize, session.sampleRate);
-      newWriteStream.write(wavHeader);
-        
-        // Update session for new chunk
-        session.writeStream = newWriteStream;
-        session.file = newFile;
-        session.storagePath = newStoragePath;
-        session.currentChunkIndex = newChunkIndex;
-        session.currentChunkStartTime = Date.now();
-        session.currentChunkBytes = 0;
-        // Keep overlap buffer for next rotation (will be updated as we write)
-        
-        // Write overlap buffer to new chunk if we have it
-        if (overlapBuffer.length > 0) {
-          const canWrite = newWriteStream.write(overlapBuffer);
-          session.currentChunkBytes += overlapBuffer.length;
-          // Don't add to totalBytes here - it was already counted in the previous chunk
+          
+          const canWrite = session.writeStream.write(item.data, (error?: Error | null) => {
+            if (error) {
+              audioLogger.error({
+                event: 'rotation_queue_drain_write_error',
+                participantEmail: session.participantEmail,
+                callId: session.callId,
+                itemIndex: i,
+                error: error.message,
+              }, `Error writing queued item ${i} during rotation`);
+              item.reject(error);
+            } else {
+              item.resolve();
+            }
+            resolve();
+          });
+          
           if (!canWrite) {
-            newWriteStream.once('drain', () => {
-              // Stream ready for more data
+            // Handle backpressure
+            session.writeStream.once('drain', () => {
+              // Continue with next item
             });
           }
-        }
-        
-        console.log(`🔄 Rotated to chunk ${newChunkIndex} for ${session.participantEmail} (overlap: ${overlapBuffer.length} bytes)`);
-        resolve();
-      } catch (error: any) {
-        console.error(`❌ Error rotating chunk:`, error);
-        resolve(); // Resolve anyway to not block
+        });
       }
-    });
+      
+      const queueDrainDuration = Date.now() - queueDrainStart;
+      audioLogger.info({
+        event: 'rotation_queue_drain_complete',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        itemsDrained: queuedItems.length,
+        duration: queueDrainDuration,
+      }, `Queue drain complete: ${queuedItems.length} items in ${queueDrainDuration}ms`);
+      
+      // Step 3: Now safe to close the stream
+      return new Promise<void>((resolve, reject) => {
+        let uploadCompleted = false;
+        let timeoutFired = false;
+        const rotationTimeout = 30000; // 30 seconds timeout
     
-    // Close the write stream
-    session.writeStream.end(() => {
-      // 'finish' event will fire when upload completes
-    });
-    
-    // Handle stream errors during close
-    session.writeStream.on('error', (error: any) => {
-      if ((error as any).code !== 'ERR_STREAM_WRITE_AFTER_END') {
-        console.error(`❌ Error closing chunk stream:`, error);
-      }
-      if (!uploadCompleted && !timeoutFired) {
-        // Still try to publish and rotate
-        publishAudioChunkReady(
-          session,
-          currentChunkIndex,
-          currentChunkStartTime,
-          currentChunkEndTime,
-          currentStorageUrl,
-          false
-        ).then(() => {
-          // Create new chunk even if publish failed
-          const newChunkIndex = currentChunkIndex + 1;
-          const date = new Date();
-          const year = date.getFullYear();
-          const month = String(date.getMonth() + 1).padStart(2, '0');
-          const day = String(date.getDate()).padStart(2, '0');
-          const dateFolder = `${year}-${month}-${day}`;
-          const newStoragePath = `orgs/${session.orgSlug}/recordings/${dateFolder}/${session.callId}/${session.participantEmail}/chunk_${newChunkIndex}.wav`;
+        session.writeStream.on('finish', async () => {
+          if (timeoutFired) return;
+          uploadCompleted = true;
           
-          const bucket = getStorageBucket();
-          const newFile = bucket.file(newStoragePath);
-          const newWriteStream = newFile.createWriteStream({
-            resumable: true,
-            timeout: 600000,
-            metadata: {
-              contentType: 'audio/wav',
+          try {
+            // CRITICAL: Update WAV header with actual file size and verify sample rate
+            try {
+              const actualPcmSize = session.currentChunkBytes;
+              const actualFileSize = 44 + actualPcmSize; // 44 bytes for WAV header + PCM data
+              
+              // Download the file, update header, and re-upload
+              const [fileBuffer] = await session.file.download();
+              
+              // Verify file size matches
+              const expectedTotalSize = 44 + actualPcmSize;
+              if (fileBuffer.length !== expectedTotalSize) {
+                console.error(`❌ CRITICAL: Downloaded file size mismatch for chunk ${currentChunkIndex}!`);
+                console.error(`   Expected: ${expectedTotalSize} bytes (44 header + ${actualPcmSize} PCM)`);
+                console.error(`   Actual: ${fileBuffer.length} bytes`);
+              }
+              
+              // Verify WAV header is valid
+              const riffId = fileBuffer.toString('ascii', 0, 4);
+              const waveId = fileBuffer.toString('ascii', 8, 12);
+              if (riffId !== 'RIFF' || waveId !== 'WAVE') {
+                console.error(`❌ CRITICAL: Invalid WAV header for chunk ${currentChunkIndex}! RIFF=${riffId}, WAVE=${waveId}`);
+                throw new Error('Invalid WAV header structure');
+              }
+              
+              // CRITICAL: Verify sample rate in header matches session sample rate
+              const currentSampleRate = fileBuffer.readUInt32LE(24);
+              if (currentSampleRate !== session.sampleRate) {
+                console.error(`❌ CRITICAL: Sample rate mismatch in header for chunk ${currentChunkIndex}!`);
+                console.error(`   Expected: ${session.sampleRate} Hz, Found: ${currentSampleRate} Hz`);
+                console.error(`   This will cause "slow and deep" or "fast and high" sound when played!`);
+                // Fix it
+                fileBuffer.writeUInt32LE(session.sampleRate, 24);
+                const byteRate = session.sampleRate * 1 * 2; // sampleRate * channels * bytesPerSample
+                fileBuffer.writeUInt32LE(byteRate, 28);
+                console.log(`   ✅ Fixed sample rate to ${session.sampleRate} Hz in header`);
+              }
+              
+              // Update RIFF chunk size (bytes 4-7)
+              fileBuffer.writeUInt32LE(actualFileSize, 4);
+              
+              // Update data chunk size (bytes 40-43)
+              fileBuffer.writeUInt32LE(actualPcmSize, 40);
+              
+              // Re-upload with corrected header
+              await session.file.save(fileBuffer, {
+                metadata: {
+                  contentType: 'audio/wav',
+                  metadata: session.file.metadata?.metadata || {},
+                },
+              });
+              
+              console.log(`✅ Updated WAV header for chunk ${currentChunkIndex}: ${actualPcmSize} bytes PCM data, sample rate: ${session.sampleRate}Hz`);
+            } catch (error: any) {
+              console.warn(`⚠️ Failed to update WAV header for chunk ${currentChunkIndex}:`, error.message);
+              // Don't fail - the file is still usable, just with incorrect header size
+            }
+            
+            // Publish AudioChunkReady event for completed chunk
+            await publishAudioChunkReady(
+              session,
+              currentChunkIndex,
+              currentChunkStartTime,
+              currentChunkEndTime,
+              currentStorageUrl,
+              false
+            );
+            
+            // Start new chunk with overlap
+            const newChunkIndex = currentChunkIndex + 1;
+            const date = new Date();
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const dateFolder = `${year}-${month}-${day}`;
+            const newStoragePath = `orgs/${session.orgSlug}/recordings/${dateFolder}/${session.callId}/${session.participantEmail}/chunk_${newChunkIndex}.wav`;
+            
+            const bucket = getStorageBucket();
+            const newFile = bucket.file(newStoragePath);
+            const newWriteStream = newFile.createWriteStream({
+              resumable: true,
+              timeout: 600000,
               metadata: {
-                callId: session.callId,
-                participantEmail: session.participantEmail,
-                chunkIndex: newChunkIndex.toString(),
-                timestamp: Date.now().toString(),
+                contentType: 'audio/wav',
+                metadata: {
+                  callId: session.callId,
+                  participantEmail: session.participantEmail,
+                  chunkIndex: newChunkIndex.toString(),
+                  timestamp: Date.now().toString(),
+                },
               },
-            },
-            validation: false,
-          });
+              validation: false,
+            });
+            
+            // Handle errors on new stream
+            newWriteStream.on('error', async (error: any) => {
+              const isRetryable = error.code === 'ECONNRESET' || 
+                                 error.code === 'ETIMEDOUT' || 
+                                 error.code === 'EPIPE' ||
+                                 error.code === 408 ||
+                                 error.code === 429 ||
+                                 (error.code >= 500 && error.code < 600);
+              
+              if (error.code === 408 && error.message?.includes('Retry limit exceeded')) {
+                console.error(`❌ Stream failed during rotation for ${session.participantEmail}, attempting recovery...`);
+                
+                // Try to publish the current chunk anyway (even if upload failed)
+                try {
+                  await publishAudioChunkReady(
+                    session,
+                    currentChunkIndex,
+                    currentChunkStartTime,
+                    currentChunkEndTime,
+                    currentStorageUrl,
+                    false
+                  );
+                  console.log(`✅ Published chunk ${currentChunkIndex} after rotation failure recovery`);
+                } catch (pubError) {
+                  console.error(`❌ Failed to publish chunk after rotation error:`, pubError);
+                }
+                
+                // Remove session so new chunks can create a fresh one
+                const sessionKey = `${session.callId}:${session.participantEmail}`;
+                streamingSessions.delete(sessionKey);
+                sessionCreationLocks.delete(sessionKey);
+                
+                // Reset state
+                session.state = 'idle';
+                session.rotationLock = undefined;
+                
+                // Resolve to allow continuation
+                resolve();
+              } else if (!isRetryable) {
+                console.error(`❌ Non-retryable error in new chunk stream for ${session.participantEmail}:`, error);
+              }
+            });
           
-        // Write WAV header before streaming PCM data
-        const maxExpectedChunkSize = 2 * 1024 * 1024; // 2MB placeholder
-        // Use session's sample rate (immutable, set at session creation)
-        const wavHeader = createWavHeader(maxExpectedChunkSize, session.sampleRate);
-        newWriteStream.write(wavHeader);
-        
-        session.writeStream = newWriteStream;
-          session.file = newFile;
-          session.storagePath = newStoragePath;
-          session.currentChunkIndex = newChunkIndex;
-          session.currentChunkStartTime = Date.now();
-          session.currentChunkBytes = 0;
-          
-          if (overlapBuffer.length > 0) {
-            newWriteStream.write(overlapBuffer);
-            session.currentChunkBytes += overlapBuffer.length;
+          // Write WAV header before streaming PCM data
+          const maxExpectedChunkSize = 2 * 1024 * 1024; // 2MB placeholder
+          // Use session's sample rate (immutable, set at session creation)
+          const wavHeader = createWavHeader(maxExpectedChunkSize, session.sampleRate);
+          newWriteStream.write(wavHeader);
+            
+            // Update session for new chunk
+            session.writeStream = newWriteStream;
+            session.file = newFile;
+            session.storagePath = newStoragePath;
+            session.currentChunkIndex = newChunkIndex;
+            session.currentChunkStartTime = Date.now();
+            session.currentChunkBytes = 0;
+            // CRITICAL: Preserve byte order decision across rotations
+            // DO NOT reset needsByteSwap - it should persist for the entire session
+            // The byte order is determined once per session and applies to all chunks
+            // Initialize write queue for new stream if not already initialized
+            if (!session.writeQueue) {
+              session.writeQueue = [];
+              session.writing = false;
+            }
+            // Keep overlap buffer for next rotation (will be updated as we write)
+            
+            // Write overlap buffer to new chunk if we have it
+            if (overlapBuffer.length > 0) {
+              const canWrite = newWriteStream.write(overlapBuffer);
+              session.currentChunkBytes += overlapBuffer.length;
+              // Don't add to totalBytes here - it was already counted in the previous chunk
+              if (!canWrite) {
+                newWriteStream.once('drain', () => {
+                  // Stream ready for more data
+                });
+              }
+            }
+            
+            const rotationDuration = Date.now() - rotationStartTime;
+            audioLogger.info({
+              event: 'rotation_complete',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              oldChunkIndex: currentChunkIndex,
+              newChunkIndex,
+              duration: rotationDuration,
+            }, `Rotation complete: chunk ${currentChunkIndex} -> ${newChunkIndex} in ${rotationDuration}ms`);
+            
+            // Reset state to idle
+            session.state = 'idle';
+            resolve();
+          } catch (error: any) {
+            audioLogger.error({
+              event: 'rotation_error',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              currentChunkIndex,
+              error: error.message,
+            }, `Error during rotation: ${error.message}`);
+            // Reset state even on error
+            session.state = 'idle';
+            reject(error);
           }
-          
-          resolve();
-        }).catch(() => resolve());
-      }
-    });
-    
-    // Timeout after 2 minutes
-    setTimeout(() => {
-      if (!uploadCompleted) {
-        timeoutFired = true;
-        console.warn(`⚠️ Timeout waiting for chunk upload, proceeding with rotation`);
-        publishAudioChunkReady(
-          session,
-          currentChunkIndex,
-          currentChunkStartTime,
-          currentChunkEndTime,
-          currentStorageUrl,
-          false
-        ).then(() => {
-          // Create new chunk
-          const newChunkIndex = currentChunkIndex + 1;
-          const date = new Date();
-          const year = date.getFullYear();
-          const month = String(date.getMonth() + 1).padStart(2, '0');
-          const day = String(date.getDate()).padStart(2, '0');
-          const dateFolder = `${year}-${month}-${day}`;
-          const newStoragePath = `orgs/${session.orgSlug}/recordings/${dateFolder}/${session.callId}/${session.participantEmail}/chunk_${newChunkIndex}.wav`;
-          
-          const bucket = getStorageBucket();
-          const newFile = bucket.file(newStoragePath);
-          const newWriteStream = newFile.createWriteStream({
-            resumable: true,
-            timeout: 600000,
-            metadata: {
-              contentType: 'audio/wav',
-              metadata: {
-                callId: session.callId,
-                participantEmail: session.participantEmail,
-                chunkIndex: newChunkIndex.toString(),
-                timestamp: Date.now().toString(),
-              },
-            },
-            validation: false,
+        });
+        
+        // Close the write stream (after queue is drained)
+        session.writeStream.end(() => {
+          // 'finish' event will fire when upload completes
+        });
+        
+        // Handle stream errors during close
+        session.writeStream.on('error', (error: any) => {
+          if ((error as any).code !== 'ERR_STREAM_WRITE_AFTER_END') {
+            audioLogger.error({
+              event: 'rotation_stream_error',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              currentChunkIndex,
+              error: error.message,
+            }, `Error closing chunk stream: ${error.message}`);
+          }
+          if (!uploadCompleted && !timeoutFired) {
+            // Still try to publish and rotate
+            publishAudioChunkReady(
+              session,
+              currentChunkIndex,
+              currentChunkStartTime,
+              currentChunkEndTime,
+              currentStorageUrl,
+              false
+            ).then(() => {
+              // Create new chunk even if publish failed
+              const newChunkIndex = currentChunkIndex + 1;
+              const date = new Date();
+              const year = date.getFullYear();
+              const month = String(date.getMonth() + 1).padStart(2, '0');
+              const day = String(date.getDate()).padStart(2, '0');
+              const dateFolder = `${year}-${month}-${day}`;
+              const newStoragePath = `orgs/${session.orgSlug}/recordings/${dateFolder}/${session.callId}/${session.participantEmail}/chunk_${newChunkIndex}.wav`;
+              
+              const bucket = getStorageBucket();
+              const newFile = bucket.file(newStoragePath);
+              const newWriteStream = newFile.createWriteStream({
+                resumable: true,
+                timeout: 600000,
+                metadata: {
+                  contentType: 'audio/wav',
+                  metadata: {
+                    callId: session.callId,
+                    participantEmail: session.participantEmail,
+                    chunkIndex: newChunkIndex.toString(),
+                    timestamp: Date.now().toString(),
+                  },
+                },
+                validation: false,
+              });
+              
+            // Write WAV header before streaming PCM data
+            const maxExpectedChunkSize = 2 * 1024 * 1024; // 2MB placeholder
+            // Use session's sample rate (immutable, set at session creation)
+            const wavHeader = createWavHeader(maxExpectedChunkSize, session.sampleRate);
+            newWriteStream.write(wavHeader);
+            
+            session.writeStream = newWriteStream;
+              session.file = newFile;
+              session.storagePath = newStoragePath;
+              session.currentChunkIndex = newChunkIndex;
+              session.currentChunkStartTime = Date.now();
+              session.currentChunkBytes = 0;
+              // Initialize write queue for new stream if not already initialized
+              if (!session.writeQueue) {
+                session.writeQueue = [];
+                session.writing = false;
+              }
+              
+              if (overlapBuffer.length > 0) {
+                newWriteStream.write(overlapBuffer);
+                session.currentChunkBytes += overlapBuffer.length;
+              }
+              
+              session.state = 'idle';
+              resolve();
+            }).catch(() => {
+              session.state = 'idle';
+              resolve();
+            });
+          }
+        });
+        
+        // Timeout protection (30 seconds)
+        setTimeout(() => {
+          if (!uploadCompleted) {
+            timeoutFired = true;
+            const rotationDuration = Date.now() - rotationStartTime;
+            audioLogger.warn({
+              event: 'rotation_timeout',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              currentChunkIndex,
+              duration: rotationDuration,
+            }, `Rotation timeout after ${rotationDuration}ms, proceeding with new chunk creation`);
+            
+            publishAudioChunkReady(
+              session,
+              currentChunkIndex,
+              currentChunkStartTime,
+              currentChunkEndTime,
+              currentStorageUrl,
+              false
+            ).then(() => {
+              // Create new chunk
+              const newChunkIndex = currentChunkIndex + 1;
+              const date = new Date();
+              const year = date.getFullYear();
+              const month = String(date.getMonth() + 1).padStart(2, '0');
+              const day = String(date.getDate()).padStart(2, '0');
+              const dateFolder = `${year}-${month}-${day}`;
+              const newStoragePath = `orgs/${session.orgSlug}/recordings/${dateFolder}/${session.callId}/${session.participantEmail}/chunk_${newChunkIndex}.wav`;
+              
+              const bucket = getStorageBucket();
+              const newFile = bucket.file(newStoragePath);
+              const newWriteStream = newFile.createWriteStream({
+                resumable: true,
+                timeout: 600000,
+                metadata: {
+                  contentType: 'audio/wav',
+                  metadata: {
+                    callId: session.callId,
+                    participantEmail: session.participantEmail,
+                    chunkIndex: newChunkIndex.toString(),
+                    timestamp: Date.now().toString(),
+                  },
+                },
+                validation: false,
+              });
+              
+            // Write WAV header before streaming PCM data
+            const maxExpectedChunkSize = 2 * 1024 * 1024; // 2MB placeholder
+            // Use session's sample rate (immutable, set at session creation)
+            const wavHeader = createWavHeader(maxExpectedChunkSize, session.sampleRate);
+            newWriteStream.write(wavHeader);
+            
+            session.writeStream = newWriteStream;
+            session.file = newFile;
+            session.storagePath = newStoragePath;
+            session.currentChunkIndex = newChunkIndex;
+            session.currentChunkStartTime = Date.now();
+            session.currentChunkBytes = 0;
+            // Initialize write queue for new stream if not already initialized
+            if (!session.writeQueue) {
+              session.writeQueue = [];
+              session.writing = false;
+            }
+            
+            if (overlapBuffer.length > 0) {
+              newWriteStream.write(overlapBuffer);
+              session.currentChunkBytes += overlapBuffer.length;
+            }
+            
+            session.state = 'idle';
+            resolve();
+          }).catch(() => {
+            session.state = 'idle';
+            resolve();
           });
-          
-        // Write WAV header before streaming PCM data
-        const maxExpectedChunkSize = 2 * 1024 * 1024; // 2MB placeholder
-        // Use session's sample rate (immutable, set at session creation)
-        const wavHeader = createWavHeader(maxExpectedChunkSize, session.sampleRate);
-        newWriteStream.write(wavHeader);
-        
-        session.writeStream = newWriteStream;
-        session.file = newFile;
-        session.storagePath = newStoragePath;
-        session.currentChunkIndex = newChunkIndex;
-        session.currentChunkStartTime = Date.now();
-        session.currentChunkBytes = 0;
-        
-        if (overlapBuffer.length > 0) {
-          newWriteStream.write(overlapBuffer);
-          session.currentChunkBytes += overlapBuffer.length;
+        }
+      }, rotationTimeout);
+      });
+    } catch (error: any) {
+      audioLogger.error({
+        event: 'rotation_fatal_error',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        error: error.message,
+      }, `Fatal error during rotation: ${error.message}`);
+      // Always reset state on error
+      session.state = 'idle';
+      session.rotationLock = undefined;
+      throw error;
+    } finally {
+      // Clear rotation lock when done
+      session.rotationLock = undefined;
+    }
+  })();
+  
+  return session.rotationLock;
+}
+
+/**
+ * Validate audio pattern to determine if samples represent valid audio data
+ * Checks for typical audio characteristics: non-zero samples, variation, reasonable range
+ */
+function hasValidAudioPattern(samples: number[]): boolean {
+  // Check for typical audio characteristics:
+  // - Not all zeros
+  // - Not all maxed out
+  // - Has variation (not constant)
+  // - Most samples in reasonable range
+  const nonZero = samples.filter(s => s !== 0).length;
+  const variation = Math.max(...samples) - Math.min(...samples);
+  const avgAbs = samples.reduce((a, b) => a + Math.abs(b), 0) / samples.length;
+  
+  return nonZero > samples.length * 0.1 && // At least 10% non-zero
+         variation > 100 && // Has variation
+         avgAbs > 10 && avgAbs < 20000; // Reasonable average
+}
+
+/**
+ * Process write queue sequentially to ensure chunks are written in order
+ * Respects rotation state - does not process queue during rotation
+ */
+function processWriteQueue(session: StreamingSession): void {
+  // Don't process queue if rotation is in progress (queue will be drained by rotation)
+  if (session.state === 'rotating') {
+    return;
+  }
+  
+  if (session.writing || !session.writeQueue || session.writeQueue.length === 0) {
+    return; // Already processing or no queue
+  }
+  
+  if (session.writeStream.destroyed || session.writeStream.writableEnded) {
+    // Reject all pending writes
+    while (session.writeQueue.length > 0) {
+      const item = session.writeQueue.shift()!;
+      item.reject(new Error('Stream closed'));
+    }
+    return;
+  }
+  
+  // Set state to writing
+  session.state = 'writing';
+  session.writing = true;
+  const item = session.writeQueue.shift()!;
+  
+  // CRITICAL: Byte order handling - apply based on configuration or detection
+  let dataToWrite = item.data;
+  
+  // Apply byte order based on configuration
+  // Default: little-endian (LiveKit's documented format) - no detection needed
+  if (session.needsByteSwap === null) {
+    if (AUDIO_BYTE_ORDER === 'little-endian') {
+      // LiveKit sends PCM16 in little-endian format - no swap needed
+      session.needsByteSwap = false;
+      audioLogger.info({
+        event: 'byte_order_configured',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        configuration: AUDIO_BYTE_ORDER,
+        decision: 'no-swap',
+        reason: 'LiveKit egress sends PCM16 in little-endian format (documented)',
+      }, `Byte order configured: no swap needed (LiveKit format is little-endian)`);
+    } else if (AUDIO_BYTE_ORDER === 'big-endian') {
+      // Manual override: always swap from BE to LE
+      session.needsByteSwap = true;
+      audioLogger.info({
+        event: 'byte_order_configured',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        configuration: AUDIO_BYTE_ORDER,
+        decision: 'swap',
+        reason: 'Manual configuration override',
+      }, `Byte order configured: will swap BE->LE (manual override)`);
+    } else {
+      // AUDIO_BYTE_ORDER === 'auto' - use detection (opt-in only)
+      // Enhanced detection with conservative multi-factor validation
+      if (item.data.length >= 20) {
+        // Check multiple samples (not just first few) for better accuracy
+        const numSamples = Math.min(100, item.data.length / 2);
+        const samplesLE: number[] = [];
+        const samplesBE: number[] = [];
+        for (let i = 0; i < numSamples; i++) {
+          samplesLE.push(item.data.readInt16LE(i * 2));
+          samplesBE.push(item.data.readInt16BE(i * 2));
         }
         
-        resolve();
-      }).catch(() => resolve());
+        // Calculate statistics
+        const lePeak = Math.max(...samplesLE.map(Math.abs));
+        const bePeak = Math.max(...samplesBE.map(Math.abs));
+        const leAvg = samplesLE.reduce((a, b) => a + Math.abs(b), 0) / samplesLE.length;
+        const beAvg = samplesBE.reduce((a, b) => a + Math.abs(b), 0) / samplesBE.length;
+        
+        // Multi-factor validation checks
+        const BE_MULTIPLIER_THRESHOLD = 10; // Increased from 2 to 10 for more conservative detection
+        const LE_SUSPICIOUS_THRESHOLD = 1000; // If LE peak is very small, it's likely wrong byte order
+        
+        const validationChecks = {
+          beMuchLarger: bePeak > lePeak * BE_MULTIPLIER_THRESHOLD,
+          leSuspiciouslySmall: lePeak < LE_SUSPICIOUS_THRESHOLD,
+          beInValidRange: bePeak > 100 && bePeak < 30000,
+          leHasValidPattern: hasValidAudioPattern(samplesLE),
+          beHasValidPattern: hasValidAudioPattern(samplesBE),
+        };
+        
+        // Calculate confidence score (0-1)
+        const confidenceScore = validationChecks.beMuchLarger && 
+                                validationChecks.leSuspiciouslySmall && 
+                                validationChecks.beInValidRange && 
+                                validationChecks.beHasValidPattern &&
+                                !validationChecks.leHasValidPattern ? 0.9 : 0.1;
+        
+        // Log diagnostic info to file
+        audioLogger.info({
+          event: 'byte_order_diagnostic',
+          participantEmail: session.participantEmail,
+          callId: session.callId,
+          chunkCount: session.chunkCount,
+          bufferLength: item.data.length,
+          samplesLE: samplesLE.slice(0, 5), // First 5 for brevity
+          samplesBE: samplesBE.slice(0, 5),
+          lePeak,
+          bePeak,
+          leAvg: Math.round(leAvg * 100) / 100,
+          beAvg: Math.round(beAvg * 100) / 100,
+          sampleRate: session.sampleRate,
+          validationChecks,
+          confidence: confidenceScore,
+        }, `Byte order diagnostic: LE peak=${lePeak}, BE peak=${bePeak}, LE avg=${leAvg.toFixed(2)}, BE avg=${beAvg.toFixed(2)}, confidence=${confidenceScore.toFixed(2)}`);
+        
+        // Only swap if ALL validation checks indicate BE is correct
+        if (validationChecks.beMuchLarger && 
+            validationChecks.leSuspiciouslySmall && 
+            validationChecks.beInValidRange && 
+            validationChecks.beHasValidPattern &&
+            !validationChecks.leHasValidPattern) {
+          session.needsByteSwap = true; // Remember: we need to swap for ALL chunks in this session
+          audioLogger.error({
+            event: 'byte_order_mismatch_detected',
+            participantEmail: session.participantEmail,
+            callId: session.callId,
+            chunkCount: session.chunkCount,
+            lePeak,
+            bePeak,
+            leAvg,
+            beAvg,
+            confidence: confidenceScore,
+            validationChecks,
+            action: 'swapping_bytes_for_all_chunks',
+          }, `CRITICAL: Byte order mismatch detected! BE values are ${(bePeak / lePeak).toFixed(2)}x larger. Will swap bytes for ALL chunks in this session.`);
+        } else {
+          // Default to no swap - assume data is already in correct byte order (LE)
+          session.needsByteSwap = false;
+          if (lePeak > bePeak * BE_MULTIPLIER_THRESHOLD) {
+            audioLogger.info({
+              event: 'byte_order_correct',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              chunkCount: session.chunkCount,
+              confidence: confidenceScore,
+            }, `Byte order appears correct (LE interpretation is ${(lePeak / bePeak).toFixed(2)}x larger). No swap needed for this session.`);
+          } else {
+            audioLogger.warn({
+              event: 'byte_order_ambiguous',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              chunkCount: session.chunkCount,
+              lePeak,
+              bePeak,
+              confidence: confidenceScore,
+              validationChecks,
+              message: 'Both LE and BE interpretations are similar - assuming no swap needed (might be silence)',
+            }, `Byte order ambiguous: LE peak=${lePeak}, BE peak=${bePeak} (similar values). Assuming no swap needed.`);
+          }
+        }
+      } else {
+        // Buffer too small for detection - default to no swap
+        session.needsByteSwap = false;
+        audioLogger.warn({
+          event: 'byte_order_insufficient_data',
+          participantEmail: session.participantEmail,
+          callId: session.callId,
+          bufferLength: item.data.length,
+          message: 'Buffer too small for byte order detection - defaulting to no swap',
+        }, `Insufficient data for byte order detection (${item.data.length} bytes) - defaulting to no swap`);
+      }
     }
-  }, 120000); // 2 minutes
-});
+    
+    // Log final decision once per session
+    audioLogger.info({
+      event: 'byte_order_determined',
+      participantEmail: session.participantEmail,
+      callId: session.callId,
+      configuration: AUDIO_BYTE_ORDER,
+      decision: session.needsByteSwap ? 'swap' : 'no-swap',
+      method: AUDIO_BYTE_ORDER === 'auto' ? 'detection' : 'configuration',
+    }, `Byte order determined: ${session.needsByteSwap ? 'swap BE->LE' : 'no swap (LE correct)'} via ${AUDIO_BYTE_ORDER}`);
+  }
+  
+  // Apply byte swap if needed (for ALL chunks once determined)
+  if (session.needsByteSwap === true) {
+    // Swap bytes: read as BE, write as LE
+    dataToWrite = Buffer.alloc(item.data.length);
+    for (let i = 0; i < item.data.length; i += 2) {
+      const sample = item.data.readInt16BE(i);
+      dataToWrite.writeInt16LE(sample, i);
+    }
+    
+    // Log swap only occasionally to avoid spam (every 100 chunks)
+    if (session.chunkCount % 100 === 0) {
+      audioLogger.debug({
+        event: 'byte_order_swapped',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        chunkCount: session.chunkCount,
+        originalLength: item.data.length,
+        swappedLength: dataToWrite.length,
+      }, `Bytes swapped: ${item.data.length} bytes converted from BE to LE (chunk ${session.chunkCount})`);
+    }
+  }
+  
+  const canWrite = session.writeStream.write(dataToWrite, (error?: Error | null) => {
+    session.writing = false;
+    
+    if (error) {
+      // Handle write-after-end errors gracefully
+      if ((error as any).code === 'ERR_STREAM_WRITE_AFTER_END') {
+        console.warn(`⚠️ Stream already closed for ${session.participantEmail}, removing session`);
+        item.reject(error);
+        // Reject remaining items
+        while (session.writeQueue.length > 0) {
+          const remaining = session.writeQueue.shift()!;
+          remaining.reject(new Error('Stream closed'));
+        }
+        // Reset state on error
+        session.state = 'idle';
+        return;
+      }
+      
+      const isRetryable = (error as any).code === 'ECONNRESET' || 
+                         (error as any).code === 'ETIMEDOUT' || 
+                         (error as any).code === 'EPIPE';
+      if (!isRetryable) {
+        console.error(`❌ Error writing chunk for ${session.participantEmail}:`, error);
+      }
+      item.reject(error);
+      // Reset state on error
+      session.state = 'idle';
+    } else {
+      item.resolve();
+      // Reset state to idle when write completes successfully
+      session.state = 'idle';
+    }
+    
+    // Process next item in queue
+    processWriteQueue(session);
+  });
+  
+  if (!canWrite) {
+    // Stream is backpressured, wait for drain
+    session.writeStream.once('drain', () => {
+      processWriteQueue(session);
+    });
+  }
 }
 
 /**
  * Record an audio chunk
- * Streams directly to Cloud Storage (async, non-blocking)
+ * Streams directly to Cloud Storage (now with sequential write queue)
  */
 export async function recordChunk(
   callId: string,
@@ -1176,6 +1716,9 @@ export async function recordChunk(
     // Check if session exists but stream is closed/destroyed
     if (session && (session.writeStream.destroyed || session.writeStream.writableEnded)) {
       console.warn(`⚠️ Stream closed for ${participantEmail}, removing session and creating new one`);
+      // Reset state before removing
+      session.state = 'idle';
+      session.rotationLock = undefined;
       streamingSessions.delete(sessionKey);
       sessionCreationLocks.delete(sessionKey); // Also clear any lock
       session = null;
@@ -1212,13 +1755,15 @@ export async function recordChunk(
           .then((newSession) => {
             // Check if another session was created while we were creating this one
             const existing = streamingSessions.get(sessionKey);
-            if (existing && existing !== newSession) {
-              // Duplicate detected - close the new one and use the existing
-              console.warn(`⚠️ Duplicate session detected for ${participantEmail}, closing new session and using existing`);
-              newSession.writeStream.destroy();
-              sessionCreationLocks.delete(sessionKey);
-              return existing;
-            }
+          if (existing && existing !== newSession) {
+            // Duplicate detected - close the new one and use the existing
+            console.warn(`⚠️ Duplicate session detected for ${participantEmail}, closing new session and using existing`);
+            newSession.state = 'idle';
+            newSession.rotationLock = undefined;
+            newSession.writeStream.destroy();
+            sessionCreationLocks.delete(sessionKey);
+            return existing;
+          }
             
             // Store the session
             streamingSessions.set(sessionKey, newSession);
@@ -1249,6 +1794,9 @@ export async function recordChunk(
         `This would cause incorrect WAV header. Creating new session.`
       );
       // Close existing session and create new one with correct sample rate
+      // Reset state before destroying
+      session.state = 'idle';
+      session.rotationLock = undefined;
       try {
         session.writeStream.destroy();
       } catch (e) {
@@ -1267,40 +1815,64 @@ export async function recordChunk(
     }
     
     // Check if current chunk exceeds duration threshold and needs rotation
-    // We check BEFORE writing to avoid writing to a chunk that's about to be closed
-    // NOTE: Rotation is non-blocking - we don't await to allow concurrent processing
+    // CRITICAL: Await rotation to ensure new stream is ready before queuing writes
+    // This prevents race condition where writes queue to closed stream
     if (session.currentChunkBytes >= CHUNK_DURATION_BYTES) {
-      // Rotate to new chunk (non-blocking - don't await)
-      // The write will queue if rotation is in progress, but we continue processing
-      rotateChunk(sessionKey, session)
-        .catch((error: any) => {
-          console.error(`❌ Error rotating chunk:`, error);
-          // Continue - try to write to current stream anyway
-        });
-      // Don't await - continue immediately to allow concurrent chunk processing
-    }
-    
-    // Write chunk to stream (async, non-blocking)
-    const canWrite = session.writeStream.write(audioData, (error?: Error | null) => {
-      if (error) {
-        // Handle write-after-end errors gracefully
-        if ((error as any).code === 'ERR_STREAM_WRITE_AFTER_END') {
-          console.warn(`⚠️ Stream already closed for ${participantEmail}, removing session`);
+      // Check if rotation is already in progress
+      if (session.state === 'rotating' && session.rotationLock) {
+        // Wait for existing rotation to complete
+        audioLogger.info({
+          event: 'awaiting_existing_rotation',
+          participantEmail,
+          callId: session.callId,
+          currentChunkIndex: session.currentChunkIndex,
+        }, `Rotation already in progress, awaiting completion before queuing write`);
+        try {
+          await session.rotationLock;
+        } catch (error: any) {
+          audioLogger.error({
+            event: 'rotation_wait_error',
+            participantEmail,
+            callId: session.callId,
+            error: error.message,
+          }, `Error waiting for rotation: ${error.message}`);
+          // Remove broken session - next chunk will create fresh one
           streamingSessions.delete(sessionKey);
-          sessionCreationLocks.delete(sessionKey); // Clean up any lock
+          sessionCreationLocks.delete(sessionKey);
           return;
         }
-        
-        const isRetryable = (error as any).code === 'ECONNRESET' || 
-                           (error as any).code === 'ETIMEDOUT' || 
-                           (error as any).code === 'EPIPE';
-        if (!isRetryable) {
-          console.error(`❌ Error writing chunk for ${participantEmail}:`, error);
+      } else if (session.state !== 'rotating') {
+        // Start rotation and await it
+        try {
+          await rotateChunk(sessionKey, session);
+        } catch (error: any) {
+          audioLogger.error({
+            event: 'rotation_error',
+            participantEmail,
+            callId: session.callId,
+            error: error.message,
+          }, `Error rotating chunk: ${error.message}`);
+          // Remove broken session - next chunk will create fresh one
+          streamingSessions.delete(sessionKey);
+          sessionCreationLocks.delete(sessionKey);
+          return;
         }
       }
+    }
+    
+    // CRITICAL: Queue writes to ensure sequential writing (prevents interleaving)
+    if (!session.writeQueue) {
+      session.writeQueue = [];
+      session.writing = false;
+    }
+    
+    // Add to write queue and wait for it to be written
+    await new Promise<void>((resolve, reject) => {
+      session.writeQueue!.push({ data: audioData, resolve, reject });
+      processWriteQueue(session);
     });
     
-    // Update session stats
+    // Update session stats (after successful write)
     session.totalBytes += audioData.length;
     session.chunkCount++;
     session.currentChunkBytes += audioData.length;
@@ -1313,13 +1885,6 @@ export async function recordChunk(
       session.overlapBuffer = combinedBuffer.slice(combinedBuffer.length - CHUNK_OVERLAP_BYTES);
     } else {
       session.overlapBuffer = combinedBuffer;
-    }
-    
-    // If stream is backpressured, wait for drain (but don't block the caller)
-    if (!canWrite) {
-      session.writeStream.once('drain', () => {
-        // Stream is ready for more data
-      });
     }
     
     // Log periodically (every ~5 seconds worth of audio at 16kHz)
@@ -1368,12 +1933,69 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
     const finalStorageUrl = `gs://${getStorageBucket().name}/${session.storagePath}`;
     
     // Wait for the GCS upload to complete (finish event)
-    session.writeStream.on('finish', () => {
+    session.writeStream.on('finish', async () => {
       if (timeoutFired) {
         return;
       }
       uploadCompleted = true;
       console.log(`✅ GCS upload completed for final chunk ${finalChunkIndex} for ${session.participantEmail}: ${session.currentChunkBytes} bytes`);
+      
+      // CRITICAL: Update WAV header with actual file size and verify sample rate
+      try {
+        const actualPcmSize = session.currentChunkBytes;
+        const actualFileSize = 44 + actualPcmSize; // 44 bytes for WAV header + PCM data
+        
+        // Download the file, update header, and re-upload
+        const [fileBuffer] = await session.file.download();
+        
+        // Verify file size matches
+        const expectedTotalSize = 44 + actualPcmSize;
+        if (fileBuffer.length !== expectedTotalSize) {
+          console.error(`❌ CRITICAL: Downloaded file size mismatch for chunk ${finalChunkIndex}!`);
+          console.error(`   Expected: ${expectedTotalSize} bytes (44 header + ${actualPcmSize} PCM)`);
+          console.error(`   Actual: ${fileBuffer.length} bytes`);
+        }
+        
+        // Verify WAV header is valid
+        const riffId = fileBuffer.toString('ascii', 0, 4);
+        const waveId = fileBuffer.toString('ascii', 8, 12);
+        if (riffId !== 'RIFF' || waveId !== 'WAVE') {
+          console.error(`❌ CRITICAL: Invalid WAV header for chunk ${finalChunkIndex}! RIFF=${riffId}, WAVE=${waveId}`);
+          throw new Error('Invalid WAV header structure');
+        }
+        
+        // CRITICAL: Verify sample rate in header matches session sample rate
+        const currentSampleRate = fileBuffer.readUInt32LE(24);
+        if (currentSampleRate !== session.sampleRate) {
+          console.error(`❌ CRITICAL: Sample rate mismatch in header for chunk ${finalChunkIndex}!`);
+          console.error(`   Expected: ${session.sampleRate} Hz, Found: ${currentSampleRate} Hz`);
+          console.error(`   This will cause "slow and deep" or "fast and high" sound when played!`);
+          // Fix it
+          fileBuffer.writeUInt32LE(session.sampleRate, 24);
+          const byteRate = session.sampleRate * 1 * 2; // sampleRate * channels * bytesPerSample
+          fileBuffer.writeUInt32LE(byteRate, 28);
+          console.log(`   ✅ Fixed sample rate to ${session.sampleRate} Hz in header`);
+        }
+        
+        // Update RIFF chunk size (bytes 4-7)
+        fileBuffer.writeUInt32LE(actualFileSize, 4);
+        
+        // Update data chunk size (bytes 40-43)
+        fileBuffer.writeUInt32LE(actualPcmSize, 40);
+        
+        // Re-upload with corrected header
+        await session.file.save(fileBuffer, {
+          metadata: {
+            contentType: 'audio/wav',
+            metadata: session.file.metadata?.metadata || {},
+          },
+        });
+        
+        console.log(`✅ Updated WAV header for chunk ${finalChunkIndex}: ${actualPcmSize} bytes PCM data, sample rate: ${session.sampleRate}Hz`);
+      } catch (error: any) {
+        console.warn(`⚠️ Failed to update WAV header for chunk ${finalChunkIndex}:`, error.message);
+        // Don't fail - the file is still usable, just with incorrect header size
+      }
       
       // Publish final AudioChunkReady event after upload is complete
       publishAudioChunkReady(
@@ -1448,7 +2070,19 @@ export async function cleanupParticipantBuffer(callId: string, participantEmail:
     console.log(`⏳ Waiting for in-flight chunks to finish for ${participantEmail}...`);
     await new Promise(resolve => setTimeout(resolve, 200)); // 200ms grace period
     
+    // Wait for rotation to complete if in progress
+    if (session.state === 'rotating' && session.rotationLock) {
+      try {
+        await session.rotationLock;
+      } catch (error) {
+        // Ignore rotation errors during cleanup
+      }
+    }
+    
     await closeStreamingSession(sessionKey, session);
+    // Reset state before deleting
+    session.state = 'idle';
+    session.rotationLock = undefined;
     streamingSessions.delete(sessionKey);
     sessionCreationLocks.delete(sessionKey); // Clean up any lock
   }
@@ -1470,13 +2104,27 @@ export async function flushCallBuffers(callId: string): Promise<void> {
     }
   }
   
+  // Wait for any in-progress rotations before closing
+  for (const [, session] of sessionsToClose) {
+    if (session.state === 'rotating' && session.rotationLock) {
+      try {
+        await session.rotationLock;
+      } catch (error) {
+        // Ignore rotation errors during cleanup
+      }
+    }
+  }
+  
   // Close all sessions in parallel
   await Promise.allSettled(
     sessionsToClose.map(([key, session]) => closeStreamingSession(key, session))
   );
   
   // Clean up sessions and locks
-  for (const [key] of sessionsToClose) {
+  for (const [key, session] of sessionsToClose) {
+    // Reset state before deleting
+    session.state = 'idle';
+    session.rotationLock = undefined;
     streamingSessions.delete(key);
     sessionCreationLocks.delete(key); // Clean up any locks
   }

@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import { resample48kHzTo16kHz } from '../services/audio-processor.js';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { transcriptionLogger } from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -683,6 +684,17 @@ async function transcribeAudioChunk(
       }
     }
     
+    // Log transcription started
+    transcriptionLogger.info({
+      event: 'transcription_started',
+      callId: session.callId,
+      participantEmail: email,
+      chunkIndex,
+      storageUrl,
+      assemblyaiJobId: jobId,
+      timestamp: new Date().toISOString(),
+    }, `Chunk ${chunkIndex} transcription started for ${email}`);
+    
     // Poll for completion (async, don't await to allow parallel processing)
     pollTranscriptionStatus(session, email, chunkIndex, jobId)
       .then((transcriptText) => {
@@ -691,6 +703,16 @@ async function transcribeAudioChunk(
         }
       })
       .catch((error) => {
+        transcriptionLogger.error({
+          event: 'transcription_polling_error',
+          callId: session.callId,
+          participantEmail: email,
+          chunkIndex,
+          assemblyaiJobId: jobId,
+          error: error.message,
+          stack: error.stack,
+          timestamp: new Date().toISOString(),
+        }, `Error polling transcription for chunk ${chunkIndex}: ${error.message}`);
         console.error(`❌ Error polling transcription for chunk ${chunkIndex}:`, error);
       });
     
@@ -698,6 +720,18 @@ async function transcribeAudioChunk(
     // The polling happens in background, and results are stored in session.chunkTranscripts
     return null;
   } catch (error: any) {
+    // Log transcription error to file
+    transcriptionLogger.error({
+      event: 'transcription_error',
+      callId: session.callId,
+      participantEmail: email,
+      chunkIndex,
+      storageUrl: storageUrl || null,
+      error: error.message,
+      stack: error.stack,
+      timestamp: new Date().toISOString(),
+    }, `Error transcribing chunk ${chunkIndex} for ${email}: ${error.message}`);
+    
     console.error(`❌ Error transcribing chunk ${chunkIndex} for ${email}:`, error);
     
     // Mark as failed
@@ -744,6 +778,9 @@ async function pollTranscriptionStatus(
   const assemblyAI = await getAssemblyAIClient();
   const startTime = Date.now();
   
+  // Declare storageUrl at function level so it's available for logging
+  let storageUrl: string | undefined = undefined;
+  
   while (Date.now() - startTime < TRANSCRIPTION_MAX_WAIT_MS) {
     try {
       const transcript = await assemblyAI.transcripts.get(jobId);
@@ -768,13 +805,13 @@ async function pollTranscriptionStatus(
         session.processingChunks.get(email)!.delete(chunkIndex);
         session.processedChunks.get(email)!.add(chunkIndex);
         
+        // Get storage_url from session state (before DB operations)
+        storageUrl = session.chunkStorageUrls.get(email)?.get(chunkIndex);
+        
         // Save to DB - retrieve storage_url from session state or DB
         if (session.orgSlug) {
           try {
             const pool = await getOrgPoolBySlug(session.orgSlug);
-            
-            // Get storage_url from session state
-            let storageUrl = session.chunkStorageUrls.get(email)?.get(chunkIndex);
             
             // If not in session state, try to get from DB as fallback
             if (!storageUrl) {
@@ -817,7 +854,20 @@ async function pollTranscriptionStatus(
           }
         }
         
-        // Print full transcription for this chunk
+        // Log transcription to file (structured logging)
+        transcriptionLogger.info({
+          event: 'transcription_completed',
+          callId: session.callId,
+          participantEmail: email,
+          chunkIndex,
+          storageUrl: storageUrl || null,
+          assemblyaiJobId: jobId,
+          transcriptLength: transcriptText.length,
+          transcript: transcriptText,
+          timestamp: new Date().toISOString(),
+        }, `Chunk ${chunkIndex} transcription completed for ${email}`);
+        
+        // Also print to console for immediate visibility
         console.log(`\n${'='.repeat(80)}`);
         console.log(`✅ Chunk ${chunkIndex} transcription completed for ${email}`);
         console.log(`${'='.repeat(80)}`);
@@ -831,6 +881,19 @@ async function pollTranscriptionStatus(
         session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'failed');
         session.processingChunks.get(email)!.delete(chunkIndex);
         
+        const errorMessage = transcript.error || 'Unknown error';
+        
+        // Log transcription error to file
+        transcriptionLogger.error({
+          event: 'transcription_failed',
+          callId: session.callId,
+          participantEmail: email,
+          chunkIndex,
+          assemblyaiJobId: jobId,
+          error: errorMessage,
+          timestamp: new Date().toISOString(),
+        }, `Chunk ${chunkIndex} transcription failed for ${email}: ${errorMessage}`);
+        
         // Save to DB
         if (session.orgSlug) {
           try {
@@ -839,7 +902,7 @@ async function pollTranscriptionStatus(
               UPDATE transcription_chunk_results
               SET status = 'failed', error_message = $1
               WHERE call_id = $2 AND participant_email = $3 AND chunk_index = $4
-            `, [transcript.error || 'Unknown error', session.callId, email, chunkIndex]);
+            `, [errorMessage, session.callId, email, chunkIndex]);
           } catch (dbError: any) {
             // Handle missing table gracefully
             if (dbError.code === '42P01') {
@@ -850,7 +913,7 @@ async function pollTranscriptionStatus(
           }
         }
         
-        throw new Error(`Transcription failed: ${transcript.error || 'Unknown error'}`);
+        throw new Error(`Transcription failed: ${errorMessage}`);
       }
       
       // Still processing (queued or processing), wait and poll again
@@ -865,6 +928,16 @@ async function pollTranscriptionStatus(
   }
   
   // Timeout - mark as failed
+  transcriptionLogger.error({
+    event: 'transcription_timeout',
+    callId: session.callId,
+    participantEmail: email,
+    chunkIndex,
+    assemblyaiJobId: jobId,
+    waitDuration: TRANSCRIPTION_MAX_WAIT_MS,
+    timestamp: new Date().toISOString(),
+  }, `Chunk ${chunkIndex} transcription timed out for ${email} after ${TRANSCRIPTION_MAX_WAIT_MS}ms`);
+  
   session.chunkTranscriptionStatus.get(email)!.set(chunkIndex, 'failed');
   session.processingChunks.get(email)!.delete(chunkIndex);
   
