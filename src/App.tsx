@@ -34,6 +34,7 @@ import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
 import Docs from "./pages/Docs";
 import DocDetail from "./pages/DocDetail";
+import Calendar from "./pages/Calendar";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Organizations from "./pages/Organizations";
@@ -98,6 +99,9 @@ const AppRoutesContent = () => {
       const docId = pathname.split('/docs/')[1];
       return `Doc Detail - ${docId}`;
     }
+    
+    // Calendar
+    if (pathname === '/calendar') return 'Calendar';
     
     // Teams (redirected but track for completeness)
     if (pathname === '/teams') return 'Teams';
@@ -211,6 +215,16 @@ const AppRoutesContent = () => {
             <ProtectedRoute>
               <DashboardLayout>
                 <DocDetail />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/calendar"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Calendar />
               </DashboardLayout>
             </ProtectedRoute>
           }

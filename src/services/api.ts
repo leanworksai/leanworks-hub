@@ -2,6 +2,7 @@ import type { Project, Comment } from '@/data/projectsData';
 import type { Task, TaskComment } from '@/data/tasksData';
 import type { Team, TeamDetailData } from '@/data/teamsData';
 import type { Doc } from '@/data/docsData';
+import type { Event } from '@/data/eventsData';
 import { auth, db } from '@/lib/firebase-client';
 
 // Use proxy API in development (uses gcp_credential.json via Admin SDK)
@@ -261,6 +262,50 @@ export const tasksService = {
     }
     const data = await response.json();
     return data.comment;
+  },
+};
+
+// Events Service
+export const eventsService = {
+  async getAll(): Promise<Event[]> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/events` : `${API_BASE}/events`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) throw new Error('Failed to fetch events');
+    return response.json();
+  },
+
+  async getById(eventId: string): Promise<Event | null> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/events/${eventId}` : `${API_BASE}/events/${eventId}`;
+    const response = await authenticatedFetch(url);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error('Failed to fetch event');
+    return response.json();
+  },
+
+  async create(event: Event): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/events` : `${API_BASE}/events`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify(event),
+    });
+    if (!response.ok) throw new Error('Failed to create event');
+  },
+
+  async update(eventId: string, updates: Partial<Event>): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/events/${eventId}` : `${API_BASE}/events/${eventId}`;
+    const response = await authenticatedFetch(url, {
+      method: 'PATCH',
+      body: JSON.stringify(updates),
+    });
+    if (!response.ok) throw new Error('Failed to update event');
+  },
+
+  async delete(eventId: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/events/${eventId}` : `${API_BASE}/events/${eventId}`;
+    const response = await authenticatedFetch(url, {
+      method: 'DELETE',
+    });
+    if (!response.ok) throw new Error('Failed to delete event');
   },
 };
 

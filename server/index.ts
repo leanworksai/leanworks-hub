@@ -5288,6 +5288,405 @@ app.delete('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req,
 });
 
 // ============================================================================
+// EVENTS ENDPOINTS (PostgreSQL)
+// ============================================================================
+
+app.get('/api/events', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const pool = await getOrgPool(orgId);
+    
+    const result = await pool.query(`
+      SELECT 
+        e.id,
+        e.title,
+        e.description,
+        e.start_date,
+        e.end_date,
+        e.all_day,
+        e.location,
+        e.attendees,
+        e.created_by,
+        e.visibility,
+        e.visible_to_members,
+        e.created_at,
+        e.updated_at
+      FROM events e
+      WHERE (
+        -- Creator always has access
+        e.created_by = $1
+        -- OR event visibility is 'all_members' (default - visible to all org members)
+        OR (e.visibility = 'all_members' OR e.visibility IS NULL)
+        -- OR event visibility is 'specific_members' and user is in visible_to_members
+        OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $2::jsonb)
+        -- OR user is in attendees
+        OR (e.attendees IS NOT NULL AND e.attendees @> $2::jsonb)
+      )
+      ORDER BY e.start_date ASC
+    `, [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
+    
+    const events = result.rows.map(row => ({
+      id: row.id,
+      title: row.title,
+      description: row.description || '',
+      startDate: row.start_date ? new Date(row.start_date).toISOString() : '',
+      endDate: row.end_date ? new Date(row.end_date).toISOString() : '',
+      allDay: row.all_day || false,
+      location: row.location || undefined,
+      attendees: row.attendees || [],
+      createdBy: row.created_by,
+      visibility: row.visibility || 'all_members',
+      visibleToMembers: row.visible_to_members || [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
+    }));
+    
+    res.json(events);
+  } catch (error) {
+    console.error('Get events error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.get('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const eventId = req.params.id;
+    const pool = await getOrgPool(orgId);
+    
+    const result = await pool.query(`
+      SELECT 
+        e.id,
+        e.title,
+        e.description,
+        e.start_date,
+        e.end_date,
+        e.all_day,
+        e.location,
+        e.attendees,
+        e.created_by,
+        e.visibility,
+        e.visible_to_members,
+        e.created_at,
+        e.updated_at
+      FROM events e
+      WHERE e.id = $1 AND (
+        -- Creator always has access
+        e.created_by = $2
+        -- OR event visibility is 'all_members' (default - visible to all org members)
+        OR (e.visibility = 'all_members' OR e.visibility IS NULL)
+        -- OR event visibility is 'specific_members' and user is in visible_to_members
+        OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $3::jsonb)
+        -- OR user is in attendees
+        OR (e.attendees IS NOT NULL AND e.attendees @> $3::jsonb)
+      )
+    `, [eventId, userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    
+    const row = result.rows[0];
+    const event = {
+      id: row.id,
+      title: row.title,
+      description: row.description || '',
+      startDate: row.start_date ? new Date(row.start_date).toISOString() : '',
+      endDate: row.end_date ? new Date(row.end_date).toISOString() : '',
+      allDay: row.all_day || false,
+      location: row.location || undefined,
+      attendees: row.attendees || [],
+      createdBy: row.created_by,
+      visibility: row.visibility || 'all_members',
+      visibleToMembers: row.visible_to_members || [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
+    };
+    
+    res.json(event);
+  } catch (error) {
+    console.error('Get event error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.post('/api/events', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const { title, description, startDate, endDate, allDay, location, attendees, visibility, visibleToMembers } = req.body;
+    
+    if (!title || !startDate || !endDate) {
+      return res.status(400).json({ error: 'Title, startDate, and endDate are required' });
+    }
+    
+    // Validate visibility (default to 'all_members' - visible to all org members)
+    const validVisibility = ['all_members', 'specific_members'];
+    const eventVisibility = visibility && validVisibility.includes(visibility) ? visibility : 'all_members';
+    
+    // Validate visibleToMembers for specific_members visibility
+    let visibleToMembersArray: string[] = [];
+    if (eventVisibility === 'specific_members') {
+      if (Array.isArray(visibleToMembers) && visibleToMembers.length > 0) {
+        visibleToMembersArray = visibleToMembers.map((email: string) => email.toLowerCase());
+      } else {
+        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+      }
+    }
+    
+    // Validate and normalize attendees
+    let attendeesArray: string[] = [];
+    if (Array.isArray(attendees) && attendees.length > 0) {
+      attendeesArray = attendees.map((email: string) => email.toLowerCase());
+    }
+    
+    // Parse dates - handle both date-only (YYYY-MM-DD) and datetime strings
+    let startDateParsed: Date;
+    let endDateParsed: Date;
+    
+    try {
+      startDateParsed = new Date(startDate);
+      endDateParsed = new Date(endDate);
+      
+      if (isNaN(startDateParsed.getTime()) || isNaN(endDateParsed.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+      
+      // If allDay is true, set time to start of day
+      if (allDay) {
+        startDateParsed.setHours(0, 0, 0, 0);
+        endDateParsed.setHours(23, 59, 59, 999);
+      }
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid date format' });
+    }
+    
+    if (endDateParsed < startDateParsed) {
+      return res.status(400).json({ error: 'End date must be after start date' });
+    }
+    
+    const pool = await getOrgPool(orgId);
+    const eventId = crypto.randomBytes(16).toString('hex');
+    
+    await pool.query(`
+      INSERT INTO events (
+        id, title, description, start_date, end_date, all_day, location, 
+        attendees, created_by, visibility, visible_to_members, created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `, [
+      eventId,
+      title,
+      description || null,
+      startDateParsed,
+      endDateParsed,
+      allDay || false,
+      location || null,
+      JSON.stringify(attendeesArray),
+      userEmail.toLowerCase(),
+      eventVisibility,
+      JSON.stringify(visibleToMembersArray),
+      Date.now(),
+    ]);
+    
+    res.status(201).json({ id: eventId, title, startDate, endDate });
+  } catch (error) {
+    console.error('Create event error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.patch('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const eventId = req.params.id;
+    const updates = req.body;
+    const pool = await getOrgPool(orgId);
+    
+    // Check if event exists and user has permission
+    const eventCheck = await pool.query(
+      'SELECT created_by FROM events WHERE id = $1',
+      [eventId]
+    );
+    
+    if (eventCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    
+    // Only creator can update visibility
+    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
+      const eventCreatorEmail = eventCheck.rows[0].created_by?.toLowerCase();
+      const normalizedUserEmail = userEmail.toLowerCase();
+      
+      if (eventCreatorEmail !== normalizedUserEmail) {
+        return res.status(403).json({ error: 'Only the event creator can update visibility settings' });
+      }
+    }
+    
+    const setClauses: string[] = [];
+    const values: any[] = [];
+    let paramIndex = 1;
+    
+    // Map camelCase to snake_case for database
+    const fieldMap: { [key: string]: string } = {
+      title: 'title',
+      description: 'description',
+      location: 'location',
+      allDay: 'all_day',
+    };
+    
+    // Handle visibility separately
+    if (updates.visibility !== undefined) {
+      const validVisibility = ['all_members', 'specific_members'];
+      const eventVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
+      setClauses.push(`visibility = $${paramIndex}`);
+      values.push(eventVisibility);
+      paramIndex++;
+      
+      // Handle visibleToMembers
+      if (eventVisibility === 'specific_members') {
+        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
+          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
+          setClauses.push(`visible_to_members = $${paramIndex}`);
+          values.push(JSON.stringify(visibleToMembersArray));
+          paramIndex++;
+        } else {
+          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
+        }
+      } else {
+        setClauses.push(`visible_to_members = $${paramIndex}`);
+        values.push(JSON.stringify([]));
+        paramIndex++;
+      }
+    }
+    
+    // Handle dates
+    if (updates.startDate !== undefined || updates.endDate !== undefined) {
+      let startDate = updates.startDate;
+      let endDate = updates.endDate;
+      
+      // If only one date is provided, fetch the other from database
+      if (startDate === undefined || endDate === undefined) {
+        const currentEvent = await pool.query(
+          'SELECT start_date, end_date, all_day FROM events WHERE id = $1',
+          [eventId]
+        );
+        if (currentEvent.rows.length > 0) {
+          if (startDate === undefined) {
+            startDate = currentEvent.rows[0].start_date.toISOString();
+          }
+          if (endDate === undefined) {
+            endDate = currentEvent.rows[0].end_date.toISOString();
+          }
+        }
+      }
+      
+      const startDateParsed = new Date(startDate);
+      const endDateParsed = new Date(endDate);
+      
+      if (isNaN(startDateParsed.getTime()) || isNaN(endDateParsed.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+      
+      const allDay = updates.allDay !== undefined ? updates.allDay : (await pool.query('SELECT all_day FROM events WHERE id = $1', [eventId])).rows[0]?.all_day || false;
+      
+      if (allDay) {
+        startDateParsed.setHours(0, 0, 0, 0);
+        endDateParsed.setHours(23, 59, 59, 999);
+      }
+      
+      if (endDateParsed < startDateParsed) {
+        return res.status(400).json({ error: 'End date must be after start date' });
+      }
+      
+      setClauses.push(`start_date = $${paramIndex}`);
+      values.push(startDateParsed);
+      paramIndex++;
+      
+      setClauses.push(`end_date = $${paramIndex}`);
+      values.push(endDateParsed);
+      paramIndex++;
+    }
+    
+    // Handle attendees
+    if (updates.attendees !== undefined) {
+      if (Array.isArray(updates.attendees)) {
+        const attendeesArray = updates.attendees.map((email: string) => email.toLowerCase());
+        setClauses.push(`attendees = $${paramIndex}`);
+        values.push(JSON.stringify(attendeesArray));
+        paramIndex++;
+      } else {
+        return res.status(400).json({ error: 'attendees must be an array' });
+      }
+    }
+    
+    // Handle other fields
+    Object.entries(updates).forEach(([key, value]) => {
+      if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && key !== 'startDate' && key !== 'endDate' && key !== 'attendees' && fieldMap[key]) {
+        const dbField = fieldMap[key];
+        setClauses.push(`${dbField} = $${paramIndex}`);
+        values.push(value);
+        paramIndex++;
+      }
+    });
+    
+    if (setClauses.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+    
+    setClauses.push(`updated_at = NOW()`);
+    values.push(eventId);
+    
+    await pool.query(`
+      UPDATE events 
+      SET ${setClauses.join(', ')}
+      WHERE id = $${paramIndex}
+    `, values);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update event error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+app.delete('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const eventId = req.params.id;
+    const pool = await getOrgPool(orgId);
+    
+    // Check if user is the creator
+    const eventCheck = await pool.query(
+      'SELECT created_by FROM events WHERE id = $1',
+      [eventId]
+    );
+    
+    if (eventCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Event not found' });
+    }
+    
+    const eventCreatorEmail = eventCheck.rows[0].created_by?.toLowerCase();
+    const normalizedUserEmail = userEmail.toLowerCase();
+    
+    if (eventCreatorEmail !== normalizedUserEmail) {
+      return res.status(403).json({ error: 'Only the event creator can delete the event' });
+    }
+    
+    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete event error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
 // MESSAGES ENDPOINTS (Firestore Only)
 // ============================================================================
 

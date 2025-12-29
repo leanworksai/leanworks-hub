@@ -216,6 +216,34 @@ CREATE TABLE IF NOT EXISTS task_comments (
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 
 -- ============================================================================
+-- EVENTS TABLES
+-- ============================================================================
+
+-- Events table
+CREATE TABLE IF NOT EXISTS events (
+  id VARCHAR(50) PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  description TEXT,
+  start_date TIMESTAMP NOT NULL,
+  end_date TIMESTAMP NOT NULL,
+  all_day BOOLEAN DEFAULT false,
+  location VARCHAR(255),
+  attendees JSONB DEFAULT '[]'::jsonb, -- Array of user emails
+  created_by VARCHAR(255) NOT NULL,  -- References user in shared DB (email)
+  visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
+  visible_to_members JSONB DEFAULT '[]'::jsonb,
+  created_at BIGINT,
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_start_date ON events(start_date);
+CREATE INDEX IF NOT EXISTS idx_events_end_date ON events(end_date);
+CREATE INDEX IF NOT EXISTS idx_events_created_by ON events(created_by);
+CREATE INDEX IF NOT EXISTS idx_events_visibility ON events(visibility);
+CREATE INDEX IF NOT EXISTS idx_events_visible_to_members ON events USING GIN (visible_to_members);
+CREATE INDEX IF NOT EXISTS idx_events_attendees ON events USING GIN (attendees);
+
+-- ============================================================================
 -- UPDATES TABLES
 -- ============================================================================
 
@@ -380,6 +408,9 @@ CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks FOR EACH ROW EXECU
 
 DROP TRIGGER IF EXISTS update_docs_updated_at ON docs;
 CREATE TRIGGER update_docs_updated_at BEFORE UPDATE ON docs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_events_updated_at ON events;
+CREATE TRIGGER update_events_updated_at BEFORE UPDATE ON events FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
 -- TRANSCRIPTION TABLES (Voice Call Transcription)
