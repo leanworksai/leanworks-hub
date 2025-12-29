@@ -51,10 +51,18 @@ export function DayView({ currentDate, onDateChange, items, onItemClick, onDateC
           const event = item.data as any;
           if (event.startDate && event.endDate) {
             try {
-              const startDate = startOfDay(new Date(event.startDate));
-              const endDate = endOfDay(new Date(event.endDate));
-              // Check if the date falls within the event's date range
-              return isWithinInterval(date, { start: startDate, end: endDate });
+              const eventStart = new Date(event.startDate);
+              const eventEnd = new Date(event.endDate);
+              
+              if (event.allDay) {
+                // For all-day events, check if the date falls within the event's date range
+                const startDate = startOfDay(eventStart);
+                const endDate = endOfDay(eventEnd);
+                return isWithinInterval(date, { start: startDate, end: endDate });
+              } else {
+                // For timed events, check if the event overlaps with this day
+                return (eventStart <= dayEnd && eventEnd >= dayStart);
+              }
             } catch {
               return false;
             }
