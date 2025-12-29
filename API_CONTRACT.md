@@ -4,8 +4,9 @@
 
 - **Content-Type**: `application/json`
 - **Authentication**: Bearer token in `Authorization` header
-- **Database**: Firestore (project: `leanworks-prod`)
-- **Data Isolation**: All data is domain-based (isolated by user email domain)
+- **Database**: Hybrid (PostgreSQL for structured data, Firestore for messages/real-time)
+- **Data Isolation**: All data is organization-based (isolated by organization ID)
+- **Organization Context**: Most endpoints require `X-Org-Id` header to specify the organization context
 
 ## API Access Methods
 
@@ -329,11 +330,29 @@ curl -X GET "https://your-domain.com/api/projects" \
 
 ---
 
+## Health Check API
+
+### GET /api/health
+
+Check API health status.
+
+**Response (200 OK):**
+```json
+{
+  "status": "healthy",
+  "database": "hybrid",
+  "postgres": "primary",
+  "firestore": "messages-only"
+}
+```
+
+---
+
 ## Authentication APIs
 
 ### POST /api/auth/signup
 
-Create a new user account.
+Create a new user account. A personal workspace is automatically created for the user.
 
 **Request Body:**
 ```json
@@ -343,23 +362,29 @@ Create a new user account.
   "firstName": "John",
   "lastName": "Doe",
   "jobTitle": "Software Engineer",
-  "responsibilities": "Frontend development" // optional
+  "timezone": "America/New_York"
 }
 ```
 
-**Response (200 OK):**
+**Response (201 OK):**
 ```json
 {
   "success": true,
-  "message": "Account created successfully!",
-  "userId": "firebase-uid-here"
+  "uid": "firebase-uid-here",
+  "email": "user@example.com",
+  "message": "Account created! Please check your email to verify your account.",
+  "personalOrg": {
+    "id": "org-id-123",
+    "name": "John's Workspace",
+    "slug": "john_workspace",
+    "type": "personal"
+  }
 }
 ```
 
 **Error Responses:**
-- `400` - Missing required fields
-- `403` - Email not whitelisted
-- `400` - Account already exists
+- `400` - Missing required fields (email, password, firstName, lastName, timezone) or account already exists
+- `500` - Server error
 
 ---
 
@@ -383,14 +408,98 @@ Login and receive a custom token.
   "user": {
     "uid": "firebase-uid",
     "email": "user@example.com",
-    "emailVerified": true
-  }
+    "emailVerified": true,
+    "firstName": "John",
+    "lastName": "Doe"
+  },
+  "organizations": [
+    {
+      "id": "org-id-123",
+      "name": "John's Workspace",
+      "slug": "john_workspace",
+      "type": "personal",
+      "role": "owner",
+      "isOwner": true
+    }
+  ],
+  "defaultOrgId": "org-id-123"
 }
 ```
 
 **Error Responses:**
 - `400` - Missing email or password
 - `401` - Invalid email or password
+- `403` - Email not verified (code: `EMAIL_NOT_VERIFIED`)
+- `500` - Server error
+
+---
+
+### GET /api/auth/verify-email
+
+Verify email address with a verification token.
+
+**Query Parameters:**
+- `token` (required) - Email verification token
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Email verified successfully! You can now log in.",
+  "email": "user@example.com"
+}
+```
+
+**Error Responses:**
+- `400` - Invalid or expired token, or token already used
+- `500` - Server error
+
+---
+
+### POST /api/auth/resend-verification
+
+Resend email verification link.
+
+**Request Body:**
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Verification email sent"
+}
+```
+
+**Error Responses:**
+- `400` - Email is required or already verified
+- `404` - User not found
+- `500` - Server error
+
+---
+
+### GET /api/auth/verification-status
+
+Check email verification status.
+
+**Query Parameters:**
+- `email` (required) - User email
+
+**Response (200 OK):**
+```json
+{
+  "email": "user@example.com",
+  "emailVerified": true
+}
+```
+
+**Error Responses:**
+- `400` - Email is required
+- `404` - User not found
 - `500` - Server error
 
 ---
@@ -428,11 +537,12 @@ Authorization: Bearer <token>
 
 ### GET /api/users
 
-Get all users in the domain.
+Get all users in the organization.
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -464,15 +574,531 @@ Authorization: Bearer <token>
 
 ---
 
-## Projects APIs
+### PUT /api/users/profile
 
-### GET /api/projects
-
-Get all projects in the domain.
+Update the current authenticated user's profile.
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "jobTitle": "Senior Software Engineer",
+  "timezone": "America/New_York"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### GET /api/users/:email
+
+Get a specific user's profile by email.
+
+**Parameters:**
+- `email` (path) - User email
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "email": "user@example.com",
+  "firstName": "John",
+  "lastName": "Doe",
+  "jobTitle": "Software Engineer"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `404` - User not found
+- `500` - Server error
+
+---
+
+### DELETE /api/users/me
+
+Delete the current authenticated user's account.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Account deleted successfully"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+## Organization APIs
+
+All organization endpoints require organization membership. Most endpoints require the `X-Org-Id` header.
+
+### GET /api/orgs
+
+Get all organizations the authenticated user belongs to.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "org-id-123",
+    "name": "My Workspace",
+    "slug": "my_workspace",
+    "type": "personal",
+    "role": "owner",
+    "ownerEmail": "user@example.com"
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### POST /api/orgs
+
+Create a new organization.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "name": "New Organization",
+  "type": "team"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "org": {
+    "id": "org-id-123",
+    "name": "New Organization",
+    "slug": "new_organization",
+    "type": "team"
+  }
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### GET /api/orgs/:orgId
+
+Get a specific organization by ID.
+
+**Parameters:**
+- `orgId` (path) - Organization ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": "org-id-123",
+  "name": "My Organization",
+  "slug": "my_organization",
+  "type": "team",
+  "ownerEmail": "owner@example.com",
+  "members": [...]
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Organization not found
+- `500` - Server error
+
+---
+
+### PUT /api/orgs/:orgId
+
+Update an organization. Only organization owners can update.
+
+**Parameters:**
+- `orgId` (path) - Organization ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "name": "Updated Organization Name"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Only organization owners can update
+- `404` - Organization not found
+- `500` - Server error
+
+---
+
+### DELETE /api/orgs/:orgId
+
+Delete an organization. Only organization owners can delete.
+
+**Parameters:**
+- `orgId` (path) - Organization ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Only organization owners can delete
+- `404` - Organization not found
+- `500` - Server error
+
+---
+
+### POST /api/orgs/:orgId/invite
+
+Invite a user to join the organization. Only organization owners can invite.
+
+**Parameters:**
+- `orgId` (path) - Organization ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "email": "newuser@example.com",
+  "role": "member"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Invitation sent successfully"
+}
+```
+
+**Error Responses:**
+- `400` - User already a member or invalid email
+- `401` - Unauthorized
+- `403` - Only organization owners can invite
+- `500` - Server error
+
+---
+
+### GET /api/orgs/invitations/pending
+
+Get pending organization invitations for the authenticated user.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "invitation-id-123",
+    "orgId": "org-id-123",
+    "orgName": "My Organization",
+    "inviterEmail": "owner@example.com",
+    "role": "member",
+    "createdAt": "2024-11-15T10:30:00.000Z"
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### POST /api/orgs/invitations/:invitationId/accept
+
+Accept an organization invitation.
+
+**Parameters:**
+- `invitationId` (path) - Invitation ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Invitation accepted successfully"
+}
+```
+
+**Error Responses:**
+- `400` - Invitation already processed or expired
+- `401` - Unauthorized
+- `404` - Invitation not found
+- `500` - Server error
+
+---
+
+### POST /api/orgs/invitations/:invitationId/decline
+
+Decline an organization invitation.
+
+**Parameters:**
+- `invitationId` (path) - Invitation ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Invitation declined"
+}
+```
+
+**Error Responses:**
+- `400` - Invitation already processed
+- `401` - Unauthorized
+- `404` - Invitation not found
+- `500` - Server error
+
+---
+
+### DELETE /api/orgs/:orgId/members/:memberEmail
+
+Remove a member from an organization. Only organization owners can remove members.
+
+**Parameters:**
+- `orgId` (path) - Organization ID
+- `memberEmail` (path) - Member email (URL encoded)
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Member removed successfully"
+}
+```
+
+**Error Responses:**
+- `400` - Cannot remove organization owner
+- `401` - Unauthorized
+- `403` - Only organization owners can remove members
+- `404` - Organization or member not found
+- `500` - Server error
+
+---
+
+### POST /api/orgs/:orgId/leave
+
+Leave an organization. Members can leave, but owners cannot.
+
+**Parameters:**
+- `orgId` (path) - Organization ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Left organization successfully"
+}
+```
+
+**Error Responses:**
+- `400` - Organization owner cannot leave (must transfer ownership or delete organization) or not a member
+- `401` - Unauthorized
+- `404` - Organization not found
+- `500` - Server error
+
+---
+
+## Notifications APIs
+
+### GET /api/notifications
+
+Get all notifications for the authenticated user.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "notification-id-123",
+    "type": "team_invitation",
+    "title": "Team Invitation",
+    "message": "You have been invited to join Engineering team",
+    "read": false,
+    "createdAt": "2024-11-15T10:30:00.000Z"
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### PATCH /api/notifications/:notificationId/read
+
+Mark a notification as read.
+
+**Parameters:**
+- `notificationId` (path) - Notification ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `404` - Notification not found
+- `500` - Server error
+
+---
+
+### PATCH /api/notifications/:notificationId/dismiss
+
+Dismiss a notification.
+
+**Parameters:**
+- `notificationId` (path) - Notification ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `404` - Notification not found
+- `500` - Server error
+
+---
+
+## Projects APIs
+
+### GET /api/projects
+
+Get all projects in the organization.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -539,12 +1165,18 @@ Authorization: Bearer <token>
 
 ---
 
-### GET /api/projects/:name
+### GET /api/projects/:id
 
-Get a specific project by name.
+Get a specific project by ID.
 
 **Parameters:**
-- `name` (path) - Project name
+- `id` (path) - Project ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
 
 **Headers:**
 ```
@@ -631,12 +1263,18 @@ Authorization: Bearer <token>
 
 ---
 
-### PATCH /api/projects/:name
+### PATCH /api/projects/:id
 
 Update a project.
 
 **Parameters:**
-- `name` (path) - Project name
+- `id` (path) - Project ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
 
 **Headers:**
 ```
@@ -664,12 +1302,303 @@ Authorization: Bearer <token>
 
 ---
 
-### DELETE /api/projects/:name
+### DELETE /api/projects/:id
 
 Delete a project.
 
 **Parameters:**
-- `name` (path) - Project name
+- `id` (path) - Project ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Project not found
+- `500` - Server error
+
+---
+
+### POST /api/projects/:id/members
+
+Add a member to a project.
+
+**Parameters:**
+- `id` (path) - Project ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "email": "member@example.com",
+  "role": "member"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `400` - User already a member or invalid email
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Project not found
+- `500` - Server error
+
+---
+
+### DELETE /api/projects/:id/members/:memberEmail
+
+Remove a member from a project.
+
+**Parameters:**
+- `id` (path) - Project ID
+- `memberEmail` (path) - Member email (URL encoded)
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `400` - Cannot remove project owner
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Project or member not found
+- `500` - Server error
+
+---
+
+### POST /api/projects/:id/comments
+
+Add a comment to a project.
+
+**Parameters:**
+- `id` (path) - Project ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "comment": "Great progress on this project!",
+  "memberName": "John Doe",
+  "memberAvatar": "JD"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "commentId": "comment-id-123"
+}
+```
+
+**Error Responses:**
+- `400` - Comment is required
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Project not found
+- `500` - Server error
+
+---
+
+## Documents APIs
+
+### GET /api/docs
+
+Get all documents in the organization.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "doc-id-123",
+    "title": "Project Requirements",
+    "content": "Document content...",
+    "createdBy": "user@example.com",
+    "createdAt": "2024-11-15T10:30:00.000Z",
+    "updatedAt": "2024-11-15T10:30:00.000Z"
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `500` - Server error
+
+---
+
+### GET /api/docs/:id
+
+Get a specific document by ID.
+
+**Parameters:**
+- `id` (path) - Document ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": "doc-id-123",
+  "title": "Project Requirements",
+  "content": "Document content...",
+  "createdBy": "user@example.com",
+  "createdAt": "2024-11-15T10:30:00.000Z",
+  "updatedAt": "2024-11-15T10:30:00.000Z"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Document not found
+- `500` - Server error
+
+---
+
+### POST /api/docs
+
+Create a new document.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "title": "New Document",
+  "content": "Document content..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "docId": "doc-id-123"
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `500` - Server error
+
+---
+
+### PATCH /api/docs/:id
+
+Update a document.
+
+**Parameters:**
+- `id` (path) - Document ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "title": "Updated Title",
+  "content": "Updated content..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization or not the document creator
+- `404` - Document not found
+- `500` - Server error
+
+---
+
+### DELETE /api/docs/:id
+
+Delete a document.
+
+**Parameters:**
+- `id` (path) - Document ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization or not the document creator
+- `404` - Document not found
+- `500` - Server error
+
+---
 
 **Headers:**
 ```
@@ -693,11 +1622,12 @@ Authorization: Bearer <token>
 
 ### GET /api/tasks
 
-Get all tasks in the domain.
+Get all tasks in the organization.
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -916,6 +1846,7 @@ Delete a task.
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -923,6 +1854,230 @@ Authorization: Bearer <token>
 {
   "success": true
 }
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Task not found
+- `500` - Server error
+
+---
+
+### POST /api/tasks/:id/comments
+
+Add a comment to a task.
+
+**Parameters:**
+- `id` (path) - Task ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "comment": "Great work on this task!",
+  "memberName": "John Doe",
+  "memberAvatar": "JD"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "commentId": "comment-id-123"
+}
+```
+
+**Error Responses:**
+- `400` - Comment is required
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `404` - Task not found
+- `500` - Server error
+
+---
+
+## Messages APIs
+
+### GET /api/messages
+
+Get all messages (limited to recent messages).
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "message-id-123",
+    "chatId": "dm-user1-user2",
+    "role": "user",
+    "content": "Hello!",
+    "timestamp": "2024-11-15T10:30:00.000Z",
+    "userId": "user@example.com",
+    "likes": []
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### GET /api/messages/:chatId
+
+Get messages for a specific chat.
+
+**Parameters:**
+- `chatId` (path) - Chat ID (e.g., `dm-email1-email2`, `project-projectId`, `team-teamId`, `ai-assistant-userEmail`)
+
+**Query Parameters:**
+- `afterTimestamp` (optional) - Get messages after this timestamp
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "id": "message-id-123",
+    "chatId": "dm-user1-user2",
+    "role": "user",
+    "content": "Hello!",
+    "timestamp": "2024-11-15T10:30:00.000Z",
+    "userId": "user@example.com",
+    "imageUrls": null,
+    "likes": []
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Access denied (for project/team channels)
+- `500` - Server error
+
+---
+
+### POST /api/messages
+
+Create a new message.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "chatId": "dm-user1-user2",
+  "role": "user",
+  "content": "Hello!",
+  "memberName": "John Doe",
+  "memberAvatar": "JD",
+  "projectId": "project-id-123",
+  "teamId": "team-id-123",
+  "imageUrls": ["https://..."],
+  "citedContext": {...}
+}
+```
+
+**Response (201 OK):**
+```json
+{
+  "success": true,
+  "messageId": "message-id-123",
+  "message": {
+    "id": "message-id-123",
+    "chatId": "dm-user1-user2",
+    "role": "user",
+    "content": "Hello!",
+    "timestamp": "2024-11-15T10:30:00.000Z",
+    "userId": "user@example.com",
+    "likes": []
+  }
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `403` - Access denied (for project/team channels)
+- `500` - Server error
+
+---
+
+### PATCH /api/messages/:messageId/like
+
+Toggle like on a message.
+
+**Parameters:**
+- `messageId` (path) - Message ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "likes": ["user1@example.com", "user2@example.com"],
+  "liked": true
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `404` - Message not found
+- `500` - Server error
+
+---
+
+### GET /api/conversations/recent
+
+Get recent conversations for the authenticated user.
+
+**Query Parameters:**
+- `limit` (optional) - Maximum number of conversations to return (default: 50)
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "chatId": "dm-user1-user2",
+    "lastMessage": "Hello!",
+    "lastMessageTimestamp": "2024-11-15T10:30:00.000Z",
+    "lastMessageRole": "user",
+    "lastMessageUserId": "user@example.com"
+  }
+]
 ```
 
 **Error Responses:**
@@ -935,11 +2090,12 @@ Authorization: Bearer <token>
 
 ### GET /api/teams
 
-Get all teams in the domain.
+Get all teams in the organization.
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -970,12 +2126,18 @@ Authorization: Bearer <token>
 
 ---
 
-### GET /api/teams/:name
+### GET /api/teams/:id
 
-Get a specific team by name.
+Get a specific team by ID.
 
 **Parameters:**
-- `name` (path) - Team name
+- `id` (path) - Team ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
 
 **Headers:**
 ```
@@ -1294,6 +2456,7 @@ Remove a member from a team. Only team owners can remove members.
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -1307,7 +2470,7 @@ Authorization: Bearer <token>
 **Error Responses:**
 - `400` - Cannot remove team owner
 - `401` - Unauthorized
-- `403` - Only team owner can remove members
+- `403` - Only team owner can remove members or not a member of this organization
 - `404` - Team or member not found
 - `500` - Server error
 
@@ -1323,6 +2486,7 @@ Leave a team. Members can leave, but owners cannot.
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -1336,32 +2500,186 @@ Authorization: Bearer <token>
 **Error Responses:**
 - `400` - Team owner cannot leave (must transfer ownership or delete team) or not a member
 - `401` - Unauthorized
+- `403` - Not a member of this organization
 - `404` - Team not found
 - `500` - Server error
 
 ---
 
-### POST /api/teams/migrate-owners
+---
 
-Migration endpoint to backfill `ownerEmail` for teams. This is a utility endpoint.
+## Calls APIs
+
+### POST /api/calls/:chatId/offer
+
+Create a call offer (initiate a call).
+
+**Parameters:**
+- `chatId` (path) - Chat ID (must be a DM chat, format: `dm-email1-email2`)
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
-**Request Body:** (empty)
+**Request Body:**
+```json
+{
+  "offer": {...},
+  "calleeEmail": "callee@example.com"
+}
+```
 
 **Response (200 OK):**
 ```json
 {
   "success": true,
-  "message": "Migration completed. Updated: 5, Skipped: 2, Errors: 0",
-  "results": {
-    "updated": ["Team1", "Team2"],
-    "skipped": ["Team3"],
-    "errors": []
-  }
+  "callId": "call-id-123"
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields or invalid chat ID
+- `401` - Unauthorized
+- `403` - Invalid chat ID or access denied
+- `500` - Server error
+
+---
+
+### POST /api/calls/:chatId/answer
+
+Send call answer (accept a call).
+
+**Parameters:**
+- `chatId` (path) - Chat ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "callId": "call-id-123",
+  "answer": {...}
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `403` - Only the callee can answer the call
+- `404` - Call not found
+- `500` - Server error
+
+---
+
+### POST /api/calls/:chatId/ice-candidate
+
+Send ICE candidate for WebRTC connection.
+
+**Parameters:**
+- `chatId` (path) - Chat ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "callId": "call-id-123",
+  "candidate": {...}
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `403` - Access denied
+- `404` - Call not found
+- `500` - Server error
+
+---
+
+### POST /api/calls/:chatId/end
+
+End a call.
+
+**Parameters:**
+- `chatId` (path) - Chat ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "callId": "call-id-123"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true
+}
+```
+
+**Error Responses:**
+- `400` - Missing callId
+- `401` - Unauthorized
+- `403` - Access denied
+- `404` - Call not found
+- `500` - Server error
+
+---
+
+### GET /api/calls/incoming
+
+Get all incoming calls for the current user.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "calls": [
+    {
+      "callId": "call-id-123",
+      "chatId": "dm-user1-user2",
+      "callerEmail": "caller@example.com",
+      "calleeEmail": "callee@example.com",
+      "status": "ringing",
+      "createdAt": "2024-11-15T10:30:00.000Z"
+    }
+  ]
 }
 ```
 
@@ -1371,15 +2689,701 @@ Authorization: Bearer <token>
 
 ---
 
-## Integrations APIs
+### GET /api/calls/:chatId/status
 
-### GET /api/integrations
+Get call status for a chat.
 
-Get all integrations and their connection status.
+**Parameters:**
+- `chatId` (path) - Chat ID
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "callId": "call-id-123",
+  "status": "active",
+  "callerEmail": "caller@example.com",
+  "calleeEmail": "callee@example.com",
+  "createdAt": "2024-11-15T10:30:00.000Z"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Invalid chat ID or access denied
+- `500` - Server error
+
+---
+
+### POST /api/calls/:callId/start-transcription
+
+Start transcription for an active call.
+
+**Parameters:**
+- `callId` (path) - Call ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Transcription started"
+}
+```
+
+**Error Responses:**
+- `400` - Call must be active to start transcription
+- `401` - Unauthorized
+- `403` - Access denied
+- `404` - Call not found
+- `500` - Server error
+
+---
+
+## Files APIs
+
+### POST /api/files/upload
+
+Upload a file to Google Cloud Storage.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+Content-Type: multipart/form-data
+```
+
+**Request Body:**
+- `file` (file) - File to upload (max 10MB)
+- `docId` (string) - Document ID to associate the file with
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "fileUrl": "https://storage.googleapis.com/...",
+  "fileId": "file-id-123",
+  "fileName": "document.pdf",
+  "fileSize": 1024000,
+  "mimeType": "application/pdf"
+}
+```
+
+**Error Responses:**
+- `400` - Missing docId or file, or file size exceeds 10MB
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### POST /api/files/refresh
+
+Refresh signed URLs for files.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "fileUrls": ["https://storage.googleapis.com/..."],
+  "docId": "doc-id-123"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "fileUrls": ["https://storage.googleapis.com/..."]
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+## Images APIs
+
+### POST /api/images/upload
+
+Upload an image to Firebase Storage. Images are automatically converted to JPG format.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+Content-Type: multipart/form-data
+```
+
+**Request Body:**
+- `image` (file) - Image file to upload (max 10MB, formats: JPG, PNG, WebP, GIF)
+- `chatId` (string) - Chat ID to associate the image with
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "imageUrl": "https://storage.googleapis.com/...",
+  "imageId": "image-id-123.jpg"
+}
+```
+
+**Error Responses:**
+- `400` - Missing chatId or image, invalid image format, or image size exceeds 10MB
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+### POST /api/images/refresh
+
+Refresh signed URLs for images.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "imageUrls": ["https://storage.googleapis.com/..."],
+  "chatId": "chat-id-123"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "imageUrls": ["https://storage.googleapis.com/..."]
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+## LiveKit APIs
+
+### GET /api/livekit/token
+
+Get LiveKit access token for joining a room.
+
+**Query Parameters:**
+- `roomName` (required) - Room name
+- `participantName` (optional) - Participant display name
+- `canPublish` (optional) - Whether participant can publish (default: true)
+- `canSubscribe` (optional) - Whether participant can subscribe (default: true)
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "token": "livekit-jwt-token",
+  "url": "wss://livekit.leanworks.ai"
+}
+```
+
+**Error Responses:**
+- `400` - Missing roomName
+- `401` - Unauthorized
+- `503` - LiveKit service not configured
+- `500` - Server error
+
+---
+
+## TURN Server APIs
+
+### GET /api/turn/credentials
+
+Get TURN server credentials for WebRTC.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "iceServers": [
+    {
+      "urls": "stun:stun.example.com:3478"
+    },
+    {
+      "urls": "turn:turn.example.com:3478",
+      "username": "username",
+      "credential": "password"
+    }
+  ],
+  "ttl": 86400,
+  "expiresAt": "2024-11-16T10:30:00.000Z"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `503` - TURN service not configured
+- `500` - Server error
+
+---
+
+## Subscription APIs
+
+### GET /api/subscription/status
+
+Get subscription status for the authenticated user.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "plan": "standard",
+  "stripeCustomerId": "cus_...",
+  "stripeSubscriptionId": "sub_...",
+  "aiDailyUsage": 5,
+  "aiUsageLimit": 20,
+  "aiUsageRemaining": 15,
+  "trialEndsAt": "2024-11-22T10:30:00.000Z",
+  "isTrialActive": true,
+  "trialDaysRemaining": 7,
+  "memberSince": "2024-11-15T10:30:00.000Z"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `404` - User not found
+- `500` - Server error
+
+---
+
+### POST /api/subscription/checkout
+
+Create a Stripe checkout session.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "plan": "standard",
+  "successUrl": "https://leanworks.ai/subscription?success=true",
+  "cancelUrl": "https://leanworks.ai/subscription?canceled=true"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "url": "https://checkout.stripe.com/..."
+}
+```
+
+**Error Responses:**
+- `400` - Invalid plan
+- `401` - Unauthorized
+- `503` - Payment system not configured
+- `500` - Server error
+
+---
+
+### POST /api/subscription/portal
+
+Create a Stripe customer portal session.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "returnUrl": "https://leanworks.ai/subscription"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "url": "https://billing.stripe.com/..."
+}
+```
+
+**Error Responses:**
+- `400` - No subscription found
+- `401` - Unauthorized
+- `503` - Payment system not configured
+- `500` - Server error
+
+---
+
+### POST /api/subscription/switch
+
+Switch subscription plan (upgrade or downgrade).
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "plan": "pro"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "plan": "pro",
+  "message": "Successfully switched to pro plan"
+}
+```
+
+**Error Responses:**
+- `400` - Invalid plan or already on that plan
+- `401` - Unauthorized
+- `503` - Payment system not configured
+- `500` - Server error
+
+---
+
+### POST /api/subscription/cancel
+
+Cancel subscription (revert to free plan).
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "plan": "free",
+  "message": "Subscription canceled. You have been downgraded to the free plan."
+}
+```
+
+**Error Responses:**
+- `400` - No active subscription to cancel
+- `401` - Unauthorized
+- `503` - Payment system not configured
+- `500` - Server error
+
+---
+
+### POST /api/subscription/downgrade-to-free
+
+Downgrade to free plan (alias for cancel).
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "plan": "free",
+  "message": "You have been downgraded to the free plan."
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `503` - Payment system not configured
+- `500` - Server error
+
+---
+
+### POST /api/subscription/ai-usage
+
+Increment AI usage counter.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "success": true,
+  "usage": 6,
+  "limit": 20,
+  "remaining": 14
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `404` - User not found
+- `429` - AI usage limit reached
+- `500` - Server error
+
+---
+
+## AI Task Generation APIs
+
+### POST /api/generate-task
+
+Generate task details using AI.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "user_id": "user@example.com",
+  "org_slug": "my_org",
+  "task_description": "Implement user authentication"
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "title": "Implement User Authentication",
+  "description": "Detailed task description...",
+  "estimatedHours": 8,
+  "priority": "high"
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+## Configuration APIs
+
+### GET /api/firebase-config
+
+Get Firebase configuration (public endpoint, no auth required).
+
+**Response (200 OK):**
+```json
+{
+  "apiKey": "AIza...",
+  "authDomain": "leanworks-prod.firebaseapp.com",
+  "projectId": "leanworks-prod",
+  "storageBucket": "leanworks-prod.appspot.com",
+  "messagingSenderId": "123456789",
+  "appId": "1:123456789:web:..."
+}
+```
+
+**Error Responses:**
+- `500` - Server error
+
+---
+
+### GET /api/ga4-config
+
+Get Google Analytics 4 Measurement ID (public endpoint, no auth required).
+
+**Response (200 OK):**
+```json
+{
+  "measurementId": "G-XXXXXXXXXX"
+}
+```
+
+**Error Responses:**
+- `404` - GA4 Measurement ID not configured
+- `500` - Server error
+
+---
+
+### GET /api/ask-api-key
+
+Get API key for AI service (authenticated endpoint).
+
+**Headers:**
+```
+Authorization: Bearer <token>
+```
+
+**Response (200 OK):**
+```json
+{
+  "apiKey": "encrypted-api-key"
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `500` - Server error
+
+---
+
+## Update Summaries APIs
+
+### GET /api/update-summaries
+
+Get project update summaries.
+
+**Query Parameters:**
+- `projectId` (optional) - Get summary for specific project
+- `all` (optional) - If `true`, return all summaries for the project
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+{
+  "project-id-123": {
+    "dateId": "2024-11-15",
+    "updateSummary": "Project update summary..."
+  }
+}
+```
+
+Or if `projectId` is specified:
+```json
+{
+  "projectId": "project-id-123",
+  "dateId": "2024-11-15",
+  "updateSummary": "Project update summary..."
+}
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `500` - Server error
+
+---
+
+### GET /api/updates/task/:taskId
+
+Get updates associated with a task.
+
+**Parameters:**
+- `taskId` (path) - Task ID
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Response (200 OK):**
+```json
+[
+  {
+    "updateId": "update-id-123",
+    "associatedTasks": ["task-id-123"],
+    "dateId": "2024-11-15",
+    "projectId": "project-id-123",
+    "reason": "Weekly update",
+    "timestamp": "2024-11-15T10:30:00.000Z",
+    "update": "Task is progressing well...",
+    "userId": "user@example.com",
+    "memberName": "John Doe",
+    "memberAvatar": "JD"
+  }
+]
+```
+
+**Error Responses:**
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `500` - Server error
+
+---
+
+## Demo Requests API
+
+### POST /api/demo-requests
+
+Submit a demo request (public endpoint, no auth required).
+
+**Request Body:**
+```json
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "company": "Acme Corp",
+  "message": "I'd like to schedule a demo"
+}
+```
+
+**Response (201 OK):**
+```json
+{
+  "success": true,
+  "id": 123,
+  "message": "Demo request submitted successfully"
+}
+```
+
+**Error Responses:**
+- `400` - Missing required fields
+- `500` - Server error
+
+---
+
+## Integrations APIs
+
+### GET /api/integrations
+
+Get all integrations and their connection status for the organization.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Response (200 OK):**
@@ -1402,6 +3406,12 @@ Authorization: Bearer <token>
     "name": "GitHub",
     "connected": false,
     "connectedAt": null
+  },
+  {
+    "id": "outlook",
+    "name": "Outlook",
+    "connected": false,
+    "connectedAt": null
   }
 ]
 ```
@@ -1412,71 +3422,74 @@ Authorization: Bearer <token>
 
 ---
 
-### POST /api/integrations/slack/connect
+### POST /api/integrations/:integrationId/connect
 
-Connect Slack integration. Credentials are stored in GCP Secret Manager.
+Connect an integration. Credentials are stored in GCP Secret Manager. Only organization owners can connect integrations.
+
+**Parameters:**
+- `integrationId` (path) - Integration ID (`slack`, `atlassian`, or `outlook`)
 
 **Headers:**
 ```
 Authorization: Bearer <token>
+X-Org-Id: <orgId>
 ```
 
 **Request Body:**
+
+For Slack:
 ```json
 {
   "botToken": "xoxb-your-slack-bot-token"
 }
 ```
 
-**Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Slack connected successfully"
-}
-```
-
-**Error Responses:**
-- `400` - Bot token is required
-- `401` - Unauthorized
-- `500` - Server error
-
----
-
-### POST /api/integrations/atlassian/connect
-
-Connect Atlassian integration. Credentials are stored in GCP Secret Manager.
-
-**Headers:**
-```
-Authorization: Bearer <token>
-```
-
-**Request Body:**
+For Atlassian:
 ```json
 {
   "email": "user@example.com",
-  "password": "password",
+  "domain": "your-domain.atlassian.net",
   "apiToken": "atlassian-api-token"
 }
 ```
 
+For Outlook:
+```json
+{
+  "clientId": "client-id",
+  "clientSecret": "client-secret",
+  "tenantId": "tenant-id"
+}
+```
+
 **Response (200 OK):**
 ```json
 {
   "success": true,
-  "message": "Atlassian connected successfully"
+  "message": "Integration connected successfully"
 }
 ```
 
 **Error Responses:**
-- `400` - Email, password, and API token are required
+- `400` - Missing required fields or invalid integration ID
 - `401` - Unauthorized
+- `403` - Only organization owners can connect integrations
 - `500` - Server error
 
 ---
 
 ### POST /api/integrations/:integrationId/disconnect
+
+Disconnect an integration. Only organization owners can disconnect integrations.
+
+**Parameters:**
+- `integrationId` (path) - Integration ID (`slack`, `atlassian`, `github`, or `outlook`)
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
 
 Disconnect an integration.
 
@@ -1564,18 +3577,34 @@ or
 
 ## Notes
 
-1. **Domain Isolation**: All data is automatically isolated by the user's email domain. Users from different domains cannot see each other's data.
+1. **Organization-Based Isolation**: All data is automatically isolated by organization ID. Users must be members of an organization to access its data. Most endpoints require the `X-Org-Id` header to specify the organization context.
 
-2. **Email Whitelist**: Signup and login are restricted to whitelisted email addresses. Contact your administrator to add emails to the whitelist.
+2. **Email Verification**: Users must verify their email address before logging in. Verification links are sent via email during signup.
 
-3. **Team Ownership**: Team owners have special permissions:
+3. **Organization Roles**: 
+   - **Owner**: Can manage organization settings, invite/remove members, connect integrations
+   - **Member**: Can access organization data and collaborate
+
+4. **Team Ownership**: Team owners have special permissions:
    - Can approve/reject join requests
    - Can remove members
    - Cannot leave the team (must transfer ownership or delete team)
 
-4. **Secret Storage**: Integration credentials (Slack, Atlassian) are stored securely in GCP Secret Manager, not in Firestore.
+5. **Secret Storage**: Integration credentials (Slack, Atlassian, GitHub, Outlook) are stored securely in GCP Secret Manager, not in the database.
 
-5. **Firestore Timestamps**: Timestamps are automatically converted to appropriate formats (milliseconds for `createdAt`, ISO strings for dates).
+6. **Database Architecture**: 
+   - **PostgreSQL**: Used for structured data (users, projects, tasks, teams, organizations)
+   - **Firestore**: Used for real-time data (messages, calls)
+   - Each organization has its own PostgreSQL database (multi-tenant architecture)
+
+7. **Timestamps**: Timestamps are automatically converted to appropriate formats (milliseconds for `createdAt`, ISO strings for dates).
+
+8. **GitHub Integration**: GitHub uses OAuth App installation flow. The callback endpoint is `/api/integrations/github/callback`.
+
+9. **Webhooks**: 
+   - Stripe webhooks: `/api/webhooks/stripe`
+   - GitHub webhooks: `/api/integrations/github/webhook`
+   - LiveKit webhooks: `/api/livekit/webhook`
 
 ---
 
