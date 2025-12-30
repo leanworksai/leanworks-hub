@@ -3,7 +3,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { initFirestore } from "@/services/api";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { OrgProvider } from "@/contexts/OrgContext";
@@ -17,7 +17,7 @@ import { SelectedDocsProvider } from "@/contexts/SelectedDocsContext";
 import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
-import { Chatbot } from "./components/Chatbot";
+import { AIChat } from "./components/AIChat";
 import { GlobalCallListener } from "./components/GlobalCallListener";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
@@ -40,6 +40,7 @@ import Settings from "./pages/Settings";
 import Organizations from "./pages/Organizations";
 import Subscription from "./pages/Subscription";
 import NotFound from "./pages/NotFound";
+import Chats from "./pages/Chats";
 
 const queryClient = new QueryClient();
 
@@ -102,6 +103,9 @@ const AppRoutesContent = () => {
     
     // Calendar
     if (pathname === '/calendar') return 'Calendar';
+    
+    // Chats
+    if (pathname === '/chats') return 'Chats';
     
     // Teams (redirected but track for completeness)
     if (pathname === '/teams') return 'Teams';
@@ -230,6 +234,16 @@ const AppRoutesContent = () => {
           }
         />
         <Route
+          path="/chats"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Chats />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/profile"
           element={
             <ProtectedRoute>
@@ -273,7 +287,7 @@ const AppRoutesContent = () => {
         {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
         <Route path="*" element={<NotFound />} />
       </Routes>
-      {user && !isHomePage && <Chatbot />}
+      {user && !isHomePage && <AIChat />}
       {user && <GlobalCallListener />}
     </>
   );

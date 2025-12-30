@@ -650,5 +650,158 @@ export function setupMessageEndpoints(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // PATCH /api/chats/:chatId/read - Mark a chat as read
+  app.patch('/api/chats/:chatId/read', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const chatId = req.params.chatId;
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Get org slug for Firestore path
+      let readReceiptsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          readReceiptsPath = `orgs/${orgSlug}/read_receipts`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          readReceiptsPath = `orgs/default/read_receipts`;
+        }
+      } else {
+        readReceiptsPath = `orgs/default/read_receipts`;
+      }
+
+      // Sanitize document ID: replace @ and . with - in userId and chatId
+      const sanitizedUserId = userEmail.replace(/[@.]/g, '-');
+      const sanitizedChatId = chatId.replace(/[@.]/g, '-');
+      const docId = `${sanitizedUserId}_${sanitizedChatId}`;
+
+      const now = Date.now();
+      const readReceiptRef = db.collection(readReceiptsPath).doc(docId);
+
+      // Use set with merge to create or update
+      await readReceiptRef.set({
+        userId: userEmail,
+        chatId: chatId,
+        lastReadTimestamp: now,
+        updatedAt: new Date(),
+      }, { merge: true });
+
+      res.json({ success: true, lastReadTimestamp: now });
+    } catch (error) {
+      console.error('Mark chat as read error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // GET /api/chats/read-receipts - Get all read receipts for the current user
+  app.get('/api/chats/read-receipts', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Get org slug for Firestore path
+      let readReceiptsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          readReceiptsPath = `orgs/${orgSlug}/read_receipts`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          readReceiptsPath = `orgs/default/read_receipts`;
+        }
+      } else {
+        readReceiptsPath = `orgs/default/read_receipts`;
+      }
+
+      // Query all read receipts for this user
+      const snapshot = await db.collection(readReceiptsPath)
+        .where('userId', '==', userEmail)
+        .get();
+
+      const readReceipts = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          chatId: data.chatId,
+          lastReadTimestamp: data.lastReadTimestamp || 0,
+        };
+      });
+
+      res.json(readReceipts);
+    } catch (error) {
+      console.error('Get read receipts error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // POST /api/chats/read-receipts/batch - Get read receipts for specific chats
+  app.post('/api/chats/read-receipts/batch', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const { chatIds } = req.body;
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      if (!Array.isArray(chatIds)) {
+        return res.status(400).json({ error: 'chatIds must be an array' });
+      }
+
+      // Get org slug for Firestore path
+      let readReceiptsPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          readReceiptsPath = `orgs/${orgSlug}/read_receipts`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          readReceiptsPath = `orgs/default/read_receipts`;
+        }
+      } else {
+        readReceiptsPath = `orgs/default/read_receipts`;
+      }
+
+      // Build document IDs for the requested chats
+      const sanitizedUserId = userEmail.replace(/[@.]/g, '-');
+      const docIds = chatIds.map((chatId: string) => {
+        const sanitizedChatId = chatId.replace(/[@.]/g, '-');
+        return `${sanitizedUserId}_${sanitizedChatId}`;
+      });
+
+      // Fetch documents in batches (Firestore limit is 10 for 'in' queries)
+      const BATCH_SIZE = 10;
+      const readReceiptsMap: Record<string, number> = {};
+
+      for (let i = 0; i < docIds.length; i += BATCH_SIZE) {
+        const batch = docIds.slice(i, i + BATCH_SIZE);
+        const snapshot = await db.collection(readReceiptsPath)
+          .where(db.FieldPath.documentId(), 'in', batch)
+          .get();
+
+        snapshot.docs.forEach(doc => {
+          const data = doc.data();
+          if (data.chatId) {
+            readReceiptsMap[data.chatId] = data.lastReadTimestamp || 0;
+          }
+        });
+      }
+
+      res.json(readReceiptsMap);
+    } catch (error) {
+      console.error('Get read receipts batch error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
 }
 

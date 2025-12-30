@@ -32,6 +32,7 @@ import {
 import { useEffect, useState, useRef } from "react";
 import { useNavigate, NavLink } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { useAIChat } from "@/hooks/useAIChat";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone, formatRelativeTime } from "@/lib/dateTimeUtils";
 import { useOrg } from "@/contexts/OrgContext";
@@ -62,6 +63,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { isOpen: isAIChatOpen } = useAIChat();
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations, acceptInvitation: acceptOrgInvitation, declineInvitation: declineOrgInvitation } = useOrg();
   const userTimezone = useUserTimezone();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
@@ -82,8 +84,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const { data: tasks = [] } = useTasks();
   const { data: docs = [] } = useDocs();
   
-  // Chat unread count state
-  const [chatUnreadCount, setChatUnreadCount] = useState(0);
 
   // Filter requests where current user is the owner (can manage)
   const manageableRequests = joinRequests.filter(
@@ -123,17 +123,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     fetchProfile();
   }, [user]);
   
-  // Listen for chat unread count updates
-  useEffect(() => {
-    const handleChatUnreadCount = (event: CustomEvent<{ totalUnread: number }>) => {
-      setChatUnreadCount(event.detail.totalUnread);
-    };
-    
-    window.addEventListener('chatUnreadCount', handleChatUnreadCount as EventListener);
-    return () => {
-      window.removeEventListener('chatUnreadCount', handleChatUnreadCount as EventListener);
-    };
-  }, []);
 
   // Keyboard shortcut for search (Cmd+K / Ctrl+K)
   useEffect(() => {
@@ -299,7 +288,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     <SidebarProvider>
       <div className="flex min-h-screen w-full">
         <AppSidebar />
-        <div className="flex-1 flex flex-col">
+        <div className={cn("flex-1 flex flex-col transition-all duration-300", isAIChatOpen && "mr-96")}>
           <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-lg">
             <div className="flex h-16 items-center gap-2 sm:gap-4 px-3 sm:px-6">
               <SidebarTrigger className="-ml-2" />
@@ -466,8 +455,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   size="icon"
                   className="relative group"
                   onClick={() => {
-                    // Dispatch event to toggle chat
-                    window.dispatchEvent(new CustomEvent('toggleChat'));
+                    // Dispatch event to open AI chat
+                    window.dispatchEvent(new CustomEvent('openAIChat'));
                   }}
                 >
                   <div className="relative flex items-center justify-center w-5 h-5">
@@ -478,12 +467,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       <Sparkles className="h-2.5 w-2.5 text-purple-700" strokeWidth={2} />
                     </div>
                   </div>
-                  {/* Unread indicator - red badge with count, positioned at bottom-right of chat icon */}
-                  {chatUnreadCount > 0 && (
-                    <span className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 h-5 w-5 rounded-full bg-red-500 text-white text-[10px] flex items-center justify-center font-medium border-2 border-background shadow-sm z-10">
-                      {chatUnreadCount > 9 ? '9+' : chatUnreadCount}
-                    </span>
-                  )}
                 </Button>
                 
                 {/* Notifications */}

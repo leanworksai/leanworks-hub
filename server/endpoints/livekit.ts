@@ -10,13 +10,34 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { Firestore } from 'firebase-admin/firestore';
 // Note: Transcription functions are deprecated in async architecture
 // Transcription sessions are now managed in PostgreSQL by the transcription worker
-import { resample48kHzTo16kHz } from '../services/audio-processor.js';
-import { recordChunk, cleanupParticipantBuffer } from '../services/audio-recorder.js';
+import { resample48kHzTo16kHz, cleanupResamplerForSession, clearAllResamplerState } from '../services/audio-processor.js';
+import { recordChunk, cleanupParticipantBuffer, clearAllStreamingSessions } from '../services/audio-recorder.js';
+import { audioLogger, logAudioChunk, logBackpressure } from '../utils/logger.js';
+// Debug audio saving removed - production recordChunk() saves to GCS
 
 // Cache for LiveKit credentials (from Secret Manager)
 let cachedLiveKitCredentials: { apiKey: string; apiSecret: string } | null = null;
 let liveKitCredentialsCacheTime: number = 0;
 const LIVEKIT_CREDENTIALS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+// Lock sample rates per session to prevent detection inconsistencies
+// Key: sessionKey (callId:participantEmail), Value: locked sample rate
+const sessionSampleRates = new Map<string, number>();
+
+// Helper function to normalize byte order value from environment variable
+// Only supports little-endian (or small-endian as alias)
+// Big-endian support has been removed - LiveKit always sends little-endian
+function normalizeByteOrder(value: string | undefined): 'little-endian' {
+  if (!value) return 'little-endian';
+  const normalized = value.toLowerCase().trim();
+  // Support 'small-endian' as alias for 'little-endian' (small = little)
+  if (normalized === 'small-endian' || normalized === 'little-endian') {
+    return 'little-endian';
+  }
+  // Default to little-endian if unknown value
+  console.warn(`⚠️ Unknown AUDIO_BYTE_ORDER value: "${value}", defaulting to 'little-endian'`);
+  return 'little-endian';
+}
 
 // Get LiveKit credentials from Secret Manager (used for both dev and prod)
 async function getLiveKitCredentials(
@@ -317,14 +338,259 @@ export function setupLiveKitEndpoints(
           });
           const wsUrl = `${wsBaseUrl}/api/livekit/audio-ws?${wsUrlParams.toString()}`;
           
-          // Create EgressClient
+          // CRITICAL: Verify track before starting egress
           const httpUrl = livekitUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+          let trackVerified = false;
+          let trackInfo: any = null;
+          
+          // Retry logic for track verification (race condition: track might not be immediately available)
+          for (let retry = 0; retry < 3; retry++) {
+            try {
+              const roomService = new RoomServiceClient(httpUrl, credentials.apiKey, credentials.apiSecret);
+              // Use listRooms and filter by name (getRoom may not be available in all SDK versions)
+              const rooms = await roomService.listRooms([roomName]);
+              const roomInfo = rooms && rooms.length > 0 ? rooms[0] : null;
+              
+              if (!roomInfo) {
+                audioLogger.warn({
+                  event: 'track_verification_room_not_found',
+                  roomName,
+                  participantEmail,
+                  trackSid,
+                  retry,
+                }, `Room ${roomName} not found (retry ${retry + 1}/3)`);
+                if (retry < 2) {
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  continue;
+                }
+                break;
+              }
+              
+              // Find the participant and track
+              // Note: Room type may vary by SDK version, use type assertion for compatibility
+              const roomInfoAny = roomInfo as any;
+              
+              // Log room structure for debugging (only on first retry)
+              if (retry === 0) {
+                audioLogger.debug({
+                  event: 'room_info_structure',
+                  roomName,
+                  roomInfoKeys: Object.keys(roomInfoAny || {}),
+                  hasParticipants: 'participants' in roomInfoAny,
+                  participantsType: typeof roomInfoAny?.participants,
+                  participantsIsArray: Array.isArray(roomInfoAny?.participants),
+                  participantsLength: Array.isArray(roomInfoAny?.participants) ? roomInfoAny.participants.length : 
+                                    (roomInfoAny?.participants ? Object.keys(roomInfoAny.participants).length : 0),
+                }, `Room info structure for debugging`);
+              }
+              
+              // Try different ways to access participants (handle different SDK versions)
+              let participants: any[] = [];
+              if (Array.isArray(roomInfoAny?.participants)) {
+                participants = roomInfoAny.participants;
+              } else if (roomInfoAny?.participants && typeof roomInfoAny.participants === 'object') {
+                // Might be a Map or object with participant identities as keys
+                if (roomInfoAny.participants instanceof Map) {
+                  participants = Array.from(roomInfoAny.participants.values());
+                } else {
+                  participants = Object.values(roomInfoAny.participants);
+                }
+              }
+              
+              // Log available participants for debugging
+              if (retry === 0 && participants.length > 0) {
+                audioLogger.debug({
+                  event: 'room_participants_list',
+                  roomName,
+                  participantCount: participants.length,
+                  participantIdentities: participants.map((p: any) => ({
+                    identity: p.identity || p.name || 'unknown',
+                    sid: p.sid,
+                    state: p.state,
+                    tracksCount: p.tracks?.length || 0,
+                  })),
+                  lookingFor: participantIdentity,
+                }, `Available participants in room`);
+              }
+              
+              const participant = participants.find(
+                (p: any) => {
+                  const pIdentity = p.identity || p.name || '';
+                  return pIdentity === participantIdentity || 
+                         pIdentity.toLowerCase() === participantIdentity.toLowerCase();
+                }
+              );
+              
+              if (!participant) {
+                audioLogger.warn({
+                  event: 'track_verification_participant_not_found',
+                  roomName,
+                  participantIdentity,
+                  trackSid,
+                  retry,
+                  participantsFound: participants.length,
+                  participantIdentities: participants.map((p: any) => p.identity || p.name || 'unknown'),
+                }, `Participant ${participantIdentity} not found in room (retry ${retry + 1}/3, found ${participants.length} participants)`);
+                if (retry < 2) {
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  continue;
+                }
+                break;
+              }
+              
+              const track = participant.tracks?.find((t: any) => t.sid === trackSid);
+              
+              if (!track) {
+                audioLogger.warn({
+                  event: 'track_verification_track_not_found',
+                  roomName,
+                  participantIdentity,
+                  trackSid,
+                  retry,
+                  availableTracks: participant.tracks?.map((t: any) => ({
+                    sid: t.sid,
+                    kind: t.kind,
+                    source: t.source,
+                    mimeType: t.mimeType,
+                  })),
+                }, `Track ${trackSid} not found for participant (retry ${retry + 1}/3)`);
+                if (retry < 2) {
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  continue;
+                }
+                break;
+              }
+              
+              trackInfo = track;
+              
+              // Verify track properties
+              const isAudio = track.kind === 'audio' || track.mimeType?.startsWith('audio/') || track.source === 'MICROPHONE';
+              const isMuted = track.muted === true;
+              
+              audioLogger.info({
+                event: 'track_verification',
+                participantIdentity,
+                roomName,
+                trackSid: track.sid,
+                kind: track.kind,
+                source: track.source,
+                mimeType: track.mimeType,
+                muted: track.muted,
+                name: track.name,
+                isAudio,
+                isMuted,
+              }, `Track verification for egress`);
+              
+              if (!isAudio) {
+                audioLogger.error({
+                  event: 'non_audio_track_egress',
+                  participantIdentity,
+                  roomName,
+                  trackSid: track.sid,
+                  kind: track.kind,
+                  source: track.source,
+                  mimeType: track.mimeType,
+                  message: 'Track is not an audio track! Egress will fail!',
+                }, `CRITICAL: Track ${trackSid} is not an audio track (kind: ${track.kind}, source: ${track.source})!`);
+                return; // Don't start egress for non-audio tracks
+              }
+              
+              if (isMuted) {
+                audioLogger.error({
+                  event: 'muted_track_egress',
+                  participantIdentity,
+                  roomName,
+                  trackSid: track.sid,
+                  message: 'Track is MUTED! Egress will capture silence!',
+                }, `CRITICAL: Track ${trackSid} is MUTED! Egress will capture silence!`);
+                return; // Don't start egress for muted track
+              }
+              
+              // Check for multiple audio tracks (might indicate wrong track selected)
+              const audioTracks = participant.tracks?.filter((t: any) => 
+                t.kind === 'audio' || t.mimeType?.startsWith('audio/') || t.source === 'MICROPHONE'
+              ) || [];
+              
+              if (audioTracks.length > 1) {
+                audioLogger.warn({
+                  event: 'multiple_audio_tracks',
+                  participantIdentity,
+                  roomName,
+                  trackSid: track.sid,
+                  totalAudioTracks: audioTracks.length,
+                  tracks: audioTracks.map((t: any) => ({
+                    sid: t.sid,
+                    source: t.source,
+                    muted: t.muted,
+                    name: t.name,
+                  })),
+                  message: 'Multiple audio tracks found - ensure correct track is selected',
+                }, `WARNING: Participant has ${audioTracks.length} audio tracks - ensure correct track selected`);
+              }
+              
+              trackVerified = true;
+              break; // Success, exit retry loop
+            } catch (verifyError: any) {
+              audioLogger.warn({
+                event: 'track_verification_failed',
+                participantIdentity,
+                roomName,
+                trackSid,
+                retry,
+                error: verifyError.message,
+              }, `Could not verify track before egress (retry ${retry + 1}/3): ${verifyError.message}`);
+              
+              if (retry < 2) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+              }
+            }
+          }
+          
+          if (!trackVerified) {
+            // If room was found but participant wasn't, this might be a timing issue
+            // (e.g., host-only room where participant isn't in list yet)
+            // Check if room exists - if it does, proceed with warning (track was published, so it should be valid)
+            let roomExists = false;
+            try {
+              const roomService = new RoomServiceClient(httpUrl, credentials.apiKey, credentials.apiSecret);
+              const rooms = await roomService.listRooms([roomName]);
+              roomExists = rooms && rooms.length > 0;
+            } catch (e) {
+              // Ignore errors checking room
+            }
+            
+            if (roomExists) {
+              // Room exists but participant not found - likely timing issue with host-only rooms
+              // Proceed with egress but log strong warning
+              audioLogger.warn({
+                event: 'track_verification_partial',
+                participantIdentity,
+                roomName,
+                trackSid,
+                message: 'Room found but participant not in list - proceeding with egress (may be timing issue with host-only room)',
+              }, `WARNING: Could not verify participant ${participantIdentity} in room ${roomName}, but room exists. Proceeding with egress (track ${trackSid} was published, so it should be valid).`);
+              // Continue to start egress
+            } else {
+              // Room doesn't exist - definitely skip
+              audioLogger.error({
+                event: 'track_verification_failed_final',
+                participantIdentity,
+                roomName,
+                trackSid,
+                message: 'Track verification failed after 3 retries - room not found - skipping egress',
+              }, `CRITICAL: Could not verify track ${trackSid} after 3 retries - room not found - skipping egress to prevent silence capture`);
+              return;
+            }
+          }
+          
+          // Create EgressClient
           console.log(`🔧 Creating EgressClient with URL: ${httpUrl}`);
           const egressClient = new EgressClient(httpUrl, credentials.apiKey, credentials.apiSecret);
           
           try {
             console.log(`📹 Starting egress for participant ${participantEmail} in call ${callId}`);
             console.log(`   Room: ${roomName}, Track: ${trackSid}`);
+            console.log(`   Track verified: kind=${trackInfo?.kind}, source=${trackInfo?.source}, muted=${trackInfo?.muted}`);
             console.log(`   WebSocket URL: ${wsUrl}`);
             
             const info = await egressClient.startTrackEgress(roomName, wsUrl, trackSid);
@@ -382,7 +648,7 @@ export function setupLiveKitEndpoints(
                 // Sort in memory by createdAt descending
                 if (snapshot.docs.length > 0) {
                   const docsArray = Array.from(snapshot.docs);
-                  const sorted = docsArray.sort((a, b) => {
+                  const sorted = docsArray.sort((a: any, b: any) => {
                     const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
                     const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
                     return bTime - aTime; // Most recent first
@@ -497,12 +763,12 @@ export function setupLiveKitEndpoints(
                     retryQuery = retryQuery.limit(50); // Get more if orderBy not available
                   }
                   
-                  const retrySnapshot = await retryQuery.get();
+                  let retrySnapshot = await retryQuery.get();
                   
                   // Sort in memory if needed
                   if (retrySnapshot.docs.length > 0) {
                     const docsArray = Array.from(retrySnapshot.docs);
-                    const sorted = docsArray.sort((a, b) => {
+                    const sorted = docsArray.sort((a: any, b: any) => {
                       const aTime = a.data().createdAt?.toMillis?.() || a.data().createdAt?.toDate?.()?.getTime() || a.data().createdAt?.getTime?.() || 0;
                       const bTime = b.data().createdAt?.toMillis?.() || b.data().createdAt?.toDate?.()?.getTime() || b.data().createdAt?.getTime?.() || 0;
                       return bTime - aTime; // Most recent first
@@ -751,8 +1017,10 @@ export function setupLiveKitEndpoints(
       // Process audio chunk - resample and record
       // NOTE: This endpoint is deprecated in favor of WebSocket, but keeping for backward compatibility
       const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
+      // Create session key for per-session resampling
+      const sessionKey = `${callId}:${participantEmail}`;
       // Resample from 48kHz to 16kHz for AssemblyAI compatibility
-      const resampledAudio = await resample48kHzTo16kHz(audioBuffer);
+      const resampledAudio = await resample48kHzTo16kHz(audioBuffer, sessionKey);
       // Pass explicit sample rate: 16kHz after resampling
       await recordChunk(callId as string, participantEmail as string, resampledAudio, orgSlug, 16000);
 
@@ -791,6 +1059,17 @@ export function setupLiveKitEndpoints(
  * This should be called after the HTTP server is created
  */
 export function setupLiveKitWebSocketServer(server: any): void {
+  // CRITICAL: Clear all module-level state on server startup/restart
+  // This ensures queues and state don't persist across server restarts
+  const sessionSampleRatesSize = sessionSampleRates.size;
+  sessionSampleRates.clear();
+  clearAllResamplerState();
+  clearAllStreamingSessions();
+  console.log('🧹 Cleared all module-level state on server startup');
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1046',message:'Server startup - clearing all module-level state',data:{sessionSampleRatesSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+  // #endregion
+  
   const wss = new WebSocketServer({ 
     noServer: true  // Don't auto-upgrade, handle manually
   });
@@ -817,24 +1096,42 @@ export function setupLiveKitWebSocketServer(server: any): void {
     const orgSlug = url.searchParams.get('orgSlug') || undefined; // Get orgSlug from URL parameter
 
     if (!callId || !participantEmail) {
-      console.error('❌ WebSocket connection missing callId or participantEmail');
+      audioLogger.error({
+        event: 'websocket_missing_params',
+        callId: callId || null,
+        participantEmail: participantEmail || null,
+      }, 'WebSocket connection missing callId or participantEmail');
       ws.close(1008, 'Missing callId or participantEmail');
       return;
     }
     
+    // TypeScript: callId and participantEmail are now guaranteed to be non-null
+    const validCallId: string = callId;
+    const validParticipantEmail: string = participantEmail;
+    
     if (!orgSlug) {
-      console.warn(`⚠️ WebSocket connection missing orgSlug for call ${callId}. Audio files may be saved to wrong location.`);
+      audioLogger.warn({
+        event: 'websocket_missing_orgslug',
+        callId: validCallId,
+        participantEmail: validParticipantEmail,
+      }, `WebSocket connection missing orgSlug for call ${validCallId}. Audio files may be saved to wrong location.`);
     } else {
-      console.log(`✅ WebSocket connection received orgSlug ${orgSlug} for call ${callId}`);
+      audioLogger.info({
+        event: 'websocket_connected',
+        callId: validCallId,
+        participantEmail: validParticipantEmail,
+        orgSlug,
+      }, `WebSocket connection received orgSlug ${orgSlug} for call ${validCallId}`);
     }
 
-    console.log(`🔌 WebSocket connection opened for transcription:`, {
-      callId,
-      participantEmail,
+    audioLogger.info({
+      event: 'websocket_opened',
+      callId: validCallId,
+      participantEmail: validParticipantEmail,
       orgSlug: orgSlug || '(not provided)',
       remoteAddress: req.socket.remoteAddress,
-      url: req.url
-    });
+      url: req.url,
+    }, `WebSocket connection opened for transcription`);
 
     let audioChunkCount = 0;
     let verificationLogCount = 0; // Counter for verification logging (log every 100 chunks)
@@ -842,154 +1139,998 @@ export function setupLiveKitWebSocketServer(server: any): void {
     
     // Track pending chunks for backpressure detection
     const pendingChunks = new Map<string, number>();
-    const sessionKey = `${callId}:${participantEmail}`;
+    const sessionKey = `${validCallId}:${validParticipantEmail}`;
+    
+    // Track silence detection metrics
+    let consecutiveSilenceChunks = 0;
+    let totalSilenceChunks = 0;
+    let totalChunksWithAudio = 0;
+    const silenceHistory: Array<{ chunkNumber: number; isSilence: boolean; maxAmplitude: number }> = [];
+    const MAX_SILENCE_HISTORY = 100; // Keep last 100 chunks for analysis
+    
+    // Multi-layered backpressure management
+    interface BackpressureState {
+      isPaused: boolean;
+      circuitBreakerState: 'closed' | 'open' | 'half-open';
+      circuitBreakerFailures: number;
+      circuitBreakerLastFailure: number;
+      lastPauseTime: number;
+      lastResumeTime: number;
+      droppedChunks: number;
+      rateLimitDelay: number; // Adaptive rate limiting delay in ms
+    }
+    
+    const backpressureState: BackpressureState = {
+      isPaused: false,
+      circuitBreakerState: 'closed',
+      circuitBreakerFailures: 0,
+      circuitBreakerLastFailure: 0,
+      lastPauseTime: 0,
+      lastResumeTime: Date.now(),
+      droppedChunks: 0,
+      rateLimitDelay: 0,
+    };
+    
+    // Dead Letter Queue for dropped chunks
+    interface DroppedChunk {
+      chunkNumber: number;
+      chunkData: Buffer;
+      timestamp: number;
+      reason: string;
+      queueDepth: number;
+      pending: number;
+    }
+    const deadLetterQueue: DroppedChunk[] = [];
+    const MAX_DEAD_LETTER_QUEUE = 1000; // Max chunks to store in DLQ
+    
+    // Circuit breaker thresholds
+    const CIRCUIT_BREAKER_FAILURE_THRESHOLD = 10; // Open after 10 consecutive failures
+    const CIRCUIT_BREAKER_RESET_TIMEOUT = 30000; // 30 seconds before trying half-open
+    const CIRCUIT_BREAKER_SUCCESS_THRESHOLD = 3; // Need 3 successes to close from half-open
+    
+    // Backpressure thresholds
+    const BACKPRESSURE_PAUSE_THRESHOLD = 50; // Pause WebSocket at 50 chunks
+    const BACKPRESSURE_RESUME_THRESHOLD = 20; // Resume when queue drops to 20
+    const BACKPRESSURE_DROP_THRESHOLD = 100; // Drop chunks at 100 chunks
+    const BACKPRESSURE_WARNING_THRESHOLD = 30; // Warn at 30 chunks
+    
+    // CRITICAL: Chunk ordering queue - async pipeline (parallel processing, sequential writes)
+    interface QueuedChunk {
+      chunkNumber: number;
+      chunkData: Buffer;
+      orgSlug: string | undefined;
+      processingPromise: Promise<{ audio: Buffer; sampleRate: number }>; // Processing happens immediately in parallel, returns audio + detected rate
+      resolve: () => void;
+      reject: (error: Error) => void;
+    }
+    
+    const chunkQueue = new Map<string, {
+      queue: QueuedChunk[];
+      processing: boolean;
+      nextExpectedChunk: number;
+    }>();
+    
+    if (!chunkQueue.has(sessionKey)) {
+      chunkQueue.set(sessionKey, {
+        queue: [],
+        processing: false,
+        nextExpectedChunk: 1,
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1209',message:'Created new chunk queue for session',data:{sessionKey,queueSize:0,nextExpectedChunk:1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
+    } else {
+      // #region agent log
+      const existingQueue = chunkQueue.get(sessionKey);
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1215',message:'Reusing existing chunk queue (should not happen on new connection)',data:{sessionKey,queueSize:existingQueue?.queue.length||0,nextExpectedChunk:existingQueue?.nextExpectedChunk||0,processing:existingQueue?.processing||false},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
+    }
     
     /**
-     * Process audio chunk asynchronously (non-blocking, fire-and-forget)
-     * This allows multiple chunks to be processed concurrently
+     * Process write queue in order (ensures sequential writes)
+     * Processing happens in parallel, but writes are sequential
+     * Also handles backpressure state updates (resume WebSocket, update circuit breaker)
+     */
+    async function processWriteQueueInOrder(sessionKey: string): Promise<void> {
+      const queueState = chunkQueue.get(sessionKey);
+      if (!queueState || queueState.processing) {
+        return; // Already processing or no queue
+      }
+      
+      queueState.processing = true;
+      
+      while (queueState.queue.length > 0) {
+        // Find the next chunk in sequence
+        const nextIndex = queueState.queue.findIndex(
+          item => item.chunkNumber === queueState.nextExpectedChunk
+        );
+        
+        if (nextIndex === -1) {
+          // Next chunk not in queue yet, wait a bit
+          await new Promise(resolve => setTimeout(resolve, 10));
+          continue;
+        }
+        
+        // Remove the next chunk in sequence
+        const [chunk] = queueState.queue.splice(nextIndex, 1);
+        queueState.nextExpectedChunk++;
+        
+        try {
+          // Apply adaptive rate limiting delay if needed
+          if (backpressureState.rateLimitDelay > 0) {
+            await new Promise(resolve => setTimeout(resolve, backpressureState.rateLimitDelay));
+          }
+          
+          // Wait for processing to complete (may already be done if fast)
+          const { audio: processedAudio, sampleRate: detectedSampleRate } = await chunk.processingPromise;
+          
+          // Log sample rate being passed to recordChunk (especially for first chunk)
+          if (chunk.chunkNumber === 1) {
+            audioLogger.info({
+              event: 'recording_chunk_with_sample_rate',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              chunkNumber: 1,
+              processedAudioSize: processedAudio.length,
+              sampleRate: detectedSampleRate,
+            }, `📝 Recording chunk 1 with sample rate ${detectedSampleRate}Hz (${processedAudio.length} bytes)`);
+          }
+          
+          // CRITICAL: Write sequentially (this ensures order)
+          // Use the detected sample rate from processing (ensures header matches data)
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1269',message:'Writing chunk to recorder',data:{sessionKey,chunkNumber:chunk.chunkNumber,processedAudioSize:processedAudio.length,detectedSampleRate,queueDepth:queueState.queue.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+          // #endregion
+          await recordChunk(validCallId, validParticipantEmail, processedAudio, chunk.orgSlug, detectedSampleRate);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1272',message:'Chunk written to recorder',data:{sessionKey,chunkNumber:chunk.chunkNumber,processedAudioSize:processedAudio.length,detectedSampleRate},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+          // #endregion
+          
+          // Success - update circuit breaker
+          if (backpressureState.circuitBreakerState === 'half-open') {
+            // Count successes in half-open state
+            const successCount = (backpressureState.circuitBreakerFailures < 0 ? 
+              Math.abs(backpressureState.circuitBreakerFailures) : 0) + 1;
+            if (successCount >= CIRCUIT_BREAKER_SUCCESS_THRESHOLD) {
+              backpressureState.circuitBreakerState = 'closed';
+              backpressureState.circuitBreakerFailures = 0;
+              audioLogger.info({
+                event: 'circuit_breaker_closed',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+              }, `Circuit breaker closed after ${successCount} successful chunks`);
+            } else {
+              backpressureState.circuitBreakerFailures = -successCount;
+            }
+          } else if (backpressureState.circuitBreakerState === 'closed') {
+            // Reset failure count on success
+            backpressureState.circuitBreakerFailures = 0;
+          }
+          
+          chunk.resolve();
+        } catch (error: any) {
+          // Failure - update circuit breaker
+          backpressureState.circuitBreakerFailures++;
+          backpressureState.circuitBreakerLastFailure = Date.now();
+          
+          if (backpressureState.circuitBreakerState === 'half-open') {
+            // Any failure in half-open opens the circuit
+            backpressureState.circuitBreakerState = 'open';
+            audioLogger.error({
+              event: 'circuit_breaker_opened',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              reason: 'Failure in half-open state',
+            }, `Circuit breaker opened due to failure in half-open state`);
+          } else if (backpressureState.circuitBreakerFailures >= CIRCUIT_BREAKER_FAILURE_THRESHOLD) {
+            backpressureState.circuitBreakerState = 'open';
+            audioLogger.error({
+              event: 'circuit_breaker_opened',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              failures: backpressureState.circuitBreakerFailures,
+            }, `Circuit breaker opened after ${backpressureState.circuitBreakerFailures} failures`);
+          }
+          
+          audioLogger.error({
+            event: 'chunk_processing_error',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber: chunk.chunkNumber,
+            error: error.message,
+            stack: error.stack,
+          }, `Error processing/writing chunk ${chunk.chunkNumber}`);
+          chunk.reject(error);
+        }
+      }
+      
+      queueState.processing = false;
+      
+      // Check if we should resume WebSocket (queue drained)
+      const currentQueueDepth = queueState.queue.length;
+      const currentPending = pendingChunks.get(sessionKey) || 0;
+      
+      if (backpressureState.isPaused && currentQueueDepth <= BACKPRESSURE_RESUME_THRESHOLD && currentPending <= BACKPRESSURE_RESUME_THRESHOLD) {
+        // Resume WebSocket
+        backpressureState.isPaused = false;
+        backpressureState.lastResumeTime = Date.now();
+        ws.resume();
+        logBackpressure(validParticipantEmail, sessionKey, currentQueueDepth, currentPending, 'resume');
+        
+        // Reduce rate limiting delay on successful resume
+        backpressureState.rateLimitDelay = Math.max(0, backpressureState.rateLimitDelay - 5);
+      }
+      
+      // Update adaptive rate limiting based on queue depth
+      if (currentQueueDepth > 0) {
+        // Increase delay slightly if queue is still building
+        backpressureState.rateLimitDelay = Math.min(50, backpressureState.rateLimitDelay + 1);
+      } else {
+        // Decrease delay when queue is empty
+        backpressureState.rateLimitDelay = Math.max(0, backpressureState.rateLimitDelay - 2);
+      }
+    }
+    
+    /**
+     * Check circuit breaker state and update if needed
+     */
+    function checkCircuitBreaker(): boolean {
+      const now = Date.now();
+      
+      if (backpressureState.circuitBreakerState === 'open') {
+        // Check if enough time has passed to try half-open
+        if (now - backpressureState.circuitBreakerLastFailure >= CIRCUIT_BREAKER_RESET_TIMEOUT) {
+          backpressureState.circuitBreakerState = 'half-open';
+          backpressureState.circuitBreakerFailures = 0; // Reset to count successes
+          audioLogger.info({
+            event: 'circuit_breaker_half_open',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+          }, `Circuit breaker entering half-open state`);
+          return true; // Allow one chunk through
+        }
+        return false; // Circuit is open, reject chunks
+      }
+      
+      return true; // Circuit is closed or half-open, allow chunks
+    }
+    
+    /**
+     * Store dropped chunk in dead letter queue
+     */
+    function storeInDeadLetterQueue(chunkData: Buffer, chunkNumber: number, reason: string, queueDepth: number, pending: number): void {
+      if (deadLetterQueue.length >= MAX_DEAD_LETTER_QUEUE) {
+        // Remove oldest chunk
+        deadLetterQueue.shift();
+      }
+      
+      deadLetterQueue.push({
+        chunkNumber,
+        chunkData: Buffer.from(chunkData), // Copy buffer
+        timestamp: Date.now(),
+        reason,
+        queueDepth,
+        pending,
+      });
+      
+      audioLogger.debug({
+        event: 'chunk_stored_in_dlq',
+        participantEmail: validParticipantEmail,
+        callId: validCallId,
+        chunkNumber,
+        reason,
+        dlqSize: deadLetterQueue.length,
+      }, `Stored chunk ${chunkNumber} in dead letter queue (reason: ${reason})`);
+    }
+    
+    /**
+     * Process audio chunk (detects sample rate and resamples if needed)
+     * This runs in parallel for multiple chunks
+     * Returns both processed audio and detected sample rate
      */
     async function processChunkAsync(
       chunkData: Buffer,
       chunkNumber: number,
       resolvedOrgSlug: string | undefined
-    ): Promise<void> {
+    ): Promise<{ audio: Buffer; sampleRate: number }> {
       try {
         const originalSize = chunkData.length;
-        const BYPASS_RESAMPLING = false; // AssemblyAI requires 16kHz audio
-
-        // DIAGNOSTIC: Log first chunk to verify sample rate assumption
+        
+        // CRITICAL FIX: Assume 48kHz from LiveKit (more reliable than detection)
+        // LiveKit TrackEgress always sends 48kHz PCM16 audio per documentation
+        // Detection from chunk size can be inaccurate due to timing variations
+        // Assuming 48kHz ensures correct resampling and WAV header
+        const detectedInputRate = 48000; // LiveKit always sends 48kHz PCM16
+        
+        // CRITICAL: Lock sample rate per session to prevent detection inconsistencies
+        // Detection can vary between chunks due to timing variations, but the actual
+        // audio source has a fixed sample rate. Lock it on the first chunk.
+        const sessionKey = `${validCallId}:${validParticipantEmail}`;
+        let lockedInputRate = sessionSampleRates.get(sessionKey);
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1475',message:'Sample rate check',data:{sessionKey,lockedInputRate:lockedInputRate||null,detectedInputRate,chunkNumber,originalSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        
+        if (!lockedInputRate) {
+          // First chunk - lock the detected rate
+          lockedInputRate = detectedInputRate;
+          sessionSampleRates.set(sessionKey, lockedInputRate);
+          audioLogger.info({
+            event: 'sample_rate_locked',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            lockedRate: lockedInputRate,
+            firstChunkDetectedRate: detectedInputRate,
+            chunkNumber,
+          }, `🔒 Locked sample rate to ${lockedInputRate}Hz for session (first chunk detected ${detectedInputRate}Hz)`);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1488',message:'Sample rate locked',data:{sessionKey,lockedInputRate,detectedInputRate,chunkNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+        } else if (detectedInputRate !== lockedInputRate) {
+          // Subsequent chunk with different detection - log warning but use locked rate
+          audioLogger.warn({
+            event: 'sample_rate_detection_mismatch',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            lockedRate: lockedInputRate,
+            detectedRate: detectedInputRate,
+            chunkNumber,
+            originalSize,
+          }, `⚠️ Chunk ${chunkNumber} detected as ${detectedInputRate}Hz but using locked ${lockedInputRate}Hz (prevents sample rate mixing)`);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1499',message:'Sample rate mismatch',data:{sessionKey,lockedInputRate,detectedInputRate,chunkNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+        }
+        
+        // Use locked rate for all processing (ensures consistency)
+        const inputSampleRate = lockedInputRate;
+        
+        // LiveKit always sends PCM16 audio in little-endian format (per documentation)
+        // No byte order conversion needed - data is already in the correct format
+        
+        // Target sample rate for storage (16kHz for transcription compatibility)
+        const targetSampleRate = 16000;
+        
+        // DIAGNOSTIC: Log first chunk with detection results
         if (chunkNumber === 1) {
-          console.log(`🔍 First audio chunk diagnostic: ${originalSize} bytes`);
-          console.log(`   If this is 48kHz PCM16 mono: ${originalSize} bytes = ${originalSize / 2} samples = ${(originalSize / 2) / 48000} seconds`);
-          console.log(`   If this is 16kHz PCM16 mono: ${originalSize} bytes = ${originalSize / 2} samples = ${(originalSize / 2) / 16000} seconds`);
-          console.log(`   BYPASS_RESAMPLING = ${BYPASS_RESAMPLING} - ${BYPASS_RESAMPLING ? 'Skipping resampling, using original audio' : 'Resampling from 48kHz to 16kHz'}`);
+          audioLogger.info({
+            event: 'first_chunk_diagnostic',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber: 1,
+            originalSize,
+            detectedInputRate,
+            targetSampleRate,
+          }, `🔍 First audio chunk diagnostic: ${originalSize} bytes, detected ${detectedInputRate}Hz, target ${targetSampleRate}Hz`);
           
-          // CRITICAL: Detect actual sample rate by analyzing chunk size
-          const expected48kHzSize = 960 * 2; // 1920 bytes
-          const expected16kHzSize = 320 * 2; // 640 bytes
+          // Verify detection makes sense
+          const expected48kHzSize = 960 * 2; // 1920 bytes for 20ms at 48kHz
+          const expected16kHzSize = 320 * 2; // 640 bytes for 20ms at 16kHz
           const sizeDiff48kHz = Math.abs(originalSize - expected48kHzSize);
           const sizeDiff16kHz = Math.abs(originalSize - expected16kHzSize);
           
-          console.log(`   Expected size for 48kHz 20ms chunk: ${expected48kHzSize} bytes (diff: ${sizeDiff48kHz})`);
-          console.log(`   Expected size for 16kHz 20ms chunk: ${expected16kHzSize} bytes (diff: ${sizeDiff16kHz})`);
+          audioLogger.info({
+            event: 'chunk_size_analysis',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            expected48kHzSize,
+            expected16kHzSize,
+            sizeDiff48kHz,
+            sizeDiff16kHz,
+          }, `Expected sizes: 48kHz=${expected48kHzSize} bytes (diff=${sizeDiff48kHz}), 16kHz=${expected16kHzSize} bytes (diff=${sizeDiff16kHz})`);
           
-          if (sizeDiff16kHz < sizeDiff48kHz) {
-            console.error(`   ❌ CRITICAL: Audio appears to be 16kHz, not 48kHz!`);
-            console.error(`   This would cause "slow and deep" sound when played at 48kHz.`);
-            console.error(`   Actual size: ${originalSize}, Expected 16kHz: ${expected16kHzSize}, Expected 48kHz: ${expected48kHzSize}`);
+          if (detectedInputRate === 16000 && sizeDiff16kHz < sizeDiff48kHz) {
+            audioLogger.info({
+              event: 'no_resampling_needed',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+            }, `✅ Audio is already 16kHz - no resampling needed`);
+          } else if (detectedInputRate === 48000) {
+            audioLogger.info({
+              event: 'resampling_required',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+            }, `✅ Audio is 48kHz - will resample to 16kHz`);
+          } else {
+            audioLogger.warn({
+              event: 'unexpected_detected_rate',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              detectedInputRate,
+            }, `⚠️ Detected rate ${detectedInputRate}Hz doesn't match expected rates. Proceeding with resampling if needed.`);
           }
           
-          // CRITICAL: Check if audio data looks valid
+          // Check if audio data looks valid
           if (chunkData.length >= 20) {
-            const samples: Array<{ le: number; be: number }> = [];
+            const samples: number[] = [];
             let peak = 0;
             for (let i = 0; i < 10 && i * 2 < chunkData.length; i++) {
-              const sampleLE = chunkData.readInt16LE(i * 2);
-              const sampleBE = chunkData.readInt16BE(i * 2);
-              samples.push({ le: sampleLE, be: sampleBE });
-              peak = Math.max(peak, Math.abs(sampleLE), Math.abs(sampleBE));
+              const sample = chunkData.readInt16LE(i * 2);
+              samples.push(sample);
+              peak = Math.max(peak, Math.abs(sample));
             }
-            console.log(`   First 10 samples (as little-endian): ${samples.map(s => s.le).join(', ')}`);
-            console.log(`   Peak amplitude: ${peak} (${peak > 0 ? (20 * Math.log10(peak / 32768)).toFixed(2) : '-Inf'} dB)`);
+            const peakDb = peak > 0 ? (20 * Math.log10(peak / 32768)).toFixed(2) : '-Inf';
+            audioLogger.info({
+              event: 'audio_samples_check',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              firstSamples: samples,
+              peak,
+              peakDb,
+            }, `First 10 samples: [${samples.join(', ')}], Peak: ${peak} (${peakDb} dB)`);
             
             if (peak < 100) {
-              console.warn(`   ⚠️ WARNING: Audio is very quiet (peak=${peak}). This might indicate a problem.`);
+              audioLogger.warn({
+                event: 'quiet_audio_warning',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                peak,
+              }, `⚠️ WARNING: Audio is very quiet (peak=${peak}). This might indicate a problem.`);
             }
           }
         }
 
-        // Resample from 48kHz to 16kHz
-        let resampledAudio: Buffer;
-        if (BYPASS_RESAMPLING) {
-          resampledAudio = chunkData; // Fallback (should not be used)
+        const bypassResampling = process.env.BYPASS_RESAMPLING === 'true';
+        
+        // Process audio based on detected rate
+        let processedAudio: Buffer;
+        let outputSampleRate: number;
+        
+        if (inputSampleRate === targetSampleRate) {
+          // Already at target rate - use data as-is (already little-endian)
+          processedAudio = chunkData;
+          outputSampleRate = targetSampleRate;
+          
+          if (chunkNumber === 1 || chunkNumber % 100 === 0) {
+            audioLogger.info({
+              event: 'no_resampling_needed',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              chunkNumber,
+              inputSampleRate,
+              targetSampleRate,
+            }, `✓ Using audio as-is (already ${targetSampleRate}Hz, chunk ${chunkNumber})`);
+          }
+        } else if (inputSampleRate === 48000) {
+          // BYPASS MODE: Skip resampling if enabled (for debugging)
+          if (bypassResampling) {
+            processedAudio = chunkData; // Use data as-is (already little-endian)
+            outputSampleRate = 48000; // Use 48kHz instead of 16kHz
+            audioLogger.warn({
+              event: 'resampling_bypassed',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              chunkNumber,
+              warning: 'BYPASS_RESAMPLING=true - saving 48kHz directly (for debugging only)',
+            }, `⚠️ BYPASS: Skipping resampling, saving 48kHz directly (chunk ${chunkNumber})`);
+          } else {
+            // Resample from 48kHz to 16kHz
+            // Use per-session resampler for stateful resampling (prevents discontinuities)
+            // Data is already in little-endian format (LiveKit always sends LE)
+            processedAudio = await resample48kHzTo16kHz(chunkData, sessionKey);
+            outputSampleRate = targetSampleRate;
+            
+            const resampledSize = processedAudio.length;
+            const expectedSize = Math.floor(originalSize / 3);
+            const sizeDiff = Math.abs(resampledSize - expectedSize);
+            const sizeDiffPercent = (sizeDiff / expectedSize) * 100;
+            
+            // Always log first chunk resampling result
+            if (chunkNumber === 1) {
+              audioLogger.info({
+                event: 'resampling_completed',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                chunkNumber: 1,
+                originalSize,
+                resampledSize,
+                expectedSize,
+                sizeDiff,
+                sizeDiffPercent,
+              }, `✅ Resampling completed for chunk 1: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, diff=${sizeDiffPercent.toFixed(1)}%)`);
+            }
+            
+            if (sizeDiffPercent > 15) {
+              audioLogger.error({
+                event: 'resampling_verification_failed',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                originalSize,
+                resampledSize,
+                expectedSize,
+                sizeDiffPercent,
+                inputSampleRate,
+              }, `❌ Resampling verification failed for ${validParticipantEmail}: original=${originalSize} bytes, resampled=${resampledSize} bytes, expected~${expectedSize} bytes (${sizeDiffPercent.toFixed(1)}% difference)`);
+              throw new Error(`Resampling verification failed: ${sizeDiffPercent.toFixed(1)}% difference`);
+            }
+            
+            // Log verification success every 100 chunks (to avoid spam)
+            verificationLogCount++;
+            if (verificationLogCount % 100 === 0) {
+              audioLogger.info({
+                event: 'resampling_verification_success',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                chunkNumber,
+                originalSize,
+                resampledSize,
+                expectedSize,
+                sizeDiffPercent,
+              }, `✓ Resampling verified for ${participantEmail}: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, ${sizeDiffPercent.toFixed(1)}% difference)`);
+            }
+          }
         } else {
-          resampledAudio = await resample48kHzTo16kHz(chunkData);
-          const resampledSize = resampledAudio.length;
+          // Unexpected rate - log warning but try to resample anyway
+          audioLogger.warn({
+            event: 'unexpected_sample_rate_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber,
+            inputSampleRate,
+            targetSampleRate,
+            chunkSize: originalSize,
+          }, `⚠️ Unexpected input sample rate ${inputSampleRate}Hz. Attempting to resample to ${targetSampleRate}Hz.`);
           
-          // Verify resampling worked (should be ~1/3 the size: 48kHz -> 16kHz = 1/3)
-          const expectedSize = Math.floor(originalSize / 3);
-          const sizeDiff = Math.abs(resampledSize - expectedSize);
-          const sizeDiffPercent = (sizeDiff / expectedSize) * 100;
+          // Try resampling (assuming it's 48kHz-like)
+          // Use per-session resampler for stateful resampling
+          processedAudio = await resample48kHzTo16kHz(chunkData, sessionKey);
+          outputSampleRate = targetSampleRate;
           
-          if (sizeDiffPercent > 15) {
-            console.error(`❌ Resampling verification failed for ${participantEmail}: original=${originalSize} bytes, resampled=${resampledSize} bytes, expected~${expectedSize} bytes (${sizeDiffPercent.toFixed(1)}% difference)`);
-            return; // Skip this chunk
-          }
-          
-          // Log verification success every 100 chunks (to avoid spam)
-          verificationLogCount++;
-          if (verificationLogCount % 100 === 0) {
-            console.log(`✓ Resampling verified for ${participantEmail}: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, ${sizeDiffPercent.toFixed(1)}% difference)`);
-          }
+          audioLogger.warn({
+            event: 'unexpected_sample_rate_resampled',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber,
+            inputSampleRate,
+            targetSampleRate,
+            chunkSize: originalSize,
+            resampledSize: processedAudio.length,
+          }, `Unexpected sample rate ${inputSampleRate}Hz detected, resampled to ${targetSampleRate}Hz (${originalSize} → ${processedAudio.length} bytes)`);
         }
         
-        // Record chunk (non-blocking - fire-and-forget)
-        // Don't await - let it process in background while we handle next chunk
-        const actualSampleRate = BYPASS_RESAMPLING ? 48000 : 16000;
-        recordChunk(callId, participantEmail, resampledAudio, resolvedOrgSlug, actualSampleRate)
-          .catch((error: any) => {
-            console.error(`❌ Error recording chunk ${chunkNumber} for ${participantEmail}:`, error);
-          });
+        // Log final result for first chunk
+        if (chunkNumber === 1) {
+          audioLogger.info({
+            event: 'chunk_processing_complete',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber: 1,
+            originalSize,
+            processedSize: processedAudio.length,
+            inputSampleRate,
+            outputSampleRate,
+            resampled: inputSampleRate !== outputSampleRate,
+          }, `✅ Chunk 1 processing complete: ${originalSize} bytes @ ${inputSampleRate}Hz → ${processedAudio.length} bytes @ ${outputSampleRate}Hz (resampled: ${inputSampleRate !== outputSampleRate})`);
+        }
+        
+        // Return processed audio with detected sample rate
+        return { audio: processedAudio, sampleRate: outputSampleRate };
       } catch (error: any) {
-        console.error(`❌ Error in processChunkAsync for chunk ${chunkNumber}:`, error);
+        audioLogger.error({
+          event: 'resampling_error',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          chunkNumber,
+          error: error.message,
+          stack: error.stack,
+        }, `Error in processChunkAsync for chunk ${chunkNumber}`);
         throw error; // Re-throw to be caught by caller
       }
     }
     
-    // Handle binary audio data from LiveKit egress (fire-and-forget pattern)
+    // Handle binary audio data from LiveKit egress (with ordering queue)
     ws.on('message', (data: Buffer) => {
       // LiveKit egress sends audio data as binary messages
       if (!Buffer.isBuffer(data)) {
-        console.warn('⚠️ Received non-binary message from LiveKit egress:', typeof data);
+        audioLogger.warn({ event: 'invalid_message_type', type: typeof data }, 'Received non-binary message from LiveKit egress');
         return;
+      }
+      
+      // Validate buffer is not empty
+      if (data.length === 0) {
+        audioLogger.warn({
+          event: 'empty_buffer_received',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+        }, 'Received empty buffer from LiveKit egress');
+        return;
+      }
+      
+      // CRITICAL: Buffer Reuse Prevention
+      // ===================================
+      // WebSocket libraries may reuse the same Buffer object for multiple messages
+      // to improve performance. If we hold a reference to the original buffer and
+      // process it asynchronously, the buffer may be overwritten before processing
+      // completes, causing data corruption (e.g., "heavy monster tone" audio artifacts).
+      // 
+      // Solution: Copy the buffer immediately when received, before any async operations.
+      // This ensures the data won't be overwritten by subsequent messages.
+      // 
+      // Industry Best Practice: Always copy buffers before async processing or queuing.
+      const chunkData = Buffer.from(data);
+      
+      // Verify copy succeeded
+      if (chunkData.length !== data.length) {
+        audioLogger.error({
+          event: 'buffer_copy_failed',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          originalLength: data.length,
+          copyLength: chunkData.length,
+        }, `Buffer copy failed - length mismatch (original: ${data.length}, copy: ${chunkData.length})`);
+        return;
+      }
+      
+      // CRITICAL: Check if stream is Ogg/Opus format (starts with "OggS" header)
+      // LiveKit TrackEgress exports Opus tracks as Ogg/Opus, not PCM16
+      // If we receive Ogg/Opus but treat it as PCM16, it will look like garbage
+      // Note: Using original 'data' buffer for synchronous format checks is safe
+      if (audioChunkCount === 0 && data.length >= 4) {
+        const header = data.toString('ascii', 0, 4);
+        if (header === 'OggS') {
+          audioLogger.error({
+            event: 'ogg_opus_format_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            header,
+            message: 'CRITICAL: Received Ogg/Opus format from LiveKit egress, but code is treating it as PCM16! Audio will be corrupted. Need to decode Opus, not byte-swap.',
+          }, `❌ CRITICAL: Stream starts with "OggS" - this is Ogg/Opus format, not PCM16! The code is incorrectly treating compressed Opus data as raw PCM16. This will cause severe audio corruption.`);
+          // Continue processing but log the error - don't crash the connection
+        } else {
+          // Log that we're receiving PCM (expected format)
+          audioLogger.debug({
+            event: 'pcm_format_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            header: header.split('').map(c => c.charCodeAt(0)).join(','),
+            message: 'Stream does not start with OggS - assuming PCM16 format (expected)',
+          }, `✅ Stream format check: Not Ogg/Opus (header: ${header.split('').map(c => `0x${c.charCodeAt(0).toString(16)}`).join(' ')}) - treating as PCM16`);
+        }
       }
       
       audioChunkCount++;
       const now = Date.now();
       
+      // CRITICAL: Check for potential format issues even with correct PCM format
+      // 1. Sample rate mismatch (48k vs 16k) → chipmunk/slow
+      // 2. Channels/interleaving (stereo interpreted as mono) → weird artifacts
+      
+      // Check 1: Detect if this might be stereo (would cause sample rate misdetection)
+      // For 20ms chunk at 48kHz mono: 48000 * 0.02 * 2 = 1920 bytes
+      // For 20ms chunk at 48kHz stereo: 48000 * 0.02 * 2 * 2 = 3840 bytes
+      // If chunk size suggests stereo but we're treating as mono, sample rate detection will be wrong
+      // Note: Using original 'data' buffer for synchronous format checks is safe
+      if (audioChunkCount === 1) {
+        const expectedMono48kHz = 48000 * 0.02 * 2; // 1920 bytes for 20ms @ 48kHz mono
+        const expectedStereo48kHz = 48000 * 0.02 * 2 * 2; // 3840 bytes for 20ms @ 48kHz stereo
+        const expectedMono16kHz = 16000 * 0.02 * 2; // 640 bytes for 20ms @ 16kHz mono
+        const expectedStereo16kHz = 16000 * 0.02 * 2 * 2; // 1280 bytes for 20ms @ 16kHz stereo
+        
+        const sizeDiffMono48 = Math.abs(chunkData.length - expectedMono48kHz);
+        const sizeDiffStereo48 = Math.abs(chunkData.length - expectedStereo48kHz);
+        const sizeDiffMono16 = Math.abs(chunkData.length - expectedMono16kHz);
+        const sizeDiffStereo16 = Math.abs(chunkData.length - expectedStereo16kHz);
+        
+        // Check if size matches stereo better than mono
+        // CRITICAL: Only flag as stereo if stereo match is significantly better AND mono match is poor
+        // This prevents false positives when chunk size exactly matches mono (e.g., 1920 bytes = mono 48kHz)
+        // Example: 1920 bytes matches mono 48kHz exactly (diff=0), but stereo 16kHz diff=640
+        // We should NOT flag this as stereo since mono match is perfect
+        const minMonoDiff = Math.min(sizeDiffMono48, sizeDiffMono16);
+        const minStereoDiff = Math.min(sizeDiffStereo48, sizeDiffStereo16);
+        const stereoMatchBetter = minStereoDiff < minMonoDiff;
+        const monoMatchPoor = minMonoDiff > 100; // Mono match must be > 100 bytes off
+        
+        if (stereoMatchBetter && monoMatchPoor) {
+          audioLogger.error({
+            event: 'stereo_audio_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkSize: chunkData.length,
+            expectedMono48kHz,
+            expectedStereo48kHz,
+            expectedMono16kHz,
+            expectedStereo16kHz,
+            message: 'CRITICAL: Audio chunk size suggests STEREO format, but code is treating it as MONO! This will cause sample rate misdetection and weird artifacts. Need to handle stereo interleaving.',
+          }, `❌ CRITICAL: Chunk size (${chunkData.length} bytes) suggests STEREO format, but code assumes MONO! This will cause sample rate misdetection and audio artifacts.`);
+        }
+      }
+      
+      // Calculate audio level (synchronous operation, safe to use original buffer)
+      const samples = new Int16Array(data.length / 2);
+      for (let i = 0; i < samples.length; i++) {
+        samples[i] = data.readInt16LE(i * 2);
+      }
+      
+      // Calculate audio level
+      let maxAmplitude = 0;
+      let sumSquares = 0;
+      let nonZeroCount = 0;
+      
+      for (let i = 0; i < samples.length; i++) {
+        const abs = Math.abs(samples[i]);
+        maxAmplitude = Math.max(maxAmplitude, abs);
+        sumSquares += samples[i] * samples[i];
+        if (abs > 0) nonZeroCount++;
+      }
+      
+      const rms = Math.sqrt(sumSquares / samples.length);
+      const dbLevel: number | undefined = maxAmplitude > 0 ? 20 * Math.log10(maxAmplitude / 32768) : undefined;
+      const rmsDb: number | undefined = rms > 0 ? 20 * Math.log10(rms / 32768) : undefined;
+      
+      // Enhanced silence detection: check both amplitude and RMS
+      const isSilence = maxAmplitude === 0 || (maxAmplitude < 50 && nonZeroCount < samples.length * 0.01 && rms < 10);
+      
+      // Track silence metrics
+      if (isSilence) {
+        consecutiveSilenceChunks++;
+        totalSilenceChunks++;
+      } else {
+        consecutiveSilenceChunks = 0;
+        totalChunksWithAudio++;
+      }
+      
+      // Maintain silence history (rolling window)
+      silenceHistory.push({ chunkNumber: audioChunkCount, isSilence, maxAmplitude });
+      if (silenceHistory.length > MAX_SILENCE_HISTORY) {
+        silenceHistory.shift();
+      }
+      
+      // Log first chunk and every 100th chunk with audio level
+      if (audioChunkCount === 1 || audioChunkCount % 100 === 0) {
+        if (isSilence) {
+          logAudioChunk('error', 'silence_detected', {
+            chunkNumber: audioChunkCount,
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            maxAmplitude,
+            dbLevel: (dbLevel !== undefined && isFinite(dbLevel)) ? dbLevel : -Infinity,
+            rms,
+            rmsDb: (rmsDb !== undefined && isFinite(rmsDb)) ? rmsDb : -Infinity,
+            nonZeroSamples: nonZeroCount,
+            totalSamples: samples.length,
+            chunkSize: chunkData.length,
+            isSilence: true,
+            consecutiveSilenceChunks,
+            silencePercentage: audioChunkCount > 0 ? (totalSilenceChunks / audioChunkCount) * 100 : 0,
+          });
+        } else {
+          logAudioChunk('info', 'audio_chunk_received', {
+            chunkNumber: audioChunkCount,
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            maxAmplitude,
+            dbLevel: (dbLevel !== undefined && isFinite(dbLevel)) ? dbLevel : -Infinity,
+            rms,
+            rmsDb: (rmsDb !== undefined && isFinite(rmsDb)) ? rmsDb : -Infinity,
+            chunkSize: chunkData.length,
+            isSilence: false,
+          });
+        }
+      }
+      
+      // Enhanced persistent silence detection
+      if (consecutiveSilenceChunks > 10) {
+        // Log warning every 100 consecutive silence chunks or on first detection
+        if (consecutiveSilenceChunks % 100 === 0 || consecutiveSilenceChunks === 11) {
+          const silencePercentage = audioChunkCount > 0 ? (totalSilenceChunks / audioChunkCount) * 100 : 0;
+          logAudioChunk('error', 'persistent_silence', {
+            chunkNumber: audioChunkCount,
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            maxAmplitude,
+            dbLevel: (dbLevel !== undefined && isFinite(dbLevel)) ? dbLevel : -Infinity,
+            consecutiveSilenceChunks,
+            totalSilenceChunks,
+            totalChunksWithAudio,
+            silencePercentage,
+            message: 'Multiple consecutive chunks appear to be silence - egress may be capturing wrong track or muted track',
+          });
+        }
+      }
+      
+      // Periodic audio level summary (every 100 chunks)
+      if (audioChunkCount % 100 === 0 && audioChunkCount > 0) {
+        const silencePercentage = (totalSilenceChunks / audioChunkCount) * 100;
+        const avgAmplitude = silenceHistory.reduce((sum, h) => sum + h.maxAmplitude, 0) / silenceHistory.length;
+        const recentSilenceCount = silenceHistory.filter(h => h.isSilence).length;
+        const recentSilencePercentage = (recentSilenceCount / silenceHistory.length) * 100;
+        
+        audioLogger.info({
+          event: 'audio_level_summary',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          chunkNumber: audioChunkCount,
+          totalChunks: audioChunkCount,
+          totalSilenceChunks,
+          totalChunksWithAudio,
+          silencePercentage,
+          consecutiveSilenceChunks,
+          recentSilencePercentage,
+          avgAmplitude,
+          message: 'Periodic audio level summary',
+        }, `Audio level summary: ${totalChunksWithAudio} chunks with audio, ${totalSilenceChunks} silence (${silencePercentage.toFixed(1)}%), ${consecutiveSilenceChunks} consecutive silence`);
+      }
+      
       // Log every 5 seconds to show audio is flowing
       if (now - lastLogTime > 5000) {
-        console.log(`🎤 Audio streaming: ${audioChunkCount} chunks received from ${participantEmail} (${data.length} bytes)`);
+        audioLogger.info({
+          event: 'audio_streaming_status',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          totalChunks: audioChunkCount,
+          chunkSize: chunkData.length,
+          queueDepth: chunkQueue.get(sessionKey)?.queue.length || 0,
+        }, `Audio streaming: ${audioChunkCount} chunks received from ${validParticipantEmail} (${chunkData.length} bytes)`);
         lastLogTime = now;
       }
       
-      // Backpressure detection
+      // CRITICAL: Queue chunks to ensure sequential processing
+      const queueState = chunkQueue.get(sessionKey)!;
+      
+      // Check circuit breaker first
+      if (!checkCircuitBreaker()) {
+        // Circuit breaker is open - store in DLQ and drop
+        // Note: storeInDeadLetterQueue already copies the buffer, but use chunkData for consistency
+        storeInDeadLetterQueue(chunkData, audioChunkCount, 'circuit_breaker_open', queueState.queue.length, pendingChunks.get(sessionKey) || 0);
+        backpressureState.droppedChunks++;
+        logBackpressure(validParticipantEmail, sessionKey, queueState.queue.length, pendingChunks.get(sessionKey) || 0, 'drop');
+        return;
+      }
+      
+      // Backpressure detection - multi-layered approach
       const pending = pendingChunks.get(sessionKey) || 0;
-      if (pending > 100) {
-        console.warn(`⚠️ Backpressure detected for ${participantEmail}: ${pending} chunks pending, dropping chunk ${audioChunkCount}`);
+      const queueDepth = queueState.queue.length;
+      
+      // Layer 1: Drop chunks if queue is critically high (prevent memory issues)
+      if (pending > BACKPRESSURE_DROP_THRESHOLD || queueDepth > BACKPRESSURE_DROP_THRESHOLD) {
+        // Note: storeInDeadLetterQueue already copies the buffer, but use chunkData for consistency
+        storeInDeadLetterQueue(chunkData, audioChunkCount, 'queue_too_full', queueDepth, pending);
+        backpressureState.droppedChunks++;
+        logBackpressure(validParticipantEmail, sessionKey, queueDepth, pending, 'drop');
         return; // Drop chunk to prevent memory issues
+      }
+      
+      // Layer 2: Pause WebSocket if queue is getting high (prevent further buildup)
+      if (!backpressureState.isPaused && (pending > BACKPRESSURE_PAUSE_THRESHOLD || queueDepth > BACKPRESSURE_PAUSE_THRESHOLD)) {
+        backpressureState.isPaused = true;
+        backpressureState.lastPauseTime = Date.now();
+        ws.pause(); // Pause WebSocket to stop receiving more chunks
+        logBackpressure(validParticipantEmail, sessionKey, queueDepth, pending, 'pause');
+        
+        // Increase rate limiting delay when pausing
+        backpressureState.rateLimitDelay = Math.min(50, backpressureState.rateLimitDelay + 10);
+      }
+      
+      // Layer 3: Warning if queue is building up
+      if (queueDepth > BACKPRESSURE_WARNING_THRESHOLD || pending > BACKPRESSURE_WARNING_THRESHOLD) {
+        logBackpressure(validParticipantEmail, sessionKey, queueDepth, pending, 'warning');
       }
       
       // Increment pending counter
       pendingChunks.set(sessionKey, pending + 1);
       
-      // Process chunk asynchronously (fire-and-forget)
-      processChunkAsync(data, audioChunkCount, orgSlug ?? undefined)
-        .finally(() => {
-          // Decrement pending counter when done
-          const current = pendingChunks.get(sessionKey) || 0;
-          pendingChunks.set(sessionKey, Math.max(0, current - 1));
-        })
-        .catch((error: any) => {
-          console.error(`❌ Error processing chunk ${audioChunkCount} for ${participantEmail}:`, error);
+      // CRITICAL: Start processing immediately (async pipeline - parallel processing)
+      // ✅ Use chunkData (safe copy) instead of original data buffer
+      const processingPromise = processChunkAsync(chunkData, audioChunkCount, orgSlug ?? undefined);
+      
+      // Add chunk to queue with processing promise
+      new Promise<void>((resolve, reject) => {
+        queueState.queue.push({
+          chunkNumber: audioChunkCount,
+          chunkData: chunkData, // ✅ Use chunkData (safe copy) instead of original data buffer
+          orgSlug: orgSlug ?? undefined,
+          processingPromise, // Processing happens in parallel
+          resolve: () => {
+            // Decrement pending counter when done
+            const current = pendingChunks.get(sessionKey) || 0;
+            pendingChunks.set(sessionKey, Math.max(0, current - 1));
+            resolve();
+          },
+          reject: (error: Error) => {
+            // Decrement pending counter on error
+            const current = pendingChunks.get(sessionKey) || 0;
+            pendingChunks.set(sessionKey, Math.max(0, current - 1));
+            reject(error);
+          },
         });
+        
+        // Process write queue (non-blocking - writes happen sequentially)
+        processWriteQueueInOrder(sessionKey).catch((error: any) => {
+          audioLogger.error({
+            event: 'write_queue_error',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber: audioChunkCount,
+            error: error.message,
+            stack: error.stack,
+          }, `Error in write queue processor for ${validParticipantEmail}`);
+        });
+      }).catch((error: any) => {
+        audioLogger.error({
+          event: 'queue_error',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          chunkNumber: audioChunkCount,
+          error: error.message,
+          stack: error.stack,
+        }, `Error queuing chunk ${audioChunkCount} for ${validParticipantEmail}`);
+      });
     });
 
     ws.on('error', (error) => {
-      console.error(`❌ WebSocket error for ${participantEmail}:`, error);
+      audioLogger.error({
+        event: 'websocket_error',
+        participantEmail: validParticipantEmail,
+        callId: validCallId,
+        error: error.message,
+        stack: error.stack,
+      }, `WebSocket error for ${validParticipantEmail}`);
     });
 
     ws.on('close', (code, reason) => {
-      console.log(`🔌 WebSocket connection closed for ${participantEmail}:`, {
+      // Log final backpressure statistics
+      const finalQueueDepth = chunkQueue.get(sessionKey)?.queue.length || 0;
+      const finalPending = pendingChunks.get(sessionKey) || 0;
+      
+      audioLogger.info({
+        event: 'websocket_closed',
+        participantEmail: validParticipantEmail,
+        callId: validCallId,
         code,
         reason: reason.toString(),
-        callId,
-        totalChunks: audioChunkCount
+        totalChunks: audioChunkCount,
+        finalQueueDepth,
+        finalPending,
+        droppedChunks: backpressureState.droppedChunks,
+        dlqSize: deadLetterQueue.length,
+        circuitBreakerState: backpressureState.circuitBreakerState,
+        totalPauseTime: backpressureState.isPaused ? Date.now() - backpressureState.lastPauseTime : 0,
+      }, `WebSocket connection closed for ${validParticipantEmail} (dropped: ${backpressureState.droppedChunks}, DLQ: ${deadLetterQueue.length})`);
+      
+      // Log dead letter queue summary if chunks were dropped
+      if (deadLetterQueue.length > 0) {
+        audioLogger.warn({
+          event: 'dlq_summary',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          dlqSize: deadLetterQueue.length,
+          droppedChunks: backpressureState.droppedChunks,
+          oldestChunk: deadLetterQueue[0]?.chunkNumber,
+          newestChunk: deadLetterQueue[deadLetterQueue.length - 1]?.chunkNumber,
+        }, `Dead letter queue contains ${deadLetterQueue.length} dropped chunks`);
+      }
+      
+      // Clean up chunk queue
+      chunkQueue.delete(sessionKey);
+      
+      // Clean up pending chunks counter
+      pendingChunks.delete(sessionKey);
+      
+      // Clean up resampler for this session (prevent memory leaks)
+      // Note: cleanupResamplerForSession is async, but we don't await to avoid blocking close handler
+      cleanupResamplerForSession(sessionKey).catch((error) => {
+        console.error(`Failed to cleanup resampler for ${sessionKey}:`, error);
       });
       
+      // Clean up locked sample rate for this session
+      sessionSampleRates.delete(sessionKey);
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:2076',message:'WebSocket closed - cleaned up connection state',data:{sessionKey,finalQueueDepth,finalPending,chunkQueueSize:chunkQueue.size,pendingChunksSize:pendingChunks.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
+      
+      
       // Clean up audio buffer for this participant
-      cleanupParticipantBuffer(callId, participantEmail).catch((error) => {
-        console.error(`❌ Error in cleanupParticipantBuffer:`, error);
+      cleanupParticipantBuffer(validCallId, validParticipantEmail).catch((error) => {
+        audioLogger.error({
+          event: 'cleanup_error',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          error: error.message,
+          stack: error.stack,
+        }, `Error in cleanupParticipantBuffer`);
       });
     });
   });

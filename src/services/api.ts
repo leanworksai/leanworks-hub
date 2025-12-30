@@ -1176,6 +1176,45 @@ export const messagesService = {
     if (!response.ok) throw new Error('Failed to fetch recent conversations');
     return response.json();
   },
+
+  // Read Receipts Service
+  async markChatAsRead(chatId: string): Promise<void> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/chats/${encodeURIComponent(chatId)}/read` : `${API_BASE}/chats/${encodeURIComponent(chatId)}/read`;
+    const response = await authenticatedFetch(url, {
+      method: 'PATCH',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to mark chat as read' }));
+      throw new Error(error.error || 'Failed to mark chat as read');
+    }
+  },
+
+  async getReadReceipts(): Promise<{ chatId: string; lastReadTimestamp: number }[]> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/chats/read-receipts` : `${API_BASE}/chats/read-receipts`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to fetch read receipts');
+    }
+    return await response.json();
+  },
+
+  async getReadReceiptsBatch(chatIds: string[]): Promise<Map<string, number>> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/chats/read-receipts/batch` : `${API_BASE}/chats/read-receipts/batch`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ chatIds }),
+    });
+    if (!response.ok) {
+      throw new Error('Failed to fetch read receipts batch');
+    }
+    const data = await response.json();
+    // Convert object to Map
+    const map = new Map<string, number>();
+    Object.entries(data).forEach(([chatId, timestamp]) => {
+      map.set(chatId, timestamp as number);
+    });
+    return map;
+  },
 };
 
 // Image Upload Service
