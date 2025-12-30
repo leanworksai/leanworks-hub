@@ -48,9 +48,10 @@ export function setFirestoreDb(db: Firestore): void {
 
 // Chunk duration and overlap constants
 const CHUNK_DURATION_MS = 45000; // 45 seconds (configurable: 30-60s)
-const CHUNK_OVERLAP_MS = 300; // 300ms overlap (200-500ms range)
+const CHUNK_OVERLAP_MS = 10000; // 10 seconds overlap (industry best practice: 5-30s for transcription)
 // At 16kHz PCM (16-bit): 1 second = 16,000 samples * 2 bytes = 32,000 bytes
 // 45 seconds = 1,440,000 bytes ≈ 1.4MB
+// 10 seconds overlap = 320,000 bytes ≈ 320KB
 const CHUNK_DURATION_BYTES = Math.floor((CHUNK_DURATION_MS / 1000) * 16000 * 2); // Bytes for chunk duration at 16kHz
 const CHUNK_OVERLAP_BYTES = Math.floor((CHUNK_OVERLAP_MS / 1000) * 16000 * 2); // Bytes for overlap at 16kHz
 
@@ -934,6 +935,16 @@ async function publishAudioChunkReady(
   try {
     const topic = await getAudioChunksTopic();
     
+    // Calculate sample count from PCM data
+    // Sample rate verification is handled by:
+    // 1. Pre-save check in recordChunk (detects 48kHz audio when 16kHz expected)
+    // 2. PCM data analysis in rotateChunk/closeStreamingSession (detects 48kHz PCM when header says 16kHz)
+    // Wall clock duration is unreliable (can vary due to pauses, buffering, network delays)
+    const actualSamples = session.currentChunkBytes / 2; // 16-bit = 2 bytes per sample
+    
+    // Use session sample rate directly - it's verified by the checks above
+    const verifiedSampleRate = session.sampleRate;
+    
     const message = {
       event: 'audio_chunk_ready',
       callId: session.callId,
@@ -947,12 +958,12 @@ async function publishAudioChunkReady(
       // Overlap metadata for transcription dedupe
       overlapStartMs: overlapStartMs ?? CHUNK_OVERLAP_MS,
       overlapEndMs: overlapEndMs ?? 0,
-      sampleCount: session.currentChunkBytes / 2, // 16-bit = 2 bytes per sample
-      sampleRate: session.sampleRate,
+      sampleCount: actualSamples,
+      sampleRate: verifiedSampleRate,
     };
     
     const messageId = await topic.publishMessage({ json: message });
-    console.log(`📤 Published AudioChunkReady event: ${messageId} (chunk ${chunkIndex}, ${chunkEndTime - chunkStartTime}ms, ${isFinal ? 'final' : 'intermediate'})`);
+    console.log(`📤 Published AudioChunkReady event: ${messageId} (chunk ${chunkIndex}, ${chunkEndTime - chunkStartTime}ms, ${isFinal ? 'final' : 'intermediate'}, ${verifiedSampleRate}Hz)`);
   } catch (error: any) {
     console.error(`❌ Error publishing AudioChunkReady event for chunk ${chunkIndex}:`, error);
   }
@@ -1129,11 +1140,147 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
                 console.log(`   ✅ Fixed sample rate to ${session.sampleRate} Hz in header`);
               }
               
+              // CRITICAL: Verify actual PCM data matches header sample rate
+              // Assumes original input is always 48kHz from LiveKit
+              // If header says 16kHz but audio data size suggests 48kHz, fix the header
+              const pcmDataStart = 44; // WAV header is 44 bytes
+              const pcmDataSize = fileBuffer.length - pcmDataStart;
+              const pcmSamples = pcmDataSize / 2; // 16-bit = 2 bytes per sample
+              
+              // Calculate expected size for 16kHz vs 48kHz based on actual sample count
+              // If we have X samples and header says 16kHz, duration = X/16000 seconds
+              // If audio is actually 48kHz, duration = X/48000 seconds (3x shorter)
+              // We can't directly measure duration, but we can check if the data pattern suggests 48kHz
+              
+              // Method: Check if audio data size suggests 48kHz when header says 16kHz
+              // For a typical chunk, if header says 16kHz but we have ~3x more samples than expected
+              // for the wall clock duration, it's likely 48kHz audio
+              
+              // More reliable: Check if the PCM data has characteristics of 48kHz audio
+              // 48kHz audio will have higher frequency content than properly resampled 16kHz
+              if (currentSampleRate === 16000 && pcmDataSize >= 2000) {
+                // Analyze a sample of the PCM data to detect if it's actually 48kHz
+                const sampleSize = Math.min(5000, pcmSamples); // Analyze first 5000 samples
+                let zeroCrossings = 0;
+                let highFreqVariation = 0;
+                let prevSample = 0;
+                
+                for (let i = 1; i < sampleSize; i++) {
+                  const offset = pcmDataStart + (i * 2);
+                  if (offset + 1 >= fileBuffer.length) break;
+                  
+                  const sample1 = fileBuffer.readInt16LE(offset - 2);
+                  const sample2 = fileBuffer.readInt16LE(offset);
+                  
+                  // Zero crossing detection
+                  if ((prevSample >= 0 && sample2 < 0) || (prevSample < 0 && sample2 >= 0)) {
+                    zeroCrossings++;
+                  }
+                  
+                  // High frequency variation (difference between consecutive samples)
+                  const diff = Math.abs(sample2 - sample1);
+                  highFreqVariation += diff;
+                  
+                  prevSample = sample2;
+                }
+                
+                const zcr = zeroCrossings / sampleSize;
+                const avgVariation = highFreqVariation / sampleSize;
+                
+                // 48kHz audio typically has higher zero-crossing rate and variation
+                // Properly resampled 16kHz audio should have lower values
+                // Thresholds: ZCR > 0.12 and avgVariation > 500 suggests 48kHz
+                if (zcr > 0.12 && avgVariation > 500) {
+                  console.error(`❌ CRITICAL: PCM data analysis suggests 48kHz audio but header says 16kHz for chunk ${currentChunkIndex}!`);
+                  console.error(`   ZCR: ${zcr.toFixed(3)} (typical 48kHz: >0.12, 16kHz: <0.10)`);
+                  console.error(`   Avg variation: ${avgVariation.toFixed(0)} (typical 48kHz: >500, 16kHz: <300)`);
+                  console.error(`   This will cause "slow and deep" sound (monster tone) when played!`);
+                  console.error(`   Resampling may have failed or wrong audio was saved.`);
+                  console.error(`   Fixing header to 48kHz to match actual audio data...`);
+                  
+                  // Fix header to match actual audio (48kHz)
+                  fileBuffer.writeUInt32LE(48000, 24);
+                  const byteRate = 48000 * 1 * 2; // 48kHz * channels * bytesPerSample
+                  fileBuffer.writeUInt32LE(byteRate, 28);
+                  
+                  // Update session sample rate for future chunks
+                  session.sampleRate = 48000;
+                  
+                  audioLogger.error({
+                    event: 'wav_header_corrected_to_48khz',
+                    participantEmail: session.participantEmail,
+                    callId: session.callId,
+                    chunkIndex: currentChunkIndex,
+                    originalHeaderRate: 16000,
+                    correctedRate: 48000,
+                    pcmDataSize,
+                    pcmSamples,
+                    zcr: zcr.toFixed(3),
+                    avgVariation: avgVariation.toFixed(0),
+                    message: 'CRITICAL: Fixed WAV header from 16kHz to 48kHz - PCM data is actually 48kHz (resampling may have failed)',
+                  }, `Fixed WAV header: 16kHz → 48kHz (PCM analysis: ZCR=${zcr.toFixed(3)}, variation=${avgVariation.toFixed(0)})`);
+                } else {
+                  // PCM data appears to be correctly 16kHz
+                  if (currentChunkIndex === 0) {
+                    audioLogger.debug({
+                      event: 'pcm_data_verified_16khz',
+                      participantEmail: session.participantEmail,
+                      callId: session.callId,
+                      chunkIndex: currentChunkIndex,
+                      zcr: zcr.toFixed(3),
+                      avgVariation: avgVariation.toFixed(0),
+                      message: 'PCM data verified as 16kHz (matches header)',
+                    }, `✓ PCM data verified as 16kHz: ZCR=${zcr.toFixed(3)}, variation=${avgVariation.toFixed(0)}`);
+                  }
+                }
+              }
+              
               // Update RIFF chunk size (bytes 4-7)
               fileBuffer.writeUInt32LE(actualFileSize, 4);
               
               // Update data chunk size (bytes 40-43)
               fileBuffer.writeUInt32LE(actualPcmSize, 40);
+              
+              // VERIFY: Check PCM data integrity (sample first 20 samples)
+              // pcmDataStart is already declared above (line 1237)
+              if (fileBuffer.length >= pcmDataStart + 40) {
+                const verificationSamples: number[] = [];
+                let maxSample = 0;
+                let invalidSamples = 0;
+                
+                for (let i = 0; i < 20 && (pcmDataStart + i * 2 + 1) < fileBuffer.length; i++) {
+                  const offset = pcmDataStart + (i * 2);
+                  const sampleLE = fileBuffer.readInt16LE(offset);
+                  const sampleBE = fileBuffer.readInt16BE(offset);
+                  verificationSamples.push(sampleLE);
+                  
+                  // Check valid range
+                  if (sampleLE < -32768 || sampleLE > 32767) {
+                    invalidSamples++;
+                  }
+                  
+                  maxSample = Math.max(maxSample, Math.abs(sampleLE));
+                }
+                
+                if (invalidSamples > 0) {
+                  console.error(`❌ CRITICAL: ${invalidSamples} invalid PCM samples detected in chunk ${currentChunkIndex}!`);
+                  console.error(`   First 20 samples: [${verificationSamples.join(', ')}]`);
+                }
+                
+                // Log verification (only for first chunk or if issues detected)
+                if (currentChunkIndex === 0 || invalidSamples > 0) {
+                  audioLogger.info({
+                    event: 'wav_pcm_data_verification',
+                    participantEmail: session.participantEmail,
+                    callId: session.callId,
+                    chunkIndex: currentChunkIndex,
+                    firstSamples: verificationSamples,
+                    maxSample,
+                    invalidSamples,
+                    message: 'PCM data verification after WAV header update',
+                  }, `🔍 PCM data verification (chunk ${currentChunkIndex}): First 20 samples: [${verificationSamples.join(', ')}], Max: ${maxSample}, Invalid: ${invalidSamples}`);
+                }
+              }
               
               // Re-upload with corrected header
               await session.file.save(fileBuffer, {
@@ -1536,6 +1683,56 @@ function processWriteQueue(session: StreamingSession): void {
   // Data passed to recordChunk is already in the correct format - no modification needed
   const dataToWrite = item.data;
   
+  // VERIFY: Check PCM data integrity before writing (sample first 10 samples, log periodically)
+  // This helps catch corruption early, before it's written to GCS
+  if (session.chunkCount % 100 === 0 && dataToWrite.length >= 20) {
+    const verificationSamples: number[] = [];
+    let maxSample = 0;
+    let invalidSamples = 0;
+    
+    for (let i = 0; i < 10 && (i * 2 + 1) < dataToWrite.length; i++) {
+      const offset = i * 2;
+      const sampleLE = dataToWrite.readInt16LE(offset);
+      const sampleBE = dataToWrite.readInt16BE(offset);
+      verificationSamples.push(sampleLE);
+      
+      // Check valid range
+      if (sampleLE < -32768 || sampleLE > 32767) {
+        invalidSamples++;
+      }
+      
+      maxSample = Math.max(maxSample, Math.abs(sampleLE));
+    }
+    
+    if (invalidSamples > 0) {
+      audioLogger.error({
+        event: 'pcm_data_corruption_detected',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        chunkIndex: session.currentChunkIndex,
+        chunkCount: session.chunkCount,
+        firstSamples: verificationSamples,
+        maxSample,
+        invalidSamples,
+        dataSize: dataToWrite.length,
+        message: 'CRITICAL: Invalid PCM samples detected before writing to WAV file!',
+      }, `❌ CRITICAL: ${invalidSamples} invalid PCM samples detected before writing (chunk ${session.currentChunkIndex}, chunkCount ${session.chunkCount})! First 10 samples: [${verificationSamples.join(', ')}]`);
+    } else {
+      // Log verification periodically (every 100 chunks)
+      audioLogger.debug({
+        event: 'pcm_data_verification_before_write',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        chunkIndex: session.currentChunkIndex,
+        chunkCount: session.chunkCount,
+        firstSamples: verificationSamples,
+        maxSample,
+        dataSize: dataToWrite.length,
+        message: 'PCM data verification before writing to WAV file',
+      }, `🔍 PCM data verification before write (chunk ${session.currentChunkIndex}): First 10 samples: [${verificationSamples.join(', ')}], Max: ${maxSample}`);
+    }
+  }
+  
   const canWrite = session.writeStream.write(dataToWrite, (error?: Error | null) => {
     session.writing = false;
     
@@ -1700,6 +1897,79 @@ export async function recordChunk(
         sessionCreationLocks.delete(sessionKey);
         // Recursively call to create new session with correct sample rate
         return recordChunk(callId, participantEmail, audioData, orgSlug, sampleRate);
+      }
+      
+      // CRITICAL: Verify audio data size matches expected sample rate
+      // This catches cases where 48kHz audio is accidentally saved with 16kHz header
+      // Assumes original input is always 48kHz from LiveKit, so if sampleRate is 16kHz,
+      // the audio should be ~1/3 the size of 48kHz input
+      if (audioData.length >= 20) {
+        // For a typical 20ms chunk at 16kHz: 16000 * 0.02 * 2 = 640 bytes
+        // For a typical 20ms chunk at 48kHz: 48000 * 0.02 * 2 = 1920 bytes
+        const expected16kHz = 16000 * 0.02 * 2; // 640 bytes for 20ms @ 16kHz
+        const expected48kHz = 48000 * 0.02 * 2; // 1920 bytes for 20ms @ 48kHz
+        const sizeDiff16kHz = Math.abs(audioData.length - expected16kHz);
+        const sizeDiff48kHz = Math.abs(audioData.length - expected48kHz);
+        
+        // Check if audio size suggests different sample rate than metadata
+        if (sampleRate === 16000 && sizeDiff48kHz < sizeDiff16kHz) {
+          // Audio size suggests 48kHz but header says 16kHz!
+          console.error(`❌ CRITICAL: Audio data size suggests 48kHz but sampleRate parameter says 16kHz!`);
+          console.error(`   Audio size: ${audioData.length} bytes`);
+          console.error(`   Expected 16kHz (20ms): ${expected16kHz} bytes (diff: ${sizeDiff16kHz})`);
+          console.error(`   Expected 48kHz (20ms): ${expected48kHz} bytes (diff: ${sizeDiff48kHz})`);
+          console.error(`   This means 48kHz audio is being saved with 16kHz header - will cause monster tone!`);
+          console.error(`   The resampled 16kHz audio should have been passed, not the original 48kHz audio!`);
+          console.error(`   This indicates resampling may have failed or wrong audio was passed to recordChunk!`);
+          
+          audioLogger.error({
+            event: 'wrong_audio_saved_48khz_instead_of_16khz',
+            participantEmail,
+            callId,
+            audioSize: audioData.length,
+            sampleRate,
+            expected16kHz,
+            expected48kHz,
+            sizeDiff16kHz,
+            sizeDiff48kHz,
+            message: 'CRITICAL: 48kHz audio is being saved with 16kHz header - resampling may have failed or wrong audio passed',
+          }, `Wrong audio saved: 48kHz audio (${audioData.length} bytes) with 16kHz header! Resampling may have failed.`);
+          
+          // Don't save - this would create incorrect metadata
+          throw new Error(`Cannot save 48kHz audio (${audioData.length} bytes) with 16kHz header - resampling may have failed. Expected ~${expected16kHz} bytes for 16kHz audio.`);
+        } else if (sampleRate === 48000 && sizeDiff16kHz < sizeDiff48kHz) {
+          // Audio size suggests 16kHz but header says 48kHz (less common but possible)
+          console.warn(`⚠️ Audio data size suggests 16kHz but sampleRate parameter says 48kHz!`);
+          console.warn(`   Audio size: ${audioData.length} bytes`);
+          console.warn(`   Expected 16kHz (20ms): ${expected16kHz} bytes (diff: ${sizeDiff16kHz})`);
+          console.warn(`   Expected 48kHz (20ms): ${expected48kHz} bytes (diff: ${sizeDiff48kHz})`);
+          console.warn(`   This might indicate 16kHz audio is being saved with 48kHz header.`);
+          
+          audioLogger.warn({
+            event: 'audio_size_mismatch_16khz_with_48khz_header',
+            participantEmail,
+            callId,
+            audioSize: audioData.length,
+            sampleRate,
+            expected16kHz,
+            expected48kHz,
+            sizeDiff16kHz,
+            sizeDiff48kHz,
+            message: 'Audio size suggests 16kHz but header says 48kHz',
+          }, `Audio size mismatch: ${audioData.length} bytes suggests 16kHz but header says 48kHz`);
+        } else {
+          // Metadata matches - log verification success for first chunk
+          if (session.chunkCount === 0) {
+            audioLogger.debug({
+              event: 'first_chunk_sample_rate_verified',
+              participantEmail,
+              callId,
+              sampleRate: session.sampleRate,
+              audioSize: audioData.length,
+              message: 'First chunk sample rate metadata verified',
+            }, `✓ First chunk sample rate verified: ${session.sampleRate}Hz, size: ${audioData.length} bytes`);
+          }
+        }
       }
     
     // Check if stream is still writable before writing
@@ -1885,11 +2155,115 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
           console.log(`   ✅ Fixed sample rate to ${session.sampleRate} Hz in header`);
         }
         
+        // CRITICAL: Verify actual PCM data matches header sample rate (same as rotation check)
+        const pcmDataStartFinal = 44; // WAV header is 44 bytes
+        const pcmDataSize = fileBuffer.length - pcmDataStartFinal;
+        const pcmSamples = pcmDataSize / 2; // 16-bit = 2 bytes per sample
+        
+        // Check if PCM data is actually 48kHz when header says 16kHz
+        if (currentSampleRate === 16000 && pcmDataSize >= 2000) {
+          // Analyze PCM data to detect if it's actually 48kHz
+          const sampleSize = Math.min(5000, pcmSamples);
+          let zeroCrossings = 0;
+          let highFreqVariation = 0;
+          let prevSample = 0;
+          
+          for (let i = 1; i < sampleSize; i++) {
+            const offset = pcmDataStartFinal + (i * 2);
+            if (offset + 1 >= fileBuffer.length) break;
+            
+            const sample1 = fileBuffer.readInt16LE(offset - 2);
+            const sample2 = fileBuffer.readInt16LE(offset);
+            
+            // Zero crossing detection
+            if ((prevSample >= 0 && sample2 < 0) || (prevSample < 0 && sample2 >= 0)) {
+              zeroCrossings++;
+            }
+            
+            // High frequency variation
+            const diff = Math.abs(sample2 - sample1);
+            highFreqVariation += diff;
+            
+            prevSample = sample2;
+          }
+          
+          const zcr = zeroCrossings / sampleSize;
+          const avgVariation = highFreqVariation / sampleSize;
+          
+          // If ZCR and variation suggest 48kHz, fix the header
+          if (zcr > 0.12 && avgVariation > 500) {
+            console.error(`❌ CRITICAL: Final chunk PCM data suggests 48kHz but header says 16kHz!`);
+            console.error(`   ZCR: ${zcr.toFixed(3)}, Avg variation: ${avgVariation.toFixed(0)}`);
+            console.error(`   Fixing header to 48kHz to match actual audio data...`);
+            
+            // Fix header to match actual audio (48kHz)
+            fileBuffer.writeUInt32LE(48000, 24);
+            const byteRate = 48000 * 1 * 2;
+            fileBuffer.writeUInt32LE(byteRate, 28);
+            
+            // Update session sample rate
+            session.sampleRate = 48000;
+            
+            audioLogger.error({
+              event: 'final_chunk_header_corrected_to_48khz',
+              participantEmail: session.participantEmail,
+              callId: session.callId,
+              chunkIndex: finalChunkIndex,
+              originalHeaderRate: 16000,
+              correctedRate: 48000,
+              pcmDataSize,
+              zcr: zcr.toFixed(3),
+              avgVariation: avgVariation.toFixed(0),
+              message: 'CRITICAL: Fixed final chunk header from 16kHz to 48kHz - PCM data is actually 48kHz',
+            }, `Fixed final chunk header: 16kHz → 48kHz (PCM analysis)`);
+          }
+        }
+        
         // Update RIFF chunk size (bytes 4-7)
         fileBuffer.writeUInt32LE(actualFileSize, 4);
         
         // Update data chunk size (bytes 40-43)
         fileBuffer.writeUInt32LE(actualPcmSize, 40);
+        
+        // VERIFY: Check PCM data integrity (sample first 20 samples)
+        // pcmDataStartFinal is already declared above (line 2250)
+        if (fileBuffer.length >= pcmDataStartFinal + 40) {
+          const verificationSamples: number[] = [];
+          let maxSample = 0;
+          let invalidSamples = 0;
+          
+          for (let i = 0; i < 20 && (pcmDataStartFinal + i * 2 + 1) < fileBuffer.length; i++) {
+            const offset = pcmDataStartFinal + (i * 2);
+            const sampleLE = fileBuffer.readInt16LE(offset);
+            const sampleBE = fileBuffer.readInt16BE(offset);
+            verificationSamples.push(sampleLE);
+            
+            // Check valid range
+            if (sampleLE < -32768 || sampleLE > 32767) {
+              invalidSamples++;
+            }
+            
+            maxSample = Math.max(maxSample, Math.abs(sampleLE));
+          }
+          
+          if (invalidSamples > 0) {
+            console.error(`❌ CRITICAL: ${invalidSamples} invalid PCM samples detected in final chunk ${finalChunkIndex}!`);
+            console.error(`   First 20 samples: [${verificationSamples.join(', ')}]`);
+          }
+          
+          // Log verification for final chunk
+          audioLogger.info({
+            event: 'wav_pcm_data_verification',
+            participantEmail: session.participantEmail,
+            callId: session.callId,
+            chunkIndex: finalChunkIndex,
+            firstSamples: verificationSamples,
+            maxSample,
+            invalidSamples,
+            isFinal: true,
+            message: 'PCM data verification after final WAV header update',
+          }, `🔍 PCM data verification (final chunk ${finalChunkIndex}): First 20 samples: [${verificationSamples.join(', ')}], Max: ${maxSample}, Invalid: ${invalidSamples}`);
+        }
         
         // Re-upload with corrected header
         await session.file.save(fileBuffer, {

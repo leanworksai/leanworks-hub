@@ -1194,37 +1194,6 @@ export function setupLiveKitWebSocketServer(server: any): void {
     const BACKPRESSURE_DROP_THRESHOLD = 100; // Drop chunks at 100 chunks
     const BACKPRESSURE_WARNING_THRESHOLD = 30; // Warn at 30 chunks
     
-    /**
-     * Detect actual sample rate from chunk size
-     * LiveKit typically sends 20ms chunks, so we can infer sample rate from size
-     * 
-     * @param chunkSize - Size of audio chunk in bytes
-     * @param chunkDurationMs - Expected chunk duration in milliseconds (default: 20ms)
-     * @returns Detected sample rate (rounded to nearest standard rate)
-     */
-    function detectSampleRate(chunkSize: number, chunkDurationMs: number = 20): number {
-      // CRITICAL: This assumes MONO audio (1 channel)
-      // If audio is STEREO (2 channels), this calculation will be WRONG
-      // Stereo: chunkSize = samples * 2 channels * 2 bytes = samples * 4
-      // Mono: chunkSize = samples * 1 channel * 2 bytes = samples * 2
-      // So for stereo, we'd detect 2x the actual sample rate!
-      const samples = chunkSize / 2; // 16-bit = 2 bytes per sample (ASSUMES MONO)
-      const durationSeconds = chunkDurationMs / 1000;
-      const detectedRate = Math.round(samples / durationSeconds);
-      
-      // Round to nearest standard sample rate
-      const standardRates = [8000, 16000, 22050, 44100, 48000];
-      const closestRate = standardRates.reduce((prev, curr) => 
-        Math.abs(curr - detectedRate) < Math.abs(prev - detectedRate) ? curr : prev
-      );
-      
-      // WARNING: If detected rate is unusually high (e.g., 96kHz), it might be stereo interpreted as mono
-      // Note: We can't log here because validParticipantEmail/validCallId are not in scope
-      // This warning will be logged in the calling code if needed
-      
-      return closestRate;
-    }
-
     // CRITICAL: Chunk ordering queue - async pipeline (parallel processing, sequential writes)
     interface QueuedChunk {
       chunkNumber: number;
@@ -1467,23 +1436,11 @@ export function setupLiveKitWebSocketServer(server: any): void {
       try {
         const originalSize = chunkData.length;
         
-        // CRITICAL: Detect actual sample rate from chunk size (don't assume!)
-        // LiveKit typically sends 20ms chunks, so we can infer sample rate
-        // WARNING: This assumes MONO - if stereo, detected rate will be 2x too high!
-        const detectedInputRate = detectSampleRate(originalSize, 20);
-        
-        // WARNING: If detected rate is unusually high (e.g., 96kHz), it might be stereo interpreted as mono
-        if (detectedInputRate > 48000) {
-          audioLogger.warn({
-            event: 'unusual_sample_rate_detected',
-            participantEmail: validParticipantEmail,
-            callId: validCallId,
-            chunkNumber,
-            chunkSize: originalSize,
-            detectedInputRate,
-            message: 'Detected unusually high sample rate - might be stereo audio interpreted as mono! This will cause sample rate mismatch issues.',
-          }, `⚠️ WARNING: Detected sample rate ${detectedInputRate}Hz - might be stereo interpreted as mono!`);
-        }
+        // CRITICAL FIX: Assume 48kHz from LiveKit (more reliable than detection)
+        // LiveKit TrackEgress always sends 48kHz PCM16 audio per documentation
+        // Detection from chunk size can be inaccurate due to timing variations
+        // Assuming 48kHz ensures correct resampling and WAV header
+        const detectedInputRate = 48000; // LiveKit always sends 48kHz PCM16
         
         // CRITICAL: Lock sample rate per session to prevent detection inconsistencies
         // Detection can vary between chunks due to timing variations, but the actual
@@ -1586,23 +1543,22 @@ export function setupLiveKitWebSocketServer(server: any): void {
           
           // Check if audio data looks valid
           if (chunkData.length >= 20) {
-            const samples: Array<{ le: number; be: number }> = [];
+            const samples: number[] = [];
             let peak = 0;
             for (let i = 0; i < 10 && i * 2 < chunkData.length; i++) {
-              const sampleLE = chunkData.readInt16LE(i * 2);
-              const sampleBE = chunkData.readInt16BE(i * 2);
-              samples.push({ le: sampleLE, be: sampleBE });
-              peak = Math.max(peak, Math.abs(sampleLE), Math.abs(sampleBE));
+              const sample = chunkData.readInt16LE(i * 2);
+              samples.push(sample);
+              peak = Math.max(peak, Math.abs(sample));
             }
             const peakDb = peak > 0 ? (20 * Math.log10(peak / 32768)).toFixed(2) : '-Inf';
             audioLogger.info({
               event: 'audio_samples_check',
               participantEmail: validParticipantEmail,
               callId: validCallId,
-              firstSamples: samples.map(s => s.le),
+              firstSamples: samples,
               peak,
               peakDb,
-            }, `First 10 samples: [${samples.map(s => s.le).join(', ')}], Peak: ${peak} (${peakDb} dB)`);
+            }, `First 10 samples: [${samples.join(', ')}], Peak: ${peak} (${peakDb} dB)`);
             
             if (peak < 100) {
               audioLogger.warn({
@@ -1650,16 +1606,6 @@ export function setupLiveKitWebSocketServer(server: any): void {
             }, `⚠️ BYPASS: Skipping resampling, saving 48kHz directly (chunk ${chunkNumber})`);
           } else {
             // Resample from 48kHz to 16kHz
-            audioLogger.info({
-              event: 'resampling_started',
-              participantEmail: validParticipantEmail,
-              callId: validCallId,
-              chunkNumber,
-              originalSize,
-              inputSampleRate,
-              targetSampleRate,
-            }, `🔄 Resampling chunk ${chunkNumber}: ${originalSize} bytes @ ${inputSampleRate}Hz → ${targetSampleRate}Hz`);
-            
             // Use per-session resampler for stateful resampling (prevents discontinuities)
             // Data is already in little-endian format (LiveKit always sends LE)
             processedAudio = await resample48kHzTo16kHz(chunkData, sessionKey);
@@ -1781,9 +1727,45 @@ export function setupLiveKitWebSocketServer(server: any): void {
         return;
       }
       
+      // Validate buffer is not empty
+      if (data.length === 0) {
+        audioLogger.warn({
+          event: 'empty_buffer_received',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+        }, 'Received empty buffer from LiveKit egress');
+        return;
+      }
+      
+      // CRITICAL: Buffer Reuse Prevention
+      // ===================================
+      // WebSocket libraries may reuse the same Buffer object for multiple messages
+      // to improve performance. If we hold a reference to the original buffer and
+      // process it asynchronously, the buffer may be overwritten before processing
+      // completes, causing data corruption (e.g., "heavy monster tone" audio artifacts).
+      // 
+      // Solution: Copy the buffer immediately when received, before any async operations.
+      // This ensures the data won't be overwritten by subsequent messages.
+      // 
+      // Industry Best Practice: Always copy buffers before async processing or queuing.
+      const chunkData = Buffer.from(data);
+      
+      // Verify copy succeeded
+      if (chunkData.length !== data.length) {
+        audioLogger.error({
+          event: 'buffer_copy_failed',
+          participantEmail: validParticipantEmail,
+          callId: validCallId,
+          originalLength: data.length,
+          copyLength: chunkData.length,
+        }, `Buffer copy failed - length mismatch (original: ${data.length}, copy: ${chunkData.length})`);
+        return;
+      }
+      
       // CRITICAL: Check if stream is Ogg/Opus format (starts with "OggS" header)
       // LiveKit TrackEgress exports Opus tracks as Ogg/Opus, not PCM16
       // If we receive Ogg/Opus but treat it as PCM16, it will look like garbage
+      // Note: Using original 'data' buffer for synchronous format checks is safe
       if (audioChunkCount === 0 && data.length >= 4) {
         const header = data.toString('ascii', 0, 4);
         if (header === 'OggS') {
@@ -1813,22 +1795,22 @@ export function setupLiveKitWebSocketServer(server: any): void {
       // CRITICAL: Check for potential format issues even with correct PCM format
       // 1. Sample rate mismatch (48k vs 16k) → chipmunk/slow
       // 2. Channels/interleaving (stereo interpreted as mono) → weird artifacts
-      // 3. Signed vs unsigned (PCM16 should be signed) → harsh distortion
       
       // Check 1: Detect if this might be stereo (would cause sample rate misdetection)
       // For 20ms chunk at 48kHz mono: 48000 * 0.02 * 2 = 1920 bytes
       // For 20ms chunk at 48kHz stereo: 48000 * 0.02 * 2 * 2 = 3840 bytes
       // If chunk size suggests stereo but we're treating as mono, sample rate detection will be wrong
+      // Note: Using original 'data' buffer for synchronous format checks is safe
       if (audioChunkCount === 1) {
         const expectedMono48kHz = 48000 * 0.02 * 2; // 1920 bytes for 20ms @ 48kHz mono
         const expectedStereo48kHz = 48000 * 0.02 * 2 * 2; // 3840 bytes for 20ms @ 48kHz stereo
         const expectedMono16kHz = 16000 * 0.02 * 2; // 640 bytes for 20ms @ 16kHz mono
         const expectedStereo16kHz = 16000 * 0.02 * 2 * 2; // 1280 bytes for 20ms @ 16kHz stereo
         
-        const sizeDiffMono48 = Math.abs(data.length - expectedMono48kHz);
-        const sizeDiffStereo48 = Math.abs(data.length - expectedStereo48kHz);
-        const sizeDiffMono16 = Math.abs(data.length - expectedMono16kHz);
-        const sizeDiffStereo16 = Math.abs(data.length - expectedStereo16kHz);
+        const sizeDiffMono48 = Math.abs(chunkData.length - expectedMono48kHz);
+        const sizeDiffStereo48 = Math.abs(chunkData.length - expectedStereo48kHz);
+        const sizeDiffMono16 = Math.abs(chunkData.length - expectedMono16kHz);
+        const sizeDiffStereo16 = Math.abs(chunkData.length - expectedStereo16kHz);
         
         // Check if size matches stereo better than mono
         // CRITICAL: Only flag as stereo if stereo match is significantly better AND mono match is poor
@@ -1845,43 +1827,17 @@ export function setupLiveKitWebSocketServer(server: any): void {
             event: 'stereo_audio_detected',
             participantEmail: validParticipantEmail,
             callId: validCallId,
-            chunkSize: data.length,
+            chunkSize: chunkData.length,
             expectedMono48kHz,
             expectedStereo48kHz,
             expectedMono16kHz,
             expectedStereo16kHz,
             message: 'CRITICAL: Audio chunk size suggests STEREO format, but code is treating it as MONO! This will cause sample rate misdetection and weird artifacts. Need to handle stereo interleaving.',
-          }, `❌ CRITICAL: Chunk size (${data.length} bytes) suggests STEREO format, but code assumes MONO! This will cause sample rate misdetection and audio artifacts.`);
+          }, `❌ CRITICAL: Chunk size (${chunkData.length} bytes) suggests STEREO format, but code assumes MONO! This will cause sample rate misdetection and audio artifacts.`);
         }
       }
       
-      // Check 2: Verify signed PCM16 (not unsigned)
-      // Signed PCM16 should have values in range -32768 to 32767
-      // If we see values > 32767, it might be unsigned (0-65535 range)
-      if (audioChunkCount === 1 && data.length >= 4) {
-        const sample1 = data.readInt16LE(0);
-        const sample2 = data.readInt16LE(2);
-        const sample1Unsigned = data.readUInt16LE(0);
-        const sample2Unsigned = data.readUInt16LE(2);
-        
-        // Check if unsigned interpretation makes more sense (values > 32767)
-        const maxSigned = Math.max(Math.abs(sample1), Math.abs(sample2));
-        const maxUnsigned = Math.max(sample1Unsigned, sample2Unsigned);
-        
-        if (maxUnsigned > 32767 && maxSigned < 1000) {
-          audioLogger.error({
-            event: 'unsigned_pcm_detected',
-            participantEmail: validParticipantEmail,
-            callId: validCallId,
-            sample1Signed: sample1,
-            sample2Signed: sample2,
-            sample1Unsigned: sample1Unsigned,
-            sample2Unsigned: sample2Unsigned,
-            message: 'CRITICAL: Audio appears to be UNSIGNED PCM (0-65535), but code is treating it as SIGNED PCM16 (-32768 to 32767)! This will cause harsh distortion. Need to convert unsigned to signed.',
-          }, `❌ CRITICAL: Audio appears to be UNSIGNED PCM (samples: ${sample1Unsigned}, ${sample2Unsigned}), but code treats it as SIGNED! This will cause harsh distortion.`);
-        }
-      }
-      
+      // Calculate audio level (synchronous operation, safe to use original buffer)
       const samples = new Int16Array(data.length / 2);
       for (let i = 0; i < samples.length; i++) {
         samples[i] = data.readInt16LE(i * 2);
@@ -1934,7 +1890,7 @@ export function setupLiveKitWebSocketServer(server: any): void {
             rmsDb: (rmsDb !== undefined && isFinite(rmsDb)) ? rmsDb : -Infinity,
             nonZeroSamples: nonZeroCount,
             totalSamples: samples.length,
-            chunkSize: data.length,
+            chunkSize: chunkData.length,
             isSilence: true,
             consecutiveSilenceChunks,
             silencePercentage: audioChunkCount > 0 ? (totalSilenceChunks / audioChunkCount) * 100 : 0,
@@ -1948,7 +1904,7 @@ export function setupLiveKitWebSocketServer(server: any): void {
             dbLevel: (dbLevel !== undefined && isFinite(dbLevel)) ? dbLevel : -Infinity,
             rms,
             rmsDb: (rmsDb !== undefined && isFinite(rmsDb)) ? rmsDb : -Infinity,
-            chunkSize: data.length,
+            chunkSize: chunkData.length,
             isSilence: false,
           });
         }
@@ -2004,9 +1960,9 @@ export function setupLiveKitWebSocketServer(server: any): void {
           participantEmail: validParticipantEmail,
           callId: validCallId,
           totalChunks: audioChunkCount,
-          chunkSize: data.length,
+          chunkSize: chunkData.length,
           queueDepth: chunkQueue.get(sessionKey)?.queue.length || 0,
-        }, `Audio streaming: ${audioChunkCount} chunks received from ${validParticipantEmail} (${data.length} bytes)`);
+        }, `Audio streaming: ${audioChunkCount} chunks received from ${validParticipantEmail} (${chunkData.length} bytes)`);
         lastLogTime = now;
       }
       
@@ -2016,7 +1972,8 @@ export function setupLiveKitWebSocketServer(server: any): void {
       // Check circuit breaker first
       if (!checkCircuitBreaker()) {
         // Circuit breaker is open - store in DLQ and drop
-        storeInDeadLetterQueue(data, audioChunkCount, 'circuit_breaker_open', queueState.queue.length, pendingChunks.get(sessionKey) || 0);
+        // Note: storeInDeadLetterQueue already copies the buffer, but use chunkData for consistency
+        storeInDeadLetterQueue(chunkData, audioChunkCount, 'circuit_breaker_open', queueState.queue.length, pendingChunks.get(sessionKey) || 0);
         backpressureState.droppedChunks++;
         logBackpressure(validParticipantEmail, sessionKey, queueState.queue.length, pendingChunks.get(sessionKey) || 0, 'drop');
         return;
@@ -2028,7 +1985,8 @@ export function setupLiveKitWebSocketServer(server: any): void {
       
       // Layer 1: Drop chunks if queue is critically high (prevent memory issues)
       if (pending > BACKPRESSURE_DROP_THRESHOLD || queueDepth > BACKPRESSURE_DROP_THRESHOLD) {
-        storeInDeadLetterQueue(data, audioChunkCount, 'queue_too_full', queueDepth, pending);
+        // Note: storeInDeadLetterQueue already copies the buffer, but use chunkData for consistency
+        storeInDeadLetterQueue(chunkData, audioChunkCount, 'queue_too_full', queueDepth, pending);
         backpressureState.droppedChunks++;
         logBackpressure(validParticipantEmail, sessionKey, queueDepth, pending, 'drop');
         return; // Drop chunk to prevent memory issues
@@ -2054,13 +2012,14 @@ export function setupLiveKitWebSocketServer(server: any): void {
       pendingChunks.set(sessionKey, pending + 1);
       
       // CRITICAL: Start processing immediately (async pipeline - parallel processing)
-      const processingPromise = processChunkAsync(data, audioChunkCount, orgSlug ?? undefined);
+      // ✅ Use chunkData (safe copy) instead of original data buffer
+      const processingPromise = processChunkAsync(chunkData, audioChunkCount, orgSlug ?? undefined);
       
       // Add chunk to queue with processing promise
       new Promise<void>((resolve, reject) => {
         queueState.queue.push({
           chunkNumber: audioChunkCount,
-          chunkData: data,
+          chunkData: chunkData, // ✅ Use chunkData (safe copy) instead of original data buffer
           orgSlug: orgSlug ?? undefined,
           processingPromise, // Processing happens in parallel
           resolve: () => {
@@ -2150,7 +2109,10 @@ export function setupLiveKitWebSocketServer(server: any): void {
       pendingChunks.delete(sessionKey);
       
       // Clean up resampler for this session (prevent memory leaks)
-      cleanupResamplerForSession(sessionKey);
+      // Note: cleanupResamplerForSession is async, but we don't await to avoid blocking close handler
+      cleanupResamplerForSession(sessionKey).catch((error) => {
+        console.error(`Failed to cleanup resampler for ${sessionKey}:`, error);
+      });
       
       // Clean up locked sample rate for this session
       sessionSampleRates.delete(sessionKey);

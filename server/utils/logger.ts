@@ -169,8 +169,7 @@ export function logBackpressure(
     audioLogger.warn(logData, `Backpressure: Pausing WebSocket (queue: ${queueDepth})`);
   } else if (action === 'resume') {
     audioLogger.info(logData, `Backpressure: Resuming WebSocket (queue: ${queueDepth})`);
-  } else {
-    audioLogger.warn(logData, `Backpressure: Warning (queue: ${queueDepth})`);
   }
+  // Warning action removed - too verbose
 }
 

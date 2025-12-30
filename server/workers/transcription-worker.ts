@@ -58,6 +58,15 @@ const pendingChunks = new Map<string, Array<{ message: any; data: any }>>(); // 
 // Add near top with other Maps
 const transcriptionSessionLocks = new Map<string, Promise<void>>();
 
+// Track calls that need summaries (when call ended but transcriptions weren't complete)
+interface PendingSummary {
+  docId: string;
+  ownerEmail: string;
+  orgSlug: string;
+  callId: string;
+}
+const pendingSummaries = new Map<string, PendingSummary>(); // callId -> PendingSummary
+
 // Note: pushAudioInChunks removed - no longer using streaming API
 
 /**
@@ -97,6 +106,34 @@ function needsResampling(audioBuffer: Buffer): boolean {
   
   // Default: assume 16kHz (safer - won't break if already correct)
   return false;
+}
+
+/**
+ * Detect actual sample rate from audio buffer size and duration
+ * This verifies the metadata matches the actual data
+ * 
+ * @param audioBuffer - PCM audio buffer (16-bit samples)
+ * @param expectedDuration - Optional expected duration in seconds
+ * @returns Detected sample rate (16000 or 48000)
+ */
+function detectActualSampleRate(audioBuffer: Buffer, expectedDuration?: number): number {
+  const bytes = audioBuffer.length;
+  const samples = bytes / 2; // 16-bit = 2 bytes per sample
+  
+  // If we have duration, calculate sample rate directly
+  if (expectedDuration && expectedDuration > 0) {
+    const calculatedRate = samples / expectedDuration;
+    
+    // Round to nearest standard rate (16kHz or 48kHz)
+    if (Math.abs(calculatedRate - 16000) < Math.abs(calculatedRate - 48000)) {
+      return 16000;
+    } else {
+      return 48000;
+    }
+  }
+  
+  // Otherwise, use size-based heuristic (from needsResampling function)
+  return needsResampling(audioBuffer) ? 48000 : 16000;
 }
 
 /**
@@ -615,28 +652,103 @@ async function transcribeAudioChunk(
     let wavBuffer: Buffer;
     
     if (isWav) {
-      // File is already WAV format - verify sample rate from header
+      // File is already WAV format - verify sample rate from header matches actual audio
       if (audioBuffer.length < 44) {
         console.warn(`⚠️ WAV file too small (${audioBuffer.length} bytes) for chunk ${chunkIndex} of ${email}`);
         return null;
       }
       
       // Read sample rate from WAV header (bytes 24-27, little-endian)
-      const sampleRate = audioBuffer.readUInt32LE(24);
+      const headerSampleRate = audioBuffer.readUInt32LE(24);
       
-      if (sampleRate !== 16000) {
-        console.warn(`⚠️ WAV file has unexpected sample rate ${sampleRate}Hz (expected 16000Hz) for chunk ${chunkIndex} of ${email}`);
-        // Still proceed, but log warning
+      // CRITICAL: Verify header sample rate matches actual audio data
+      // Calculate PCM data size (file size - 44 byte header)
+      const pcmDataSize = audioBuffer.length - 44;
+      const pcmSamples = pcmDataSize / 2; // 16-bit = 2 bytes per sample
+      
+      // Try to estimate duration from chunk metadata if available
+      // For now, use size-based detection as fallback
+      const detectedSampleRate = detectActualSampleRate(Buffer.from(audioBuffer, 44, pcmDataSize));
+      
+      // Check if header sample rate matches detected rate
+      if (headerSampleRate !== detectedSampleRate) {
+        console.error(`❌ CRITICAL: WAV header sample rate mismatch for chunk ${chunkIndex} of ${email}!`);
+        console.error(`   Header says: ${headerSampleRate}Hz`);
+        console.error(`   Audio data indicates: ${detectedSampleRate}Hz`);
+        console.error(`   PCM data: ${pcmSamples} samples, ${pcmDataSize} bytes`);
+        console.error(`   This will cause incorrect playback speed (monster tone)!`);
+        
+        // Fix the header to match actual audio data
+        const fixedBuffer = Buffer.from(audioBuffer);
+        fixedBuffer.writeUInt32LE(detectedSampleRate, 24);
+        const byteRate = detectedSampleRate * 1 * 2; // sampleRate * channels * bytesPerSample
+        fixedBuffer.writeUInt32LE(byteRate, 28);
+        
+        transcriptionLogger.error({
+          event: 'wav_header_sample_rate_fixed',
+          callId: session.callId,
+          participantEmail: email,
+          chunkIndex,
+          originalHeaderRate: headerSampleRate,
+          detectedRate: detectedSampleRate,
+          pcmSamples,
+          pcmDataSize,
+          message: 'CRITICAL: Fixed WAV header sample rate to match actual audio data',
+        }, `Fixed WAV header: ${headerSampleRate}Hz → ${detectedSampleRate}Hz for chunk ${chunkIndex}`);
+        
+        wavBuffer = fixedBuffer;
+      } else {
+        // Header matches - verify it's 16kHz as expected
+        if (headerSampleRate !== 16000) {
+          console.warn(`⚠️ WAV file has sample rate ${headerSampleRate}Hz (expected 16000Hz) for chunk ${chunkIndex} of ${email}`);
+          console.warn(`   However, audio data appears to match header (${detectedSampleRate}Hz)`);
+          // Still proceed - AssemblyAI can handle other sample rates
+        }
+        
+        // Use WAV file directly with AssemblyAI
+        wavBuffer = audioBuffer;
+      }
+    } else {
+      // Legacy PCM file - detect actual sample rate and resample to 16kHz if needed
+      const detectedSampleRate = detectActualSampleRate(audioBuffer);
+      
+      if (detectedSampleRate !== 16000) {
+        console.warn(`⚠️ PCM audio detected as ${detectedSampleRate}Hz (expected 16kHz) for chunk ${chunkIndex} of ${email}`);
+        console.warn(`   Resampling to 16kHz...`);
       }
       
-      // Use WAV file directly with AssemblyAI
-      wavBuffer = audioBuffer;
-    } else {
-      // Legacy PCM file - resample to 16kHz if needed and convert to WAV
       const resampledAudio = await ensure16kHz(audioBuffer, email);
       
+      // CRITICAL: Verify resampled audio is actually 16kHz before creating WAV header
+      const verifiedSampleRate = detectActualSampleRate(resampledAudio);
+      if (verifiedSampleRate !== 16000) {
+        console.error(`❌ CRITICAL: Resampled audio is still ${verifiedSampleRate}Hz, not 16kHz!`);
+        console.error(`   This will cause incorrect WAV header metadata!`);
+        transcriptionLogger.error({
+          event: 'resampling_verification_failed',
+          callId: session.callId,
+          participantEmail: email,
+          chunkIndex,
+          detectedRate: verifiedSampleRate,
+          expectedRate: 16000,
+          message: 'CRITICAL: Resampled audio does not match expected 16kHz',
+        }, `Resampling verification failed: got ${verifiedSampleRate}Hz, expected 16kHz`);
+      }
+      
       // Convert PCM to WAV format for AssemblyAI (WAV is auto-detected, raw PCM is not)
-      wavBuffer = pcmToWav(resampledAudio, 16000);
+      // Use verified sample rate (should be 16000)
+      wavBuffer = pcmToWav(resampledAudio, verifiedSampleRate);
+      
+      // Double-check the WAV header we just created
+      const createdHeaderRate = wavBuffer.readUInt32LE(24);
+      if (createdHeaderRate !== verifiedSampleRate) {
+        console.error(`❌ CRITICAL: Created WAV header has wrong sample rate!`);
+        console.error(`   Expected: ${verifiedSampleRate}Hz, Got: ${createdHeaderRate}Hz`);
+        // Fix it
+        wavBuffer.writeUInt32LE(verifiedSampleRate, 24);
+        const byteRate = verifiedSampleRate * 1 * 2;
+        wavBuffer.writeUInt32LE(byteRate, 28);
+      }
     }
     
     // Upload to AssemblyAI and submit transcription job
@@ -874,6 +986,106 @@ async function pollTranscriptionStatus(
         console.log(`Full Transcription:`);
         console.log(transcriptText);
         console.log(`${'='.repeat(80)}\n`);
+        
+        // Check if there's a pending summary for this call and if all transcriptions are now complete
+        const pendingSummary = pendingSummaries.get(session.callId);
+        if (pendingSummary) {
+          // Reload session from DB to ensure we have the latest state (in case call ended and session was removed from activeSessions)
+          let sessionToCheck = session;
+          if (session.orgSlug && !activeSessions.has(session.callId)) {
+            // Session not in activeSessions (call may have ended), try to reload from DB
+            const dbSession = await loadSessionFromDB(session.callId, session.orgSlug);
+            if (dbSession) {
+              // Merge latest state from DB
+              for (const [email, dbChunkMap] of dbSession.chunkTranscripts.entries()) {
+                if (!sessionToCheck.chunkTranscripts.has(email)) {
+                  sessionToCheck.chunkTranscripts.set(email, new Map());
+                }
+                const memChunkMap = sessionToCheck.chunkTranscripts.get(email)!;
+                for (const [chunkIdx, transcript] of dbChunkMap.entries()) {
+                  if (!memChunkMap.has(chunkIdx)) {
+                    memChunkMap.set(chunkIdx, transcript);
+                  }
+                }
+              }
+              // Merge status maps
+              for (const [email, dbStatusMap] of dbSession.chunkTranscriptionStatus.entries()) {
+                if (!sessionToCheck.chunkTranscriptionStatus.has(email)) {
+                  sessionToCheck.chunkTranscriptionStatus.set(email, new Map());
+                }
+                const memStatusMap = sessionToCheck.chunkTranscriptionStatus.get(email)!;
+                for (const [chunkIdx, status] of dbStatusMap.entries()) {
+                  if (!memStatusMap.has(chunkIdx)) {
+                    memStatusMap.set(chunkIdx, status);
+                  }
+                }
+              }
+            }
+          }
+          
+          const allComplete = areAllChunksTranscribed(sessionToCheck);
+          if (allComplete.allComplete) {
+            // Final verification: ensure we have the absolute latest state before triggering summary
+            // Reload from DB one more time to be absolutely certain
+            let finalSessionCheck = sessionToCheck;
+            if (session.orgSlug) {
+              const latestDbSession = await loadSessionFromDB(session.callId, session.orgSlug);
+              if (latestDbSession) {
+                // Merge latest DB state into our check session
+                for (const [email, dbChunkMap] of latestDbSession.chunkTranscripts.entries()) {
+                  if (!finalSessionCheck.chunkTranscripts.has(email)) {
+                    finalSessionCheck.chunkTranscripts.set(email, new Map());
+                  }
+                  const memChunkMap = finalSessionCheck.chunkTranscripts.get(email)!;
+                  for (const [chunkIdx, transcript] of dbChunkMap.entries()) {
+                    memChunkMap.set(chunkIdx, transcript);
+                  }
+                }
+                for (const [email, dbStatusMap] of latestDbSession.chunkTranscriptionStatus.entries()) {
+                  if (!finalSessionCheck.chunkTranscriptionStatus.has(email)) {
+                    finalSessionCheck.chunkTranscriptionStatus.set(email, new Map());
+                  }
+                  const memStatusMap = finalSessionCheck.chunkTranscriptionStatus.get(email)!;
+                  for (const [chunkIdx, status] of dbStatusMap.entries()) {
+                    memStatusMap.set(chunkIdx, status);
+                  }
+                }
+                // Also merge final chunks received status
+                for (const email of latestDbSession.finalChunksReceived) {
+                  finalSessionCheck.finalChunksReceived.add(email);
+                }
+              }
+            }
+            
+            // Final verification check with latest state
+            const finalVerification = areAllChunksTranscribed(finalSessionCheck);
+            
+            // Also verify that all participants have received their final chunks
+            const allParticipants = Array.from(finalSessionCheck.participants.keys());
+            const missingFinalChunks = allParticipants.filter(email => !finalSessionCheck.finalChunksReceived.has(email));
+            
+            if (finalVerification.allComplete && missingFinalChunks.length === 0) {
+              console.log(`✅ All transcriptions now complete for call ${session.callId} (final verification passed). Triggering pending summary.`);
+              // Remove from pending map
+              pendingSummaries.delete(session.callId);
+              // Trigger summary generation - only after absolute confirmation that all transcriptions are complete
+              // Errors are handled internally and logged at appropriate levels
+              generateMeetingDocSummary(pendingSummary.docId, pendingSummary.ownerEmail, pendingSummary.orgSlug)
+                .catch((error) => {
+                  // Additional catch is redundant but ensures no unhandled rejections
+                  // Error is already logged in generateMeetingDocSummary
+                });
+            } else {
+              if (!finalVerification.allComplete) {
+                console.log(`⏳ Final verification shows incomplete transcriptions for call ${session.callId}. Will retry on next completion.`);
+                console.log(`   Incomplete: ${finalVerification.incomplete.join(', ')}`);
+              }
+              if (missingFinalChunks.length > 0) {
+                console.log(`⏳ Final verification shows missing final chunks from: ${missingFinalChunks.join(', ')}. Will retry on next completion.`);
+              }
+            }
+          }
+        }
         
         return transcriptText;
       } else if (transcript.status === 'error') {
@@ -1309,8 +1521,22 @@ async function generateMeetingDocSummary(
       throw fetchError;
     }
   } catch (error: any) {
-    // Log error but don't fail the entire process
-    console.error(`❌ Error generating meeting doc summary for doc ${docId}:`, error.message);
+    // Log error at warning level since this is a background operation that doesn't affect the user
+    // The summary can be regenerated later if needed
+    const errorMessage = error.message || String(error);
+    const isNetworkError = errorMessage.includes('fetch failed') || 
+                          errorMessage.includes('ECONNREFUSED') ||
+                          errorMessage.includes('ENOTFOUND') ||
+                          errorMessage.includes('timeout');
+    
+    if (isNetworkError) {
+      // Network errors are expected in some environments - log at debug level
+      console.log(`ℹ️  Summary generation deferred for doc ${docId} (network issue: ${errorMessage}). Will retry on next access.`);
+    } else {
+      // Other errors (auth, API errors) - log at warning level
+      console.warn(`⚠️  Summary generation failed for doc ${docId}: ${errorMessage}`);
+    }
+    // Don't throw - this is a background operation that shouldn't affect call ending
   }
 }
 
@@ -1464,6 +1690,8 @@ async function handleCallEnded(message: any): Promise<void> {
 
   // First, check if all chunks are already transcribed - if so, proceed immediately
   const initialCheck = areAllChunksTranscribed(session);
+  let allTranscriptionsComplete = initialCheck.allComplete;
+  
   if (initialCheck.allComplete) {
     console.log(`✅ All chunks are already transcribed! Proceeding immediately to merge and create doc.`);
   } else {
@@ -1497,6 +1725,7 @@ async function handleCallEnded(message: any): Promise<void> {
       if (checkResult.allComplete) {
         const elapsed = Math.floor((Date.now() - startWaitTime) / 1000);
         console.log(`✅ All chunk transcriptions completed after ${elapsed}s`);
+        allTranscriptionsComplete = true;
         break;
       }
       
@@ -1519,6 +1748,10 @@ async function handleCallEnded(message: any): Promise<void> {
     if (!finalCheck.allComplete) {
       console.warn(`⚠️ Timeout: Some chunks not transcribed after ${MAX_WAIT_TIME_MS / 1000}s. Proceeding with available chunks.`);
       console.warn(`   Incomplete: ${finalCheck.incomplete.join(', ')}`);
+      allTranscriptionsComplete = false;
+    } else {
+      // Double-check: if final check shows complete, update flag
+      allTranscriptionsComplete = true;
     }
   }
   
@@ -1709,17 +1942,48 @@ async function handleCallEnded(message: any): Promise<void> {
           console.log(`✅ Created shared meeting doc (docId: ${docId}) visible to ${visibleToMembers.length} participant(s): ${visibleToMembers.join(', ')}`);
           
           // Generate meeting doc summary asynchronously (only once for the shared doc)
-          if (finalOrgSlug && formattedTranscript && formattedTranscript.trim().length > 0) {
-            console.log(`📊 Triggering summary generation for shared doc ${docId} (orgSlug: ${finalOrgSlug})`);
-            try {
-              // Call summary API in background (fire and forget)
-              generateMeetingDocSummary(docId, ownerEmail, finalOrgSlug)
-                .catch((error) => {
-                  console.error(`❌ Background summary generation failed for doc ${docId}:`, error);
-                });
-            } catch (orgError: any) {
-              console.warn(`⚠️ Could not get org slug for summary generation:`, orgError.message);
+          // IMPORTANT: Only generate summary if ALL transcriptions are complete
+          if (finalOrgSlug && formattedTranscript && formattedTranscript.trim().length > 0 && allTranscriptionsComplete) {
+            // Final verification: double-check that all transcriptions are actually complete
+            // This ensures we never trigger summary generation before all transcriptions finish
+            const finalVerification = areAllChunksTranscribed(session);
+            if (!finalVerification.allComplete) {
+              console.warn(`⚠️ Final verification failed: Not all transcriptions are complete. Deferring summary generation.`);
+              console.warn(`   Incomplete: ${finalVerification.incomplete.join(', ')}`);
+              // Store pending summary info so we can trigger it when all transcriptions complete
+              pendingSummaries.set(callId, {
+                docId,
+                ownerEmail,
+                orgSlug: finalOrgSlug,
+                callId
+              });
+              console.log(`📝 Registered pending summary for call ${callId} (docId: ${docId})`);
+            } else {
+              console.log(`📊 All transcriptions complete (verified). Triggering summary generation for shared doc ${docId} (orgSlug: ${finalOrgSlug})`);
+              try {
+                // Call summary API in background (fire and forget)
+                // Errors are handled internally and logged at appropriate levels
+                // This will only execute after ALL transcriptions are confirmed complete
+                generateMeetingDocSummary(docId, ownerEmail, finalOrgSlug)
+                  .catch((error) => {
+                    // Additional catch is redundant but ensures no unhandled rejections
+                    // Error is already logged in generateMeetingDocSummary
+                  });
+              } catch (orgError: any) {
+                console.warn(`⚠️ Could not get org slug for summary generation:`, orgError.message);
+              }
             }
+          } else if (finalOrgSlug && formattedTranscript && formattedTranscript.trim().length > 0 && !allTranscriptionsComplete) {
+            console.warn(`⚠️ Skipping summary generation: Not all transcriptions are complete yet. Summary will be generated once all transcriptions finish.`);
+            console.warn(`   Doc ${docId} created but summary deferred until all chunks are transcribed.`);
+            // Store pending summary info so we can trigger it when all transcriptions complete
+            pendingSummaries.set(callId, {
+              docId,
+              ownerEmail,
+              orgSlug: finalOrgSlug,
+              callId
+            });
+            console.log(`📝 Registered pending summary for call ${callId} (docId: ${docId})`);
           }
         } catch (docError: any) {
           console.error(`❌ Error creating shared doc:`, docError);

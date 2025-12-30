@@ -15,35 +15,27 @@ import { analyzeAudio, isDebugModeEnabled } from '../utils/audio-debug.js';
  * Audio Processing Configuration
  * Following industry best practices for voice recording/transcription:
  * - DC offset removal: DISABLED (high-pass filter removes DC naturally)
- * - AGC: DISABLED by default for recording (preserves original dynamics, prevents pumping artifacts)
  * - Normalization: DISABLED (preserves original levels)
  * - Soft limiter: DISABLED for recording (preserves dynamics, only for playback)
  * - High-pass filter: Optional (can be enabled via env var, stateful implementation)
  * - Dithering: DISABLED (not needed for 16-bit voice, causes artifacts)
  */
 const AUDIO_PROCESSING_CONFIG = {
-  // DC offset removal - DISABLED (high-pass filter removes DC naturally)
-  // Per-chunk DC removal causes discontinuities - use high-pass filter instead
-  removeDCOffset: false,
-  
-  // AGC - DISABLED by default for recording (causes distortion if enabled)
-  // Enable only for real-time playback, not for archival/transcription
-  enableAGC: process.env.ENABLE_AGC === 'true', // Default: false
-  agcTargetRMS: parseFloat(process.env.AGC_TARGET_RMS || '-24'), // More conservative if enabled (-24dB)
-  
   // Normalization - DISABLED for recording (preserves original dynamics)
   enableNormalization: false,
   
-  // Soft limiting - ENABLED to prevent clipping from resampler amplification
-  // Resamplers can slightly amplify signals, causing clipping even with moderate input
-  // Soft limiter prevents clipping while preserving dynamics (tanh-based compression)
-  enableSoftLimiter: true, // ENABLED to prevent clipping from resampler amplification
-  limiterThreshold: 0.8, // Lower threshold to prevent clipping from loud input
+  // Soft limiting - ENABLED with conservative threshold to prevent clipping
+  // Clipping degrades transcription quality more than gentle limiting
+  // Using higher threshold (0.95) to only limit extreme peaks, preserving dynamics
+  enableSoftLimiter: true, // ENABLED to prevent clipping that degrades transcription
+  limiterThreshold: 0.95, // Higher threshold - only limits extreme peaks, preserves most dynamics
   
-  // High-pass filter - Enabled by default, for noise reduction (stateful implementation)
-  // Removes DC offset naturally, so separate DC removal not needed
+  // High-pass filter - Very relaxed cutoff for voice (100Hz instead of 20Hz or 80Hz)
+  // Higher cutoff (100Hz) removes more low-frequency noise while preserving voice fundamentals
+  // Voice fundamentals are typically 85-300Hz for men, 165-500Hz for women
+  // 100Hz cutoff removes rumble and DC while preserving voice quality
   enableHighPassFilter: process.env.ENABLE_HIGH_PASS_FILTER !== 'false', // Default: true
-  highPassCutoff: parseInt(process.env.HIGH_PASS_CUTOFF || '80', 10), // Hz
+  highPassCutoff: parseInt(process.env.HIGH_PASS_CUTOFF || '100', 10), // 100Hz (removes DC and rumble, preserves voice)
 };
 
 /**
@@ -94,6 +86,8 @@ let resamplingStats = {
   totalChunks: 0,
   totalInputBytes: 0,
   totalOutputBytes: 0,
+  totalInputSamples: 0,  // Cumulative input samples for drift tracking
+  totalOutputSamples: 0, // Cumulative output samples for drift tracking
   lastLogTime: Date.now()
 };
 
@@ -226,12 +220,88 @@ export function clearAllResamplerState(): void {
 }
 
 /**
+ * Flush resampler to get any remaining buffered samples
+ * CRITICAL: Must be called at the end of a stream to prevent sample loss
+ * libsamplerate's full() method buffers samples internally, and these must be flushed
+ * 
+ * @param sessionKey - Session identifier
+ * @returns Buffer containing any remaining samples, or null if none
+ */
+export async function flushResampler(sessionKey: string): Promise<Buffer | null> {
+  const resampler = resamplerInstances.get(sessionKey);
+  if (!resampler) {
+    return null;
+  }
+  
+  // Check if resampler has an end() method to flush remaining samples
+  // Some implementations use end(), others might use flush() or drain()
+  let remainingSamples: Float32Array | null = null;
+  
+  if (typeof resampler.end === 'function') {
+    try {
+      remainingSamples = resampler.end();
+    } catch (error: any) {
+      audioLogger.warn({
+        event: 'resampler_flush_failed',
+        sessionKey,
+        error: error.message,
+      }, `⚠️ Failed to flush resampler (end()): ${error.message}`);
+    }
+  } else if (typeof resampler.flush === 'function') {
+    try {
+      remainingSamples = resampler.flush();
+    } catch (error: any) {
+      audioLogger.warn({
+        event: 'resampler_flush_failed',
+        sessionKey,
+        error: error.message,
+      }, `⚠️ Failed to flush resampler (flush()): ${error.message}`);
+    }
+  }
+  
+  if (remainingSamples && remainingSamples.length > 0) {
+    // Convert Float32Array to PCM16 Buffer
+    const outputBuffer = Buffer.alloc(remainingSamples.length * 2);
+    for (let i = 0; i < remainingSamples.length; i++) {
+      const floatValue = Math.max(-1.0, Math.min(1.0, remainingSamples[i]));
+      const intValue = Math.round(floatValue * 32767);
+      outputBuffer.writeInt16LE(intValue, i * 2);
+    }
+    
+    audioLogger.info({
+      event: 'resampler_flushed',
+      sessionKey,
+      remainingSamples: remainingSamples.length,
+      remainingBytes: outputBuffer.length,
+    }, `🔄 Flushed ${remainingSamples.length} remaining samples (${outputBuffer.length} bytes) from resampler`);
+    
+    return outputBuffer;
+  }
+  
+  return null;
+}
+
+/**
  * Clean up resampler and filter state for a session when it ends
  * Prevents memory leaks by removing unused resamplers and filter states
+ * CRITICAL: Flushes resampler before cleanup to prevent sample loss
  * 
  * @param sessionKey - Session identifier to clean up
  */
-export function cleanupResamplerForSession(sessionKey: string): void {
+export async function cleanupResamplerForSession(sessionKey: string): Promise<void> {
+  // CRITICAL: Flush resampler before cleanup to get any remaining buffered samples
+  const flushedSamples = await flushResampler(sessionKey);
+  if (flushedSamples) {
+    audioLogger.warn({
+      event: 'resampler_had_remaining_samples',
+      sessionKey,
+      remainingSamples: flushedSamples.length / 2,
+      message: 'Resampler had remaining samples at cleanup - may indicate timing issue or missing flush call',
+    }, `⚠️ Resampler had ${flushedSamples.length / 2} remaining samples at cleanup - these samples were lost`);
+    // TODO: In the future, these flushed samples could be appended to the final chunk
+    // For now, we log a warning to detect the issue
+  }
+  
   if (resamplerInstances.has(sessionKey)) {
     const resampler = resamplerInstances.get(sessionKey);
     // Reset resampler state before cleanup
@@ -272,14 +342,7 @@ export function cleanupResamplerForSession(sessionKey: string): void {
 
 // Log audio processing configuration at startup
 console.log('🎙️ Audio Processing Configuration:');
-const dcOffsetStatus = AUDIO_PROCESSING_CONFIG.enableHighPassFilter 
-  ? '✅ Enabled (via high-pass filter)' 
-  : (AUDIO_PROCESSING_CONFIG.removeDCOffset ? '⚠️ Enabled (per-chunk)' : '❌ Disabled');
-console.log(`   DC Offset Removal: ${dcOffsetStatus} (high-pass filter removes DC naturally, per-chunk removal causes discontinuities)`);
-console.log(`   AGC: ${AUDIO_PROCESSING_CONFIG.enableAGC ? '⚠️ Enabled' : '✅ Disabled'} (disabled by default for recording - preserves dynamics)`);
-if (AUDIO_PROCESSING_CONFIG.enableAGC) {
-  console.log(`   AGC Target RMS: ${AUDIO_PROCESSING_CONFIG.agcTargetRMS}dB`);
-}
+console.log(`   DC Offset Removal: ${AUDIO_PROCESSING_CONFIG.enableHighPassFilter ? '✅ Enabled (via high-pass filter)' : '❌ Disabled'} (high-pass filter removes DC naturally)`);
 console.log(`   Soft Limiter: ${AUDIO_PROCESSING_CONFIG.enableSoftLimiter ? '⚠️ Enabled' : '❌ Disabled'} (disabled for recording - preserves dynamics, only for playback)`);
 console.log(`   High-Pass Filter: ${AUDIO_PROCESSING_CONFIG.enableHighPassFilter ? '✅ Enabled' : '❌ Disabled'} (stateful - removes DC naturally)`);
 if (AUDIO_PROCESSING_CONFIG.enableHighPassFilter) {
@@ -668,11 +731,12 @@ export async function resample48kHzTo16kHz(
     // Step 1: Convert Int16 to Float32 (normalize to -1.0 to 1.0)
     // Use standard 32768.0 normalization (industry standard, avoids asymmetry)
     // This maps -32768 → -1.0 (exact), 0 → 0.0, 32767 → ~0.99997
-    // CRITICAL: Apply input gain reduction (0.5x = ~6dB) to prevent clipping
+    // CRITICAL: Apply input gain reduction to prevent clipping
     // Input audio from LiveKit can be very loud (peaks of 30721-32512)
     // Resamplers can slightly amplify signals, causing clipping even with moderate input
-    // Very aggressive gain reduction needed to bring loud input to reasonable levels
-    const INPUT_GAIN = 0.5; // ~6dB reduction, prevents clipping from very loud input
+    // Less aggressive gain reduction (0.8x = ~2dB) to preserve voice dynamics
+    // Soft limiter is disabled, so we rely on gain reduction for clipping prevention
+    const INPUT_GAIN = 0.8; // ~2dB reduction, less aggressive to preserve voice quality
     let inputFloat = new Float32Array(inputSamples);
     for (let i = 0; i < inputSamples; i++) {
       // Normalize: -32768 → -1.0, 0 → 0.0, 32767 → ~0.99997
@@ -695,41 +759,6 @@ export async function resample48kHzTo16kHz(
       const filterStateAfter = filterStates.get(sessionKey || 'default');
       fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:608',message:'After high-pass filter',data:{sessionKey:sessionKey||'default',hasState:!!filterStateAfter,prevInput:filterStateAfter?.prevInput||0,prevOutput:filterStateAfter?.prevOutput||0,outputSamples:inputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
       // #endregion
-    }
-    
-    // Step 1.1.5: DC offset removal (only if high-pass filter is disabled)
-    // INDUSTRY BEST PRACTICE: Per-chunk DC removal causes discontinuities
-    // High-pass filter removes DC naturally, so this is only needed if HPF is disabled
-    // However, per-chunk removal causes artifacts, so it's better to use high-pass filter
-    if (AUDIO_PROCESSING_CONFIG.removeDCOffset && !AUDIO_PROCESSING_CONFIG.enableHighPassFilter) {
-      const dcOffsetBefore = inputFloat.reduce((sum, val) => sum + val, 0) / inputFloat.length;
-      inputFloat = removeDCOffset(inputFloat);
-      const dcOffsetAfter = inputFloat.reduce((sum, val) => sum + val, 0) / inputFloat.length;
-      
-      // Log DC offset removal (always log first chunk, then only if significant offset detected)
-      if (resamplingStats.totalChunks === 0 || Math.abs(dcOffsetBefore) > 0.001) {
-        const logLevel = resamplingStats.totalChunks === 0 ? 'info' : 'debug';
-        audioLogger[logLevel]({
-          event: 'dc_offset_removed',
-          dcOffsetBefore: dcOffsetBefore.toFixed(6),
-          dcOffsetAfter: dcOffsetAfter.toFixed(6),
-          samples: inputSamples,
-          chunkNumber: resamplingStats.totalChunks + 1,
-          note: 'Consider using high-pass filter instead to avoid per-chunk discontinuities',
-        }, `DC offset removed (chunk ${resamplingStats.totalChunks + 1}): ${dcOffsetBefore.toFixed(6)} -> ${dcOffsetAfter.toFixed(6)}`);
-      }
-    }
-    
-    // Step 1.3: AGC - DISABLED by default for recording (preserves original dynamics)
-    // Industry best practice: AGC causes pumping artifacts and distortion when applied per-chunk
-    // Enable only for real-time playback, not for archival/transcription recordings
-    if (AUDIO_PROCESSING_CONFIG.enableAGC) {
-      audioLogger.debug({
-        event: 'agc_enabled',
-        targetRMS: AUDIO_PROCESSING_CONFIG.agcTargetRMS,
-        note: 'AGC is enabled - this may cause distortion for recording',
-      }, `⚠️ AGC enabled (target RMS: ${AUDIO_PROCESSING_CONFIG.agcTargetRMS}dB) - not recommended for recording`);
-      inputFloat = applyAutomaticGainControl(inputFloat, AUDIO_PROCESSING_CONFIG.agcTargetRMS);
     }
     
     // Step 2: Get resampler for this session (or create if needed)
@@ -956,24 +985,57 @@ export async function resample48kHzTo16kHz(
       }, `WARNING: First ${checkSamples} samples are all zeros`);
     }
     
-    // CRITICAL: Verify resampling ratio (should be ~0.333 for 48kHz -> 16kHz)
+    // CRITICAL: Verify resampling ratio (should be ~0.333333 for 48kHz -> 16kHz)
     const actualRatio = outputSamples / inputSamples;
-    const expectedRatio = 16000 / 48000; // Should be exactly 1/3 = 0.333...
+    const expectedRatio = 16000 / 48000; // Should be exactly 1/3 = 0.333333...
     const ratioDiff = Math.abs(actualRatio - expectedRatio);
+    const ratioDiffPercent = (ratioDiff / expectedRatio) * 100;
     
     // Also verify output size is approximately 1/3 of input
     const expectedOutputSamples = Math.floor(inputSamples / 3);
     const sizeDiff = Math.abs(outputSamples - expectedOutputSamples);
     const sizeDiffPercent = (sizeDiff / expectedOutputSamples) * 100;
     
-    // Ratio check is more critical - catches incorrect resampling even if size is close
-    if (ratioDiff > 0.05) {
+    // Update cumulative stats for drift tracking
+    resamplingStats.totalChunks++;
+    resamplingStats.totalInputBytes += audioData.length;
+    resamplingStats.totalOutputBytes += outputBuffer.length;
+    resamplingStats.totalInputSamples += inputSamples;
+    resamplingStats.totalOutputSamples += outputSamples;
+    
+    // Calculate cumulative ratio and drift
+    const cumulativeRatio = resamplingStats.totalOutputSamples / resamplingStats.totalInputSamples;
+    const cumulativeRatioDiff = Math.abs(cumulativeRatio - expectedRatio);
+    const cumulativeDriftPercent = (cumulativeRatioDiff / expectedRatio) * 100;
+    
+    // Log per-chunk ratio for pattern detection (every chunk, not just periodically)
+    audioLogger.debug({
+      event: 'resampling_ratio_per_chunk',
+      sessionKey: sessionKey || 'default',
+      chunkNumber: resamplingStats.totalChunks,
+      inputSamples,
+      outputSamples,
+      actualRatio: actualRatio.toFixed(6),
+      expectedRatio: expectedRatio.toFixed(6),
+      ratioDiff: ratioDiff.toFixed(6),
+      ratioDiffPercent: ratioDiffPercent.toFixed(3),
+      cumulativeRatio: cumulativeRatio.toFixed(6),
+      cumulativeDriftPercent: cumulativeDriftPercent.toFixed(3),
+      message: 'Per-chunk resampling ratio and cumulative drift tracking',
+    }, `Chunk ${resamplingStats.totalChunks}: ratio=${actualRatio.toFixed(6)} (diff: ${ratioDiffPercent.toFixed(3)}%), cumulative=${cumulativeRatio.toFixed(6)} (drift: ${cumulativeDriftPercent.toFixed(3)}%)`);
+    
+    // BALANCED RATIO VALIDATION: 1% tolerance - catches real issues without rejecting valid resampling
+    // libsamplerate can produce slight variations (0.1-0.5%) due to internal buffering at chunk boundaries
+    // 1% tolerance catches real problems (like 48kHz audio mislabeled as 16kHz) without false positives
+    const RATIO_TOLERANCE_PERCENT = 1.0; // 1% tolerance - balanced between detection and false positives
+    if (ratioDiffPercent > RATIO_TOLERANCE_PERCENT) {
       const speedMultiplier = 1 / actualRatio;
       console.error(
         `❌ CRITICAL: Resampling ratio incorrect! ` +
-        `Expected ~${expectedRatio.toFixed(3)} (16kHz/48kHz), ` +
-        `got ${actualRatio.toFixed(3)}. ` +
-        `Audio will sound ${speedMultiplier.toFixed(1)}x wrong speed!`
+        `Expected ${expectedRatio.toFixed(6)} (16kHz/48kHz), ` +
+        `got ${actualRatio.toFixed(6)}. ` +
+        `Difference: ${ratioDiffPercent.toFixed(3)}% (tolerance: ${RATIO_TOLERANCE_PERCENT}%). ` +
+        `Audio will sound ${speedMultiplier.toFixed(3)}x wrong speed!`
       );
       console.error(`   Input: ${inputSamples} samples (${(inputSamples/48000).toFixed(3)}s at 48kHz)`);
       console.error(`   Output: ${outputSamples} samples (${(outputSamples/16000).toFixed(3)}s at 16kHz)`);
@@ -982,7 +1044,26 @@ export async function resample48kHzTo16kHz(
       
       // Throw error to prevent saving incorrectly resampled audio
       throw new Error(
-        `Resampling failed: ratio ${actualRatio.toFixed(3)} is too far from expected ${expectedRatio.toFixed(3)}`
+        `Resampling failed: ratio ${actualRatio.toFixed(6)} is too far from expected ${expectedRatio.toFixed(6)} (${ratioDiffPercent.toFixed(3)}% difference, tolerance: ${RATIO_TOLERANCE_PERCENT}%)`
+      );
+    }
+    
+    // Check cumulative drift (warn if > 0.5%, error if > 2%)
+    // libsamplerate can have slight variations that accumulate, so we use more lenient thresholds
+    if (cumulativeDriftPercent > 2.0) {
+      console.error(
+        `❌ CRITICAL: Cumulative resampling drift detected! ` +
+        `Cumulative ratio: ${cumulativeRatio.toFixed(6)} (expected ${expectedRatio.toFixed(6)}), ` +
+        `drift: ${cumulativeDriftPercent.toFixed(3)}%. ` +
+        `This indicates timing issues accumulating over time.`
+      );
+      throw new Error(
+        `Cumulative resampling drift too high: ${cumulativeDriftPercent.toFixed(3)}% (tolerance: 2.0%)`
+      );
+    } else if (cumulativeDriftPercent > 0.5) {
+      console.warn(
+        `⚠️ Cumulative resampling drift detected: ${cumulativeDriftPercent.toFixed(3)}% ` +
+        `(cumulative ratio: ${cumulativeRatio.toFixed(6)}, expected: ${expectedRatio.toFixed(6)})`
       );
     }
     
@@ -991,11 +1072,6 @@ export async function resample48kHzTo16kHz(
       console.warn(`⚠️ Resampling output size unexpected: input=${inputSamples} samples, output=${outputSamples} samples, expected~${expectedOutputSamples} samples (${sizeDiffPercent.toFixed(1)}% difference)`);
       // Don't throw for size mismatch alone if ratio is correct (ratio is more important)
     }
-    
-    // Enhanced quality metrics logging
-    resamplingStats.totalChunks++;
-    resamplingStats.totalInputBytes += audioData.length;
-    resamplingStats.totalOutputBytes += outputBuffer.length;
     
     // Calculate quality metrics
     const peakValue = Math.max(...Array.from(outputFloatLimited).map(Math.abs));
@@ -1013,10 +1089,11 @@ export async function resample48kHzTo16kHz(
       const ratioAccuracy = (1 - Math.abs(overallRatio - expectedOverallRatio) / expectedOverallRatio) * 100;
       
       console.log(`🔄 Resampling stats: ${resamplingStats.totalChunks} chunks, ${resamplingStats.totalInputBytes} bytes in → ${resamplingStats.totalOutputBytes} bytes out`);
-      console.log(`   Overall ratio: ${(overallRatio * 100).toFixed(1)}% (expected ${(expectedOverallRatio * 100).toFixed(1)}%, accuracy: ${ratioAccuracy.toFixed(1)}%)`);
+      console.log(`   Overall ratio (bytes): ${(overallRatio * 100).toFixed(1)}% (expected ${(expectedOverallRatio * 100).toFixed(1)}%, accuracy: ${ratioAccuracy.toFixed(1)}%)`);
+      console.log(`   Cumulative ratio (samples): ${(cumulativeRatio * 100).toFixed(3)}% (expected ${(expectedRatio * 100).toFixed(3)}%, drift: ${cumulativeDriftPercent.toFixed(3)}%)`);
       console.log(`🔍 Input audio: peak=${inputPeak.toFixed(4)}, RMS=${inputRMS.toFixed(4)}, samples=${inputSamples} (${(inputSamples/48000).toFixed(3)}s)`);
       console.log(`🔍 Output audio: peak=${peakValue.toFixed(4)}, RMS=${rmsValue.toFixed(4)}, samples=${outputSamples} (${(outputSamples/16000).toFixed(3)}s)${clippingDetected ? ' ⚠️ CLIPPING!' : ''}`);
-      console.log(`   Resampling ratio: ${actualRatio.toFixed(3)} (expected ${expectedRatio.toFixed(3)}, diff: ${(ratioDiff * 100).toFixed(2)}%)`);
+      console.log(`   Current chunk ratio: ${actualRatio.toFixed(6)} (expected ${expectedRatio.toFixed(6)}, diff: ${ratioDiffPercent.toFixed(3)}%)`);
       resamplingStats.lastLogTime = now;
     }
     
