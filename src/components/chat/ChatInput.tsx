@@ -150,19 +150,23 @@ export function ChatInput({
 
   return (
     <div className="border-t bg-background">
-      <ContextBadges
-        projects={selectedProjects}
-        tasks={selectedTasks}
-        teams={selectedTeams}
-        docs={selectedDocs}
-        onRemoveProject={onRemoveProject}
-        onRemoveTask={onRemoveTask}
-        onRemoveTeam={onRemoveTeam}
-        onRemoveDoc={onRemoveDoc}
-        variant="inline"
-      />
+      {(selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
+        <div className="px-4 pt-3 pb-2">
+          <ContextBadges
+            projects={selectedProjects}
+            tasks={selectedTasks}
+            teams={selectedTeams}
+            docs={selectedDocs}
+            onRemoveProject={onRemoveProject}
+            onRemoveTask={onRemoveTask}
+            onRemoveTeam={onRemoveTeam}
+            onRemoveDoc={onRemoveDoc}
+            variant="inline"
+          />
+        </div>
+      )}
       
-      <div className="p-4 relative">
+      <div className="px-4 py-3 relative">
         {/* Image Preview Section */}
         {imagePreviewUrls.length > 0 && (
           <div className="mb-3 flex gap-2 flex-wrap">
@@ -230,7 +234,7 @@ export function ChatInput({
           </div>
         )}
         
-        <div className="flex gap-2 relative">
+        <div className="flex items-center gap-2 bg-muted/50 rounded-lg border border-border/50 px-2 py-1.5 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
           <input
             type="file"
             ref={fileInputRef}
@@ -243,9 +247,10 @@ export function ChatInput({
             <PopoverTrigger asChild>
               <Button
                 type="button"
-                variant="outline"
+                variant="ghost"
                 size="icon"
                 disabled={isLoading || uploadingImages}
+                className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-background/50"
               >
                 <Smile className="h-4 w-4" />
               </Button>
@@ -263,9 +268,10 @@ export function ChatInput({
           <Button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            variant="outline"
+            variant="ghost"
             size="icon"
             disabled={isLoading || uploadingImages}
+            className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-background/50"
           >
             <ImageIcon className="h-4 w-4" />
           </Button>
@@ -278,12 +284,13 @@ export function ChatInput({
             onClick={handleInputClick}
             placeholder={placeholder}
             disabled={disabled || isLoading}
-            className="flex-1"
+            className="flex-1 h-8 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 px-2"
           />
           <Button
             onClick={handleSend}
             disabled={(!input.trim() && imagePreviewUrls.length === 0) || isLoading || uploadingImages}
             size="icon"
+            className="h-8 w-8 bg-primary hover:bg-primary/90 text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send className="h-4 w-4" />
           </Button>

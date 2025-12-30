@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X, Calendar } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X, Calendar, MessageSquare } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   Sidebar,
@@ -32,12 +32,14 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ContextBadges } from "@/components/ContextBadges";
 import { Badge } from "@/components/ui/badge";
 import { trackSidebarNavigation, trackOrgSwitch, trackAIChat, trackContextSelect } from "@/lib/analytics";
+import { useTeamChats } from "@/hooks/useTeamChats";
 
 const menuItems = [
   { title: "Calendar", url: "/calendar", icon: Calendar },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Docs", url: "/docs", icon: StickyNote },
+  { title: "Chats", url: "/chats", icon: MessageSquare },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
 ];
 
@@ -48,6 +50,7 @@ export function AppSidebar() {
   const { selectedTasks, toggleTask } = useSelectedTasks();
   const { selectedTeams, toggleTeam } = useSelectedTeams();
   const { selectedDocs, toggleDoc } = useSelectedDocs();
+  const { totalUnreadCount } = useTeamChats();
   
   // Close mobile sidebar when a navigation item is clicked
   const handleNavClick = (itemName?: string, url?: string) => {
@@ -201,6 +204,11 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
+                      {item.title === "Chats" && totalUnreadCount > 0 && (
+                        <Badge variant="destructive" className="ml-auto h-5 min-w-5 px-1.5 flex items-center justify-center text-xs">
+                          {totalUnreadCount > 9 ? '9+' : totalUnreadCount}
+                        </Badge>
+                      )}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
