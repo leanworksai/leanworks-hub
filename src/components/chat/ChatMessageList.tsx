@@ -26,6 +26,7 @@ export interface ChatMessageListProps {
   onDraftResponse?: (messageId: string) => void;
   isGeneratingDraft?: boolean;
   generatingDraftMessageId?: string | null;
+  hideContext?: boolean;
 }
 
 export interface ChatMessageListRef {
@@ -48,6 +49,7 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   onDraftResponse,
   isGeneratingDraft = false,
   generatingDraftMessageId = null,
+  hideContext = false,
 }, ref) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -115,6 +117,7 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
               onImageError={onImageError}
               onDraftResponse={onDraftResponse}
               isGeneratingDraft={isGeneratingDraft && generatingDraftMessageId === message.id}
+              hideContext={hideContext}
             />
           );
         })}

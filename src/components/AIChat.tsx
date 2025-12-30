@@ -10,7 +10,6 @@ import { messagesService, imageUploadService, type ChatMessage } from "@/service
 import { getAIAssistantChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
-import { ContextBadges } from "@/components/ContextBadges";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
@@ -653,6 +652,7 @@ export function AIChat() {
                 </div>
               }
               className="flex-1 min-h-0"
+              hideContext={true}
             />
           )}
           {isLoading && (
@@ -678,18 +678,7 @@ export function AIChat() {
 
       {/* Input Area */}
       <div className="bg-background flex-shrink-0">
-        <ContextBadges
-          projects={selectedProjects}
-          tasks={selectedTasks}
-          teams={selectedTeams}
-          docs={selectedDocs}
-          onRemoveProject={toggleProject}
-          onRemoveTask={toggleTask}
-          onRemoveTeam={toggleTeam}
-          onRemoveDoc={toggleDoc}
-          variant="inline"
-        />
-        <div className="mt-2">
+        <div>
           {imagePreviewUrls.length > 0 && (
             <div className="mb-2 flex gap-2 flex-wrap">
               {imagePreviewUrls.map((url, index) => (
@@ -734,6 +723,7 @@ export function AIChat() {
             onRemoveTeam={toggleTeam}
             onRemoveDoc={toggleDoc}
             placeholder="Ask lean anything..."
+            hideContext={true}
           />
         </div>
       </div>

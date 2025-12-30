@@ -48,6 +48,9 @@ export interface ChatInputProps {
   // Placeholder
   placeholder?: string;
   helpText?: string;
+  
+  // Hide context badges
+  hideContext?: boolean;
 }
 
 export function ChatInput({
@@ -77,6 +80,7 @@ export function ChatInput({
   onImageRemove,
   placeholder = "Type your message...",
   helpText,
+  hideContext = false,
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -150,7 +154,7 @@ export function ChatInput({
 
   return (
     <div className="border-t bg-background">
-      {(selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
+      {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
         <div className="px-4 pt-3 pb-2">
           <ContextBadges
             projects={selectedProjects}

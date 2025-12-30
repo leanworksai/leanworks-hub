@@ -252,6 +252,7 @@ export interface ChatMessageProps {
   showSenderInfo?: boolean;
   onDraftResponse?: (messageId: string) => void;
   isGeneratingDraft?: boolean;
+  hideContext?: boolean;
 }
 
 export function ChatMessage({
@@ -267,6 +268,7 @@ export function ChatMessage({
   showSenderInfo = true,
   onDraftResponse,
   isGeneratingDraft = false,
+  hideContext = false,
 }: ChatMessageProps) {
   const timestamp = message.timestamp instanceof Date 
     ? message.timestamp 
@@ -358,7 +360,7 @@ export function ChatMessage({
           style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
         >
           {/* Cited context */}
-          {message.citedContext && (
+          {!hideContext && message.citedContext && (
             <CitedContextBadges 
               citedContext={message.citedContext}
               className="mb-2 pb-2 border-b border-border/50 w-full min-w-0"

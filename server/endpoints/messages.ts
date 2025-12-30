@@ -5,6 +5,7 @@
  */
 
 import express from 'express';
+import { FieldValue } from 'firebase-admin/firestore';
 import { userQueries } from '../../database/queries.js';
 import { getOrgPool, getOrgSlugById, getSharedPool } from '../../database/multi-tenant-pool.js';
 
@@ -689,7 +690,7 @@ export function setupMessageEndpoints(
         userId: userEmail,
         chatId: chatId,
         lastReadTimestamp: now,
-        updatedAt: db.FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
 
       res.json({ success: true, lastReadTimestamp: now });
