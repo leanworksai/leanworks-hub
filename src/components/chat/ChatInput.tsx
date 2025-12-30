@@ -51,6 +51,9 @@ export interface ChatInputProps {
   
   // Hide context badges
   hideContext?: boolean;
+  
+  // Theme variant
+  theme?: "default" | "purple";
 }
 
 export function ChatInput({
@@ -81,6 +84,7 @@ export function ChatInput({
   placeholder = "Type your message...",
   helpText,
   hideContext = false,
+  theme = "default",
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -153,7 +157,10 @@ export function ChatInput({
   }, [showMentions, onMentionDetect, input]);
 
   return (
-    <div className="border-t bg-background">
+    <div className={cn(
+      "border-t",
+      theme === "purple" ? "bg-purple-50 border-purple-200" : "bg-background"
+    )}>
       {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
         <div className="px-4 pt-3 pb-2">
           <ContextBadges
@@ -238,7 +245,12 @@ export function ChatInput({
           </div>
         )}
         
-        <div className="flex items-center gap-2 bg-muted/50 rounded-lg border border-border/50 px-2 py-1.5 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+        <div className={cn(
+          "flex items-center gap-2 rounded-lg px-2 py-1.5 transition-all",
+          theme === "purple" 
+            ? "bg-purple-100 border border-purple-300 focus-within:border-purple-400 focus-within:ring-1 focus-within:ring-purple-300/30"
+            : "bg-muted/50 border border-border/50 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20"
+        )}>
           <input
             type="file"
             ref={fileInputRef}

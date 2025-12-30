@@ -39,7 +39,7 @@ const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Docs", url: "/docs", icon: StickyNote },
-  { title: "Chats", url: "/chats", icon: MessageSquare },
+  { title: "Team Chats", url: "/chats", icon: MessageSquare },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
 ];
 
@@ -204,7 +204,7 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
-                      {item.title === "Chats" && totalUnreadCount > 0 && (
+                      {item.title === "Team Chats" && totalUnreadCount > 0 && (
                         <Badge variant="destructive" className="ml-auto h-5 min-w-5 px-1.5 flex items-center justify-center text-xs">
                           {totalUnreadCount > 9 ? '9+' : totalUnreadCount}
                         </Badge>

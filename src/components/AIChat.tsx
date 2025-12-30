@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { X, Bot } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -577,13 +576,28 @@ export function AIChat() {
         trackAIChat('close', { source: 'header_button' });
       }
     };
+
+    const handleOpenChat = () => {
+      if (isFreePlan) {
+        toast({
+          title: "Feature unavailable",
+          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
+          variant: "default",
+        });
+        return;
+      }
+      setIsOpen(true);
+      // Tracking is already done in the sidebar component
+    };
     
     window.addEventListener('openAIChat', handleToggleChat as EventListener);
     window.addEventListener('toggleChat', handleToggleChat as EventListener); // Keep for backward compatibility
+    window.addEventListener('openChatWithAI', handleOpenChat as EventListener);
     
     return () => {
       window.removeEventListener('openAIChat', handleToggleChat as EventListener);
       window.removeEventListener('toggleChat', handleToggleChat as EventListener);
+      window.removeEventListener('openChatWithAI', handleOpenChat as EventListener);
     };
   }, [isOpen, isFreePlan, toast]);
 
@@ -592,43 +606,16 @@ export function AIChat() {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed right-0 top-16 h-[calc(100vh-4rem)] w-full sm:w-96 border-l bg-background z-30 flex flex-col shadow-lg overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b bg-primary/5 flex-shrink-0">
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <Avatar className="h-8 w-8 flex-shrink-0">
-            <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-            <AvatarFallback className="bg-primary text-primary-foreground">
-              L
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex flex-col min-w-0">
-            <h3 className="font-semibold text-sm truncate">lean</h3>
-            <p className="text-xs text-muted-foreground truncate">AI Assistant</p>
-          </div>
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => {
-            setIsOpen(false);
-            trackAIChat('close', { source: 'close_button' });
-          }}
-          className="h-8 w-8"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-      </div>
-
+    <div className="fixed right-0 top-16 h-[calc(100vh-4rem)] w-full sm:w-96 border-l border-purple-200 bg-purple-50 z-30 flex flex-col shadow-lg overflow-hidden">
       {/* Messages */}
-      <ScrollArea className="flex-1 min-h-0 overflow-hidden">
+      <ScrollArea className="flex-1 min-h-0 overflow-hidden bg-purple-50">
         <div className="p-4 space-y-4">
           {isLoadingMessages && (
             <div className="flex items-center justify-center py-8">
               <div className="flex gap-1">
-                <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
               </div>
             </div>
           )}
@@ -644,9 +631,9 @@ export function AIChat() {
               getUserDisplayInfo={getMessageDisplayInfo}
               emptyState={
                 <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                  <Bot className="h-12 w-12 text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-semibold mb-2">Chat with lean</h3>
-                  <p className="text-sm text-muted-foreground max-w-sm">
+                  <Bot className="h-12 w-12 text-purple-500 mb-4" />
+                  <h3 className="text-lg font-semibold mb-2 text-purple-900">Chat with lean</h3>
+                  <p className="text-sm text-purple-700/70 max-w-sm">
                     Ask me anything about your projects, tasks, or team. I'm here to help!
                   </p>
                 </div>
@@ -659,15 +646,15 @@ export function AIChat() {
             <div className="flex gap-3 justify-start">
               <Avatar className="h-8 w-8 flex-shrink-0">
                 <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-                <AvatarFallback className="bg-primary text-primary-foreground">
+                <AvatarFallback className="bg-purple-500 text-white">
                   L
                 </AvatarFallback>
               </Avatar>
-              <div className="bg-muted rounded-lg px-4 py-2">
+              <div className="bg-purple-100 border border-purple-200 rounded-lg px-4 py-2">
                 <div className="flex gap-1">
-                  <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <div className="h-2 w-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
                 </div>
               </div>
             </div>
@@ -677,7 +664,7 @@ export function AIChat() {
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="bg-background flex-shrink-0">
+      <div className="bg-purple-50 border-t border-purple-200 flex-shrink-0">
         <div>
           {imagePreviewUrls.length > 0 && (
             <div className="mb-2 flex gap-2 flex-wrap">
@@ -724,6 +711,7 @@ export function AIChat() {
             onRemoveDoc={toggleDoc}
             placeholder="Ask lean anything..."
             hideContext={true}
+            theme="purple"
           />
         </div>
       </div>
