@@ -17,15 +17,23 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Byte order configuration
-// Options: 'little-endian' | 'big-endian' | 'auto'
-// Default: 'little-endian' (LiveKit egress sends PCM16 in little-endian format)
-// 
-// LiveKit Format Documentation:
-// - LiveKit egress sends raw PCM16 audio at 48kHz
-// - PCM16 format uses little-endian byte order (standard)
-// - Opus codec (used by LiveKit) also uses little-endian
-// - Detection is disabled by default to prevent false positives
-const AUDIO_BYTE_ORDER = (process.env.AUDIO_BYTE_ORDER as 'little-endian' | 'big-endian' | 'auto') || 'little-endian';
+// LiveKit always sends PCM16 audio in little-endian format (per documentation)
+// Big-endian support has been removed
+// Helper function to normalize byte order value from environment variable
+// Only supports little-endian (or small-endian as alias)
+function normalizeByteOrder(value: string | undefined): 'little-endian' {
+  if (!value) return 'little-endian';
+  const normalized = value.toLowerCase().trim();
+  // Support 'small-endian' as alias for 'little-endian' (small = little)
+  if (normalized === 'small-endian' || normalized === 'little-endian') {
+    return 'little-endian';
+  }
+  // Default to little-endian if unknown value
+  console.warn(`⚠️ Unknown AUDIO_BYTE_ORDER value: "${value}", defaulting to 'little-endian'`);
+  return 'little-endian';
+}
+
+export const AUDIO_BYTE_ORDER = normalizeByteOrder(process.env.AUDIO_BYTE_ORDER);
 
 // Initialize clients (lazy initialization)
 let storageClient: Storage | null = null;
@@ -69,10 +77,19 @@ interface StreamingSession {
   // CRITICAL: Write queue to ensure sequential writes
   writeQueue: Array<{ data: Buffer; resolve: () => void; reject: (error: Error) => void }>;
   writing: boolean; // Whether a write is currently in progress
-  needsByteSwap: boolean | null; // null = not determined yet, true = swap BE to LE, false = no swap needed
   // State machine for rotation coordination
   state: 'idle' | 'writing' | 'rotating' | 'closing'; // Track current operation state
   rotationLock?: Promise<void>; // Track in-progress rotation to prevent concurrent rotations
+  // Metrics tracking
+  firstChunkWallTime: number; // Wall clock time of first chunk
+  totalSamplesWritten: number; // For drift detection
+  metrics: {
+    inputBytesPerSecond: number;
+    queueDepth: number;
+    droppedFrames: number;
+    headerPatchFailures: number;
+    rotationDurations: number[];
+  };
 }
 
 const streamingSessions = new Map<string, StreamingSession>();
@@ -162,6 +179,8 @@ async function getOrCreateOriginalAudioSession(
     timeout: 600000, // 10 minutes
     metadata: {
       contentType: 'audio/wav',
+      // INDUSTRY BEST PRACTICE: Prevent GCS transcoding/compression
+      cacheControl: 'no-transform',
       metadata: {
         callId,
         participantEmail,
@@ -225,7 +244,11 @@ export async function saveOriginalAudio(
   originalAudio: Buffer,
   orgSlug?: string
 ): Promise<void> {
-  try {
+  // Original audio saving is disabled - only resampled audio is saved
+  return;
+  
+  // Disabled code below (kept for reference)
+  /* try {
     // Get or create streaming session
     const sessionKey = `${callId}:${participantEmail}:original`;
     let session = originalAudioSessions.get(sessionKey);
@@ -328,7 +351,7 @@ export async function saveOriginalAudio(
   } catch (error: any) {
     // Don't fail the main flow if original audio save fails
     console.warn(`⚠️ Failed to save original audio for ${participantEmail}:`, error.message);
-  }
+  } */
 }
 
   /**
@@ -467,7 +490,7 @@ export async function saveOriginalAudio(
  * @param sampleRate - Sample rate in Hz (default: 16000)
  * @returns 44-byte WAV header buffer
  */
-function createWavHeader(pcmDataSize: number, sampleRate: number = 16000): Buffer {
+export function createWavHeader(pcmDataSize: number, sampleRate: number = 16000): Buffer {
   const numChannels = 1; // Mono
   const bitsPerSample = 16;
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
@@ -759,6 +782,10 @@ async function createStreamingSession(
     timeout: 600000, // 10 minutes timeout per request (increased for stability)
     metadata: {
       contentType: 'audio/wav',
+      // INDUSTRY BEST PRACTICE: Prevent GCS transcoding/compression
+      // cacheControl: 'no-transform' prevents intermediaries from modifying content
+      // This ensures audio files are stored and served without modification
+      cacheControl: 'no-transform',
       metadata: {
         callId,
         participantEmail,
@@ -801,9 +828,17 @@ async function createStreamingSession(
       sampleRate, // Store sample rate (immutable once set)
       writeQueue: [], // Initialize write queue
       writing: false, // No write in progress initially
-      needsByteSwap: null, // Byte order not determined yet
       state: 'idle', // Initialize state machine
       rotationLock: undefined, // No rotation in progress initially
+      firstChunkWallTime: now,
+      totalSamplesWritten: 0,
+      metrics: {
+        inputBytesPerSecond: 0,
+        queueDepth: 0,
+        droppedFrames: 0,
+        headerPatchFailures: 0,
+        rotationDurations: [],
+      },
     };
   
   // Handle stream errors (async, non-blocking)
@@ -843,7 +878,9 @@ async function createStreamingSession(
             session.currentChunkStartTime,
             Date.now(),
             currentStorageUrl,
-            false // Not final, just intermediate chunk
+            false, // Not final, just intermediate chunk
+            CHUNK_OVERLAP_MS, // overlapStartMs
+            0                  // overlapEndMs
           );
           console.log(`✅ Published chunk ${session.currentChunkIndex} after 408 timeout recovery`);
         } catch (pubError: any) {
@@ -890,7 +927,9 @@ async function publishAudioChunkReady(
   chunkStartTime: number,
   chunkEndTime: number,
   storageUrl: string,
-  isFinal: boolean = false
+  isFinal: boolean = false,
+  overlapStartMs?: number,
+  overlapEndMs?: number
 ): Promise<void> {
   try {
     const topic = await getAudioChunksTopic();
@@ -905,6 +944,11 @@ async function publishAudioChunkReady(
       chunkEndTime,
       orgSlug: session.orgSlug,
       isFinal,
+      // Overlap metadata for transcription dedupe
+      overlapStartMs: overlapStartMs ?? CHUNK_OVERLAP_MS,
+      overlapEndMs: overlapEndMs ?? 0,
+      sampleCount: session.currentChunkBytes / 2, // 16-bit = 2 bytes per sample
+      sampleRate: session.sampleRate,
     };
     
     const messageId = await topic.publishMessage({ json: message });
@@ -1101,6 +1145,7 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
               
               console.log(`✅ Updated WAV header for chunk ${currentChunkIndex}: ${actualPcmSize} bytes PCM data, sample rate: ${session.sampleRate}Hz`);
             } catch (error: any) {
+              session.metrics.headerPatchFailures++;
               console.warn(`⚠️ Failed to update WAV header for chunk ${currentChunkIndex}:`, error.message);
               // Don't fail - the file is still usable, just with incorrect header size
             }
@@ -1112,7 +1157,9 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
               currentChunkStartTime,
               currentChunkEndTime,
               currentStorageUrl,
-              false
+              false,
+              CHUNK_OVERLAP_MS, // overlapStartMs
+              0                  // overlapEndMs
             );
             
             // Start new chunk with overlap
@@ -1161,7 +1208,9 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
                     currentChunkStartTime,
                     currentChunkEndTime,
                     currentStorageUrl,
-                    false
+                    false,
+                    CHUNK_OVERLAP_MS, // overlapStartMs
+                    0                  // overlapEndMs
                   );
                   console.log(`✅ Published chunk ${currentChunkIndex} after rotation failure recovery`);
                 } catch (pubError) {
@@ -1197,9 +1246,7 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
             session.currentChunkIndex = newChunkIndex;
             session.currentChunkStartTime = Date.now();
             session.currentChunkBytes = 0;
-            // CRITICAL: Preserve byte order decision across rotations
-            // DO NOT reset needsByteSwap - it should persist for the entire session
-            // The byte order is determined once per session and applies to all chunks
+            // Byte order is always little-endian (LiveKit always sends LE)
             // Initialize write queue for new stream if not already initialized
             if (!session.writeQueue) {
               session.writeQueue = [];
@@ -1220,6 +1267,11 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
             }
             
             const rotationDuration = Date.now() - rotationStartTime;
+            session.metrics.rotationDurations.push(rotationDuration);
+            // Keep only last 10 rotations
+            if (session.metrics.rotationDurations.length > 10) {
+              session.metrics.rotationDurations.shift();
+            }
             audioLogger.info({
               event: 'rotation_complete',
               participantEmail: session.participantEmail,
@@ -1270,7 +1322,9 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
               currentChunkStartTime,
               currentChunkEndTime,
               currentStorageUrl,
-              false
+              false,
+              CHUNK_OVERLAP_MS, // overlapStartMs
+              0                  // overlapEndMs
             ).then(() => {
               // Create new chunk even if publish failed
               const newChunkIndex = currentChunkIndex + 1;
@@ -1349,7 +1403,9 @@ async function rotateChunk(sessionKey: string, session: StreamingSession): Promi
               currentChunkStartTime,
               currentChunkEndTime,
               currentStorageUrl,
-              false
+              false,
+              CHUNK_OVERLAP_MS, // overlapStartMs
+              0                  // overlapEndMs
             ).then(() => {
               // Create new chunk
               const newChunkIndex = currentChunkIndex + 1;
@@ -1476,180 +1532,9 @@ function processWriteQueue(session: StreamingSession): void {
   session.writing = true;
   const item = session.writeQueue.shift()!;
   
-  // CRITICAL: Byte order handling - apply based on configuration or detection
-  let dataToWrite = item.data;
-  
-  // Apply byte order based on configuration
-  // Default: little-endian (LiveKit's documented format) - no detection needed
-  if (session.needsByteSwap === null) {
-    if (AUDIO_BYTE_ORDER === 'little-endian') {
-      // LiveKit sends PCM16 in little-endian format - no swap needed
-      session.needsByteSwap = false;
-      audioLogger.info({
-        event: 'byte_order_configured',
-        participantEmail: session.participantEmail,
-        callId: session.callId,
-        configuration: AUDIO_BYTE_ORDER,
-        decision: 'no-swap',
-        reason: 'LiveKit egress sends PCM16 in little-endian format (documented)',
-      }, `Byte order configured: no swap needed (LiveKit format is little-endian)`);
-    } else if (AUDIO_BYTE_ORDER === 'big-endian') {
-      // Manual override: always swap from BE to LE
-      session.needsByteSwap = true;
-      audioLogger.info({
-        event: 'byte_order_configured',
-        participantEmail: session.participantEmail,
-        callId: session.callId,
-        configuration: AUDIO_BYTE_ORDER,
-        decision: 'swap',
-        reason: 'Manual configuration override',
-      }, `Byte order configured: will swap BE->LE (manual override)`);
-    } else {
-      // AUDIO_BYTE_ORDER === 'auto' - use detection (opt-in only)
-      // Enhanced detection with conservative multi-factor validation
-      if (item.data.length >= 20) {
-        // Check multiple samples (not just first few) for better accuracy
-        const numSamples = Math.min(100, item.data.length / 2);
-        const samplesLE: number[] = [];
-        const samplesBE: number[] = [];
-        for (let i = 0; i < numSamples; i++) {
-          samplesLE.push(item.data.readInt16LE(i * 2));
-          samplesBE.push(item.data.readInt16BE(i * 2));
-        }
-        
-        // Calculate statistics
-        const lePeak = Math.max(...samplesLE.map(Math.abs));
-        const bePeak = Math.max(...samplesBE.map(Math.abs));
-        const leAvg = samplesLE.reduce((a, b) => a + Math.abs(b), 0) / samplesLE.length;
-        const beAvg = samplesBE.reduce((a, b) => a + Math.abs(b), 0) / samplesBE.length;
-        
-        // Multi-factor validation checks
-        const BE_MULTIPLIER_THRESHOLD = 10; // Increased from 2 to 10 for more conservative detection
-        const LE_SUSPICIOUS_THRESHOLD = 1000; // If LE peak is very small, it's likely wrong byte order
-        
-        const validationChecks = {
-          beMuchLarger: bePeak > lePeak * BE_MULTIPLIER_THRESHOLD,
-          leSuspiciouslySmall: lePeak < LE_SUSPICIOUS_THRESHOLD,
-          beInValidRange: bePeak > 100 && bePeak < 30000,
-          leHasValidPattern: hasValidAudioPattern(samplesLE),
-          beHasValidPattern: hasValidAudioPattern(samplesBE),
-        };
-        
-        // Calculate confidence score (0-1)
-        const confidenceScore = validationChecks.beMuchLarger && 
-                                validationChecks.leSuspiciouslySmall && 
-                                validationChecks.beInValidRange && 
-                                validationChecks.beHasValidPattern &&
-                                !validationChecks.leHasValidPattern ? 0.9 : 0.1;
-        
-        // Log diagnostic info to file
-        audioLogger.info({
-          event: 'byte_order_diagnostic',
-          participantEmail: session.participantEmail,
-          callId: session.callId,
-          chunkCount: session.chunkCount,
-          bufferLength: item.data.length,
-          samplesLE: samplesLE.slice(0, 5), // First 5 for brevity
-          samplesBE: samplesBE.slice(0, 5),
-          lePeak,
-          bePeak,
-          leAvg: Math.round(leAvg * 100) / 100,
-          beAvg: Math.round(beAvg * 100) / 100,
-          sampleRate: session.sampleRate,
-          validationChecks,
-          confidence: confidenceScore,
-        }, `Byte order diagnostic: LE peak=${lePeak}, BE peak=${bePeak}, LE avg=${leAvg.toFixed(2)}, BE avg=${beAvg.toFixed(2)}, confidence=${confidenceScore.toFixed(2)}`);
-        
-        // Only swap if ALL validation checks indicate BE is correct
-        if (validationChecks.beMuchLarger && 
-            validationChecks.leSuspiciouslySmall && 
-            validationChecks.beInValidRange && 
-            validationChecks.beHasValidPattern &&
-            !validationChecks.leHasValidPattern) {
-          session.needsByteSwap = true; // Remember: we need to swap for ALL chunks in this session
-          audioLogger.error({
-            event: 'byte_order_mismatch_detected',
-            participantEmail: session.participantEmail,
-            callId: session.callId,
-            chunkCount: session.chunkCount,
-            lePeak,
-            bePeak,
-            leAvg,
-            beAvg,
-            confidence: confidenceScore,
-            validationChecks,
-            action: 'swapping_bytes_for_all_chunks',
-          }, `CRITICAL: Byte order mismatch detected! BE values are ${(bePeak / lePeak).toFixed(2)}x larger. Will swap bytes for ALL chunks in this session.`);
-        } else {
-          // Default to no swap - assume data is already in correct byte order (LE)
-          session.needsByteSwap = false;
-          if (lePeak > bePeak * BE_MULTIPLIER_THRESHOLD) {
-            audioLogger.info({
-              event: 'byte_order_correct',
-              participantEmail: session.participantEmail,
-              callId: session.callId,
-              chunkCount: session.chunkCount,
-              confidence: confidenceScore,
-            }, `Byte order appears correct (LE interpretation is ${(lePeak / bePeak).toFixed(2)}x larger). No swap needed for this session.`);
-          } else {
-            audioLogger.warn({
-              event: 'byte_order_ambiguous',
-              participantEmail: session.participantEmail,
-              callId: session.callId,
-              chunkCount: session.chunkCount,
-              lePeak,
-              bePeak,
-              confidence: confidenceScore,
-              validationChecks,
-              message: 'Both LE and BE interpretations are similar - assuming no swap needed (might be silence)',
-            }, `Byte order ambiguous: LE peak=${lePeak}, BE peak=${bePeak} (similar values). Assuming no swap needed.`);
-          }
-        }
-      } else {
-        // Buffer too small for detection - default to no swap
-        session.needsByteSwap = false;
-        audioLogger.warn({
-          event: 'byte_order_insufficient_data',
-          participantEmail: session.participantEmail,
-          callId: session.callId,
-          bufferLength: item.data.length,
-          message: 'Buffer too small for byte order detection - defaulting to no swap',
-        }, `Insufficient data for byte order detection (${item.data.length} bytes) - defaulting to no swap`);
-      }
-    }
-    
-    // Log final decision once per session
-    audioLogger.info({
-      event: 'byte_order_determined',
-      participantEmail: session.participantEmail,
-      callId: session.callId,
-      configuration: AUDIO_BYTE_ORDER,
-      decision: session.needsByteSwap ? 'swap' : 'no-swap',
-      method: AUDIO_BYTE_ORDER === 'auto' ? 'detection' : 'configuration',
-    }, `Byte order determined: ${session.needsByteSwap ? 'swap BE->LE' : 'no swap (LE correct)'} via ${AUDIO_BYTE_ORDER}`);
-  }
-  
-  // Apply byte swap if needed (for ALL chunks once determined)
-  if (session.needsByteSwap === true) {
-    // Swap bytes: read as BE, write as LE
-    dataToWrite = Buffer.alloc(item.data.length);
-    for (let i = 0; i < item.data.length; i += 2) {
-      const sample = item.data.readInt16BE(i);
-      dataToWrite.writeInt16LE(sample, i);
-    }
-    
-    // Log swap only occasionally to avoid spam (every 100 chunks)
-    if (session.chunkCount % 100 === 0) {
-      audioLogger.debug({
-        event: 'byte_order_swapped',
-        participantEmail: session.participantEmail,
-        callId: session.callId,
-        chunkCount: session.chunkCount,
-        originalLength: item.data.length,
-        swappedLength: dataToWrite.length,
-      }, `Bytes swapped: ${item.data.length} bytes converted from BE to LE (chunk ${session.chunkCount})`);
-    }
-  }
+  // LiveKit always sends PCM16 audio in little-endian format
+  // Data passed to recordChunk is already in the correct format - no modification needed
+  const dataToWrite = item.data;
   
   const canWrite = session.writeStream.write(dataToWrite, (error?: Error | null) => {
     session.writing = false;
@@ -1786,27 +1671,36 @@ export async function recordChunk(
       }
     }
     
-    // CRITICAL: Validate sample rate matches (fail fast on mismatch)
-    if (session.sampleRate !== sampleRate) {
-      console.error(
-        `❌ Sample rate mismatch for ${participantEmail}: ` +
-        `session=${session.sampleRate}Hz, audio=${sampleRate}Hz. ` +
-        `This would cause incorrect WAV header. Creating new session.`
-      );
-      // Close existing session and create new one with correct sample rate
-      // Reset state before destroying
-      session.state = 'idle';
-      session.rotationLock = undefined;
-      try {
-        session.writeStream.destroy();
-      } catch (e) {
-        // Ignore errors when destroying
+      // CRITICAL: Validate sample rate matches (fail fast on mismatch)
+      if (session.sampleRate !== sampleRate) {
+        console.error(
+          `❌ Sample rate mismatch for ${participantEmail}: ` +
+          `session=${session.sampleRate}Hz, audio=${sampleRate}Hz. ` +
+          `This would cause incorrect WAV header. Creating new session.`
+        );
+        // Log this to structured logger as well
+        audioLogger.error({
+          event: 'sample_rate_mismatch',
+          participantEmail,
+          callId,
+          sessionSampleRate: session.sampleRate,
+          audioSampleRate: sampleRate,
+          audioSize: audioData.length,
+        }, `Sample rate mismatch: session=${session.sampleRate}Hz, audio=${sampleRate}Hz. Creating new session.`);
+        // Close existing session and create new one with correct sample rate
+        // Reset state before destroying
+        session.state = 'idle';
+        session.rotationLock = undefined;
+        try {
+          session.writeStream.destroy();
+        } catch (e) {
+          // Ignore errors when destroying
+        }
+        streamingSessions.delete(sessionKey);
+        sessionCreationLocks.delete(sessionKey);
+        // Recursively call to create new session with correct sample rate
+        return recordChunk(callId, participantEmail, audioData, orgSlug, sampleRate);
       }
-      streamingSessions.delete(sessionKey);
-      sessionCreationLocks.delete(sessionKey);
-      // Recursively call to create new session with correct sample rate
-      return recordChunk(callId, participantEmail, audioData, orgSlug, sampleRate);
-    }
     
     // Check if stream is still writable before writing
     if (session.writeStream.destroyed || session.writeStream.writableEnded) {
@@ -1876,6 +1770,7 @@ export async function recordChunk(
     session.totalBytes += audioData.length;
     session.chunkCount++;
     session.currentChunkBytes += audioData.length;
+    session.totalSamplesWritten += audioData.length / 2; // 16-bit = 2 bytes per sample
     
     // Update overlap buffer: keep last CHUNK_OVERLAP_BYTES in memory
     // Append new data to overlap buffer, then trim to size
@@ -1891,6 +1786,17 @@ export async function recordChunk(
     const timeElapsed = Date.now() - session.startTime;
     if (timeElapsed > 0 && session.chunkCount % 200 === 0) {
       const bytesPerSecond = (session.totalBytes / timeElapsed) * 1000;
+      session.metrics.inputBytesPerSecond = bytesPerSecond;
+      session.metrics.queueDepth = session.writeQueue.length;
+      
+      audioLogger.info({
+        event: 'session_metrics',
+        participantEmail: session.participantEmail,
+        callId: session.callId,
+        chunkIndex: session.currentChunkIndex,
+        ...session.metrics,
+      }, `Session metrics: ${Math.round(session.metrics.inputBytesPerSecond)} bytes/s, queue: ${session.metrics.queueDepth}`);
+      
       console.log(`🎤 Streaming audio: chunk ${session.currentChunkIndex}, ${session.chunkCount} total chunks, ${session.totalBytes} bytes (${Math.round(bytesPerSecond)} bytes/s) for ${participantEmail}`);
     }
   } catch (error: any) {
@@ -1916,7 +1822,9 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
         session.currentChunkStartTime,
         Date.now(),
         finalStorageUrl,
-        true
+        true,
+        0, // No overlap at start of final chunk
+        0  // No overlap at end
       ).then(() => {
         resolve();
       }).catch((error) => {
@@ -1993,6 +1901,7 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
         
         console.log(`✅ Updated WAV header for chunk ${finalChunkIndex}: ${actualPcmSize} bytes PCM data, sample rate: ${session.sampleRate}Hz`);
       } catch (error: any) {
+        session.metrics.headerPatchFailures++;
         console.warn(`⚠️ Failed to update WAV header for chunk ${finalChunkIndex}:`, error.message);
         // Don't fail - the file is still usable, just with incorrect header size
       }
@@ -2004,7 +1913,9 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
         finalChunkStartTime,
         Date.now(),
         finalStorageUrl,
-        true
+        true,
+        0, // No overlap at start of final chunk
+        0  // No overlap at end
       ).then(() => {
         resolve();
       }).catch((error) => {
@@ -2031,7 +1942,9 @@ async function closeStreamingSession(sessionKey: string, session: StreamingSessi
           finalChunkStartTime,
           Date.now(),
           finalStorageUrl,
-          true
+          true,
+          0, // No overlap at start of final chunk
+          0  // No overlap at end
         ).then(() => resolve()).catch(() => resolve());
       }
     });
@@ -2089,6 +2002,40 @@ export async function cleanupParticipantBuffer(callId: string, participantEmail:
   
   // Also close original audio session if it exists
   // Original audio upload removed - no longer saving original audio to GCS
+}
+
+/**
+ * Clear all streaming sessions and state (called on server startup/restart)
+ * Prevents state from persisting across server restarts
+ */
+export function clearAllStreamingSessions(): void {
+  const sessionCount = streamingSessions.size;
+  const lockCount = sessionCreationLocks.size;
+  const cacheCount = orgSlugCache.size;
+  
+  // Close all active sessions gracefully
+  for (const [key, session] of streamingSessions.entries()) {
+    try {
+      // Reset state
+      session.state = 'idle';
+      session.rotationLock = undefined;
+      // Close write stream if it exists and is writable
+      if (session.writeStream && !session.writeStream.destroyed) {
+        session.writeStream.destroy();
+      }
+    } catch (error) {
+      // Ignore errors during cleanup
+    }
+  }
+  
+  streamingSessions.clear();
+  sessionCreationLocks.clear();
+  orgSlugCache.clear();
+  
+  console.log(`🧹 Cleared all streaming sessions on server startup (${sessionCount} sessions, ${lockCount} locks, ${cacheCount} cache entries)`);
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-recorder.ts:2137',message:'Cleared all streaming sessions',data:{sessionCount,lockCount,cacheCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+  // #endregion
 }
 
 /**

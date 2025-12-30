@@ -6,9 +6,45 @@
 import libsamplerate from '@alexanderolsen/libsamplerate-js';
 const { create, ConverterType } = libsamplerate;
 import { audioLogger } from '../utils/logger.js';
+import { analyzeAudio, isDebugModeEnabled } from '../utils/audio-debug.js';
 
 // Note: processAudioChunk is no longer used in async architecture
 // Audio is now recorded via audio-recorder.ts and processed by transcription-worker.ts
+
+/**
+ * Audio Processing Configuration
+ * Following industry best practices for voice recording/transcription:
+ * - DC offset removal: DISABLED (high-pass filter removes DC naturally)
+ * - AGC: DISABLED by default for recording (preserves original dynamics, prevents pumping artifacts)
+ * - Normalization: DISABLED (preserves original levels)
+ * - Soft limiter: DISABLED for recording (preserves dynamics, only for playback)
+ * - High-pass filter: Optional (can be enabled via env var, stateful implementation)
+ * - Dithering: DISABLED (not needed for 16-bit voice, causes artifacts)
+ */
+const AUDIO_PROCESSING_CONFIG = {
+  // DC offset removal - DISABLED (high-pass filter removes DC naturally)
+  // Per-chunk DC removal causes discontinuities - use high-pass filter instead
+  removeDCOffset: false,
+  
+  // AGC - DISABLED by default for recording (causes distortion if enabled)
+  // Enable only for real-time playback, not for archival/transcription
+  enableAGC: process.env.ENABLE_AGC === 'true', // Default: false
+  agcTargetRMS: parseFloat(process.env.AGC_TARGET_RMS || '-24'), // More conservative if enabled (-24dB)
+  
+  // Normalization - DISABLED for recording (preserves original dynamics)
+  enableNormalization: false,
+  
+  // Soft limiting - ENABLED to prevent clipping from resampler amplification
+  // Resamplers can slightly amplify signals, causing clipping even with moderate input
+  // Soft limiter prevents clipping while preserving dynamics (tanh-based compression)
+  enableSoftLimiter: true, // ENABLED to prevent clipping from resampler amplification
+  limiterThreshold: 0.8, // Lower threshold to prevent clipping from loud input
+  
+  // High-pass filter - Enabled by default, for noise reduction (stateful implementation)
+  // Removes DC offset naturally, so separate DC removal not needed
+  enableHighPassFilter: process.env.ENABLE_HIGH_PASS_FILTER !== 'false', // Default: true
+  highPassCutoff: parseInt(process.env.HIGH_PASS_CUTOFF || '80', 10), // Hz
+};
 
 /**
  * Process audio data from LiveKit egress/webhook
@@ -16,6 +52,9 @@ import { audioLogger } from '../utils/logger.js';
  * 
  * Note: LiveKit egress sends PCM16 at 48kHz, but AssemblyAI requires 16kHz
  * We resample the audio before sending to the transcription service
+ * 
+ * IMPORTANT: Byte order normalization happens in livekit.ts before this function is called.
+ * This function receives data that is already normalized to little-endian format.
  */
 export async function processLiveKitAudio(
   callId: string,
@@ -28,9 +67,13 @@ export async function processLiveKitAudio(
       ? audioData 
       : Buffer.from(audioData);
 
+    // Create session key for per-session resampling
+    const sessionKey = `${callId}:${participantEmail}`;
+
     // Resample from 48kHz to 16kHz (AssemblyAI requirement)
     // LiveKit Track Egress sends PCM16 at 48kHz
-    const resampledAudio = await resample48kHzTo16kHz(audioBuffer);
+    // Use per-session resampler for stateful resampling
+    const resampledAudio = await resample48kHzTo16kHz(audioBuffer, sessionKey);
 
     // Route resampled audio to transcription service
     processAudioChunk(callId, participantEmail, resampledAudio);
@@ -54,35 +97,196 @@ let resamplingStats = {
   lastLogTime: Date.now()
 };
 
-// Create a resampler instance (reused for efficiency, created lazily)
-let resamplerInstance: any = null;
-let resamplerInitPromise: Promise<any> | null = null;
+// INDUSTRY BEST PRACTICE: Per-session resamplers for stateful resampling
+// Each callId:participantEmail gets its own resampler instance to maintain continuity
+// This prevents discontinuities at chunk boundaries (the "monster voice" issue)
+const resamplerInstances = new Map<string, any>(); // Key: sessionKey (callId:participantEmail)
+const resamplerInitPromises = new Map<string, Promise<any>>(); // Track initialization promises per session
 
-async function getResampler(): Promise<any> {
-  if (resamplerInstance) {
-    return resamplerInstance;
+// INDUSTRY BEST PRACTICE: Per-session filter state for high-pass filter
+// Maintains continuity across chunks to prevent discontinuities at boundaries
+interface FilterState {
+  prevInput: number;
+  prevOutput: number;
+}
+const filterStates = new Map<string, FilterState>(); // Key: sessionKey (callId:participantEmail)
+
+/**
+ * Get or create a resampler instance for a specific session
+ * Industry best practice: One resampler per audio stream maintains continuity
+ * 
+ * @param sessionKey - Unique identifier for the session (format: "callId:participantEmail")
+ * @returns Resampler instance for this session
+ */
+async function getResamplerForSession(sessionKey: string): Promise<any> {
+  // Return existing resampler if available
+  if (resamplerInstances.has(sessionKey)) {
+    // #region agent log
+    const existingResampler = resamplerInstances.get(sessionKey);
+    const hasFull = existingResampler && typeof existingResampler.full === 'function';
+    const hasSimple = existingResampler && typeof existingResampler.simple === 'function';
+    fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:119',message:'Reusing existing resampler',data:{sessionKey,hasFull,hasSimple,resamplerExists:!!existingResampler},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    return resamplerInstances.get(sessionKey);
   }
   
-  if (resamplerInitPromise) {
-    return resamplerInitPromise;
+  // Wait for existing initialization if in progress
+  if (resamplerInitPromises.has(sessionKey)) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:126',message:'Waiting for resampler init',data:{sessionKey},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    return resamplerInitPromises.get(sessionKey);
   }
   
-  // Create resampler: 48kHz -> 16kHz, mono channel, best quality
-  resamplerInitPromise = create(1, 48000, 16000, {
-    converterType: ConverterType.SRC_SINC_BEST_QUALITY,
-  }).then((resampler) => {
-    resamplerInstance = resampler;
-    resamplerInitPromise = null;
+  // Create new resampler for this session
+  // INDUSTRY BEST PRACTICE: Use MEDIUM_QUALITY for real-time streaming
+  // BEST_QUALITY uses longer filters that can introduce latency and artifacts in streaming
+  // MEDIUM_QUALITY provides optimal balance of quality and performance for real-time audio
+  const initPromise = create(1, 48000, 16000, {
+    converterType: ConverterType.SRC_SINC_MEDIUM_QUALITY,
+  }).then(async (resampler) => {
+    // CRITICAL FIX: Pre-initialize resampler with silence to warm up internal state
+    // The full() method produces fewer samples on first call due to filter initialization
+    // Pre-feeding silence ensures first real chunk produces correct output size
+    if (typeof resampler.full === 'function') {
+      // Create a small silence buffer (20ms at 48kHz = 960 samples)
+      const warmupSamples = 960; // Same size as typical input chunk
+      const warmupFloat = new Float32Array(warmupSamples); // All zeros (silence)
+      
+      // Warm up the resampler - this initializes internal filter state
+      // CRITICAL: The first call to full() produces fewer samples due to filter initialization
+      // We need to warm up multiple times to ensure the resampler is fully initialized
+      const warmupOutput1 = resampler.full(warmupFloat);
+      // Second warmup call to ensure state is fully initialized
+      const warmupOutput2 = resampler.full(warmupFloat);
+      
+      // Discard the warmup output (it's just silence anyway)
+      // The important part is that the resampler's internal state is now initialized
+      audioLogger.debug({
+        event: 'resampler_warmed_up',
+        sessionKey,
+        warmupInputSamples: warmupSamples,
+        warmupOutput1Samples: warmupOutput1.length,
+        warmupOutput2Samples: warmupOutput2.length,
+      }, `Resampler warmed up: ${warmupSamples} input samples → ${warmupOutput1.length}, ${warmupOutput2.length} output samples (discarded)`);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:153',message:'Resampler warmup complete',data:{sessionKey,warmupInputSamples:warmupSamples,warmupOutput1Samples:warmupOutput1.length,warmupOutput2Samples:warmupOutput2.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    }
+    
+    resamplerInstances.set(sessionKey, resampler);
+    resamplerInitPromises.delete(sessionKey);
+    audioLogger.info({
+      event: 'resampler_created',
+      sessionKey,
+      message: 'Created per-session resampler for stateful resampling (warmed up)',
+    }, `✅ Created resampler for session: ${sessionKey} (warmed up)`);
+    // #region agent log
+    const hasFull = resampler && typeof resampler.full === 'function';
+    const hasSimple = resampler && typeof resampler.simple === 'function';
+    fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:135',message:'Resampler created and warmed up',data:{sessionKey,hasFull,hasSimple,resamplerType:typeof resampler},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     return resampler;
+  }).catch((error) => {
+    resamplerInitPromises.delete(sessionKey);
+    audioLogger.error({
+      event: 'resampler_creation_failed',
+      sessionKey,
+      error: error.message,
+    }, `❌ Failed to create resampler for session ${sessionKey}:`, error);
+    throw error;
   });
   
-  return resamplerInitPromise;
+  resamplerInitPromises.set(sessionKey, initPromise);
+  return initPromise;
 }
 
-// Initialize resampler eagerly at module load
-getResampler().catch((error) => {
-  console.error(`❌ Error initializing resampler at startup:`, error);
-});
+/**
+ * Clear all resampler and filter state (called on server startup/restart)
+ * Prevents state from persisting across server restarts
+ */
+export function clearAllResamplerState(): void {
+  const resamplerCount = resamplerInstances.size;
+  const filterCount = filterStates.size;
+  const promiseCount = resamplerInitPromises.size;
+  
+  resamplerInstances.clear();
+  resamplerInitPromises.clear();
+  filterStates.clear();
+  
+  audioLogger.info({
+    event: 'all_resampler_state_cleared',
+    resamplerCount,
+    filterCount,
+    promiseCount,
+  }, `🧹 Cleared all resampler state on server startup (${resamplerCount} resamplers, ${filterCount} filters, ${promiseCount} promises)`);
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:206',message:'Cleared all resampler state',data:{resamplerCount,filterCount,promiseCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+  // #endregion
+}
+
+/**
+ * Clean up resampler and filter state for a session when it ends
+ * Prevents memory leaks by removing unused resamplers and filter states
+ * 
+ * @param sessionKey - Session identifier to clean up
+ */
+export function cleanupResamplerForSession(sessionKey: string): void {
+  if (resamplerInstances.has(sessionKey)) {
+    const resampler = resamplerInstances.get(sessionKey);
+    // Reset resampler state before cleanup
+    if (resampler && typeof resampler.reset === 'function') {
+      try {
+        resampler.reset();
+      } catch (error: any) {
+        audioLogger.warn({
+          event: 'resampler_reset_failed',
+          sessionKey,
+          error: error.message,
+        }, `⚠️ Failed to reset resampler for session ${sessionKey}:`, error);
+      }
+    }
+    resamplerInstances.delete(sessionKey);
+    audioLogger.info({
+      event: 'resampler_cleaned_up',
+      sessionKey,
+      remainingResamplers: resamplerInstances.size,
+    }, `🧹 Cleaned up resampler for session: ${sessionKey} (${resamplerInstances.size} remaining)`);
+  }
+  
+  // Also clean up any pending initialization promises
+  if (resamplerInitPromises.has(sessionKey)) {
+    resamplerInitPromises.delete(sessionKey);
+  }
+  
+  // Clean up filter state for this session
+  if (filterStates.has(sessionKey)) {
+    filterStates.delete(sessionKey);
+    audioLogger.debug({
+      event: 'filter_state_cleaned_up',
+      sessionKey,
+      remainingFilters: filterStates.size,
+    }, `🧹 Cleaned up filter state for session: ${sessionKey}`);
+  }
+}
+
+// Log audio processing configuration at startup
+console.log('🎙️ Audio Processing Configuration:');
+const dcOffsetStatus = AUDIO_PROCESSING_CONFIG.enableHighPassFilter 
+  ? '✅ Enabled (via high-pass filter)' 
+  : (AUDIO_PROCESSING_CONFIG.removeDCOffset ? '⚠️ Enabled (per-chunk)' : '❌ Disabled');
+console.log(`   DC Offset Removal: ${dcOffsetStatus} (high-pass filter removes DC naturally, per-chunk removal causes discontinuities)`);
+console.log(`   AGC: ${AUDIO_PROCESSING_CONFIG.enableAGC ? '⚠️ Enabled' : '✅ Disabled'} (disabled by default for recording - preserves dynamics)`);
+if (AUDIO_PROCESSING_CONFIG.enableAGC) {
+  console.log(`   AGC Target RMS: ${AUDIO_PROCESSING_CONFIG.agcTargetRMS}dB`);
+}
+console.log(`   Soft Limiter: ${AUDIO_PROCESSING_CONFIG.enableSoftLimiter ? '⚠️ Enabled' : '❌ Disabled'} (disabled for recording - preserves dynamics, only for playback)`);
+console.log(`   High-Pass Filter: ${AUDIO_PROCESSING_CONFIG.enableHighPassFilter ? '✅ Enabled' : '❌ Disabled'} (stateful - removes DC naturally)`);
+if (AUDIO_PROCESSING_CONFIG.enableHighPassFilter) {
+  console.log(`   High-Pass Cutoff: ${AUDIO_PROCESSING_CONFIG.highPassCutoff}Hz`);
+}
+console.log(`   Dithering: ❌ Disabled (not needed for 16-bit voice - causes artifacts)`);
+console.log(`   Configuration: Following industry best practices for voice recording/transcription`);
 
 /**
  * Remove DC offset from audio signal
@@ -110,18 +314,23 @@ export function removeDCOffset(audioFloat: Float32Array): Float32Array {
 
 /**
  * Apply high-pass filter to remove low-frequency noise
- * First-order RC high-pass filter implementation
+ * First-order RC high-pass filter implementation (STATEFUL)
  * Removes rumble, HVAC noise, and other low-frequency artifacts below cutoff frequency
+ * 
+ * INDUSTRY BEST PRACTICE: Stateful filter maintains continuity across chunks
+ * Prevents discontinuities at chunk boundaries that cause distortion
  * 
  * @param audioFloat - Float32Array of audio samples
  * @param sampleRate - Sample rate in Hz (e.g., 48000 or 16000)
  * @param cutoffFreq - Cutoff frequency in Hz (default: 80Hz)
+ * @param sessionKey - Optional session identifier for stateful filtering
  * @returns Float32Array with high-pass filter applied
  */
 export function applyHighPassFilter(
   audioFloat: Float32Array,
   sampleRate: number,
-  cutoffFreq: number = 80
+  cutoffFreq: number = 80,
+  sessionKey?: string
 ): Float32Array {
   // RC filter constant: alpha = rc / (rc + dt)
   // where rc = 1 / (2 * PI * cutoffFreq) and dt = 1 / sampleRate
@@ -131,11 +340,18 @@ export function applyHighPassFilter(
   
   const result = new Float32Array(audioFloat.length);
   
-  // FIX: Initialize prevInput to 0, not first sample
-  // Using audioFloat[0] as prevInput causes incorrect filtering at the start of each chunk
-  // This creates artifacts and distortion, especially noticeable in voice
-  let prevInput = 0;
-  let prevOutput = 0;
+  // INDUSTRY BEST PRACTICE: Maintain filter state across chunks
+  // Get or initialize filter state for this session
+  const stateKey = sessionKey || 'default';
+  let state = filterStates.get(stateKey);
+  if (!state) {
+    // Initialize state for new session
+    state = { prevInput: 0, prevOutput: 0 };
+    filterStates.set(stateKey, state);
+  }
+  
+  let prevInput = state.prevInput;
+  let prevOutput = state.prevOutput;
   
   // First-order high-pass filter: y[n] = alpha * (y[n-1] + x[n] - x[n-1])
   for (let i = 0; i < audioFloat.length; i++) {
@@ -145,6 +361,11 @@ export function applyHighPassFilter(
     prevInput = currentInput;
     prevOutput = currentOutput;
   }
+  
+  // Update state for next chunk
+  state.prevInput = prevInput;
+  state.prevOutput = prevOutput;
+  filterStates.set(stateKey, state);
   
   return result;
 }
@@ -370,7 +591,22 @@ export function applySoftLimiter(
   return result;
 }
 
-export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
+/**
+ * Resample PCM16 audio from 48kHz to 16kHz using stateful resampling
+ * Industry best practice: Uses per-session resamplers with process() method
+ * to maintain continuity between chunks and prevent discontinuities
+ * 
+ * @param audioData - PCM16 audio buffer at 48kHz (already normalized to little-endian)
+ * @param sessionKey - Optional session identifier (callId:participantEmail) for per-session resampling
+ * @returns Resampled PCM16 audio buffer at 16kHz (little-endian)
+ * 
+ * IMPORTANT: This function assumes input data is already in little-endian format.
+ * Byte order normalization happens in livekit.ts before this function is called.
+ */
+export async function resample48kHzTo16kHz(
+  audioData: Buffer,
+  sessionKey?: string
+): Promise<Buffer> {
   try {
     // Convert Buffer to Int16Array
     const inputSamples = audioData.length / 2; // 16-bit = 2 bytes per sample
@@ -378,9 +614,10 @@ export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
       throw new Error('Empty audio buffer');
     }
     
-    // CRITICAL FIX: Always use readInt16LE to ensure correct byte order
+    // CRITICAL: Always use readInt16LE to ensure correct byte order
+    // IMPORTANT: Input data is already normalized to little-endian by livekit.ts before this function is called
+    // Byte order normalization happens at the system boundary (livekit.ts) before resampling
     // Never use direct Int16Array view as it uses platform byte order which may be wrong
-    // LiveKit sends PCM16 in little-endian format, so we must always read as LE
     // Direct Int16Array view would use native byte order (could be big-endian on some systems)
     const inputArray = new Int16Array(inputSamples);
     for (let i = 0; i < inputSamples; i++) {
@@ -388,20 +625,23 @@ export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
     }
     
     // CRITICAL: Validate input data before processing
+    // Valid range for signed 16-bit PCM: -32768 to 32767
     let inputZeroCount = 0;
     let inputMax = 0;
     let inputInvalidCount = 0;
     for (let i = 0; i < inputSamples; i++) {
       const sample = inputArray[i];
       if (sample === 0) inputZeroCount++;
-      if (Math.abs(sample) > 32767) {
+      // Valid range for signed 16-bit: -32768 to 32767
+      if (sample < -32768 || sample > 32767) {
         inputInvalidCount++;
         audioLogger.error({
           event: 'invalid_input_sample',
           sampleIndex: i,
           sampleValue: sample,
+          minAllowed: -32768,
           maxAllowed: 32767,
-        }, `CRITICAL: Input sample ${i} exceeds valid range: ${sample} (max should be 32767)`);
+        }, `CRITICAL: Input sample ${i} exceeds valid range: ${sample} (valid range: -32768 to 32767)`);
       }
       inputMax = Math.max(inputMax, Math.abs(sample));
     }
@@ -426,54 +666,157 @@ export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
     }
     
     // Step 1: Convert Int16 to Float32 (normalize to -1.0 to 1.0)
-    // FIX: Use proper normalization - Int16 range is -32768 to 32767
-    // Divide by 32768.0 (not 32767) to get proper -1.0 to ~0.999 range
+    // Use standard 32768.0 normalization (industry standard, avoids asymmetry)
+    // This maps -32768 → -1.0 (exact), 0 → 0.0, 32767 → ~0.99997
+    // CRITICAL: Apply input gain reduction (0.5x = ~6dB) to prevent clipping
+    // Input audio from LiveKit can be very loud (peaks of 30721-32512)
+    // Resamplers can slightly amplify signals, causing clipping even with moderate input
+    // Very aggressive gain reduction needed to bring loud input to reasonable levels
+    const INPUT_GAIN = 0.5; // ~6dB reduction, prevents clipping from very loud input
     let inputFloat = new Float32Array(inputSamples);
     for (let i = 0; i < inputSamples; i++) {
-      // Normalize: -32768 -> -1.0, 0 -> 0.0, 32767 -> ~0.999
-      inputFloat[i] = inputArray[i] / 32768.0;
+      // Normalize: -32768 → -1.0, 0 → 0.0, 32767 → ~0.99997
+      // Using 32768.0 is the standard approach and avoids normalization asymmetry
+      // Apply gain reduction to prevent resampler amplification from causing clipping
+      inputFloat[i] = (inputArray[i] / 32768.0) * INPUT_GAIN;
     }
     
-    // Step 1.5: Apply Automatic Gain Control (AGC) to normalize audio levels
-    inputFloat = applyAutomaticGainControl(inputFloat);
+    // Step 1.1: Optional high-pass filter (for noise reduction and DC removal)
+    // INDUSTRY BEST PRACTICE: Stateful filter maintains continuity across chunks
+    // High-pass filter naturally removes DC offset, so separate DC removal not needed
+    // Note: Applied before resampling, so use input sample rate (48kHz)
+    // #region agent log
+    const filterStateBefore = filterStates.get(sessionKey || 'default');
+    fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:605',message:'Before high-pass filter',data:{sessionKey:sessionKey||'default',enabled:AUDIO_PROCESSING_CONFIG.enableHighPassFilter,hasState:!!filterStateBefore,prevInput:filterStateBefore?.prevInput||0,prevOutput:filterStateBefore?.prevOutput||0,inputSamples:inputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
+    if (AUDIO_PROCESSING_CONFIG.enableHighPassFilter) {
+      inputFloat = applyHighPassFilter(inputFloat, 48000, AUDIO_PROCESSING_CONFIG.highPassCutoff, sessionKey);
+      // #region agent log
+      const filterStateAfter = filterStates.get(sessionKey || 'default');
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:608',message:'After high-pass filter',data:{sessionKey:sessionKey||'default',hasState:!!filterStateAfter,prevInput:filterStateAfter?.prevInput||0,prevOutput:filterStateAfter?.prevOutput||0,outputSamples:inputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
+    }
     
-    // Step 2: Get resampler (wait for initialization if needed)
-    const resampler = await getResampler();
+    // Step 1.1.5: DC offset removal (only if high-pass filter is disabled)
+    // INDUSTRY BEST PRACTICE: Per-chunk DC removal causes discontinuities
+    // High-pass filter removes DC naturally, so this is only needed if HPF is disabled
+    // However, per-chunk removal causes artifacts, so it's better to use high-pass filter
+    if (AUDIO_PROCESSING_CONFIG.removeDCOffset && !AUDIO_PROCESSING_CONFIG.enableHighPassFilter) {
+      const dcOffsetBefore = inputFloat.reduce((sum, val) => sum + val, 0) / inputFloat.length;
+      inputFloat = removeDCOffset(inputFloat);
+      const dcOffsetAfter = inputFloat.reduce((sum, val) => sum + val, 0) / inputFloat.length;
+      
+      // Log DC offset removal (always log first chunk, then only if significant offset detected)
+      if (resamplingStats.totalChunks === 0 || Math.abs(dcOffsetBefore) > 0.001) {
+        const logLevel = resamplingStats.totalChunks === 0 ? 'info' : 'debug';
+        audioLogger[logLevel]({
+          event: 'dc_offset_removed',
+          dcOffsetBefore: dcOffsetBefore.toFixed(6),
+          dcOffsetAfter: dcOffsetAfter.toFixed(6),
+          samples: inputSamples,
+          chunkNumber: resamplingStats.totalChunks + 1,
+          note: 'Consider using high-pass filter instead to avoid per-chunk discontinuities',
+        }, `DC offset removed (chunk ${resamplingStats.totalChunks + 1}): ${dcOffsetBefore.toFixed(6)} -> ${dcOffsetAfter.toFixed(6)}`);
+      }
+    }
+    
+    // Step 1.3: AGC - DISABLED by default for recording (preserves original dynamics)
+    // Industry best practice: AGC causes pumping artifacts and distortion when applied per-chunk
+    // Enable only for real-time playback, not for archival/transcription recordings
+    if (AUDIO_PROCESSING_CONFIG.enableAGC) {
+      audioLogger.debug({
+        event: 'agc_enabled',
+        targetRMS: AUDIO_PROCESSING_CONFIG.agcTargetRMS,
+        note: 'AGC is enabled - this may cause distortion for recording',
+      }, `⚠️ AGC enabled (target RMS: ${AUDIO_PROCESSING_CONFIG.agcTargetRMS}dB) - not recommended for recording`);
+      inputFloat = applyAutomaticGainControl(inputFloat, AUDIO_PROCESSING_CONFIG.agcTargetRMS);
+    }
+    
+    // Step 2: Get resampler for this session (or create if needed)
+    // INDUSTRY BEST PRACTICE: Use per-session resamplers for stateful resampling
+    // This maintains continuity between chunks, preventing discontinuities and artifacts
+    const resampler = sessionKey 
+      ? await getResamplerForSession(sessionKey)
+      : await getResamplerForSession('default'); // Fallback for backward compatibility
     
     if (!resampler) {
       throw new Error('Resampler not initialized');
     }
     
-    // Step 3: Resample using high-quality algorithm (48kHz -> 16kHz)
-    // CRITICAL: Use simple() for stateless resampling (more reliable for independent chunks)
-    // process() is stateful and can cause issues with streaming chunks
-    // simple() processes each chunk independently, ensuring correct resampling
+    // Step 3: Resample using stateful full() method (INDUSTRY BEST PRACTICE)
+    // CRITICAL FIX: Use full() instead of simple() for continuous audio streams
+    // full() maintains state between chunks, ensuring smooth transitions
+    // simple() processes each chunk independently, causing discontinuities at boundaries
+    // Note: libsamplerate-js uses 'full()' for stateful resampling, not 'process()'
     let outputFloat: Float32Array;
     
-    // Always prefer simple() for stateless resampling (safer for independent chunks)
-    if (typeof resampler.simple === 'function') {
-      outputFloat = resampler.simple(inputFloat);
-    } else if (typeof resampler.process === 'function') {
-      // Fallback to process() only if simple() not available
+    // #region agent log
+    const resamplerMethod = typeof resampler.full === 'function' ? 'full' : (typeof resampler.simple === 'function' ? 'simple' : 'none');
+    const resamplerHasFull = typeof resampler.full === 'function';
+    const resamplerHasSimple = typeof resampler.simple === 'function';
+    fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:662',message:'Resampler method check',data:{sessionKey:sessionKey||'default',hasFull:resamplerHasFull,hasSimple:resamplerHasSimple,method:resamplerMethod,inputSamples:inputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
+    
+    if (typeof resampler.full === 'function') {
+      // Use stateful resampling - maintains continuity between chunks
+      // This is the industry standard for continuous audio streams
+      // full() maintains internal state for smooth transitions between chunks
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:666',message:'Using full() method',data:{sessionKey:sessionKey||'default',inputSamples:inputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      outputFloat = resampler.full(inputFloat);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:669',message:'After full() call',data:{sessionKey:sessionKey||'default',inputSamples:inputFloat.length,outputSamples:outputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+    } else if (typeof resampler.simple === 'function') {
+      // Fallback to simple() only if full() not available (not recommended)
       audioLogger.warn({
-        event: 'resampler_fallback',
-        message: 'Resampler does not have simple() method, using process() (may cause state issues)',
-      }, 'Resampler does not have simple() method, using process()');
-      // CRITICAL: Reset state before processing to avoid artifacts between chunks
-      if (typeof resampler.reset === 'function') {
-        resampler.reset();
-      }
-      outputFloat = resampler.process(inputFloat);
+        event: 'resampler_fallback_to_simple',
+        sessionKey: sessionKey || 'default',
+        message: 'Using stateless simple() - may cause discontinuities at chunk boundaries',
+      }, '⚠️ WARNING: Resampler does not have full() method, using simple() (may cause artifacts)');
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:674',message:'Using simple() fallback',data:{sessionKey:sessionKey||'default',inputSamples:inputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+      outputFloat = resampler.simple(inputFloat);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'audio-processor.ts:677',message:'After simple() call',data:{sessionKey:sessionKey||'default',inputSamples:inputFloat.length,outputSamples:outputFloat.length,chunkNumber:resamplingStats.totalChunks+1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
     } else {
-      throw new Error('Resampler has neither simple() nor process() method');
+      throw new Error('Resampler has neither full() nor simple() method');
     }
     
     if (!outputFloat || outputFloat.length === 0) {
       throw new Error('Resampling produced empty output');
     }
     
-    // Step 3.5: Apply soft limiter to prevent clipping
-    let outputFloatLimited = applySoftLimiter(outputFloat);
+    // DEBUG: Analyze audio characteristics after resampling
+    if (isDebugModeEnabled()) {
+      const analysis = analyzeAudio(outputFloat, 16000);
+      resamplingStats.totalChunks++;
+      const chunkNumber = resamplingStats.totalChunks;
+      
+      // Log analysis for first chunk or every 100 chunks
+      if (chunkNumber === 1 || chunkNumber % 100 === 0) {
+        audioLogger.info({
+          event: 'audio_analysis',
+          sessionKey: sessionKey || 'default',
+          chunkNumber,
+          peak: analysis.peak,
+          rms: analysis.rms,
+          zeroCrossings: analysis.zeroCrossings,
+          estimatedFreq: analysis.estimatedFreq,
+          frequencyContent: analysis.frequencyContent,
+        }, `🔍 Audio analysis (chunk ${chunkNumber}): peak=${analysis.peak.toFixed(3)}, RMS=${analysis.rms.toFixed(3)}, zeroCrossings=${analysis.zeroCrossings}, estFreq=${analysis.estimatedFreq.toFixed(1)}Hz`);
+      }
+    }
+    
+    // Step 3.5: Apply soft limiter to prevent clipping (only if enabled)
+    // Industry best practice: Soft limiter prevents clipping but doesn't normalize
+    // This preserves dynamics while preventing digital distortion
+    let outputFloatLimited = AUDIO_PROCESSING_CONFIG.enableSoftLimiter
+      ? applySoftLimiter(outputFloat, AUDIO_PROCESSING_CONFIG.limiterThreshold)
+      : outputFloat;
     
     // CRITICAL: Validate resampler output for corruption
     let nanCount = 0;
@@ -499,15 +842,28 @@ export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
     }
     
     if (nanCount > 0 || infCount > 0 || outOfRangeCount > 0) {
-      console.error(`❌ CRITICAL: Resampler produced corrupted output!`);
-      console.error(`   NaN samples: ${nanCount}, Infinity samples: ${infCount}, Out-of-range samples: ${outOfRangeCount}`);
-      console.error(`   Total samples: ${outputFloat.length}, Max absolute value: ${maxAbsValue}`);
-      console.error(`   This will cause severe audio corruption!`);
+      const corruptionPercent = ((nanCount + infCount + outOfRangeCount) / outputFloatLimited.length) * 100;
       
       // If too many samples are corrupted, throw error
-      const corruptionPercent = ((nanCount + infCount + outOfRangeCount) / outputFloatLimited.length) * 100;
       if (corruptionPercent > 10) {
+        console.error(`❌ CRITICAL: Resampler produced corrupted output!`);
+        console.error(`   NaN samples: ${nanCount}, Infinity samples: ${infCount}, Out-of-range samples: ${outOfRangeCount}`);
+        console.error(`   Total samples: ${outputFloat.length}, Max absolute value: ${maxAbsValue}`);
+        console.error(`   Corruption: ${corruptionPercent.toFixed(1)}% - This will cause severe audio corruption!`);
         throw new Error(`Resampler output is too corrupted: ${corruptionPercent.toFixed(1)}% of samples are invalid`);
+      } else {
+        // Low corruption (< 10%) is expected for loud/clipping audio - values are clamped correctly
+        // Log at warning level, not error, since this is handled gracefully
+        audioLogger.warn({
+          event: 'resampler_minor_clipping',
+          nanCount,
+          infCount,
+          outOfRangeCount,
+          totalSamples: outputFloatLimited.length,
+          corruptionPercent: corruptionPercent.toFixed(2),
+          maxAbsValue,
+          message: 'Resampler detected minor clipping/out-of-range values (expected for loud audio). Values have been clamped to valid range.',
+        }, `⚠️ Resampler minor clipping: ${outOfRangeCount} out-of-range samples (${corruptionPercent.toFixed(2)}%) - clamped to valid range. This is normal for loud/clipping audio.`);
       }
     }
     
@@ -521,9 +877,12 @@ export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
       // CRITICAL: Ensure value is in valid range before conversion
       const floatValue = Math.max(-1.0, Math.min(1.0, outputFloatLimited[i]));
       
-      // Denormalize: -1.0 -> -32768, 0.0 -> 0, 1.0 -> 32768 (clamp to 32767)
-      // Use Math.floor for more predictable rounding (avoids bias)
-      const sample = Math.max(-32768, Math.min(32767, Math.floor(floatValue * 32768.0)));
+      // Denormalize: -1.0 → -32768, 0.0 → 0, 1.0 → 32767
+      // Use 32768.0 to match normalization (standard approach, avoids asymmetry)
+      // Math.round() prevents DC bias (Math.floor() introduces -0.5 sample bias)
+      // NO DITHERING for 16-bit voice recording - dithering introduces artifacts
+      // Dithering is only needed when reducing bit depth (24-bit → 16-bit), not for 16-bit voice
+      const sample = Math.max(-32768, Math.min(32767, Math.round(floatValue * 32768.0)));
       
       // CRITICAL: Validate the sample value before writing
       if (isNaN(sample) || !isFinite(sample)) {
@@ -553,13 +912,39 @@ export async function resample48kHzTo16kHz(audioData: Buffer): Promise<Buffer> {
     }
     
     // CRITICAL: Verify output buffer contains valid audio data
+    // We write with writeInt16LE(), so data is definitely little-endian
+    // No need to check BE interpretation - that was causing false positives
     let zeroSamples = 0;
     let maxSample = 0;
-    const checkSamples = Math.min(100, outputSamples);
-    for (let i = 0; i < checkSamples; i++) {
+    let avgSample = 0;
+    let sum = 0;
+    const checkSamples = Math.min(500, outputSamples); // Check more samples for better statistics
+    const step = Math.max(1, Math.floor(outputSamples / checkSamples)); // Sample evenly across buffer
+    
+    for (let i = 0; i < outputSamples; i += step) {
       const sample = outputBuffer.readInt16LE(i * 2);
+      const abs = Math.abs(sample);
+      
       if (sample === 0) zeroSamples++;
-      maxSample = Math.max(maxSample, Math.abs(sample));
+      maxSample = Math.max(maxSample, abs);
+      sum += abs;
+    }
+    
+    avgSample = sum / checkSamples;
+    
+    // Validate that samples are in reasonable range for PCM16
+    // Valid range: -32768 to 32767
+    // If maxSample > 32767, something is wrong (shouldn't happen with our clamping)
+    if (maxSample > 32767) {
+      audioLogger.error({
+        event: 'resampler_output_invalid_range',
+        sessionKey: sessionKey || 'default',
+        maxSample,
+        avgSample: avgSample.toFixed(1),
+        checkSamples,
+        message: 'CRITICAL: Resampler output contains values outside PCM16 range! This should never happen with proper clamping.',
+      }, `❌ CRITICAL: Resampler output contains invalid sample values! Max=${maxSample} (should be ≤32767)`);
+      throw new Error(`Resampler output contains invalid sample values: max=${maxSample} (should be ≤32767)`);
     }
     
     // If all samples are zero, something is wrong

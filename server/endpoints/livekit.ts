@@ -10,14 +10,34 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { Firestore } from 'firebase-admin/firestore';
 // Note: Transcription functions are deprecated in async architecture
 // Transcription sessions are now managed in PostgreSQL by the transcription worker
-import { resample48kHzTo16kHz } from '../services/audio-processor.js';
-import { recordChunk, cleanupParticipantBuffer } from '../services/audio-recorder.js';
+import { resample48kHzTo16kHz, cleanupResamplerForSession, clearAllResamplerState } from '../services/audio-processor.js';
+import { recordChunk, cleanupParticipantBuffer, clearAllStreamingSessions } from '../services/audio-recorder.js';
 import { audioLogger, logAudioChunk, logBackpressure } from '../utils/logger.js';
+// Debug audio saving removed - production recordChunk() saves to GCS
 
 // Cache for LiveKit credentials (from Secret Manager)
 let cachedLiveKitCredentials: { apiKey: string; apiSecret: string } | null = null;
 let liveKitCredentialsCacheTime: number = 0;
 const LIVEKIT_CREDENTIALS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+// Lock sample rates per session to prevent detection inconsistencies
+// Key: sessionKey (callId:participantEmail), Value: locked sample rate
+const sessionSampleRates = new Map<string, number>();
+
+// Helper function to normalize byte order value from environment variable
+// Only supports little-endian (or small-endian as alias)
+// Big-endian support has been removed - LiveKit always sends little-endian
+function normalizeByteOrder(value: string | undefined): 'little-endian' {
+  if (!value) return 'little-endian';
+  const normalized = value.toLowerCase().trim();
+  // Support 'small-endian' as alias for 'little-endian' (small = little)
+  if (normalized === 'small-endian' || normalized === 'little-endian') {
+    return 'little-endian';
+  }
+  // Default to little-endian if unknown value
+  console.warn(`⚠️ Unknown AUDIO_BYTE_ORDER value: "${value}", defaulting to 'little-endian'`);
+  return 'little-endian';
+}
 
 // Get LiveKit credentials from Secret Manager (used for both dev and prod)
 async function getLiveKitCredentials(
@@ -997,8 +1017,10 @@ export function setupLiveKitEndpoints(
       // Process audio chunk - resample and record
       // NOTE: This endpoint is deprecated in favor of WebSocket, but keeping for backward compatibility
       const audioBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body);
+      // Create session key for per-session resampling
+      const sessionKey = `${callId}:${participantEmail}`;
       // Resample from 48kHz to 16kHz for AssemblyAI compatibility
-      const resampledAudio = await resample48kHzTo16kHz(audioBuffer);
+      const resampledAudio = await resample48kHzTo16kHz(audioBuffer, sessionKey);
       // Pass explicit sample rate: 16kHz after resampling
       await recordChunk(callId as string, participantEmail as string, resampledAudio, orgSlug, 16000);
 
@@ -1037,6 +1059,17 @@ export function setupLiveKitEndpoints(
  * This should be called after the HTTP server is created
  */
 export function setupLiveKitWebSocketServer(server: any): void {
+  // CRITICAL: Clear all module-level state on server startup/restart
+  // This ensures queues and state don't persist across server restarts
+  const sessionSampleRatesSize = sessionSampleRates.size;
+  sessionSampleRates.clear();
+  clearAllResamplerState();
+  clearAllStreamingSessions();
+  console.log('🧹 Cleared all module-level state on server startup');
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1046',message:'Server startup - clearing all module-level state',data:{sessionSampleRatesSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+  // #endregion
+  
   const wss = new WebSocketServer({ 
     noServer: true  // Don't auto-upgrade, handle manually
   });
@@ -1161,12 +1194,43 @@ export function setupLiveKitWebSocketServer(server: any): void {
     const BACKPRESSURE_DROP_THRESHOLD = 100; // Drop chunks at 100 chunks
     const BACKPRESSURE_WARNING_THRESHOLD = 30; // Warn at 30 chunks
     
+    /**
+     * Detect actual sample rate from chunk size
+     * LiveKit typically sends 20ms chunks, so we can infer sample rate from size
+     * 
+     * @param chunkSize - Size of audio chunk in bytes
+     * @param chunkDurationMs - Expected chunk duration in milliseconds (default: 20ms)
+     * @returns Detected sample rate (rounded to nearest standard rate)
+     */
+    function detectSampleRate(chunkSize: number, chunkDurationMs: number = 20): number {
+      // CRITICAL: This assumes MONO audio (1 channel)
+      // If audio is STEREO (2 channels), this calculation will be WRONG
+      // Stereo: chunkSize = samples * 2 channels * 2 bytes = samples * 4
+      // Mono: chunkSize = samples * 1 channel * 2 bytes = samples * 2
+      // So for stereo, we'd detect 2x the actual sample rate!
+      const samples = chunkSize / 2; // 16-bit = 2 bytes per sample (ASSUMES MONO)
+      const durationSeconds = chunkDurationMs / 1000;
+      const detectedRate = Math.round(samples / durationSeconds);
+      
+      // Round to nearest standard sample rate
+      const standardRates = [8000, 16000, 22050, 44100, 48000];
+      const closestRate = standardRates.reduce((prev, curr) => 
+        Math.abs(curr - detectedRate) < Math.abs(prev - detectedRate) ? curr : prev
+      );
+      
+      // WARNING: If detected rate is unusually high (e.g., 96kHz), it might be stereo interpreted as mono
+      // Note: We can't log here because validParticipantEmail/validCallId are not in scope
+      // This warning will be logged in the calling code if needed
+      
+      return closestRate;
+    }
+
     // CRITICAL: Chunk ordering queue - async pipeline (parallel processing, sequential writes)
     interface QueuedChunk {
       chunkNumber: number;
       chunkData: Buffer;
       orgSlug: string | undefined;
-      processingPromise: Promise<Buffer>; // Processing happens immediately in parallel
+      processingPromise: Promise<{ audio: Buffer; sampleRate: number }>; // Processing happens immediately in parallel, returns audio + detected rate
       resolve: () => void;
       reject: (error: Error) => void;
     }
@@ -1183,6 +1247,14 @@ export function setupLiveKitWebSocketServer(server: any): void {
         processing: false,
         nextExpectedChunk: 1,
       });
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1209',message:'Created new chunk queue for session',data:{sessionKey,queueSize:0,nextExpectedChunk:1},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
+    } else {
+      // #region agent log
+      const existingQueue = chunkQueue.get(sessionKey);
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1215',message:'Reusing existing chunk queue (should not happen on new connection)',data:{sessionKey,queueSize:existingQueue?.queue.length||0,nextExpectedChunk:existingQueue?.nextExpectedChunk||0,processing:existingQueue?.processing||false},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
     }
     
     /**
@@ -1221,14 +1293,29 @@ export function setupLiveKitWebSocketServer(server: any): void {
           }
           
           // Wait for processing to complete (may already be done if fast)
-          const resampledAudio = await chunk.processingPromise;
+          const { audio: processedAudio, sampleRate: detectedSampleRate } = await chunk.processingPromise;
+          
+          // Log sample rate being passed to recordChunk (especially for first chunk)
+          if (chunk.chunkNumber === 1) {
+            audioLogger.info({
+              event: 'recording_chunk_with_sample_rate',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              chunkNumber: 1,
+              processedAudioSize: processedAudio.length,
+              sampleRate: detectedSampleRate,
+            }, `📝 Recording chunk 1 with sample rate ${detectedSampleRate}Hz (${processedAudio.length} bytes)`);
+          }
           
           // CRITICAL: Write sequentially (this ensures order)
-          const actualSampleRate = 48000; // TEST: Use 48kHz for raw audio (normally 16000 after resampling)
-          if (chunk.chunkNumber === 1 || chunk.chunkNumber % 100 === 0) {
-            console.log(`🧪 TEST MODE: Recording raw audio at ${actualSampleRate}Hz, buffer size: ${resampledAudio.length} bytes (chunk ${chunk.chunkNumber})`);
-          }
-          await recordChunk(validCallId, validParticipantEmail, resampledAudio, chunk.orgSlug, actualSampleRate);
+          // Use the detected sample rate from processing (ensures header matches data)
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1269',message:'Writing chunk to recorder',data:{sessionKey,chunkNumber:chunk.chunkNumber,processedAudioSize:processedAudio.length,detectedSampleRate,queueDepth:queueState.queue.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+          // #endregion
+          await recordChunk(validCallId, validParticipantEmail, processedAudio, chunk.orgSlug, detectedSampleRate);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1272',message:'Chunk written to recorder',data:{sessionKey,chunkNumber:chunk.chunkNumber,processedAudioSize:processedAudio.length,detectedSampleRate},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+          // #endregion
           
           // Success - update circuit breaker
           if (backpressureState.circuitBreakerState === 'half-open') {
@@ -1368,46 +1455,136 @@ export function setupLiveKitWebSocketServer(server: any): void {
     }
     
     /**
-     * Process audio chunk (resampling only - returns resampled buffer)
+     * Process audio chunk (detects sample rate and resamples if needed)
      * This runs in parallel for multiple chunks
+     * Returns both processed audio and detected sample rate
      */
     async function processChunkAsync(
       chunkData: Buffer,
       chunkNumber: number,
       resolvedOrgSlug: string | undefined
-    ): Promise<Buffer> {
+    ): Promise<{ audio: Buffer; sampleRate: number }> {
       try {
         const originalSize = chunkData.length;
-        const BYPASS_RESAMPLING = true; // TEST: Save raw 48kHz audio to diagnose distortion
-
-        // DIAGNOSTIC: Log first chunk to verify sample rate assumption
+        
+        // CRITICAL: Detect actual sample rate from chunk size (don't assume!)
+        // LiveKit typically sends 20ms chunks, so we can infer sample rate
+        // WARNING: This assumes MONO - if stereo, detected rate will be 2x too high!
+        const detectedInputRate = detectSampleRate(originalSize, 20);
+        
+        // WARNING: If detected rate is unusually high (e.g., 96kHz), it might be stereo interpreted as mono
+        if (detectedInputRate > 48000) {
+          audioLogger.warn({
+            event: 'unusual_sample_rate_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber,
+            chunkSize: originalSize,
+            detectedInputRate,
+            message: 'Detected unusually high sample rate - might be stereo audio interpreted as mono! This will cause sample rate mismatch issues.',
+          }, `⚠️ WARNING: Detected sample rate ${detectedInputRate}Hz - might be stereo interpreted as mono!`);
+        }
+        
+        // CRITICAL: Lock sample rate per session to prevent detection inconsistencies
+        // Detection can vary between chunks due to timing variations, but the actual
+        // audio source has a fixed sample rate. Lock it on the first chunk.
+        const sessionKey = `${validCallId}:${validParticipantEmail}`;
+        let lockedInputRate = sessionSampleRates.get(sessionKey);
+        
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1475',message:'Sample rate check',data:{sessionKey,lockedInputRate:lockedInputRate||null,detectedInputRate,chunkNumber,originalSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        
+        if (!lockedInputRate) {
+          // First chunk - lock the detected rate
+          lockedInputRate = detectedInputRate;
+          sessionSampleRates.set(sessionKey, lockedInputRate);
+          audioLogger.info({
+            event: 'sample_rate_locked',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            lockedRate: lockedInputRate,
+            firstChunkDetectedRate: detectedInputRate,
+            chunkNumber,
+          }, `🔒 Locked sample rate to ${lockedInputRate}Hz for session (first chunk detected ${detectedInputRate}Hz)`);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1488',message:'Sample rate locked',data:{sessionKey,lockedInputRate,detectedInputRate,chunkNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+        } else if (detectedInputRate !== lockedInputRate) {
+          // Subsequent chunk with different detection - log warning but use locked rate
+          audioLogger.warn({
+            event: 'sample_rate_detection_mismatch',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            lockedRate: lockedInputRate,
+            detectedRate: detectedInputRate,
+            chunkNumber,
+            originalSize,
+          }, `⚠️ Chunk ${chunkNumber} detected as ${detectedInputRate}Hz but using locked ${lockedInputRate}Hz (prevents sample rate mixing)`);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1499',message:'Sample rate mismatch',data:{sessionKey,lockedInputRate,detectedInputRate,chunkNumber},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+          // #endregion
+        }
+        
+        // Use locked rate for all processing (ensures consistency)
+        const inputSampleRate = lockedInputRate;
+        
+        // LiveKit always sends PCM16 audio in little-endian format (per documentation)
+        // No byte order conversion needed - data is already in the correct format
+        
+        // Target sample rate for storage (16kHz for transcription compatibility)
+        const targetSampleRate = 16000;
+        
+        // DIAGNOSTIC: Log first chunk with detection results
         if (chunkNumber === 1) {
-          if (BYPASS_RESAMPLING) {
-            console.log(`🧪🧪🧪 TEST MODE ACTIVE: Bypassing resampling, saving raw 48kHz audio 🧪🧪🧪`);
-            console.log(`   ⚠️  WARNING: This is for diagnostic purposes only!`);
-            console.log(`   ⚠️  Remember to revert BYPASS_RESAMPLING to false after testing!`);
-          }
-          console.log(`🔍 First audio chunk diagnostic: ${originalSize} bytes`);
-          console.log(`   If this is 48kHz PCM16 mono: ${originalSize} bytes = ${originalSize / 2} samples = ${(originalSize / 2) / 48000} seconds`);
-          console.log(`   If this is 16kHz PCM16 mono: ${originalSize} bytes = ${originalSize / 2} samples = ${(originalSize / 2) / 16000} seconds`);
-          console.log(`   BYPASS_RESAMPLING = ${BYPASS_RESAMPLING} - ${BYPASS_RESAMPLING ? 'Skipping resampling, using original audio' : 'Resampling from 48kHz to 16kHz'}`);
+          audioLogger.info({
+            event: 'first_chunk_diagnostic',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber: 1,
+            originalSize,
+            detectedInputRate,
+            targetSampleRate,
+          }, `🔍 First audio chunk diagnostic: ${originalSize} bytes, detected ${detectedInputRate}Hz, target ${targetSampleRate}Hz`);
           
-          // CRITICAL: Detect actual sample rate by analyzing chunk size
-          const expected48kHzSize = 960 * 2; // 1920 bytes
-          const expected16kHzSize = 320 * 2; // 640 bytes
+          // Verify detection makes sense
+          const expected48kHzSize = 960 * 2; // 1920 bytes for 20ms at 48kHz
+          const expected16kHzSize = 320 * 2; // 640 bytes for 20ms at 16kHz
           const sizeDiff48kHz = Math.abs(originalSize - expected48kHzSize);
           const sizeDiff16kHz = Math.abs(originalSize - expected16kHzSize);
           
-          console.log(`   Expected size for 48kHz 20ms chunk: ${expected48kHzSize} bytes (diff: ${sizeDiff48kHz})`);
-          console.log(`   Expected size for 16kHz 20ms chunk: ${expected16kHzSize} bytes (diff: ${sizeDiff16kHz})`);
+          audioLogger.info({
+            event: 'chunk_size_analysis',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            expected48kHzSize,
+            expected16kHzSize,
+            sizeDiff48kHz,
+            sizeDiff16kHz,
+          }, `Expected sizes: 48kHz=${expected48kHzSize} bytes (diff=${sizeDiff48kHz}), 16kHz=${expected16kHzSize} bytes (diff=${sizeDiff16kHz})`);
           
-          if (sizeDiff16kHz < sizeDiff48kHz) {
-            console.error(`   ❌ CRITICAL: Audio appears to be 16kHz, not 48kHz!`);
-            console.error(`   This would cause "slow and deep" sound when played at 48kHz.`);
-            console.error(`   Actual size: ${originalSize}, Expected 16kHz: ${expected16kHzSize}, Expected 48kHz: ${expected48kHzSize}`);
+          if (detectedInputRate === 16000 && sizeDiff16kHz < sizeDiff48kHz) {
+            audioLogger.info({
+              event: 'no_resampling_needed',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+            }, `✅ Audio is already 16kHz - no resampling needed`);
+          } else if (detectedInputRate === 48000) {
+            audioLogger.info({
+              event: 'resampling_required',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+            }, `✅ Audio is 48kHz - will resample to 16kHz`);
+          } else {
+            audioLogger.warn({
+              event: 'unexpected_detected_rate',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              detectedInputRate,
+            }, `⚠️ Detected rate ${detectedInputRate}Hz doesn't match expected rates. Proceeding with resampling if needed.`);
           }
           
-          // CRITICAL: Check if audio data looks valid
+          // Check if audio data looks valid
           if (chunkData.length >= 20) {
             const samples: Array<{ le: number; be: number }> = [];
             let peak = 0;
@@ -1417,53 +1594,172 @@ export function setupLiveKitWebSocketServer(server: any): void {
               samples.push({ le: sampleLE, be: sampleBE });
               peak = Math.max(peak, Math.abs(sampleLE), Math.abs(sampleBE));
             }
-            console.log(`   First 10 samples (as little-endian): ${samples.map(s => s.le).join(', ')}`);
-            console.log(`   Peak amplitude: ${peak} (${peak > 0 ? (20 * Math.log10(peak / 32768)).toFixed(2) : '-Inf'} dB)`);
+            const peakDb = peak > 0 ? (20 * Math.log10(peak / 32768)).toFixed(2) : '-Inf';
+            audioLogger.info({
+              event: 'audio_samples_check',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              firstSamples: samples.map(s => s.le),
+              peak,
+              peakDb,
+            }, `First 10 samples: [${samples.map(s => s.le).join(', ')}], Peak: ${peak} (${peakDb} dB)`);
             
             if (peak < 100) {
-              console.warn(`   ⚠️ WARNING: Audio is very quiet (peak=${peak}). This might indicate a problem.`);
+              audioLogger.warn({
+                event: 'quiet_audio_warning',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                peak,
+              }, `⚠️ WARNING: Audio is very quiet (peak=${peak}). This might indicate a problem.`);
             }
           }
         }
 
-        // Resample from 48kHz to 16kHz
-        let resampledAudio: Buffer;
-        if (BYPASS_RESAMPLING) {
-          resampledAudio = chunkData; // TEST: Use raw 48kHz audio
+        const bypassResampling = process.env.BYPASS_RESAMPLING === 'true';
+        
+        // Process audio based on detected rate
+        let processedAudio: Buffer;
+        let outputSampleRate: number;
+        
+        if (inputSampleRate === targetSampleRate) {
+          // Already at target rate - use data as-is (already little-endian)
+          processedAudio = chunkData;
+          outputSampleRate = targetSampleRate;
+          
           if (chunkNumber === 1 || chunkNumber % 100 === 0) {
-            console.log(`🧪 TEST MODE: Bypassing resampling, using raw ${chunkData.length} bytes at 48kHz (chunk ${chunkNumber})`);
-          }
-        } else {
-          resampledAudio = await resample48kHzTo16kHz(chunkData);
-          const resampledSize = resampledAudio.length;
-          
-          // Verify resampling worked (should be ~1/3 the size: 48kHz -> 16kHz = 1/3)
-          const expectedSize = Math.floor(originalSize / 3);
-          const sizeDiff = Math.abs(resampledSize - expectedSize);
-          const sizeDiffPercent = (sizeDiff / expectedSize) * 100;
-          
-          if (sizeDiffPercent > 15) {
-            audioLogger.error({
-              event: 'resampling_verification_failed',
+            audioLogger.info({
+              event: 'no_resampling_needed',
               participantEmail: validParticipantEmail,
               callId: validCallId,
+              chunkNumber,
+              inputSampleRate,
+              targetSampleRate,
+            }, `✓ Using audio as-is (already ${targetSampleRate}Hz, chunk ${chunkNumber})`);
+          }
+        } else if (inputSampleRate === 48000) {
+          // BYPASS MODE: Skip resampling if enabled (for debugging)
+          if (bypassResampling) {
+            processedAudio = chunkData; // Use data as-is (already little-endian)
+            outputSampleRate = 48000; // Use 48kHz instead of 16kHz
+            audioLogger.warn({
+              event: 'resampling_bypassed',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              chunkNumber,
+              warning: 'BYPASS_RESAMPLING=true - saving 48kHz directly (for debugging only)',
+            }, `⚠️ BYPASS: Skipping resampling, saving 48kHz directly (chunk ${chunkNumber})`);
+          } else {
+            // Resample from 48kHz to 16kHz
+            audioLogger.info({
+              event: 'resampling_started',
+              participantEmail: validParticipantEmail,
+              callId: validCallId,
+              chunkNumber,
               originalSize,
-              resampledSize,
-              expectedSize,
-              sizeDiffPercent,
-            }, `Resampling verification failed for ${validParticipantEmail}: original=${originalSize} bytes, resampled=${resampledSize} bytes, expected~${expectedSize} bytes (${sizeDiffPercent.toFixed(1)}% difference)`);
-            throw new Error(`Resampling verification failed: ${sizeDiffPercent.toFixed(1)}% difference`);
+              inputSampleRate,
+              targetSampleRate,
+            }, `🔄 Resampling chunk ${chunkNumber}: ${originalSize} bytes @ ${inputSampleRate}Hz → ${targetSampleRate}Hz`);
+            
+            // Use per-session resampler for stateful resampling (prevents discontinuities)
+            // Data is already in little-endian format (LiveKit always sends LE)
+            processedAudio = await resample48kHzTo16kHz(chunkData, sessionKey);
+            outputSampleRate = targetSampleRate;
+            
+            const resampledSize = processedAudio.length;
+            const expectedSize = Math.floor(originalSize / 3);
+            const sizeDiff = Math.abs(resampledSize - expectedSize);
+            const sizeDiffPercent = (sizeDiff / expectedSize) * 100;
+            
+            // Always log first chunk resampling result
+            if (chunkNumber === 1) {
+              audioLogger.info({
+                event: 'resampling_completed',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                chunkNumber: 1,
+                originalSize,
+                resampledSize,
+                expectedSize,
+                sizeDiff,
+                sizeDiffPercent,
+              }, `✅ Resampling completed for chunk 1: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, diff=${sizeDiffPercent.toFixed(1)}%)`);
+            }
+            
+            if (sizeDiffPercent > 15) {
+              audioLogger.error({
+                event: 'resampling_verification_failed',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                originalSize,
+                resampledSize,
+                expectedSize,
+                sizeDiffPercent,
+                inputSampleRate,
+              }, `❌ Resampling verification failed for ${validParticipantEmail}: original=${originalSize} bytes, resampled=${resampledSize} bytes, expected~${expectedSize} bytes (${sizeDiffPercent.toFixed(1)}% difference)`);
+              throw new Error(`Resampling verification failed: ${sizeDiffPercent.toFixed(1)}% difference`);
+            }
+            
+            // Log verification success every 100 chunks (to avoid spam)
+            verificationLogCount++;
+            if (verificationLogCount % 100 === 0) {
+              audioLogger.info({
+                event: 'resampling_verification_success',
+                participantEmail: validParticipantEmail,
+                callId: validCallId,
+                chunkNumber,
+                originalSize,
+                resampledSize,
+                expectedSize,
+                sizeDiffPercent,
+              }, `✓ Resampling verified for ${participantEmail}: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, ${sizeDiffPercent.toFixed(1)}% difference)`);
+            }
           }
+        } else {
+          // Unexpected rate - log warning but try to resample anyway
+          audioLogger.warn({
+            event: 'unexpected_sample_rate_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber,
+            inputSampleRate,
+            targetSampleRate,
+            chunkSize: originalSize,
+          }, `⚠️ Unexpected input sample rate ${inputSampleRate}Hz. Attempting to resample to ${targetSampleRate}Hz.`);
           
-          // Log verification success every 100 chunks (to avoid spam)
-          verificationLogCount++;
-          if (verificationLogCount % 100 === 0) {
-            console.log(`✓ Resampling verified for ${participantEmail}: ${originalSize} bytes → ${resampledSize} bytes (expected ~${expectedSize} bytes, ${sizeDiffPercent.toFixed(1)}% difference)`);
-          }
+          // Try resampling (assuming it's 48kHz-like)
+          // Use per-session resampler for stateful resampling
+          processedAudio = await resample48kHzTo16kHz(chunkData, sessionKey);
+          outputSampleRate = targetSampleRate;
+          
+          audioLogger.warn({
+            event: 'unexpected_sample_rate_resampled',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber,
+            inputSampleRate,
+            targetSampleRate,
+            chunkSize: originalSize,
+            resampledSize: processedAudio.length,
+          }, `Unexpected sample rate ${inputSampleRate}Hz detected, resampled to ${targetSampleRate}Hz (${originalSize} → ${processedAudio.length} bytes)`);
         }
         
-        // Return resampled audio (writing happens in write queue)
-        return resampledAudio;
+        // Log final result for first chunk
+        if (chunkNumber === 1) {
+          audioLogger.info({
+            event: 'chunk_processing_complete',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkNumber: 1,
+            originalSize,
+            processedSize: processedAudio.length,
+            inputSampleRate,
+            outputSampleRate,
+            resampled: inputSampleRate !== outputSampleRate,
+          }, `✅ Chunk 1 processing complete: ${originalSize} bytes @ ${inputSampleRate}Hz → ${processedAudio.length} bytes @ ${outputSampleRate}Hz (resampled: ${inputSampleRate !== outputSampleRate})`);
+        }
+        
+        // Return processed audio with detected sample rate
+        return { audio: processedAudio, sampleRate: outputSampleRate };
       } catch (error: any) {
         audioLogger.error({
           event: 'resampling_error',
@@ -1485,41 +1781,105 @@ export function setupLiveKitWebSocketServer(server: any): void {
         return;
       }
       
+      // CRITICAL: Check if stream is Ogg/Opus format (starts with "OggS" header)
+      // LiveKit TrackEgress exports Opus tracks as Ogg/Opus, not PCM16
+      // If we receive Ogg/Opus but treat it as PCM16, it will look like garbage
+      if (audioChunkCount === 0 && data.length >= 4) {
+        const header = data.toString('ascii', 0, 4);
+        if (header === 'OggS') {
+          audioLogger.error({
+            event: 'ogg_opus_format_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            header,
+            message: 'CRITICAL: Received Ogg/Opus format from LiveKit egress, but code is treating it as PCM16! Audio will be corrupted. Need to decode Opus, not byte-swap.',
+          }, `❌ CRITICAL: Stream starts with "OggS" - this is Ogg/Opus format, not PCM16! The code is incorrectly treating compressed Opus data as raw PCM16. This will cause severe audio corruption.`);
+          // Continue processing but log the error - don't crash the connection
+        } else {
+          // Log that we're receiving PCM (expected format)
+          audioLogger.debug({
+            event: 'pcm_format_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            header: header.split('').map(c => c.charCodeAt(0)).join(','),
+            message: 'Stream does not start with OggS - assuming PCM16 format (expected)',
+          }, `✅ Stream format check: Not Ogg/Opus (header: ${header.split('').map(c => `0x${c.charCodeAt(0).toString(16)}`).join(' ')}) - treating as PCM16`);
+        }
+      }
+      
       audioChunkCount++;
       const now = Date.now();
       
-      // CRITICAL: Validate audio data IMMEDIATELY (before any processing)
-      // Informational byte order diagnostic on first chunk (for debugging only)
-      // Note: Actual byte order handling is done in audio-recorder.ts based on configuration
-      if (audioChunkCount === 1 && data.length >= 20) {
-        const samplesLE: number[] = [];
-        const samplesBE: number[] = [];
-        for (let i = 0; i < Math.min(10, data.length / 2); i++) {
-          samplesLE.push(data.readInt16LE(i * 2));
-          samplesBE.push(data.readInt16BE(i * 2));
+      // CRITICAL: Check for potential format issues even with correct PCM format
+      // 1. Sample rate mismatch (48k vs 16k) → chipmunk/slow
+      // 2. Channels/interleaving (stereo interpreted as mono) → weird artifacts
+      // 3. Signed vs unsigned (PCM16 should be signed) → harsh distortion
+      
+      // Check 1: Detect if this might be stereo (would cause sample rate misdetection)
+      // For 20ms chunk at 48kHz mono: 48000 * 0.02 * 2 = 1920 bytes
+      // For 20ms chunk at 48kHz stereo: 48000 * 0.02 * 2 * 2 = 3840 bytes
+      // If chunk size suggests stereo but we're treating as mono, sample rate detection will be wrong
+      if (audioChunkCount === 1) {
+        const expectedMono48kHz = 48000 * 0.02 * 2; // 1920 bytes for 20ms @ 48kHz mono
+        const expectedStereo48kHz = 48000 * 0.02 * 2 * 2; // 3840 bytes for 20ms @ 48kHz stereo
+        const expectedMono16kHz = 16000 * 0.02 * 2; // 640 bytes for 20ms @ 16kHz mono
+        const expectedStereo16kHz = 16000 * 0.02 * 2 * 2; // 1280 bytes for 20ms @ 16kHz stereo
+        
+        const sizeDiffMono48 = Math.abs(data.length - expectedMono48kHz);
+        const sizeDiffStereo48 = Math.abs(data.length - expectedStereo48kHz);
+        const sizeDiffMono16 = Math.abs(data.length - expectedMono16kHz);
+        const sizeDiffStereo16 = Math.abs(data.length - expectedStereo16kHz);
+        
+        // Check if size matches stereo better than mono
+        // CRITICAL: Only flag as stereo if stereo match is significantly better AND mono match is poor
+        // This prevents false positives when chunk size exactly matches mono (e.g., 1920 bytes = mono 48kHz)
+        // Example: 1920 bytes matches mono 48kHz exactly (diff=0), but stereo 16kHz diff=640
+        // We should NOT flag this as stereo since mono match is perfect
+        const minMonoDiff = Math.min(sizeDiffMono48, sizeDiffMono16);
+        const minStereoDiff = Math.min(sizeDiffStereo48, sizeDiffStereo16);
+        const stereoMatchBetter = minStereoDiff < minMonoDiff;
+        const monoMatchPoor = minMonoDiff > 100; // Mono match must be > 100 bytes off
+        
+        if (stereoMatchBetter && monoMatchPoor) {
+          audioLogger.error({
+            event: 'stereo_audio_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            chunkSize: data.length,
+            expectedMono48kHz,
+            expectedStereo48kHz,
+            expectedMono16kHz,
+            expectedStereo16kHz,
+            message: 'CRITICAL: Audio chunk size suggests STEREO format, but code is treating it as MONO! This will cause sample rate misdetection and weird artifacts. Need to handle stereo interleaving.',
+          }, `❌ CRITICAL: Chunk size (${data.length} bytes) suggests STEREO format, but code assumes MONO! This will cause sample rate misdetection and audio artifacts.`);
         }
+      }
+      
+      // Check 2: Verify signed PCM16 (not unsigned)
+      // Signed PCM16 should have values in range -32768 to 32767
+      // If we see values > 32767, it might be unsigned (0-65535 range)
+      if (audioChunkCount === 1 && data.length >= 4) {
+        const sample1 = data.readInt16LE(0);
+        const sample2 = data.readInt16LE(2);
+        const sample1Unsigned = data.readUInt16LE(0);
+        const sample2Unsigned = data.readUInt16LE(2);
         
-        const lePeak = Math.max(...samplesLE.map(Math.abs));
-        const bePeak = Math.max(...samplesBE.map(Math.abs));
-        const leAvg = samplesLE.reduce((a, b) => a + Math.abs(b), 0) / samplesLE.length;
-        const beAvg = samplesBE.reduce((a, b) => a + Math.abs(b), 0) / samplesBE.length;
+        // Check if unsigned interpretation makes more sense (values > 32767)
+        const maxSigned = Math.max(Math.abs(sample1), Math.abs(sample2));
+        const maxUnsigned = Math.max(sample1Unsigned, sample2Unsigned);
         
-        // Informational logging only - no action taken here
-        // Actual byte order handling is done in audio-recorder.ts based on configuration
-        audioLogger.info({
-          event: 'byte_order_diagnostic_received',
-          participantEmail: validParticipantEmail,
-          callId: validCallId,
-          chunkNumber: audioChunkCount,
-          bufferLength: data.length,
-          samplesLE: samplesLE.slice(0, 5),
-          samplesBE: samplesBE.slice(0, 5),
-          lePeak,
-          bePeak,
-          leAvg: Math.round(leAvg * 100) / 100,
-          beAvg: Math.round(beAvg * 100) / 100,
-          note: 'Informational only - byte order handling is done in audio-recorder.ts',
-        }, `Byte order diagnostic (received from LiveKit): LE peak=${lePeak}, BE peak=${bePeak}, LE avg=${leAvg.toFixed(2)}, BE avg=${beAvg.toFixed(2)} (informational only)`);
+        if (maxUnsigned > 32767 && maxSigned < 1000) {
+          audioLogger.error({
+            event: 'unsigned_pcm_detected',
+            participantEmail: validParticipantEmail,
+            callId: validCallId,
+            sample1Signed: sample1,
+            sample2Signed: sample2,
+            sample1Unsigned: sample1Unsigned,
+            sample2Unsigned: sample2Unsigned,
+            message: 'CRITICAL: Audio appears to be UNSIGNED PCM (0-65535), but code is treating it as SIGNED PCM16 (-32768 to 32767)! This will cause harsh distortion. Need to convert unsigned to signed.',
+          }, `❌ CRITICAL: Audio appears to be UNSIGNED PCM (samples: ${sample1Unsigned}, ${sample2Unsigned}), but code treats it as SIGNED! This will cause harsh distortion.`);
+        }
       }
       
       const samples = new Int16Array(data.length / 2);
@@ -1785,6 +2145,20 @@ export function setupLiveKitWebSocketServer(server: any): void {
       
       // Clean up chunk queue
       chunkQueue.delete(sessionKey);
+      
+      // Clean up pending chunks counter
+      pendingChunks.delete(sessionKey);
+      
+      // Clean up resampler for this session (prevent memory leaks)
+      cleanupResamplerForSession(sessionKey);
+      
+      // Clean up locked sample rate for this session
+      sessionSampleRates.delete(sessionKey);
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:2076',message:'WebSocket closed - cleaned up connection state',data:{sessionKey,finalQueueDepth,finalPending,chunkQueueSize:chunkQueue.size,pendingChunksSize:pendingChunks.size},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
+      // #endregion
+      
       
       // Clean up audio buffer for this participant
       cleanupParticipantBuffer(validCallId, validParticipantEmail).catch((error) => {

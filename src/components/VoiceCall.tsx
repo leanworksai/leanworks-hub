@@ -894,7 +894,7 @@ export function VoiceCallButton({
             <AlertDialogCancel onClick={() => proceedWithCall(false)}>
               No, Start Call Without Recording
             </AlertDialogCancel>
-            <AlertDialogAction onClick={() => proceedWithCall(true)} disabled>
+            <AlertDialogAction onClick={() => proceedWithCall(true)}>
               Yes, Enable Recording
             </AlertDialogAction>
           </AlertDialogFooter>
