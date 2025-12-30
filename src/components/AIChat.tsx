@@ -17,6 +17,7 @@ import { useOrg } from "@/contexts/OrgContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
 import { useAIChat } from "@/hooks/useAIChat";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { trackAIChat, trackError } from "@/lib/analytics";
 import type { Message, LikedByUser } from "@/components/chat/types";
@@ -28,6 +29,7 @@ export function AIChat() {
   const { toast } = useToast();
   const { data: allDomainUsers = [] } = useUsers();
   const { isOpen, setIsOpen, chatId } = useAIChat();
+  const isMobile = useIsMobile();
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedTeams, toggleTeam, clearSelection: clearSelectedTeams } = useSelectedTeams();
@@ -606,7 +608,14 @@ export function AIChat() {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed right-0 top-16 h-[calc(100vh-4rem)] w-full sm:w-96 border-l border-purple-200 bg-purple-50 z-30 flex flex-col shadow-lg overflow-hidden">
+    <div className={cn(
+      "fixed top-16 h-[calc(100vh-4rem)] flex flex-col shadow-lg overflow-hidden",
+      // Mobile: overlay entire screen under header
+      "left-0 right-0 w-full z-[60]",
+      // Desktop: right side panel
+      "sm:right-0 sm:left-auto sm:w-96 sm:z-30",
+      "border-l border-purple-200 bg-purple-50"
+    )}>
       {/* Messages */}
       <ScrollArea className="flex-1 min-h-0 overflow-hidden bg-purple-50">
         <div className="p-4 space-y-4">
