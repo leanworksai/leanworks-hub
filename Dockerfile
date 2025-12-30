@@ -3,6 +3,14 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install build dependencies for native modules (Python, make, g++, opus, etc.)
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    libc6-compat \
+    opus-dev
+
 # Copy package files
 COPY package*.json ./
 COPY bun.lockb* ./
@@ -21,8 +29,14 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install nginx
-RUN apk add --no-cache nginx
+# Install nginx and build dependencies for native modules
+RUN apk add --no-cache \
+    nginx \
+    python3 \
+    make \
+    g++ \
+    libc6-compat \
+    opus-dev
 
 # Copy package files and install dependencies (including tsx for running TypeScript server)
 COPY package*.json ./
