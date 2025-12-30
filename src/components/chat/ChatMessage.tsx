@@ -331,6 +331,15 @@ export function ChatMessage({
             </span>
           </div>
         )}
+        {/* Sender info for sent messages in AI chat (when displayName is "You") */}
+        {isSent && displayName === "You" && (
+          <div className="flex items-center gap-2 mb-1 px-1 justify-end">
+            <span className="text-xs text-muted-foreground">
+              {formatTimeInTimezone(timestamp, userTimezone)}
+            </span>
+            <p className="font-medium text-sm">{displayName}</p>
+          </div>
+        )}
         
         {/* Like button with likes */}
         <LikeButton
@@ -417,16 +426,11 @@ export function ChatMessage({
               ))}
             </div>
           )}
-          
-          {/* Timestamp for sent messages or at bottom */}
-          <p className="text-xs mt-1 opacity-60">
-            {formatTimeInTimezone(timestamp, userTimezone)}
-          </p>
         </div>
       </div>
       
-      {/* Avatar for sent messages */}
-      {isSent && (
+      {/* Avatar for sent messages - hidden when displayName is "You" (AI chat) */}
+      {isSent && displayName !== "You" && (
         <Avatar className="h-8 w-8 flex-shrink-0">
           <AvatarFallback className={getAvatarColor(currentUserEmail.toLowerCase())}>
             {displayInitials || <User className="h-4 w-4" />}

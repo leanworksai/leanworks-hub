@@ -1,7 +1,9 @@
-import { ReactNode, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
+import { ReactNode, useRef, useEffect, forwardRef, useImperativeHandle, useMemo } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChatMessage } from "./ChatMessage";
+import { DateSeparator } from "./DateSeparator";
 import { Message, ChannelMessage, LikedByUser } from "./types";
+import { useUserTimezone } from "@/hooks/useUserTimezone";
 
 const MESSAGE_LOAD_INCREMENT = 20;
 
@@ -52,6 +54,7 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   hideContext = false,
 }, ref) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const userTimezone = useUserTimezone();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -73,6 +76,75 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   const totalMessages = messages.length;
   const visibleMessages = messages.slice(-visibleCount);
   const hasMoreMessages = totalMessages > visibleCount;
+
+  // Helper function to get date string for a message (in user's timezone)
+  const getMessageDateString = (message: Message | ChannelMessage): string => {
+    const timestamp = message.timestamp instanceof Date 
+      ? message.timestamp 
+      : new Date(message.timestamp);
+    
+    // Get date string in user's timezone
+    const dateStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: userTimezone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+    }).format(timestamp);
+    
+    return dateStr;
+  };
+
+  // Messages with date separators
+  const messagesWithSeparators = useMemo(() => {
+    if (visibleMessages.length === 0) {
+      return [];
+    }
+
+    const result: ReactNode[] = [];
+    let lastDate: string | null = null;
+
+    visibleMessages.forEach((message, index) => {
+      const messageDate = getMessageDateString(message);
+      const timestamp = message.timestamp instanceof Date 
+        ? message.timestamp 
+        : new Date(message.timestamp);
+      
+      // Add date separator before first message or when date changed
+      if (index === 0 || (lastDate !== null && lastDate !== messageDate)) {
+        result.push(
+          <DateSeparator 
+            key={`date-separator-${message.id}-${index}`}
+            date={timestamp}
+            timezone={userTimezone}
+          />
+        );
+      }
+      
+      // Add the message
+      const { isSent, isLean, displayName, displayInitials } = getUserDisplayInfo(message);
+      result.push(
+        <ChatMessage
+          key={message.id}
+          message={message}
+          isSent={isSent}
+          isLean={isLean}
+          displayName={displayName}
+          displayInitials={displayInitials}
+          currentUserEmail={currentUserEmail}
+          onToggleLike={onToggleLike}
+          getLikedByUsers={getLikedByUsers}
+          onImageError={onImageError}
+          onDraftResponse={onDraftResponse}
+          isGeneratingDraft={isGeneratingDraft && generatingDraftMessageId === message.id}
+          hideContext={hideContext}
+        />
+      );
+      
+      lastDate = messageDate;
+    });
+
+    return result;
+  }, [visibleMessages, userTimezone, getUserDisplayInfo, currentUserEmail, onToggleLike, getLikedByUsers, onImageError, onDraftResponse, isGeneratingDraft, generatingDraftMessageId, hideContext]);
 
   if (messages.length === 0 && emptyState) {
     return (
@@ -99,28 +171,8 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
           </div>
         )}
 
-        {/* Messages */}
-        {visibleMessages.map((message) => {
-          const { isSent, isLean, displayName, displayInitials } = getUserDisplayInfo(message);
-          
-          return (
-            <ChatMessage
-              key={message.id}
-              message={message}
-              isSent={isSent}
-              isLean={isLean}
-              displayName={displayName}
-              displayInitials={displayInitials}
-              currentUserEmail={currentUserEmail}
-              onToggleLike={onToggleLike}
-              getLikedByUsers={getLikedByUsers}
-              onImageError={onImageError}
-              onDraftResponse={onDraftResponse}
-              isGeneratingDraft={isGeneratingDraft && generatingDraftMessageId === message.id}
-              hideContext={hideContext}
-            />
-          );
-        })}
+        {/* Messages with date separators */}
+        {messagesWithSeparators}
 
         {/* Loading indicator */}
         {isLoading && loadingIndicator}

@@ -541,8 +541,8 @@ export function AIChat() {
     let displayInitials: string;
     
     if (isSent) {
-      displayName = currentUserDisplayInfo.displayName;
-      displayInitials = currentUserDisplayInfo.initials;
+      displayName = "You";
+      displayInitials = "";
     } else if (isLean) {
       displayName = "lean";
       displayInitials = "L";

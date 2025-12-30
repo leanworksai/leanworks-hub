@@ -3,13 +3,12 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies for native modules (Python, make, g++, opus, etc.)
+# Install build dependencies for native modules (Python, make, g++, etc.)
 RUN apk add --no-cache \
     python3 \
     make \
     g++ \
-    libc6-compat \
-    opus-dev
+    libc6-compat
 
 # Copy package files
 COPY package*.json ./
@@ -29,18 +28,15 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install nginx and build dependencies for native modules
+# Install only runtime dependencies (nginx for serving static files)
 RUN apk add --no-cache \
-    nginx \
-    python3 \
-    make \
-    g++ \
-    libc6-compat \
-    opus-dev
+    nginx
 
-# Copy package files and install dependencies (including tsx for running TypeScript server)
+# Copy node_modules from builder stage (native modules already compiled)
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copy package files (needed for tsx and other runtime dependencies)
 COPY package*.json ./
-RUN npm ci
 
 # Copy built frontend files
 COPY --from=builder /app/dist /usr/share/nginx/html
