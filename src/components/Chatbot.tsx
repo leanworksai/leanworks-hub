@@ -2035,6 +2035,27 @@ export function Chatbot() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.email, projects, allTeamMembers, isOpen, selectedMember, isProjectChannel, lastReadTimestamps]);
 
+  // Open chat by default when user logs in (only once per session)
+  const hasOpenedOnLoginRef = useRef(false);
+  useEffect(() => {
+    if (user?.email && !hasOpenedOnLoginRef.current && !isOpen) {
+      // Check if user has explicitly closed the chat before
+      try {
+        const chatClosedKey = `chat_closed_${user.email.toLowerCase()}`;
+        const wasClosed = localStorage.getItem(chatClosedKey);
+        if (!wasClosed) {
+          // User hasn't closed it before, open it by default
+          setIsOpen(true);
+          hasOpenedOnLoginRef.current = true;
+        }
+      } catch {
+        // If error reading localStorage, open by default
+        setIsOpen(true);
+        hasOpenedOnLoginRef.current = true;
+      }
+    }
+  }, [user?.email, isOpen]);
+
   // Load messages from Firestore when chat changes
   // Reset visible message count when chat changes
   useEffect(() => {
@@ -4705,6 +4726,15 @@ export function Chatbot() {
                     }
                   }
                   setIsOpen(false);
+                  // Track that user explicitly closed the chat
+                  if (user?.email) {
+                    try {
+                      const chatClosedKey = `chat_closed_${user.email.toLowerCase()}`;
+                      localStorage.setItem(chatClosedKey, 'true');
+                    } catch (error) {
+                      console.error('Failed to save chat closed preference:', error);
+                    }
+                  }
                   trackAIChat('close', { source: 'close_button' });
                   // Reset mobile state when closing
                   if (isMobile) {

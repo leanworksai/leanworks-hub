@@ -1,18 +1,35 @@
 import { TeamChatSidebar } from "@/components/TeamChatSidebar";
 import { TeamChatConversation } from "@/components/TeamChatConversation";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTeamChats } from "@/hooks/useTeamChats";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Users, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
+import { getAIAssistantChatId } from "@/hooks/useChatId";
 
 type MobileTab = "contacts" | "messages";
 
 export default function Chats() {
+  const { user } = useAuth();
   const [selectedChat, setSelectedChat] = useState<{ chatId: string; selectedMember: string } | null>(null);
   const { setSelectedChat: setSelectedChatInHook } = useTeamChats();
   const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState<MobileTab>("contacts");
+
+  // Open AI chat by default when user first visits the page
+  const hasInitializedRef = useRef(false);
+  useEffect(() => {
+    if (user?.email && !selectedChat && !hasInitializedRef.current) {
+      const chatId = getAIAssistantChatId(user.email);
+      setSelectedChat({ chatId, selectedMember: "ai-assistant" });
+      setSelectedChatInHook(chatId);
+      hasInitializedRef.current = true;
+      if (isMobile) {
+        setActiveTab("messages");
+      }
+    }
+  }, [user?.email, selectedChat, setSelectedChatInHook, isMobile]);
 
   // Handle chat selection from TeamChatSidebar
   const handleSelectChat = (chatId: string, selectedMember: string) => {
