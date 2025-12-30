@@ -23,7 +23,7 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
 import { VoiceCallButton } from "./VoiceCall";
 import { useWebRTCContext } from "@/contexts/WebRTCContext";
-import type { Message, ChannelMessage, LikedByUser } from "@/components/chat/types";
+import type { Message, ChannelMessage, LikedByUser, TeamMember } from "@/components/chat/types";
 
 interface TeamChatWindowProps {
   open: boolean;
@@ -55,6 +55,9 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
   const [uploadingImages, setUploadingImages] = useState(false);
   const [pendingLikeOperations, setPendingLikeOperations] = useState<Set<string>>(new Set());
+  const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [selectedMentionIndex, setSelectedMentionIndex] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -408,6 +411,104 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     setImagePreviewUrls(newPreviewUrls);
   }, [selectedImages, imagePreviewUrls]);
 
+  // Get mentionable users for the current channel
+  const getMentionableUsers = useMemo(() => {
+    const mentionable: TeamMember[] = [];
+    
+    // Add lean (AI assistant) only for paid plans
+    if (!isFreePlan) {
+      mentionable.push({ id: "lean", name: "lean", role: "", avatar: "/logo.png" });
+    }
+    
+    // Add channel-specific members
+    if (isProjectChannel && selectedProject) {
+      // Add project members
+      selectedProject.members?.forEach(member => {
+        const user = allDomainUsers.find(u => u.email === member.id || u.email === member.email);
+        if (user) {
+          const firstName = user.firstName || '';
+          const lastName = user.lastName || '';
+          const name = `${firstName} ${lastName}`.trim() || user.email || '';
+          const avatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || user.email?.charAt(0).toUpperCase() || 'U';
+          mentionable.push({
+            id: user.email || '',
+            name: name,
+            role: member.role || user.jobTitle || 'User',
+            avatar: avatar,
+            email: user.email,
+          });
+        }
+      });
+    } else if (isTeamChannel && selectedTeam) {
+      // Add all team members
+      allTeamMembers.forEach(member => {
+        if (!mentionable.find(m => m.id === member.id)) {
+          mentionable.push(member);
+        }
+      });
+    } else if (isDM) {
+      // For DMs, add the other person
+      const otherMember = allTeamMembers.find(m => m.id === selectedMember);
+      if (otherMember) {
+        mentionable.push(otherMember);
+      }
+    }
+    
+    return mentionable;
+  }, [isProjectChannel, isTeamChannel, isDM, selectedProject, selectedTeam, allDomainUsers, allTeamMembers, selectedMember, isFreePlan]);
+
+  // Filter mentionable users based on query
+  const filteredMentionUsers = useMemo(() => {
+    if (!mentionQuery) return getMentionableUsers;
+    const query = mentionQuery.toLowerCase();
+    return getMentionableUsers.filter(user => 
+      user.name.toLowerCase().includes(query) || 
+      user.email?.toLowerCase().includes(query)
+    );
+  }, [getMentionableUsers, mentionQuery]);
+
+  // Detect @ mentions in input
+  const detectMention = useCallback((text: string, cursorPos: number) => {
+    const textBeforeCursor = text.substring(0, cursorPos);
+    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+    
+    if (lastAtIndex === -1) {
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+      return;
+    }
+    
+    // Check if there's a space before @ or it's at the start
+    const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
+    if (charBeforeAt !== ' ' && lastAtIndex !== 0) {
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+      return;
+    }
+    
+    // Get text after @ until cursor
+    const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
+    
+    // Check if there's a space in the text after @ (means mention was completed)
+    if (afterAt.includes(' ')) {
+      setShowMentionSuggestions(false);
+      setSelectedMentionIndex(0);
+      return;
+    }
+    
+    setMentionQuery(afterAt);
+    setSelectedMentionIndex(0);
+    setShowMentionSuggestions(true);
+  }, []);
+
+  // Handle mention selection
+  const handleMentionSelect = useCallback((user: TeamMember) => {
+    // Mention insertion is handled by ChatInput component
+    setShowMentionSuggestions(false);
+    setMentionQuery("");
+    setSelectedMentionIndex(0);
+  }, []);
+
   // Handle like toggle
   const handleToggleLike = useCallback(async (messageId: string, currentLikes: string[] = []) => {
     if (!user?.email) return;
@@ -731,7 +832,20 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               onRemoveTask={toggleTask}
               onRemoveTeam={toggleTeam}
               onRemoveDoc={toggleDoc}
-              placeholder={isProjectChannel || isTeamChannel ? "Type @ to mention someone..." : "Type your message..."}
+              placeholder="Type your message..."
+              showMentions={isProjectChannel || isTeamChannel || isDM}
+              mentionUsers={getMentionableUsers}
+              onMentionDetect={detectMention}
+              showMentionSuggestions={showMentionSuggestions}
+              filteredMentionUsers={filteredMentionUsers}
+              selectedMentionIndex={selectedMentionIndex}
+              onMentionSelect={handleMentionSelect}
+              onMentionIndexChange={setSelectedMentionIndex}
+              onMentionClose={() => {
+                setShowMentionSuggestions(false);
+                setMentionQuery("");
+                setSelectedMentionIndex(0);
+              }}
             />
           </div>
         </div>

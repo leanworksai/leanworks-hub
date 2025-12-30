@@ -5523,11 +5523,7 @@ export function Chatbot() {
                         detectMention(input, cursorPos);
                       }
                     }}
-                    placeholder={
-                      isProjectChannel || isTeamChannel 
-                        ? "Type @ to mention someone..." 
-                        : "Type your message..."
-                    }
+                    placeholder="Type your message..."
                     disabled={isLoading}
                     className="flex-1"
                   />

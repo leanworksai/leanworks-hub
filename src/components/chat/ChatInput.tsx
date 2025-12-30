@@ -2,9 +2,9 @@ import { useRef, useState, useCallback, KeyboardEvent, ChangeEvent } from "react
 import { X, Send, Image as ImageIcon, Smile } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { cn } from "@/lib/utils";
+import { cn, getAvatarColor } from "@/lib/utils";
 import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
 import { CitedContext, TeamMember } from "./types";
 import { Project } from "@/data/projectsData";
@@ -88,6 +88,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const [input, setInput] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [mentionCursorPos, setMentionCursorPos] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -104,6 +105,23 @@ export function ChatInput({
     }
   }, [handleSend, showMentionSuggestions]);
 
+  const insertMention = useCallback((user: TeamMember) => {
+    const beforeMention = input.substring(0, mentionCursorPos);
+    const afterCursor = input.substring(inputRef.current?.selectionStart || input.length);
+    // Extract first name only (everything before the first space)
+    const firstName = user.name.split(' ')[0];
+    const newInput = `${beforeMention}@${firstName} ${afterCursor}`;
+    setInput(newInput);
+    onMentionClose?.();
+    
+    // Focus input and move cursor after mention
+    setTimeout(() => {
+      inputRef.current?.focus();
+      const newCursorPos = beforeMention.length + firstName.length + 2; // +2 for @ and space
+      inputRef.current?.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  }, [input, mentionCursorPos, onMentionClose]);
+
   const handleMentionKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
     if (!showMentionSuggestions || filteredMentionUsers.length === 0) return;
 
@@ -119,13 +137,14 @@ export function ChatInput({
       e.preventDefault();
       const selectedUser = filteredMentionUsers[selectedMentionIndex];
       if (selectedUser) {
+        insertMention(selectedUser);
         onMentionSelect?.(selectedUser);
       }
     } else if (e.key === 'Escape') {
       e.preventDefault();
       onMentionClose?.();
     }
-  }, [showMentionSuggestions, filteredMentionUsers, selectedMentionIndex, onMentionIndexChange, onMentionSelect, onMentionClose]);
+  }, [showMentionSuggestions, filteredMentionUsers, selectedMentionIndex, onMentionIndexChange, onMentionSelect, onMentionClose, insertMention]);
 
   const insertEmoji = useCallback((emojiData: EmojiClickData) => {
     const cursorPos = inputRef.current?.selectionStart || input.length;
@@ -146,6 +165,18 @@ export function ChatInput({
     if (showMentions && onMentionDetect) {
       const cursorPos = e.target.selectionStart || 0;
       onMentionDetect(e.target.value, cursorPos);
+      // Track mention cursor position for insertion
+      const textBeforeCursor = e.target.value.substring(0, cursorPos);
+      const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+      if (lastAtIndex !== -1) {
+        const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
+        if (charBeforeAt === ' ' || lastAtIndex === 0) {
+          const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
+          if (!afterAt.includes(' ')) {
+            setMentionCursorPos(lastAtIndex);
+          }
+        }
+      }
     }
   }, [showMentions, onMentionDetect]);
 
@@ -153,6 +184,18 @@ export function ChatInput({
     if (showMentions && onMentionDetect) {
       const cursorPos = (e.target as HTMLInputElement).selectionStart || 0;
       onMentionDetect(input, cursorPos);
+      // Track mention cursor position
+      const textBeforeCursor = input.substring(0, cursorPos);
+      const lastAtIndex = textBeforeCursor.lastIndexOf('@');
+      if (lastAtIndex !== -1) {
+        const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
+        if (charBeforeAt === ' ' || lastAtIndex === 0) {
+          const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
+          if (!afterAt.includes(' ')) {
+            setMentionCursorPos(lastAtIndex);
+          }
+        }
+      }
     }
   }, [showMentions, onMentionDetect, input]);
 
@@ -208,39 +251,46 @@ export function ChatInput({
 
         {/* Mention Suggestions Dropdown */}
         {showMentionSuggestions && filteredMentionUsers.length > 0 && showMentions && (
-          <div className="absolute bottom-full left-4 right-4 mb-2 bg-popover border rounded-md shadow-lg z-50 max-h-60 overflow-auto">
-            <div className="p-2">
-              <div className="text-xs font-semibold text-muted-foreground px-2 mb-1">Mention</div>
-              <div className="space-y-0.5">
-                {filteredMentionUsers.map((user, index) => (
-                  <div
-                    key={user.id}
-                    onClick={() => onMentionSelect?.(user)}
-                    onMouseEnter={() => onMentionIndexChange?.(index)}
-                    className={cn(
-                      "flex items-center gap-2 px-2 py-2 rounded-md cursor-pointer transition-colors",
-                      index === selectedMentionIndex 
-                        ? "bg-primary text-primary-foreground" 
-                        : ""
-                    )}
-                  >
-                    <Avatar className="h-6 w-6">
-                      <AvatarFallback className="text-xs">
+          <div className="absolute bottom-full left-4 right-4 mb-2 z-50 min-w-[8rem] overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md max-h-60 overflow-auto">
+            <div className="space-y-0.5">
+              {filteredMentionUsers.map((user, index) => (
+                <div
+                  key={user.id}
+                  onClick={() => {
+                    insertMention(user);
+                    onMentionSelect?.(user);
+                  }}
+                  onMouseEnter={() => onMentionIndexChange?.(index)}
+                  className={cn(
+                    "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors",
+                    "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+                    index === selectedMentionIndex 
+                      ? "bg-accent text-accent-foreground" 
+                      : "focus:bg-accent focus:text-accent-foreground"
+                  )}
+                >
+                  <Avatar className="h-6 w-6 shrink-0 mr-2">
+                    {user.avatar?.startsWith('/') ? (
+                      <>
+                        <AvatarImage src={user.avatar} alt={user.name} className="object-contain" />
+                        <AvatarFallback className={cn("text-xs", getAvatarColor((user.email || user.id)?.toLowerCase()))}>
+                          {user.name.charAt(0).toUpperCase()}
+                        </AvatarFallback>
+                      </>
+                    ) : (
+                      <AvatarFallback className={cn("text-xs", getAvatarColor((user.email || user.id)?.toLowerCase()))}>
                         {user.avatar}
                       </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{user.name}</div>
-                      <div className={cn(
-                        "text-xs truncate",
-                        index === selectedMentionIndex 
-                          ? "text-primary-foreground/80" 
-                          : "text-muted-foreground"
-                      )}>{user.role}</div>
-                    </div>
+                    )}
+                  </Avatar>
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="font-medium truncate">{user.name}</span>
+                    {user.role && (
+                      <span className="text-xs text-muted-foreground truncate">{user.role}</span>
+                    )}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
