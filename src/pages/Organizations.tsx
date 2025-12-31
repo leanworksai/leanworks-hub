@@ -283,11 +283,6 @@ export default function Organizations() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <Avatar className="h-10 w-10 flex-shrink-0">
-                      <AvatarFallback className="bg-primary/10">
-                        <User className="h-5 w-5" />
-                      </AvatarFallback>
-                    </Avatar>
                     <div className="flex-1 min-w-0">
                       <CardTitle className="text-base flex items-center gap-2 flex-wrap">
                         <span className="truncate">{personalOrg.name}</span>
@@ -351,11 +346,6 @@ export default function Organizations() {
                 >
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-3">
-                      <Avatar className="h-10 w-10">
-                        <AvatarFallback className="bg-primary/10">
-                          {org.avatar || org.name.substring(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
                       <div className="flex-1 min-w-0">
                         <CardTitle className="text-base flex items-center gap-2 truncate">
                           {org.name}
@@ -477,7 +467,7 @@ export default function Organizations() {
       {/* Members Dialog */}
       <Dialog open={isMembersDialogOpen} onOpenChange={setIsMembersDialogOpen}>
         <DialogContent className="w-[calc(100vw-2rem)] sm:w-full sm:max-w-lg max-h-[90vh] flex flex-col">
-          <DialogHeader>
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
               {selectedOrg?.name} Members
@@ -489,7 +479,7 @@ export default function Organizations() {
             </DialogDescription>
           </DialogHeader>
           
-          <div className="py-4">
+          <div className="flex-1 min-h-0 py-4 overflow-hidden">
             {membersLoading ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -501,7 +491,7 @@ export default function Organizations() {
                 <p className="text-muted-foreground">No members found</p>
               </div>
             ) : (
-              <ScrollArea className="max-h-[50vh] sm:max-h-[400px] pr-4">
+              <ScrollArea className="h-full pr-4">
                 <div className="space-y-3">
                   {members.map((member) => (
                     <div 
@@ -563,9 +553,9 @@ export default function Organizations() {
             )}
           </div>
           
-          <Separator />
+          <Separator className="flex-shrink-0" />
           
-          <DialogFooter className="flex-col sm:flex-row gap-2">
+          <DialogFooter className="flex-shrink-0 flex-col sm:flex-row gap-2">
             <div className="flex-1 text-sm text-muted-foreground">
               {members.length} member{members.length !== 1 ? 's' : ''}
             </div>
