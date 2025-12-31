@@ -4415,40 +4415,20 @@ export function Chatbot() {
         chatId = chatId || 'general';
       }
 
-      // Find the clicked message and get up to 5 recent messages including it
+      // Find the clicked message
       const messageIndex = currentMessages.findIndex(msg => msg.id === messageId);
       if (messageIndex === -1) {
         throw new Error('Message not found');
       }
 
-      // Get up to 5 messages ending with the clicked message
-      const startIndex = Math.max(0, messageIndex - 4);
-      const messageWindow = currentMessages.slice(startIndex, messageIndex + 1);
+      // Get the clicked message content - backend will load conversation from Firestore
+      const clickedMessage = currentMessages[messageIndex];
+      const messageContent = clickedMessage.content;
 
-      // Format messages for API
-      const formattedMessages = messageWindow.map(msg => {
-        const timestamp = msg.timestamp instanceof Date 
-          ? msg.timestamp 
-          : new Date(msg.timestamp);
-        
-        return {
-          id: msg.id,
-          role: 'role' in msg ? msg.role : ('memberName' in msg ? 'user' : 'assistant'),
-          content: msg.content,
-          timestamp: timestamp,
-          memberName: 'memberName' in msg ? msg.memberName : undefined,
-          memberAvatar: 'memberAvatar' in msg ? msg.memberAvatar : undefined,
-          projectId: 'projectId' in msg ? msg.projectId : undefined,
-          teamId: 'teamId' in msg ? msg.teamId : undefined,
-          citedContext: 'citedContext' in msg ? msg.citedContext : undefined,
-          imageUrls: 'imageUrls' in msg ? msg.imageUrls : undefined,
-        };
-      });
-
-      // Call the generate response API
+      // Call the generate response API with just the current message
       const response = await messagesService.generateResponse({
-        messageWindow: formattedMessages,
         chatId: chatId,
+        message: messageContent,
         sessionId: chatId,
       });
 

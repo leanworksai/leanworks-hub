@@ -46,6 +46,7 @@ export function AIChat() {
   const [pendingLikeOperations, setPendingLikeOperations] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesRef = useRef<Message[]>([]); // Ref to track latest messages for building message window
 
   // Get current user display info
   const currentUserProfile = useMemo(() => {
@@ -224,24 +225,26 @@ export function AIChat() {
     };
   }, [isOpen, chatId, user?.email, loadCachedMessages, saveCachedMessages]);
 
-  // Generate AI response
-  const generateResponse = useCallback(async (query: string, chatId: string): Promise<string> => {
-    const messageWindow = messages.slice(-10).map(msg => ({
-      id: msg.id,
-      role: msg.role,
-      content: msg.content,
-      timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp.toISOString(),
-      citedContext: msg.citedContext,
-      imageUrls: msg.imageUrls,
-    }));
+  // Keep messagesRef in sync with messages state
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
+  // Generate AI response - takes current message and chatId
+  const generateResponse = useCallback(async (
+    message: string,  // Just the current message
+    chatId: string
+  ): Promise<string> => {
+    // Use chatId as sessionId for conversation continuity
+    // This ensures the AI service maintains context within the conversation
     const response = await messagesService.generateResponse({
-      messageWindow,
       chatId,
+      message,
+      sessionId: chatId, // Conversation-scoped session ID
     });
 
     return response.response || response.content;
-  }, [messages]);
+  }, []); // No dependencies - pure function
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {
@@ -316,8 +319,9 @@ export function AIChat() {
         imageUrls: finalImageUrls.length > 0 ? finalImageUrls : undefined,
       });
       
+      let updatedMessages: Message[] = [];
       setMessages((prev) => {
-        const updated = prev.map(msg => 
+        updatedMessages = prev.map(msg => 
           msg.id === userMessage.id 
             ? {
                 ...msg,
@@ -329,7 +333,9 @@ export function AIChat() {
               }
             : msg
         );
-        saveCachedMessages(chatId, updated.map(msg => ({
+        // Update ref immediately to ensure we have latest messages
+        messagesRef.current = updatedMessages;
+        saveCachedMessages(chatId, updatedMessages.map(msg => ({
           id: msg.id,
           chatId: chatId,
           role: msg.role,
@@ -339,7 +345,7 @@ export function AIChat() {
           imageUrls: msg.imageUrls,
           citedContext: msg.citedContext,
         })));
-        return updated;
+        return updatedMessages;
       });
 
       // Generate AI response
@@ -347,6 +353,7 @@ export function AIChat() {
       const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
 
       try {
+        // Pass only the current message - backend will load conversation from Firestore
         const response = await generateResponse(messageContent, chatId);
         
         if (hadSelections) {

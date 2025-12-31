@@ -759,19 +759,8 @@ export const messagesService = {
   },
 
   async generateResponse(params: {
-    messageWindow: Array<{
-      id: string;
-      role: string;
-      content: string;
-      timestamp: string | Date;
-      memberName?: string;
-      memberAvatar?: string;
-      projectId?: string;
-      teamId?: string;
-      citedContext?: any;
-      imageUrls?: string[];
-    }>;
-    chatId?: string;
+    chatId: string;
+    message: string;  // Just the current message
     sessionId?: string;
   }): Promise<{ response: string; content: string }> {
     const userEmail = auth?.currentUser?.email;
@@ -832,26 +821,22 @@ export const messagesService = {
       }
     }
 
-    // Format message window with proper timestamp format
-    const formattedMessageWindow = params.messageWindow.map(msg => ({
-      ...msg,
-      timestamp: msg.timestamp instanceof Date 
-        ? msg.timestamp.toISOString() 
-        : typeof msg.timestamp === 'string' 
-          ? msg.timestamp 
-          : new Date(msg.timestamp).toISOString(),
-    }));
+    const requestPayload = {
+      user_id: userEmail.toLowerCase(),
+      org_slug: orgSlug,
+      message: params.message,
+      chatId: params.chatId,
+      session_id: params.sessionId,
+    };
+
+    // Log the payload being sent to the ask API
+    console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
+    console.log('📤 Ask API URL:', aiServiceUrl);
 
     const response = await fetch(aiServiceUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify({
-        user_id: userEmail.toLowerCase(),
-        org_slug: orgSlug,
-        message_window: formattedMessageWindow,
-        chatId: params.chatId,
-        session_id: params.sessionId,
-      }),
+      body: JSON.stringify(requestPayload),
     });
 
     if (!response.ok) {
