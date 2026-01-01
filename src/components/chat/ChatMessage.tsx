@@ -253,6 +253,7 @@ export interface ChatMessageProps {
   onDraftResponse?: (messageId: string) => void;
   isGeneratingDraft?: boolean;
   hideContext?: boolean;
+  theme?: "default" | "ai-chat"; // Theme for styling - only "ai-chat" gets special styling
 }
 
 export function ChatMessage({
@@ -269,7 +270,9 @@ export function ChatMessage({
   onDraftResponse,
   isGeneratingDraft = false,
   hideContext = false,
+  theme = "default",
 }: ChatMessageProps) {
+  const isAIChatTheme = theme === "ai-chat";
   const timestamp = message.timestamp instanceof Date 
     ? message.timestamp 
     : new Date(message.timestamp);
@@ -301,11 +304,18 @@ export function ChatMessage({
     >
       {/* Avatar for received messages */}
       {!isSent && (
-        <Avatar className="h-8 w-8 flex-shrink-0">
+        <Avatar className={cn(
+          "flex-shrink-0",
+          isLean && isAIChatTheme ? "h-9 w-9 ring-2 ring-purple-200/50" : "h-8 w-8"
+        )}>
           {isLean ? (
             <>
               <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-              <AvatarFallback className="bg-muted-foreground/20 text-foreground">
+              <AvatarFallback className={cn(
+                isAIChatTheme 
+                  ? "bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold"
+                  : "bg-muted-foreground/20 text-foreground"
+              )}>
                 L
               </AvatarFallback>
             </>
@@ -324,20 +334,36 @@ export function ChatMessage({
       )}>
         {/* Sender info for received messages */}
         {!isSent && showSenderInfo && (
-          <div className="flex items-center gap-2 mb-1 px-1">
-            <p className="font-medium text-sm">{displayName}</p>
-            <span className="text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 mb-1.5 px-1">
+            <p className={cn(
+              "font-medium text-sm",
+              isLean && isAIChatTheme ? "text-black" : "text-foreground"
+            )}>
+              {displayName}
+            </p>
+            <span className={cn(
+              "text-xs",
+              isLean && isAIChatTheme ? "text-black/70" : "text-muted-foreground"
+            )}>
               {formatTimeInTimezone(timestamp, userTimezone)}
             </span>
           </div>
         )}
         {/* Sender info for sent messages in AI chat (when displayName is "You") */}
         {isSent && displayName === "You" && (
-          <div className="flex items-center gap-2 mb-1 px-1 justify-end">
-            <span className="text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 mb-1.5 px-1 justify-end">
+            <span className={cn(
+              "text-xs",
+              isAIChatTheme ? "text-black/70" : "text-muted-foreground"
+            )}>
               {formatTimeInTimezone(timestamp, userTimezone)}
             </span>
-            <p className="font-medium text-sm">{displayName}</p>
+            <p className={cn(
+              "font-medium text-sm",
+              isAIChatTheme ? "text-black" : "text-foreground"
+            )}>
+              {displayName}
+            </p>
           </div>
         )}
         
@@ -365,7 +391,19 @@ export function ChatMessage({
         
         {/* Message bubble */}
         <div 
-          className="rounded-lg px-4 py-2 bg-muted border border-border break-words min-w-0 w-full overflow-x-hidden"
+          className={cn(
+            "px-4 py-2 break-words min-w-0 w-full overflow-x-hidden transition-all",
+            isAIChatTheme
+              ? cn(
+                  "rounded-2xl shadow-sm",
+                  isSent 
+                    ? "bg-gradient-to-br from-purple-500 to-indigo-500 text-white rounded-tr-sm py-3" 
+                    : isLean
+                    ? "bg-white/90 backdrop-blur-sm border border-purple-200/60 rounded-tl-sm py-3"
+                    : "bg-muted border border-border rounded-lg"
+                )
+              : "rounded-lg bg-muted border border-border"
+          )}
           style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
         >
           {/* Cited context */}
@@ -386,7 +424,10 @@ export function ChatMessage({
               return (
                 <div className="space-y-2">
                   <p 
-                    className="text-sm whitespace-pre-wrap font-medium text-foreground break-words"
+                    className={cn(
+                      "text-sm whitespace-pre-wrap font-medium break-words",
+                      isAIChatTheme && isSent ? "text-white" : "text-foreground"
+                    )}
                     style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                   >
                     {renderMessageContent(displayContent)}
@@ -397,7 +438,11 @@ export function ChatMessage({
             }
             return (
               <p 
-                className="text-sm whitespace-pre-wrap font-medium text-foreground break-words"
+                className={cn(
+                  "text-sm whitespace-pre-wrap break-words font-medium text-foreground",
+                  isAIChatTheme && isSent && "text-white leading-relaxed",
+                  isAIChatTheme && isLean && !isSent && "leading-relaxed"
+                )}
                 style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
               >
                 {renderMessageContent(message.content)}

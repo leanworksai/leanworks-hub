@@ -6,35 +6,122 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Users, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
-import { getAIAssistantChatId } from "@/hooks/useChatId";
+import { getAIAssistantChatId, isAIAssistantChatId, isProjectChannelId, isTeamChannelId, isDirectMessageId, getDirectMessageChatId } from "@/hooks/useChatId";
 
 type MobileTab = "contacts" | "messages";
+
+// Helper functions for localStorage
+const getLastSelectedChatKey = (userEmail: string) => {
+  return `last_selected_chat_${userEmail.toLowerCase()}`;
+};
+
+const saveLastSelectedChat = (userEmail: string, chatId: string, selectedMember: string) => {
+  try {
+    const key = getLastSelectedChatKey(userEmail);
+    localStorage.setItem(key, JSON.stringify({ chatId, selectedMember }));
+  } catch (error) {
+    console.error('Failed to save last selected chat:', error);
+  }
+};
+
+const loadLastSelectedChat = (userEmail: string): { chatId: string; selectedMember: string } | null => {
+  try {
+    const key = getLastSelectedChatKey(userEmail);
+    const stored = localStorage.getItem(key);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (error) {
+    console.error('Failed to load last selected chat:', error);
+  }
+  return null;
+};
 
 export default function Chats() {
   const { user } = useAuth();
   const [selectedChat, setSelectedChat] = useState<{ chatId: string; selectedMember: string } | null>(null);
-  const { setSelectedChat: setSelectedChatInHook } = useTeamChats();
+  const { setSelectedChat: setSelectedChatInHook, allTeamMembers, projects, teams } = useTeamChats();
   const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState<MobileTab>("contacts");
-
-  // Open AI chat by default when user first visits the page
   const hasInitializedRef = useRef(false);
-  useEffect(() => {
-    if (user?.email && !selectedChat && !hasInitializedRef.current) {
-      const chatId = getAIAssistantChatId(user.email);
-      setSelectedChat({ chatId, selectedMember: "ai-assistant" });
-      setSelectedChatInHook(chatId);
-      hasInitializedRef.current = true;
-      if (isMobile) {
-        setActiveTab("messages");
+
+  // Validate if a chat still exists
+  const validateChatExists = (chatId: string, selectedMember: string): boolean => {
+    if (isAIAssistantChatId(chatId)) {
+      return true; // AI chat always exists
+    }
+    
+    // If data isn't loaded yet, assume valid (will fail gracefully if chat doesn't exist)
+    if (projects.length === 0 && teams.length === 0 && allTeamMembers.length === 0) {
+      return true;
+    }
+    
+    if (isProjectChannelId(chatId)) {
+      const projectId = selectedMember.replace("project-", "");
+      return projects.some(p => p.name.toLowerCase().replace(/\s+/g, '-') === projectId);
+    }
+    
+    if (isTeamChannelId(chatId)) {
+      const teamId = selectedMember.replace("team-", "");
+      return teams.some(t => t.name.toLowerCase().replace(/\s+/g, '-') === teamId);
+    }
+    
+    if (isDirectMessageId(chatId)) {
+      // For DMs, check if the other user still exists
+      if (selectedMember.includes('@')) {
+        return allTeamMembers.some(m => m.email?.toLowerCase() === selectedMember.toLowerCase());
+      } else {
+        return allTeamMembers.some(m => m.id === selectedMember);
       }
     }
-  }, [user?.email, selectedChat, setSelectedChatInHook, isMobile]);
+    
+    return false;
+  };
+
+  // Restore last selected chat on mount
+  useEffect(() => {
+    if (!user?.email || hasInitializedRef.current || selectedChat) return;
+    
+    const lastChat = loadLastSelectedChat(user.email);
+    
+    // Always try to restore last chat (validation is best-effort)
+    // If chat doesn't exist, UI will handle it gracefully
+    if (lastChat) {
+      // Validate if we have the data, otherwise assume valid
+      const isValid = validateChatExists(lastChat.chatId, lastChat.selectedMember);
+      
+      if (isValid) {
+        // Restore last chat
+        setSelectedChat(lastChat);
+        setSelectedChatInHook(lastChat.chatId);
+        hasInitializedRef.current = true;
+        if (isMobile) {
+          setActiveTab("messages");
+        }
+        return;
+      }
+    }
+    
+    // Fallback to AI chat if no valid last chat
+    const chatId = getAIAssistantChatId(user.email);
+    setSelectedChat({ chatId, selectedMember: "ai-assistant" });
+    setSelectedChatInHook(chatId);
+    hasInitializedRef.current = true;
+    if (isMobile) {
+      setActiveTab("messages");
+    }
+  }, [user?.email, allTeamMembers, projects, teams, setSelectedChatInHook, isMobile, selectedChat]);
 
   // Handle chat selection from TeamChatSidebar
   const handleSelectChat = (chatId: string, selectedMember: string) => {
     setSelectedChat({ chatId, selectedMember });
     setSelectedChatInHook(chatId); // Update the hook's selectedChat to trigger unread count clearing
+    
+    // Save to localStorage
+    if (user?.email) {
+      saveLastSelectedChat(user.email, chatId, selectedMember);
+    }
+    
     // On mobile, switch to messages tab when a chat is selected
     if (isMobile) {
       setActiveTab("messages");
@@ -44,8 +131,15 @@ export default function Chats() {
   // Listen for team chat open events (from other parts of the app)
   useEffect(() => {
     const handleOpenTeamChat = (event: CustomEvent<{ chatId: string; selectedMember: string }>) => {
-      setSelectedChat({ chatId: event.detail.chatId, selectedMember: event.detail.selectedMember });
-      setSelectedChatInHook(event.detail.chatId); // Update the hook's selectedChat to trigger unread count clearing
+      const { chatId, selectedMember } = event.detail;
+      setSelectedChat({ chatId, selectedMember });
+      setSelectedChatInHook(chatId); // Update the hook's selectedChat to trigger unread count clearing
+      
+      // Save to localStorage
+      if (user?.email) {
+        saveLastSelectedChat(user.email, chatId, selectedMember);
+      }
+      
       // On mobile, switch to messages tab when a chat is opened
       if (isMobile) {
         setActiveTab("messages");
@@ -56,7 +150,7 @@ export default function Chats() {
     return () => {
       window.removeEventListener('openTeamChat', handleOpenTeamChat as EventListener);
     };
-  }, [setSelectedChatInHook, isMobile]);
+  }, [setSelectedChatInHook, isMobile, user?.email]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem-2rem)] max-h-[calc(100vh-4rem-2rem)] overflow-hidden -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 -mb-4 sm:-mb-6">

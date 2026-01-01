@@ -200,10 +200,7 @@ export function ChatInput({
   }, [showMentions, onMentionDetect, input]);
 
   return (
-    <div className={cn(
-      "border-t",
-      theme === "purple" ? "bg-purple-50 border-purple-200" : "bg-background"
-    )}>
+    <div className="border-t bg-background border-border">
       {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
         <div className="px-4 pt-3 pb-2">
           <ContextBadges
@@ -295,12 +292,7 @@ export function ChatInput({
           </div>
         )}
         
-        <div className={cn(
-          "flex items-center gap-2 rounded-lg px-2 py-1.5 transition-all",
-          theme === "purple" 
-            ? "bg-purple-100 border border-purple-300 focus-within:border-purple-400 focus-within:ring-1 focus-within:ring-purple-300/30"
-            : "bg-muted/50 border border-border/50 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20"
-        )}>
+        <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-all bg-background border border-border focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20">
           <input
             type="file"
             ref={fileInputRef}
@@ -316,7 +308,7 @@ export function ChatInput({
                 variant="ghost"
                 size="icon"
                 disabled={isLoading || uploadingImages}
-                className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-background/50"
+                className="h-8 w-8 text-foreground/70 hover:text-foreground hover:bg-muted"
               >
                 <Smile className="h-4 w-4" />
               </Button>
@@ -337,7 +329,7 @@ export function ChatInput({
             variant="ghost"
             size="icon"
             disabled={isLoading || uploadingImages}
-            className="h-8 w-8 text-muted-foreground hover:text-foreground hover:bg-background/50"
+            className="h-8 w-8 text-foreground/70 hover:text-foreground hover:bg-muted"
           >
             <ImageIcon className="h-4 w-4" />
           </Button>
@@ -350,7 +342,7 @@ export function ChatInput({
             onClick={handleInputClick}
             placeholder={placeholder}
             disabled={disabled || isLoading}
-            className="flex-1 h-8 border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 px-2"
+            className="flex-1 h-8 border-0 bg-transparent text-foreground placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 px-2"
           />
           <Button
             onClick={handleSend}

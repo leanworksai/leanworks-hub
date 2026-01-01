@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { X, Bot } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -30,6 +31,7 @@ export function AIChat() {
   const { data: allDomainUsers = [] } = useUsers();
   const { isOpen, setIsOpen, chatId } = useAIChat();
   const isMobile = useIsMobile();
+  const location = useLocation();
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedTeams, toggleTeam, clearSelection: clearSelectedTeams } = useSelectedTeams();
@@ -47,6 +49,7 @@ export function AIChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<Message[]>([]); // Ref to track latest messages for building message window
+  const previousPathnameRef = useRef<string>(location.pathname);
 
   // Get current user display info
   const currentUserProfile = useMemo(() => {
@@ -137,6 +140,23 @@ export function AIChat() {
       // Try to load from cache first
       const cached = loadCachedMessages(chatId);
       if (cached && cached.messages.length > 0) {
+        if (process.env.NODE_ENV === 'development') {
+          console.log('💾 [AIChat] Loading from cache', {
+            chatId,
+            messageCount: cached.messages.length,
+            firstMessage: cached.messages[0] ? {
+              id: cached.messages[0].id,
+              role: cached.messages[0].role,
+              content: cached.messages[0].content?.substring(0, 50),
+            } : null,
+            lastMessage: cached.messages[cached.messages.length - 1] ? {
+              id: cached.messages[cached.messages.length - 1].id,
+              role: cached.messages[cached.messages.length - 1].role,
+              content: cached.messages[cached.messages.length - 1].content?.substring(0, 50),
+            } : null,
+          });
+        }
+        
         const cachedMsgs: Message[] = cached.messages.map(msg => ({
           id: msg.id,
           role: msg.role as "user" | "assistant",
@@ -156,6 +176,13 @@ export function AIChat() {
             timestamp: new Date(),
           }]);
         } else {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('💾 [AIChat] Setting messages from cache', {
+              count: cachedMsgs.length,
+              isLoadingMessages,
+              currentMessagesLength: messages.length,
+            });
+          }
           setMessages(cachedMsgs);
         }
         setIsLoadingMessages(false);
@@ -610,28 +637,48 @@ export function AIChat() {
     };
   }, [isOpen, isFreePlan, toast]);
 
+  // Close AI chat when navigating to a different page
+  useEffect(() => {
+    // Only close if pathname actually changed (not on initial mount)
+    if (isOpen && location.pathname !== previousPathnameRef.current) {
+      setIsOpen(false);
+      trackAIChat('close', { source: 'navigation' });
+    }
+    previousPathnameRef.current = location.pathname;
+  }, [location.pathname, isOpen, setIsOpen]);
+
   if (!chatId) return null;
 
   if (!isOpen) return null;
 
   return (
     <div className={cn(
-      "fixed top-16 h-[calc(100vh-4rem)] flex flex-col shadow-lg overflow-hidden",
+      "fixed top-16 h-[calc(100vh-4rem)] flex flex-col overflow-hidden",
       // Mobile: overlay entire screen under header
       "left-0 right-0 w-full z-[60]",
       // Desktop: right side panel
       "sm:right-0 sm:left-auto sm:w-96 sm:z-30",
-      "border-l border-purple-200 bg-purple-50"
+      // Modern gradient background with subtle border
+      "bg-gradient-to-br from-purple-50 via-indigo-50/30 to-purple-50",
+      "border-l border-purple-200/60",
+      "shadow-2xl shadow-purple-500/10",
+      "backdrop-blur-sm"
     )}>
+      {/* Header gradient accent */}
+      <div className="h-1 bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-500 flex-shrink-0" />
+      
       {/* Messages */}
-      <ScrollArea className="flex-1 min-h-0 overflow-hidden bg-purple-50">
-        <div className="p-4 space-y-4">
+      <ScrollArea className="flex-1 min-h-0 overflow-hidden">
+        <div className="p-6 space-y-6">
           {isLoadingMessages && (
-            <div className="flex items-center justify-center py-8">
-              <div className="flex gap-1">
-                <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+            <div className="flex items-center justify-center py-16">
+              <div className="flex flex-col items-center gap-4">
+                <div className="flex gap-2">
+                  <div className="h-2.5 w-2.5 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                  <div className="h-2.5 w-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <div className="h-2.5 w-2.5 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                </div>
+                <p className="text-sm text-muted-foreground">Loading conversation...</p>
               </div>
             </div>
           )}
@@ -645,13 +692,32 @@ export function AIChat() {
               onToggleLike={handleToggleLike}
               getLikedByUsers={getLikedByUsers}
               getUserDisplayInfo={getMessageDisplayInfo}
+              theme="ai-chat"
               emptyState={
-                <div className="flex flex-col items-center justify-center h-full text-center py-12">
-                  <Bot className="h-12 w-12 text-purple-500 mb-4" />
-                  <h3 className="text-lg font-semibold mb-2 text-purple-900">Chat with lean</h3>
-                  <p className="text-sm text-purple-700/70 max-w-sm">
-                    Ask me anything about your projects, tasks, or team. I'm here to help!
+                <div className="flex flex-col items-center justify-center h-full text-center py-16 px-4">
+                  <div className="relative mb-6">
+                    <div className="absolute inset-0 bg-gradient-to-br from-purple-400/20 to-indigo-400/20 rounded-full blur-2xl" />
+                    <div className="relative bg-gradient-to-br from-purple-500 to-indigo-500 p-6 rounded-2xl shadow-lg">
+                      <Bot className="h-12 w-12 text-white" />
+                    </div>
+                  </div>
+                  <h3 className="text-xl font-semibold mb-2 bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
+                    Chat with lean
+                  </h3>
+                  <p className="text-sm text-muted-foreground max-w-sm leading-relaxed">
+                    Ask me anything about your projects, tasks, or team. I'm here to help you stay productive!
                   </p>
+                  <div className="mt-6 flex flex-wrap gap-2 justify-center">
+                    <span className="text-xs px-3 py-1.5 bg-purple-100/50 text-purple-700 rounded-full border border-purple-200/50">
+                      💡 Project insights
+                    </span>
+                    <span className="text-xs px-3 py-1.5 bg-indigo-100/50 text-indigo-700 rounded-full border border-indigo-200/50">
+                      📋 Task management
+                    </span>
+                    <span className="text-xs px-3 py-1.5 bg-purple-100/50 text-purple-700 rounded-full border border-purple-200/50">
+                      👥 Team collaboration
+                    </span>
+                  </div>
                 </div>
               }
               className="flex-1 min-h-0"
@@ -659,17 +725,17 @@ export function AIChat() {
             />
           )}
           {isLoading && (
-            <div className="flex gap-3 justify-start">
-              <Avatar className="h-8 w-8 flex-shrink-0">
+            <div className="flex gap-3 justify-start animate-in fade-in slide-in-from-bottom-2">
+              <Avatar className="h-9 w-9 flex-shrink-0 ring-2 ring-purple-200/50">
                 <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-                <AvatarFallback className="bg-purple-500 text-white">
+                <AvatarFallback className="bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold">
                   L
                 </AvatarFallback>
               </Avatar>
-              <div className="bg-purple-100 border border-purple-200 rounded-lg px-4 py-2">
-                <div className="flex gap-1">
+              <div className="bg-white/80 backdrop-blur-sm border border-purple-200/60 rounded-2xl rounded-tl-sm px-5 py-3 shadow-sm">
+                <div className="flex gap-1.5">
                   <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                  <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                  <div className="h-2 w-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
                   <div className="h-2 w-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
                 </div>
               </div>
@@ -680,22 +746,23 @@ export function AIChat() {
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="bg-purple-50 border-t border-purple-200 flex-shrink-0">
-        <div>
+      <div className="bg-white/60 backdrop-blur-md border-t border-purple-200/60 flex-shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+        <div className="p-4">
           {imagePreviewUrls.length > 0 && (
-            <div className="mb-2 flex gap-2 flex-wrap">
+            <div className="mb-3 flex gap-2 flex-wrap">
               {imagePreviewUrls.map((url, index) => (
                 <div key={index} className="relative group">
+                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/20 to-indigo-500/20 rounded-lg blur-sm opacity-0 group-hover:opacity-100 transition-opacity" />
                   <img
                     src={url}
                     alt={`Preview ${index + 1}`}
-                    className="h-16 w-16 object-cover rounded-md border"
+                    className="relative h-20 w-20 object-cover rounded-lg border-2 border-purple-200/60 shadow-sm group-hover:border-purple-300 transition-colors"
                   />
                   <button
                     onClick={() => handleImageRemove(index)}
-                    className="absolute -top-1 -right-1 bg-destructive text-destructive-foreground rounded-full p-0.5 opacity-100 group-hover:opacity-100 transition-opacity"
+                    className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 shadow-md hover:shadow-lg transition-shadow opacity-100 group-hover:scale-110"
                   >
-                    <X className="h-3 w-3" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
               ))}
