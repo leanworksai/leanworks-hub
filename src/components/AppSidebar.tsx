@@ -119,7 +119,7 @@ export function AppSidebar() {
                 )}
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-[260px]">
+            <DropdownMenuContent align="start" className="w-[260px] z-[80]">
               <DropdownMenuLabel className="text-xs text-muted-foreground font-normal uppercase tracking-wide">
                 Switch Organization
               </DropdownMenuLabel>
