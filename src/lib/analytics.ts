@@ -39,6 +39,7 @@ let journeyState: JourneyState = {
 
 /**
  * Fetch GA4 Measurement ID from backend (Secret Manager) or fallback to env var
+ * Uses different measurement IDs for dev vs production
  */
 async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
   // Return cached ID if available and not forcing refresh
@@ -53,11 +54,18 @@ async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
 
   // Start fetching config
   ga4ConfigFetchPromise = (async () => {
+    // In development mode, use dev measurement ID directly
+    if (import.meta.env.DEV) {
+      const devMeasurementId = 'G-CTKJB29L9E';
+      ga4MeasurementId = devMeasurementId;
+      console.log('✅ GA4 Measurement ID (DEV):', devMeasurementId);
+      return devMeasurementId;
+    }
+
+    // In production, try to fetch from backend or use prod measurement ID
     try {
       // Try to fetch from backend API (Secret Manager)
-      const apiUrl = import.meta.env.DEV 
-        ? `${API_BASE}/api/ga4-config` 
-        : `${API_BASE}/ga4-config`;
+      const apiUrl = `${API_BASE}/ga4-config`;
       
       // Add cache-busting query param for Safari
       const cacheBuster = forceRefresh ? `?t=${Date.now()}` : '';
@@ -83,16 +91,20 @@ async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
           throw new Error(`Invalid GA4 Measurement ID format from backend: ${measurementId?.substring(0, 20)}`);
         }
       } else {
-        // If backend returns 404, it means GA4 is not configured (not an error)
+        // If backend returns 404, fallback to hardcoded prod measurement ID
         if (response.status === 404) {
-          console.warn('⚠️ GA4 Measurement ID not configured in backend');
+          console.warn('⚠️ GA4 Measurement ID not configured in backend, using production default');
         } else {
-          console.warn(`⚠️ Backend returned error ${response.status} for GA4 config`);
+          console.warn(`⚠️ Backend returned error ${response.status} for GA4 config, using production default`);
         }
-        throw new Error(`Failed to fetch GA4 config: ${response.status}`);
+        // Fallback to production measurement ID
+        const prodMeasurementId = 'G-T3D2R7Z6HN';
+        ga4MeasurementId = prodMeasurementId;
+        console.log('✅ GA4 Measurement ID (PROD):', prodMeasurementId);
+        return prodMeasurementId;
       }
     } catch (error: any) {
-      // Fallback to environment variable for local development
+      // Fallback to environment variable or production measurement ID
       const envMeasurementId = import.meta.env.VITE_GA4_MEASUREMENT_ID?.trim();
       if (envMeasurementId && envMeasurementId.startsWith('G-')) {
         console.warn('⚠️ Using GA4 Measurement ID from environment variable (backend fetch failed)');
@@ -100,9 +112,11 @@ async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
         return envMeasurementId;
       }
       
-      // No valid measurement ID available
-      console.warn('⚠️ GA4 Measurement ID not available. Backend fetch failed and environment variable is also invalid or missing.');
-      return null;
+      // Last resort: use production measurement ID
+      const prodMeasurementId = 'G-T3D2R7Z6HN';
+      console.warn('⚠️ Using production GA4 Measurement ID as fallback');
+      ga4MeasurementId = prodMeasurementId;
+      return prodMeasurementId;
     } finally {
       ga4ConfigFetchPromise = null;
     }
@@ -155,25 +169,33 @@ async function initializeGA4(): Promise<void> {
 
 /**
  * Initialize Firebase Analytics
+ * Note: Firebase Analytics is disabled in development mode to avoid polluting production data
  */
 export async function initializeAnalytics(): Promise<void> {
   if (analyticsInitialized || analytics) {
     return;
   }
 
-  try {
-    const supported = await isSupported();
-    if (!supported) {
-      console.warn('⚠️ Firebase Analytics is not supported in this environment');
-      return;
-    }
+  // Skip Firebase Analytics in development mode
+  if (import.meta.env.DEV) {
+    console.log('🔍 [DEV] Firebase Analytics disabled - using GA4 only');
+    analyticsInitialized = true; // Mark as initialized to prevent retries
+  } else {
+    // Only initialize Firebase Analytics in production
+    try {
+      const supported = await isSupported();
+      if (!supported) {
+        console.warn('⚠️ Firebase Analytics is not supported in this environment');
+        return;
+      }
 
-    const app = getApp();
-    analytics = getAnalytics(app);
-    analyticsInitialized = true;
-    console.log('✅ Firebase Analytics initialized');
-  } catch (error: any) {
-    console.error('❌ Failed to initialize Firebase Analytics:', error);
+      const app = getApp();
+      analytics = getAnalytics(app);
+      analyticsInitialized = true;
+      console.log('✅ Firebase Analytics initialized');
+    } catch (error: any) {
+      console.error('❌ Failed to initialize Firebase Analytics:', error);
+    }
   }
 
   // Also initialize GA4 (async, but don't wait for it)
@@ -281,8 +303,8 @@ function trackEventDual(
     navigation_method: journeyState.navigationMethod,
   };
 
-  // Send to Firebase Analytics
-  if (analytics) {
+  // Send to Firebase Analytics (only in production)
+  if (!import.meta.env.DEV && analytics) {
     try {
       logEvent(analytics, eventName, enrichedParams);
     } catch (error: any) {
@@ -290,7 +312,7 @@ function trackEventDual(
     }
   }
 
-  // Send to GA4
+  // Send to GA4 (always enabled)
   gtagEvent(eventName, enrichedParams);
 }
 
@@ -357,8 +379,8 @@ export function trackEvent(
  * Set user ID for analytics
  */
 export function setAnalyticsUserId(userId: string | null): void {
-  // Firebase Analytics
-  if (analytics) {
+  // Firebase Analytics (only in production)
+  if (!import.meta.env.DEV && analytics) {
     try {
       if (userId) {
         setUserId(analytics, userId);
@@ -370,7 +392,7 @@ export function setAnalyticsUserId(userId: string | null): void {
     }
   }
 
-  // GA4
+  // GA4 (always enabled)
   if (ga4Initialized && ga4MeasurementId) {
     try {
       const gtag = (window as any).gtag;
@@ -391,8 +413,8 @@ export function setAnalyticsUserId(userId: string | null): void {
 export function setAnalyticsUserProperties(properties: {
   [key: string]: string | null;
 }): void {
-  // Firebase Analytics
-  if (analytics) {
+  // Firebase Analytics (only in production)
+  if (!import.meta.env.DEV && analytics) {
     try {
       setUserProperties(analytics, properties);
     } catch (error: any) {
@@ -400,7 +422,7 @@ export function setAnalyticsUserProperties(properties: {
     }
   }
 
-  // GA4 - set as user properties
+  // GA4 - set as user properties (always enabled)
   if (ga4Initialized && ga4MeasurementId) {
     try {
       const gtag = (window as any).gtag;

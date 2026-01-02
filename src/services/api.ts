@@ -829,9 +829,11 @@ export const messagesService = {
       session_id: params.sessionId,
     };
 
-    // Log the payload being sent to the ask API
-    console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
-    console.log('📤 Ask API URL:', aiServiceUrl);
+    // Log the payload being sent to the ask API (development only)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
+      console.log('📤 Ask API URL:', aiServiceUrl);
+    }
 
     const response = await fetch(aiServiceUrl, {
       method: 'POST',
@@ -2107,20 +2109,24 @@ export const callSignalingService = {
     const apiUrl = import.meta.env.DEV 
       ? `${API_BASE}/api/calls/${encodeURIComponent(chatId)}/offer`
       : `${API_BASE}/calls/${encodeURIComponent(chatId)}/offer`;
-    console.log('📞 createCallOffer: Creating call via API', {
-      apiUrl,
-      chatId,
-      callerEmail,
-      calleeEmail,
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('📞 createCallOffer: Creating call via API', {
+        apiUrl,
+        chatId,
+        callerEmail,
+        calleeEmail,
+      });
+    }
 
     try {
-      console.log('📡 createCallOffer: Sending API request', {
-        apiUrl,
-        method: 'POST',
-        hasToken: !!idToken,
-        tokenLength: idToken?.length,
-      });
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 createCallOffer: Sending API request', {
+          apiUrl,
+          method: 'POST',
+          hasToken: !!idToken,
+          tokenLength: idToken?.length,
+        });
+      }
 
       // Get current org ID to include in request header
       const currentOrgId = getCurrentOrgId();
@@ -2133,14 +2139,16 @@ export const callSignalingService = {
         headers['X-Org-Id'] = currentOrgId;
       }
       
-      console.log('📡 createCallOffer: Sending API request with headers', {
-        apiUrl,
-        method: 'POST',
-        hasToken: !!idToken,
-        hasOrgId: !!currentOrgId,
-        orgId: currentOrgId,
-        headers: Object.keys(headers),
-      });
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 createCallOffer: Sending API request with headers', {
+          apiUrl,
+          method: 'POST',
+          hasToken: !!idToken,
+          hasOrgId: !!currentOrgId,
+          orgId: currentOrgId,
+          headers: Object.keys(headers),
+        });
+      }
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -2151,12 +2159,14 @@ export const callSignalingService = {
         }),
       });
 
-      console.log('📡 createCallOffer: API response received', {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok,
-        headers: Object.fromEntries(response.headers.entries()),
-      });
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📡 createCallOffer: API response received', {
+          status: response.status,
+          statusText: response.statusText,
+          ok: response.ok,
+          headers: Object.fromEntries(response.headers.entries()),
+        });
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -2178,13 +2188,15 @@ export const callSignalingService = {
       const result = await response.json();
       const callId = result.callId;
       
-      console.log('✅ createCallOffer: Call created successfully via API', {
-        callId,
-        chatId,
-        callerEmail,
-        calleeEmail,
-        result,
-      });
+      if (process.env.NODE_ENV === 'development') {
+        console.log('✅ createCallOffer: Call created successfully via API', {
+          callId,
+          chatId,
+          callerEmail,
+          calleeEmail,
+          result,
+        });
+      }
 
       // Wait a moment for Firestore to propagate, then verify document exists
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -2200,32 +2212,40 @@ export const callSignalingService = {
         const verifyDoc = await getDoc(callDocRef);
         
         if (verifyDoc.exists()) {
-          console.log('✅ createCallOffer: Document verified in Firestore', {
-            callId,
-            documentPath: callDocRef.path,
-            data: verifyDoc.data(),
-          });
+          if (process.env.NODE_ENV === 'development') {
+            console.log('✅ createCallOffer: Document verified in Firestore', {
+              callId,
+              documentPath: callDocRef.path,
+              data: verifyDoc.data(),
+            });
+          }
         } else {
-          console.warn('⚠️ createCallOffer: Document not found in Firestore yet', {
-            callId,
-            documentPath: callDocRef.path,
-            note: 'This might be a timing issue - document may appear shortly',
-          });
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('⚠️ createCallOffer: Document not found in Firestore yet', {
+              callId,
+              documentPath: callDocRef.path,
+              note: 'This might be a timing issue - document may appear shortly',
+            });
+          }
         }
       } catch (verifyError: any) {
         // Permission errors are expected if there's a case mismatch between
         // auth token email and stored email, but the document still exists
         // The Firestore listeners will pick it up automatically
         if (verifyError.code === 'permission-denied') {
-          console.log('ℹ️ createCallOffer: Document verification skipped (permission denied - document still exists)', {
-            callId,
-            note: 'This is non-critical - the document was created successfully and listeners will pick it up',
-          });
+          if (process.env.NODE_ENV === 'development') {
+            console.log('ℹ️ createCallOffer: Document verification skipped (permission denied - document still exists)', {
+              callId,
+              note: 'This is non-critical - the document was created successfully and listeners will pick it up',
+            });
+          }
         } else {
-          console.warn('⚠️ createCallOffer: Could not verify document', {
-            error: verifyError.message,
-            code: verifyError.code,
-          });
+          if (process.env.NODE_ENV === 'development') {
+            console.warn('⚠️ createCallOffer: Could not verify document', {
+              error: verifyError.message,
+              code: verifyError.code,
+            });
+          }
         }
       }
 
@@ -2248,11 +2268,13 @@ export const callSignalingService = {
    * Send call answer
    */
   async sendCallAnswer(callId: string, answer: RTCSessionDescriptionInit): Promise<void> {
-    console.log('📞 sendCallAnswer: Starting...', {
-      callId,
-      answerType: answer?.type,
-      hasAnswerSdp: !!answer?.sdp,
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('📞 sendCallAnswer: Starting...', {
+        callId,
+        answerType: answer?.type,
+        hasAnswerSdp: !!answer?.sdp,
+      });
+    }
     
     if (!db) {
       console.error('❌ sendCallAnswer: Firestore not initialized');
@@ -2268,17 +2290,21 @@ export const callSignalingService = {
     const orgSlug = getCurrentOrgSlug();
     const callRef = doc(db, `orgs/${orgSlug || 'default'}/calls`, callId);
     
-    console.log('📞 sendCallAnswer: Updating Firestore document...', {
-      path: `orgs/${orgSlug || 'default'}/calls/${callId}`,
-      orgSlug,
-    });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('📞 sendCallAnswer: Updating Firestore document...', {
+        path: `orgs/${orgSlug || 'default'}/calls/${callId}`,
+        orgSlug,
+      });
+    }
 
     await updateDoc(callRef, {
       answer: JSON.stringify(answer),
       status: 'active',
     });
     
-    console.log('✅ sendCallAnswer: Firestore document updated successfully');
+    if (process.env.NODE_ENV === 'development') {
+      console.log('✅ sendCallAnswer: Firestore document updated successfully');
+    }
   },
 
   /**
@@ -2346,7 +2372,9 @@ export const callSignalingService = {
       throw new Error(errorData.error || `Failed to start transcription: ${response.statusText}`);
     }
 
-    console.log('✅ Transcription started for call', { callId });
+    if (process.env.NODE_ENV === 'development') {
+      console.log('✅ Transcription started for call', { callId });
+    }
   },
 
   /**
@@ -2418,7 +2446,9 @@ export const callSignalingService = {
         throw new Error(errorData.error || `Failed to end call: ${response.statusText}`);
       }
 
-      console.log('✅ Call ended successfully, transcription will be finalized and docs created');
+      if (process.env.NODE_ENV === 'development') {
+        console.log('✅ Call ended successfully, transcription will be finalized and docs created');
+      }
     } catch (error: any) {
       console.error('Failed to end call:', error);
       throw error;

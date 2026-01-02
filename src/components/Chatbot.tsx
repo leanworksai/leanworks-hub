@@ -4807,7 +4807,7 @@ export function Chatbot() {
                 {/* Channels Section */}
                 <div className="px-2 py-1.5">
                   <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
-                    Channels
+                    Projects
                   </div>
                   <div className="space-y-1">
                     {filteredProjects.length > 0 || filteredTeams.length > 0 ? (
@@ -4905,7 +4905,7 @@ export function Chatbot() {
                 {/* Users Section */}
                 <div className="px-2 py-1.5">
                   <div className="text-xs font-semibold text-muted-foreground uppercase mb-1">
-                    Direct Messages
+                    Contacts
                   </div>
                   <div className="space-y-1">
                     {filteredTeamMembers.length > 0 ? (
