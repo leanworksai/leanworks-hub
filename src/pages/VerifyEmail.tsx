@@ -6,6 +6,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CheckCircle2, XCircle, Loader2, Mail } from 'lucide-react';
+import { trackEvent, trackConversion } from '@/lib/analytics';
 
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
@@ -46,6 +47,13 @@ export default function VerifyEmail() {
         setState('success');
         setMessage(data.message || 'Email verified successfully!');
         setVerifiedEmail(data.email || '');
+        
+        // Track email verification
+        trackEvent('email_verified', {
+          email: data.email || '',
+          verification_method: 'email_link',
+        });
+        trackConversion('email_verification_completed');
       } else {
         setState('error');
         setMessage(data.error || 'Failed to verify email');
@@ -78,6 +86,11 @@ export default function VerifyEmail() {
       if (response.ok) {
         setResendMessage(data.message || 'Verification email sent!');
         setResendEmail('');
+        
+        // Track resend verification
+        trackEvent('email_verification_resend', {
+          email: resendEmail,
+        });
       } else {
         setResendError(data.error || 'Failed to send verification email');
       }

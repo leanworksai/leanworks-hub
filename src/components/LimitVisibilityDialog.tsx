@@ -18,6 +18,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Users, UserCheck, Search, Mail, X, EyeOff, Globe, Shield, CheckCircle2 } from "lucide-react";
 import { useUsers } from "@/hooks/useUsers";
 import { cn } from "@/lib/utils";
+import { trackModal } from "@/lib/analytics";
 
 interface LimitVisibilityDialogProps {
   open: boolean;
@@ -120,7 +121,10 @@ export function LimitVisibilityDialog({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog open={open} onOpenChange={(open) => {
+        trackModal('limit_visibility', open ? 'open' : 'close');
+        onOpenChange(open);
+      }}>
         <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-xl">

@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { trackEvent } from "@/lib/analytics";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -38,6 +39,9 @@ export default function Settings() {
 
     setIsDeleting(true);
     try {
+      // Track account deletion
+      trackEvent('account_deleted', {});
+      
       await usersService.deleteAccount();
       toast({
         title: "Account deleted",

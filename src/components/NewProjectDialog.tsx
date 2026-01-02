@@ -28,7 +28,8 @@ import type { Project, ProjectMember } from "@/data/projectsData";
 import { useToast } from "@/hooks/use-toast";
 import { Check, ChevronsUpDown, Calendar, Trash2 } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
-import { trackCreate, trackFormSubmit, trackConversion, trackClick, trackError } from "@/lib/analytics";
+import { trackCreate, trackFormSubmit, trackConversion, trackClick, trackError, trackFirstFeatureUse, trackModal } from "@/lib/analytics";
+import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { cn } from "@/lib/utils";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
@@ -215,6 +216,11 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
       trackFormSubmit('new_project', true);
       trackConversion('project_created');
       
+      // Track first-time project creation
+      const signupDate = await getUserSignupDate();
+      const daysSinceSignup = getDaysSinceSignup(signupDate);
+      trackFirstFeatureUse('project', daysSinceSignup);
+      
       toast({
         title: "Project created",
         description: `"${project.name}" has been created successfully.`,
@@ -243,7 +249,10 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(open) => {
+      trackModal('new_project', open ? 'open' : 'close');
+      onOpenChange(open);
+    }}>
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create New Project</DialogTitle>

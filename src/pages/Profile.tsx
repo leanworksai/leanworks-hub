@@ -134,11 +134,32 @@ export default function Profile() {
         return;
       }
 
+      const oldTimezone = profile.timezone;
+      const oldJobTitle = profile.jobTitle;
+      
       await usersService.updateProfile({
         jobTitle: formData.jobTitle.trim(),
         timezone: formData.timezone,
         responsibilities: formData.responsibilities.trim() || undefined,
       });
+
+      // Track profile updates
+      if (oldJobTitle !== formData.jobTitle.trim()) {
+        trackEvent('profile_updated', {
+          field_updated: 'job_title',
+        });
+      }
+      if (oldTimezone !== formData.timezone) {
+        trackEvent('timezone_changed', {
+          old_timezone: oldTimezone || '',
+          new_timezone: formData.timezone,
+        });
+      }
+      if (profile.responsibilities !== formData.responsibilities.trim()) {
+        trackEvent('profile_updated', {
+          field_updated: 'responsibilities',
+        });
+      }
 
       // Refetch profile to get the latest merged data from server
       // Don't show loading state during refetch after save

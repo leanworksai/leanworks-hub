@@ -26,6 +26,7 @@ import { useCreateEvent, useUpdateEvent, useDeleteEvent } from "@/hooks/useEvent
 import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { trackEvent, trackModal } from "@/lib/analytics";
 import { format } from "date-fns";
 import { CalendarIcon, Trash2, Clock, MapPin, Users as UsersIcon, FileText, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -194,7 +195,16 @@ export function EventDialog({ open, onOpenChange, event, initialDate }: EventDia
         });
       } else {
         // For creation, we don't need id - backend will generate it
-        await createEvent.mutateAsync(eventData as Omit<Event, 'id'> & { id?: string });
+        const createdEvent = await createEvent.mutateAsync(eventData as Omit<Event, 'id'> & { id?: string });
+        
+        // Track calendar event creation
+        trackEvent('calendar_event_created', {
+          event_type: data.allDay ? 'all_day' : 'timed',
+          event_date: startDateTime.toISOString(),
+          has_location: !!data.location,
+          attendee_count: selectedAttendees.length,
+        });
+        
         toast({
           title: "Event created",
           description: "Event has been created successfully.",
@@ -256,7 +266,10 @@ export function EventDialog({ open, onOpenChange, event, initialDate }: EventDia
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(open) => {
+      trackModal('event_dialog', open ? 'open' : 'close');
+      onOpenChange(open);
+    }}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-2xl">{event ? "Edit Event" : "Create Event"}</DialogTitle>

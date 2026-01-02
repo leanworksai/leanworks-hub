@@ -12,6 +12,7 @@ import { Task } from "@/data/tasksData";
 import { Team } from "@/data/teamsData";
 import { Doc } from "@/data/docsData";
 import { ContextBadges } from "@/components/ContextBadges";
+import { trackEmojiPicker, trackMention } from "@/lib/analytics";
 
 export interface ChatInputProps {
   onSend: (message: string, imageUrls: string[]) => void;
@@ -114,6 +115,9 @@ export function ChatInput({
     setInput(newInput);
     onMentionClose?.();
     
+    // Track mention insertion
+    trackMention('insert');
+    
     // Focus input and move cursor after mention
     setTimeout(() => {
       inputRef.current?.focus();
@@ -152,6 +156,9 @@ export function ChatInput({
     setInput(newValue);
     setShowEmojiPicker(false);
     
+    // Track emoji selection
+    trackEmojiPicker('select', emojiData.emoji);
+    
     // Focus and set cursor position after emoji
     setTimeout(() => {
       inputRef.current?.focus();
@@ -174,6 +181,8 @@ export function ChatInput({
           const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
           if (!afterAt.includes(' ')) {
             setMentionCursorPos(lastAtIndex);
+            // Track mention detection
+            trackMention('detect');
           }
         }
       }
@@ -308,7 +317,10 @@ export function ChatInput({
             multiple
             className="hidden"
           />
-          <Popover open={showEmojiPicker} onOpenChange={setShowEmojiPicker}>
+          <Popover open={showEmojiPicker} onOpenChange={(open) => {
+            setShowEmojiPicker(open);
+            trackEmojiPicker(open ? 'open' : 'close');
+          }}>
             <PopoverTrigger asChild>
               <Button
                 type="button"

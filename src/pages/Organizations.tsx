@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useOrg, Organization, OrgMember } from '@/contexts/OrgContext';
+import { trackEvent, trackModal } from '@/lib/analytics';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -70,6 +71,14 @@ export default function Organizations() {
     setIsSubmitting(true);
     try {
       const newOrg = await createOrg(newOrgName.trim(), newOrgDescription.trim() || undefined);
+      
+      // Track organization creation
+      trackEvent('org_created', {
+        org_id: newOrg.id,
+        org_name: newOrg.name,
+        org_type: newOrg.type,
+      });
+      
       toast({ title: 'Success', description: `Organization "${newOrg.name}" created successfully` });
       setIsCreateDialogOpen(false);
       setNewOrgName('');
@@ -93,6 +102,14 @@ export default function Organizations() {
     setIsSubmitting(true);
     try {
       await inviteToOrg(selectedOrg.id, inviteEmail.trim(), inviteMessage.trim() || undefined);
+      
+      // Track team invitation
+      trackEvent('team_invite_sent', {
+        team_id: selectedOrg.id,
+        invitee_email: inviteEmail.trim(),
+        org_name: selectedOrg.name,
+      });
+      
       toast({ title: 'Success', description: `Invitation sent to ${inviteEmail}` });
       setIsInviteDialogOpen(false);
       setInviteEmail('');
@@ -113,6 +130,14 @@ export default function Organizations() {
     
     try {
       await leaveOrg(org.id);
+      
+      // Track organization leave
+      trackEvent('org_left', {
+        org_id: org.id,
+        org_name: org.name,
+        org_type: org.type,
+      });
+      
       toast({ title: 'Success', description: `You've left ${org.name}` });
     } catch (err: any) {
       toast({ title: 'Error', description: err.message, variant: 'destructive' });

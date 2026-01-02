@@ -17,7 +17,7 @@ interface UseAutoSaveOptions {
   files: any[];
   enabled?: boolean;
   debounceDelay?: number;
-  onSaveSuccess?: () => void;
+  onSaveSuccess?: (savedDocId: string, isManual: boolean) => void;
   onSaveError?: (error: Error) => void;
 }
 
@@ -272,7 +272,9 @@ export function useAutoSave({
         setSaveStatus((current) => current === 'saved' ? 'idle' : current);
       }, 2000);
       
-      onSaveSuccess?.();
+      // Determine the saved doc ID
+      const savedDocId = docId === 'new' ? (createdDocIdRef.current || '') : docId;
+      onSaveSuccess?.(savedDocId, false); // false = auto save
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to save document');
       setError(error);
@@ -444,8 +446,159 @@ export function useAutoSave({
       debounceTimerRef.current = null;
     }
     
-    await performSave();
-  }, [performSave]);
+    // Store original onSaveSuccess to call with manual flag
+    const originalOnSaveSuccess = onSaveSuccess;
+    const wrappedOnSaveSuccess = (savedDocId: string) => {
+      originalOnSaveSuccess?.(savedDocId, true); // true = manual save
+    };
+    
+    // Temporarily replace onSaveSuccess for this save
+    const performManualSave = async () => {
+      if (!enabled || isSavingRef.current) return;
+      
+      // Validate required fields
+      if (!title.trim()) {
+        setError(new Error('Title is required'));
+        setSaveStatus('error');
+        return;
+      }
+
+      if (!content.trim() || content === '<p></p>') {
+        setError(new Error('Content is required'));
+        setSaveStatus('error');
+        return;
+      }
+
+      // Validate visibility
+      if (visibility === 'specific_members' && visibleToMembers.length === 0) {
+        setError(new Error('Please select at least one member when visibility is set to Specific Members'));
+        setSaveStatus('error');
+        return;
+      }
+
+      isSavingRef.current = true;
+      setSaveStatus('saving');
+      setError(null);
+
+      try {
+        saveDraftLocally();
+
+        if (!isOnline()) {
+          // Queue save for when online
+          if (docId === 'new') {
+            const newDoc: Doc = {
+              id: uuidv4(),
+              title: title.trim(),
+              content,
+              ownerEmail: user?.email || '',
+              projectId: null,
+              teamId: null,
+              visibility,
+              visibleToMembers: Array.from(visibleToMembers),
+              metadata: { files },
+              isPinned: false,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+            queueSave('new', {}, 'create', newDoc);
+          } else {
+            queueSave(docId, {
+              title: title.trim(),
+              content,
+              visibility,
+              visibleToMembers: Array.from(visibleToMembers),
+              metadata: { files },
+            });
+          }
+          setSaveStatus('offline');
+          isSavingRef.current = false;
+          return;
+        }
+
+        let savedDocId = docId;
+        if (docId === 'new') {
+          if (createdDocIdRef.current) {
+            await updateDoc.mutateAsync({
+              docId: createdDocIdRef.current,
+              updates: {
+                title: title.trim(),
+                content,
+                visibility,
+                visibleToMembers: Array.from(visibleToMembers),
+                metadata: { files },
+              },
+            });
+            savedDocId = createdDocIdRef.current;
+            if (userIdRef.current) {
+              removeDraft(createdDocIdRef.current, userIdRef.current);
+            }
+          } else {
+            isCreatingRef.current = true;
+            try {
+              const newDoc: Doc = {
+                id: uuidv4(),
+                title: title.trim(),
+                content,
+                ownerEmail: user?.email || '',
+                projectId: null,
+                teamId: null,
+                visibility,
+                visibleToMembers: Array.from(visibleToMembers),
+                metadata: { files },
+                isPinned: false,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
+              const createdDoc = await createDoc.mutateAsync(newDoc);
+              createdDocIdRef.current = createdDoc.id;
+              savedDocId = createdDoc.id;
+              if (userIdRef.current) {
+                removeDraft('new', userIdRef.current);
+              }
+            } finally {
+              isCreatingRef.current = false;
+            }
+          }
+        } else {
+          await updateDoc.mutateAsync({
+            docId,
+            updates: {
+              title: title.trim(),
+              content,
+              visibility,
+              visibleToMembers: Array.from(visibleToMembers),
+              metadata: { files },
+            },
+          });
+          if (userIdRef.current) {
+            removeDraft(docId, userIdRef.current);
+          }
+        }
+
+        lastSavedContentRef.current = content;
+        lastSavedTitleRef.current = title.trim();
+        const savedAt = new Date();
+        setLastSavedAt(savedAt);
+        setSaveStatus('saved');
+        setIsDirty(false);
+        
+        setTimeout(() => {
+          setSaveStatus((current) => current === 'saved' ? 'idle' : current);
+        }, 2000);
+        
+        wrappedOnSaveSuccess(savedDocId);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error('Failed to save document');
+        setError(error);
+        setSaveStatus('error');
+        onSaveError?.(error);
+      } finally {
+        isSavingRef.current = false;
+      }
+    };
+    
+    await performManualSave();
+  }, [performSave, enabled, title, content, visibility, visibleToMembers, files, user?.email, docId, saveDraftLocally, createDoc, updateDoc, onSaveSuccess, onSaveError]);
 
   // Monitor online/offline status
   useEffect(() => {

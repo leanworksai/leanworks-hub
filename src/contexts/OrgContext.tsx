@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { useAuth } from './AuthContext';
 import { getAuthToken } from '@/services/api';
+import { trackEvent, trackOrgSwitch } from '@/lib/analytics';
 
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
@@ -219,18 +220,24 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   // Switch to a different org
   const switchOrg = useCallback(async (orgId: string) => {
     const org = organizations.find(o => o.id === orgId);
+    let targetOrg: Organization;
     if (org) {
+      targetOrg = org;
       setCurrentOrg(org);
     } else {
       // Fetch org details if not in list
       try {
         const orgDetails = await apiCall<Organization>(`/orgs/${orgId}`);
+        targetOrg = orgDetails;
         setCurrentOrg(orgDetails);
       } catch (err) {
         console.error('Failed to fetch org:', err);
         throw err;
       }
     }
+    
+    // Track org switch (trackOrgSwitch already exists and is used in AppSidebar)
+    trackOrgSwitch(targetOrg.id, targetOrg.name, targetOrg.type);
   }, [organizations, setCurrentOrg]);
 
   // Fetch user's organizations
@@ -445,6 +452,18 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       { method: 'POST' }
     );
     
+    // Track organization join
+    trackEvent('org_joined', {
+      org_id: result.orgId,
+      org_name: result.orgName,
+      org_type: 'team',
+    });
+    
+    // Track team invite acceptance
+    trackEvent('team_invite_accepted', {
+      team_id: result.orgId,
+    });
+    
     // Refresh orgs and invitations
     await Promise.all([refreshOrgs(), refreshInvitations()]);
     
@@ -465,9 +484,28 @@ export function OrgProvider({ children }: { children: ReactNode }) {
 
   // Decline invitation
   const declineInvitation = useCallback(async (invitationId: string) => {
+    // Get invitation details before declining to track
+    let invitationOrgId: string | undefined;
+    try {
+      const invitations = await apiCall<OrgInvitation[]>('/orgs/invitations');
+      const invitation = invitations.find(inv => inv.id === invitationId);
+      if (invitation) {
+        invitationOrgId = invitation.orgId;
+      }
+    } catch (err) {
+      // Continue even if we can't get invitation details
+    }
+    
     await apiCall(`/orgs/invitations/${invitationId}/decline`, {
       method: 'POST',
     });
+    
+    // Track team invite decline
+    if (invitationOrgId) {
+      trackEvent('team_invite_declined', {
+        team_id: invitationOrgId,
+      });
+    }
     
     // Refresh invitations
     await refreshInvitations();

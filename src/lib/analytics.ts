@@ -205,6 +205,12 @@ export async function initializeAnalytics(): Promise<void> {
   
   // Initialize session
   initializeSession();
+  
+  // Initialize is_logged_in property (defaults to false for anonymous users)
+  // This will be updated when user logs in via setAnalyticsUserId
+  setAnalyticsUserProperties({
+    is_logged_in: false,
+  });
 }
 
 /**
@@ -377,8 +383,15 @@ export function trackEvent(
 
 /**
  * Set user ID for analytics
+ * Automatically sets is_logged_in user property for easy segmentation
+ * 
+ * Usage in GA4/Firebase Analytics:
+ * - Create segment: Filter by user property "is_logged_in" = true (for logged-in users)
+ * - Create segment: Filter by user property "is_logged_in" = false (for anonymous users)
  */
 export function setAnalyticsUserId(userId: string | null): void {
+  const isLoggedIn = !!userId;
+
   // Firebase Analytics (only in production)
   if (!import.meta.env.DEV && analytics) {
     try {
@@ -387,6 +400,10 @@ export function setAnalyticsUserId(userId: string | null): void {
       } else {
         setUserId(analytics, null);
       }
+      // Automatically set is_logged_in property for easy segmentation
+      setUserProperties(analytics, {
+        is_logged_in: isLoggedIn,
+      });
     } catch (error: any) {
       console.error('Failed to set Firebase Analytics user ID:', error);
     }
@@ -400,6 +417,10 @@ export function setAnalyticsUserId(userId: string | null): void {
         gtag('config', ga4MeasurementId, {
           user_id: userId || undefined,
         });
+        // Automatically set is_logged_in property for easy segmentation
+        gtag('set', {
+          is_logged_in: isLoggedIn,
+        });
       }
     } catch (error: any) {
       console.error('Failed to set GA4 user ID:', error);
@@ -411,7 +432,7 @@ export function setAnalyticsUserId(userId: string | null): void {
  * Set user properties for analytics
  */
 export function setAnalyticsUserProperties(properties: {
-  [key: string]: string | null;
+  [key: string]: string | number | null;
 }): void {
   // Firebase Analytics (only in production)
   if (!import.meta.env.DEV && analytics) {
@@ -723,6 +744,35 @@ export function trackError(errorType: string, errorMessage: string, errorContext
   trackEventDual('error', {
     error_type: errorType,
     error_message: errorMessage,
+    component: errorContext?.component || 'unknown',
+    action: errorContext?.action || 'unknown',
+    user_action: errorContext?.user_action || 'unknown',
+    ...errorContext,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track API errors with endpoint and status code
+ */
+export function trackAPIError(endpoint: string, statusCode: number, errorMessage: string, errorContext?: Record<string, any>): void {
+  trackEventDual('api_error', {
+    endpoint: endpoint,
+    status_code: statusCode,
+    error_message: errorMessage,
+    ...errorContext,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track validation errors
+ */
+export function trackValidationError(formName: string, field: string, errorType: string, errorContext?: Record<string, any>): void {
+  trackEventDual('validation_error', {
+    form_name: formName,
+    field: field,
+    error_type: errorType,
     ...errorContext,
     location: window.location.pathname,
   });
@@ -746,6 +796,167 @@ export function trackEngagement(score: number, factors: Record<string, number>):
   trackEventDual('engagement', {
     engagement_score: score,
     ...factors,
+  });
+}
+
+/**
+ * Track message like/unlike
+ */
+export function trackMessageLike(messageId: string, action: 'like' | 'unlike', messageRole: 'user' | 'assistant'): void {
+  trackEventDual('message_like', {
+    message_id: messageId,
+    action: action,
+    message_role: messageRole,
+  });
+}
+
+/**
+ * Track draft response generation
+ */
+export function trackDraftResponse(messageId: string, success: boolean = true): void {
+  trackEventDual('draft_response', {
+    message_id: messageId,
+    success: success,
+  });
+}
+
+/**
+ * Track image upload in chat
+ */
+export function trackImageUpload(chatId: string, imageCount: number, success: boolean = true): void {
+  trackEventDual('image_upload', {
+    chat_id: chatId,
+    image_count: imageCount,
+    success: success,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track image removal from chat
+ */
+export function trackImageRemove(chatId: string): void {
+  trackEventDual('image_remove', {
+    chat_id: chatId,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track context removal (project, task, team, doc)
+ */
+export function trackContextRemove(contextType: 'project' | 'task' | 'team' | 'doc', itemId: string): void {
+  trackEventDual('context_remove', {
+    context_type: contextType,
+    item_id: itemId,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track emoji picker usage
+ */
+export function trackEmojiPicker(action: 'open' | 'close' | 'select', emoji?: string): void {
+  trackEventDual('emoji_picker', {
+    action: action,
+    emoji: emoji,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track mention usage
+ */
+export function trackMention(action: 'detect' | 'select' | 'insert', mentionCount?: number): void {
+  trackEventDual('mention', {
+    action: action,
+    mention_count: mentionCount,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track load more messages
+ */
+export function trackLoadMoreMessages(chatId: string, increment: number, totalVisible: number): void {
+  trackEventDual('load_more_messages', {
+    chat_id: chatId,
+    increment: increment,
+    total_visible: totalVisible,
+    location: window.location.pathname,
+  });
+}
+
+/**
+ * Track first-time feature usage
+ * Detects and tracks when a user uses a feature for the first time
+ */
+export function trackFirstFeatureUse(feature: 'project' | 'task' | 'ai_chat' | 'voice_call', daysSinceSignup?: number): void {
+  const storageKey = `first_${feature}_used`;
+  const hasUsedBefore = localStorage.getItem(storageKey);
+  
+  if (hasUsedBefore) {
+    return; // Already tracked
+  }
+  
+  // Mark as used
+  localStorage.setItem(storageKey, Date.now().toString());
+  
+  // Track the first-time use
+  trackEventDual('first_feature_use', {
+    feature: feature,
+    days_since_signup: daysSinceSignup || null,
+  });
+  
+  // Set user property for cohort analysis
+  const firstUseDate = new Date().toISOString();
+  setAnalyticsUserProperties({
+    [`first_${feature}_date`]: firstUseDate,
+  });
+  
+  // Track as conversion for onboarding funnel
+  trackConversion(`first_${feature}_created`);
+}
+
+/**
+ * Track home page CTA button clicks
+ */
+export function trackHomePageCTA(ctaName: string, location: string): void {
+  trackEventDual('home_page_cta_click', {
+    cta_name: ctaName,
+    location: location,
+    page_path: '/',
+  });
+}
+
+/**
+ * Track home page section visibility
+ */
+export function trackSectionView(sectionName: string): void {
+  trackEventDual('home_page_section_view', {
+    section_name: sectionName,
+    page_path: '/',
+  });
+}
+
+/**
+ * Track demo interactions (open, close, submit)
+ */
+export function trackDemoInteraction(action: 'open' | 'close' | 'submit'): void {
+  trackEventDual('home_page_demo', {
+    action: action,
+    page_path: '/',
+  });
+}
+
+/**
+ * Track home page scroll depth
+ * Enhanced version that includes page context
+ */
+export function trackHomePageScroll(depth: number): void {
+  trackEventDual('home_page_scroll_depth', {
+    depth_percent: depth,
+    page_path: '/',
   });
 }
 

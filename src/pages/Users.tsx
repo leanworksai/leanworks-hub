@@ -1,10 +1,11 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Search, Mail, Briefcase } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useUsers } from "@/hooks/useUsers";
 import { getAvatarColor } from "@/lib/utils";
+import { trackSearch, trackEvent } from "@/lib/analytics";
 
 export default function Users() {
   const { data: users = [], isLoading: isLoadingUsers } = useUsers();
@@ -25,6 +26,40 @@ export default function Users() {
     }
     return "U";
   };
+
+  // Track search with debounce
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTrackedQueryRef = useRef<string>('');
+  
+  useEffect(() => {
+    // Clear existing timeout
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    
+    // Only track if query changed and is not empty
+    if (searchQuery.trim() && searchQuery !== lastTrackedQueryRef.current) {
+      searchTimeoutRef.current = setTimeout(() => {
+        lastTrackedQueryRef.current = searchQuery;
+        const resultCount = filteredUsers.length;
+        trackSearch(searchQuery, resultCount);
+        
+        // Track empty results
+        if (resultCount === 0) {
+          trackEvent('search_no_results', {
+            search_term: searchQuery,
+            location: '/users',
+          });
+        }
+      }, 500); // Debounce search tracking
+    }
+    
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [searchQuery]);
 
   // Filter users based on search query
   const filteredUsers = useMemo(() => {

@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Users, Calendar, CheckCircle2, Circle, Clock, ChevronDown, ChevronLeft, ChevronRight, Send, Activity, MessageSquare, Trash2, Plus, X, Check, Share2, Sparkles, MoreVertical } from "lucide-react";
 import { useUserProjects, useDeleteProject, useProject, useAddProjectMember, useRemoveProjectMember, useUpdateProject } from "@/hooks/useProjects";
+import { trackUpdate, trackEvent, trackSearch } from "@/lib/analytics";
 import { useAuth } from "@/contexts/AuthContext";
 import { projectsService } from "@/services/api";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -949,6 +950,7 @@ export default function ProjectDetail() {
           currentVisibility={project.visibility || 'all_members'}
           currentVisibleToMembers={project.visibleToMembers || []}
           onSave={async (newVisibility, newVisibleToMembers) => {
+            const oldVisibility = project.visibility || 'all_members';
             await updateProject.mutateAsync({
               projectId: project.id,
               updates: {
@@ -956,6 +958,19 @@ export default function ProjectDetail() {
                 visibleToMembers: newVisibleToMembers,
               },
             });
+            
+            // Track project update
+            trackUpdate('project', project.id);
+            
+            // Track visibility change if it changed
+            if (oldVisibility !== newVisibility) {
+              trackEvent('project_visibility_changed', {
+                project_id: project.id,
+                old_visibility: oldVisibility,
+                new_visibility: newVisibility,
+              });
+            }
+            
             toast({
               title: "Visibility updated",
               description: "Project visibility has been updated successfully.",

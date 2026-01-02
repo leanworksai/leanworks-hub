@@ -20,7 +20,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useAIChat } from "@/hooks/useAIChat";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
-import { trackAIChat, trackError } from "@/lib/analytics";
+import { trackAIChat, trackError, trackMessageLike, trackImageUpload, trackImageRemove, trackContextRemove, trackDraftResponse, trackFirstFeatureUse } from "@/lib/analytics";
+import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
 import type { Message, LikedByUser } from "@/components/chat/types";
 
 export function AIChat() {
@@ -297,8 +298,12 @@ export function AIChat() {
           imageUploadService.uploadImage(chatId, file)
         );
         uploadedImageUrls = await Promise.all(uploadPromises);
+        // Track successful image upload
+        trackImageUpload(chatId, selectedImages.length, true);
       } catch (error: any) {
         console.error('Failed to upload images:', error);
+        // Track failed image upload
+        trackImageUpload(chatId, selectedImages.length, false);
         toast({
           title: "Upload Failed",
           description: error.message || 'Failed to upload images. Please try again.',
@@ -485,7 +490,12 @@ export function AIChat() {
     
     setSelectedImages(newImages);
     setImagePreviewUrls(newPreviewUrls);
-  }, [selectedImages, imagePreviewUrls]);
+    
+    // Track image removal
+    if (chatId) {
+      trackImageRemove(chatId);
+    }
+  }, [selectedImages, imagePreviewUrls, chatId]);
 
   // Handle like toggle
   const handleToggleLike = useCallback(async (messageId: string, currentLikes: string[] = []) => {
@@ -493,6 +503,10 @@ export function AIChat() {
     
     const userEmailLower = user.email.toLowerCase();
     const isLiked = currentLikes.includes(userEmailLower);
+    
+    // Find the message to get its role
+    const message = messages.find(msg => msg.id === messageId);
+    const messageRole = message?.role || 'assistant';
     
     setPendingLikeOperations((prev) => new Set(prev).add(messageId));
     
@@ -507,6 +521,9 @@ export function AIChat() {
           : msg
       )
     );
+    
+    // Track like/unlike action
+    trackMessageLike(messageId, isLiked ? 'unlike' : 'like', messageRole as 'user' | 'assistant');
     
     try {
       const result = await messagesService.toggleLike(messageId);
@@ -541,7 +558,7 @@ export function AIChat() {
         )
       );
     }
-  }, [user?.email]);
+  }, [user?.email, messages]);
 
   // Helper functions for message display
   const getUserInfo = useCallback((userId?: string) => {
@@ -605,12 +622,21 @@ export function AIChat() {
         });
         return;
       }
-      setIsOpen(prev => !prev);
-      if (!isOpen) {
-        trackAIChat('open', { source: 'header_button' });
-      } else {
-        trackAIChat('close', { source: 'header_button' });
-      }
+      setIsOpen(prev => {
+        const newIsOpen = !prev;
+        if (newIsOpen) {
+          trackAIChat('open', { source: 'header_button' });
+          // Track first-time AI chat usage
+          (async () => {
+            const signupDate = await getUserSignupDate();
+            const daysSinceSignup = getDaysSinceSignup(signupDate);
+            trackFirstFeatureUse('ai_chat', daysSinceSignup);
+          })();
+        } else {
+          trackAIChat('close', { source: 'header_button' });
+        }
+        return newIsOpen;
+      });
     };
 
     const handleOpenChat = () => {
@@ -767,10 +793,22 @@ export function AIChat() {
           selectedTasks={selectedTasks}
           selectedTeams={selectedTeams}
           selectedDocs={selectedDocs}
-          onRemoveProject={toggleProject}
-          onRemoveTask={toggleTask}
-          onRemoveTeam={toggleTeam}
-          onRemoveDoc={toggleDoc}
+          onRemoveProject={(project) => {
+            trackContextRemove('project', project.id);
+            toggleProject(project);
+          }}
+          onRemoveTask={(task) => {
+            trackContextRemove('task', task.id);
+            toggleTask(task);
+          }}
+          onRemoveTeam={(team) => {
+            trackContextRemove('team', team.id);
+            toggleTeam(team);
+          }}
+          onRemoveDoc={(doc) => {
+            trackContextRemove('doc', doc.id);
+            toggleDoc(doc);
+          }}
           placeholder="Ask lean anything..."
           hideContext={false}
           theme="purple"

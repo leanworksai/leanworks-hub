@@ -265,10 +265,38 @@ export default function Tasks() {
 
   const handleFieldSave = async (taskId: string, field: keyof Task, value: any, additionalData?: Record<string, any>) => {
     try {
+      // Get old value before update
+      const task = tasks.find(t => t.id === taskId);
+      const oldValue = task?.[field];
+      
       await updateTaskMutation.mutateAsync({ 
         taskId, 
         updates: { [field]: value, ...additionalData } 
       });
+      
+      // Track task updates
+      trackUpdate('task', taskId);
+      
+      // Track specific field changes
+      if (field === 'status' && oldValue !== value) {
+        trackEvent('task_status_changed', {
+          task_id: taskId,
+          old_status: oldValue as string,
+          new_status: value as string,
+        });
+      } else if (field === 'priority' && oldValue !== value) {
+        trackEvent('task_priority_changed', {
+          task_id: taskId,
+          old_priority: oldValue as string,
+          new_priority: value as string,
+        });
+      } else if (field === 'assigneeId' && oldValue !== value) {
+        trackEvent('task_assignee_changed', {
+          task_id: taskId,
+          old_assignee: oldValue as string || 'unassigned',
+          new_assignee: value as string || 'unassigned',
+        });
+      }
     } catch (error) {
       toast({
         title: "Error",
@@ -322,7 +350,11 @@ export default function Tasks() {
       <div className="flex flex-col sm:flex-row gap-2">
         <div className="flex items-center gap-1.5">
           <label className="text-xs text-muted-foreground whitespace-nowrap">Status:</label>
-          <Select value={filterStatus} onValueChange={(value) => setFilterStatus(value as Task["status"] | "all")}>
+          <Select value={filterStatus} onValueChange={(value) => {
+            const newValue = value as Task["status"] | "all";
+            setFilterStatus(newValue);
+            trackFilter('status', newValue, '/tasks');
+          }}>
             <SelectTrigger className="w-[93px] h-8 text-xs">
               <SelectValue placeholder="All statuses" />
             </SelectTrigger>
@@ -338,7 +370,11 @@ export default function Tasks() {
         </div>
         <div className="flex items-center gap-1.5">
           <label className="text-xs text-muted-foreground whitespace-nowrap">Priority:</label>
-          <Select value={filterPriority} onValueChange={(value) => setFilterPriority(value as Task["priority"] | "all")}>
+          <Select value={filterPriority} onValueChange={(value) => {
+            const newValue = value as Task["priority"] | "all";
+            setFilterPriority(newValue);
+            trackFilter('priority', newValue, '/tasks');
+          }}>
             <SelectTrigger className="w-[93px] h-8 text-xs">
               <SelectValue placeholder="All priorities" />
             </SelectTrigger>
@@ -385,12 +421,12 @@ export default function Tasks() {
           return (
             <div key={task.id} className="group">
               {/* Mobile: Single card, Desktop: Side-by-side cards */}
-              <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-stretch gap-3">
                 {/* Main Task Card */}
                 <Card 
                   className={cn(
                     "relative cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden",
-                    "flex-1" // Always use flex-1 to maintain consistent container size
+                    "flex-1 h-[120px] flex flex-col" // Fixed height and flex column
                   )}
                   onClick={() => handleTaskClick(task.id)}
                 >
@@ -458,15 +494,15 @@ export default function Tasks() {
                     </Popover>
                   </div>
                 )}
-                <CardHeader className="pb-3">
+                <CardHeader className="pb-3 flex-shrink-0 overflow-hidden">
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                        <CardTitle className="text-base">{task.title}</CardTitle>
+                        <CardTitle className="text-base line-clamp-1">{task.title}</CardTitle>
                       </div>
                       
                       {/* Task Meta Info */}
-                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground overflow-hidden">
                           <Popover 
                             open={isDropdownOpen(task.id, 'status')} 
                             onOpenChange={(open) => setDropdownOpen(task.id, 'status', open)}
@@ -739,7 +775,7 @@ export default function Tasks() {
               </Card>
 
               {/* Latest Progress Update Card - Desktop only */}
-              <div className="hidden sm:flex items-center gap-3 flex-1">
+              <div className="hidden sm:flex items-stretch gap-3 flex-1">
                 {hasProgressUpdate ? (
                   <>
                     {/* Visual Connector Line */}
@@ -747,10 +783,10 @@ export default function Tasks() {
                       <div className="w-0.5 h-full min-h-[100px] bg-border group-hover:bg-primary/50 transition-colors rounded-full" />
                     </div>
                     <Card 
-                      className="flex-1 cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
+                      className="flex-1 flex flex-col h-[120px] cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <CardHeader className="pb-3">
+                      <CardHeader className="pb-3 flex-shrink-0">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <p className="text-xs font-medium text-muted-foreground/70">LATEST PROGRESS UPDATE</p>
@@ -760,20 +796,22 @@ export default function Tasks() {
                               </p>
                             )}
                           </div>
-                          <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
-                            <p className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-4">
-                              {latestUpdate.update}
-                            </p>
-                            {isFreePlan && (
-                              <div className="absolute inset-0 flex items-center justify-center">
-                                <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                  Upgrade to view progress update
-                                </span>
-                              </div>
-                            )}
-                          </div>
                         </div>
                       </CardHeader>
+                      <div className="px-6 pb-6 flex-1 min-h-0">
+                        <div className={cn("relative h-full max-h-[80px] overflow-y-auto", isFreePlan && "blur-sm pointer-events-none")}>
+                          <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                            {latestUpdate.update}
+                          </p>
+                          {isFreePlan && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+                                Upgrade to view progress update
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </Card>
                   </>
                 ) : (
@@ -782,7 +820,7 @@ export default function Tasks() {
                     <div className="flex items-center justify-center w-4 flex-shrink-0">
                       <div className="w-0.5 h-full min-h-[100px] bg-transparent" />
                     </div>
-                    <Card className="flex-1 opacity-0 pointer-events-none">
+                    <Card className="flex-1 h-[120px] opacity-0 pointer-events-none">
                       <CardHeader className="pb-3">
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">

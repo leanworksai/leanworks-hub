@@ -56,7 +56,7 @@ import {
   isAIAssistantChatId 
 } from "@/hooks/useChatId";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { trackAIChat, trackVoiceCall, trackConversion, trackError } from "@/lib/analytics";
+import { trackAIChat, trackVoiceCall, trackConversion, trackError, trackDraftResponse } from "@/lib/analytics";
 
 interface Message {
   id: string;
@@ -4448,8 +4448,14 @@ export function Chatbot() {
         title: "Draft response generated",
         description: "You can edit the response before sending.",
       });
+      
+      // Track successful draft response generation
+      trackDraftResponse(messageId, true);
     } catch (error) {
       console.error('Error generating draft response:', error);
+      
+      // Track failed draft response generation
+      trackDraftResponse(messageId, false);
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "Failed to generate draft response",

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { trackEvent, trackModal } from "@/lib/analytics";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -55,7 +56,10 @@ export function QuickCreateDialog({ open, onOpenChange, initialDate, initialType
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog open={open} onOpenChange={(open) => {
+        trackModal('quick_create', open ? 'open' : 'close');
+        onOpenChange(open);
+      }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Create New Item</DialogTitle>

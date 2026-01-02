@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { trackEvent } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus } from "lucide-react";
@@ -62,6 +63,11 @@ export default function Calendar() {
     setSelectedDate(date);
     setSelectedEvent(null);
     setEventDialogOpen(true);
+    
+    // Track date selection
+    trackEvent('calendar_date_selected', {
+      selected_date: date.toISOString(),
+    });
   };
 
 
@@ -94,7 +100,13 @@ export default function Calendar() {
             <Plus className="mr-2 h-4 w-4" />
             New Event
           </Button>
-          <Select value={view} onValueChange={(v) => setView(v as ViewType)}>
+          <Select value={view} onValueChange={(v) => {
+            const newView = v as ViewType;
+            setView(newView);
+            trackEvent('calendar_view_changed', {
+              view_type: newView,
+            });
+          }}>
             <SelectTrigger className="w-[140px]">
               <SelectValue placeholder="Select view" />
             </SelectTrigger>

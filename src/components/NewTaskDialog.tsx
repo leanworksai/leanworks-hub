@@ -37,6 +37,8 @@ import { Check, ChevronsUpDown, Sparkles, Lock } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
 import { getAuthToken } from "@/services/api";
 import { cn } from "@/lib/utils";
+import { trackCreate, trackConversion, trackFirstFeatureUse, trackEvent, trackModal } from "@/lib/analytics";
+import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -553,6 +555,35 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
 
       await createTask.mutateAsync(task);
       
+      // Track task creation
+      trackCreate('task', '/tasks');
+      trackConversion('task_created');
+      
+      // Track AI-assisted task creation if applicable
+      if (isGeneratingAI) {
+        trackEvent('task_created_with_ai', {
+          used_ai: true,
+          has_project: !!project,
+          has_assignee: !!selectedAssigneeId,
+          has_due_date: !!formattedDueDate,
+          priority: data.priority,
+        });
+      }
+      
+      // Track first-time task creation
+      const signupDate = await getUserSignupDate();
+      const daysSinceSignup = getDaysSinceSignup(signupDate);
+      trackFirstFeatureUse('task', daysSinceSignup);
+      
+      // Track task creation metadata
+      trackEvent('task_created', {
+        has_project: !!project,
+        has_assignee: !!selectedAssigneeId,
+        has_due_date: !!formattedDueDate,
+        priority: data.priority,
+        status: data.status,
+      });
+      
       toast({
         title: "Task created",
         description: `"${task.title}" has been created successfully.`,
@@ -572,7 +603,10 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(open) => {
+      trackModal('new_task', open ? 'open' : 'close');
+      onOpenChange(open);
+    }}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create New Task</DialogTitle>

@@ -1,5 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
+import { trackHomePageCTA, trackDemoInteraction } from '@/lib/analytics';
+import { useSectionVisibility } from '@/hooks/useSectionVisibility';
+import { useScrollDepth } from '@/hooks/useScrollDepth';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -85,6 +88,34 @@ export default function Home() {
   const [notesInContext, setNotesInContext] = useState<Array<{id: number, title: string, content: string}>>([]);
   const [userQuestion, setUserQuestion] = useState('');
   const [aiResponse, setAiResponse] = useState<{patterns: string[], visible: boolean}>({patterns: [], visible: false});
+
+  // Section refs for visibility tracking
+  const heroSectionRef = useRef<HTMLElement>(null);
+  const featuresIntroRef = useRef<HTMLElement>(null);
+  const feature1Ref = useRef<HTMLElement>(null);
+  const feature2Ref = useRef<HTMLElement>(null);
+  const feature3Ref = useRef<HTMLElement>(null);
+  const feature4Ref = useRef<HTMLElement>(null);
+  const meetLeanRef = useRef<HTMLElement>(null);
+  const ctaSectionRef = useRef<HTMLElement>(null);
+
+  // Section refs map for useSectionVisibility hook (memoized to prevent re-renders)
+  const sectionRefs = useMemo(() => ({
+    hero: heroSectionRef,
+    features_intro: featuresIntroRef,
+    feature_project_management: feature1Ref,
+    feature_progress_tracking: feature2Ref,
+    feature_messaging: feature3Ref,
+    feature_documents: feature4Ref,
+    meet_lean: meetLeanRef,
+    cta: ctaSectionRef,
+  }), []);
+
+  // Track section visibility
+  useSectionVisibility(sectionRefs);
+
+  // Track scroll depth
+  useScrollDepth();
 
   // Animation sequence for AI-Assisted Ticket Creation demo
   useEffect(() => {
@@ -333,6 +364,16 @@ export default function Home() {
     }
   }, [docDemoState]);
 
+  // Handle demo dialog state changes with tracking
+  const handleDemoDialogChange = (open: boolean) => {
+    setIsDemoDialogOpen(open);
+    if (open) {
+      trackDemoInteraction('open');
+    } else {
+      trackDemoInteraction('close');
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -351,8 +392,9 @@ export default function Home() {
       }
 
       setSubmitSuccess(true);
+      trackDemoInteraction('submit');
       setTimeout(() => {
-        setIsDemoDialogOpen(false);
+        handleDemoDialogChange(false);
         setSubmitSuccess(false);
         setFormData({ name: '', email: '', company: '', message: '' });
       }, 2000);
@@ -381,10 +423,19 @@ export default function Home() {
             </div>
             <div className="flex items-center space-x-4">
               <Link to="/login">
-                <Button variant="ghost">Sign In</Button>
+                <Button 
+                  variant="ghost"
+                  onClick={() => trackHomePageCTA('sign_in', 'navigation')}
+                >
+                  Sign In
+                </Button>
               </Link>
               <Link to="/login">
-                <Button>Get Started</Button>
+                <Button
+                  onClick={() => trackHomePageCTA('get_started', 'navigation')}
+                >
+                  Get Started
+                </Button>
               </Link>
             </div>
           </div>
@@ -392,7 +443,7 @@ export default function Home() {
       </nav>
 
       {/* Hero Section */}
-      <section className="container mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
+      <section ref={heroSectionRef} className="container mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16">
         <div className="max-w-4xl mx-auto text-center">
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight mb-6">
             <span className="bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
@@ -404,7 +455,11 @@ export default function Home() {
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link to="/login">
-              <Button size="lg" className="w-full sm:w-auto">
+              <Button 
+                size="lg" 
+                className="w-full sm:w-auto"
+                onClick={() => trackHomePageCTA('get_started_free', 'hero')}
+              >
                 Get Started Free
                 <ArrowRight className="ml-2 h-4 w-4" />
               </Button>
@@ -413,7 +468,7 @@ export default function Home() {
               size="lg" 
               variant="outline" 
               className="w-full sm:w-auto"
-              onClick={() => setIsDemoDialogOpen(true)}
+              onClick={() => handleDemoDialogChange(true)}
             >
               Watch Demo
             </Button>
@@ -422,7 +477,7 @@ export default function Home() {
       </section>
 
       {/* Features Introduction */}
-      <section className="container mx-auto px-4 sm:px-6 lg:px-8 py-16">
+      <section ref={featuresIntroRef} className="container mx-auto px-4 sm:px-6 lg:px-8 py-16">
         <div className="max-w-4xl mx-auto text-center">
           <div className="inline-flex items-center space-x-2 px-4 py-2 rounded-full bg-primary/10 text-primary text-sm font-medium mb-6">
             <Brain className="h-4 w-4" />
@@ -435,7 +490,7 @@ export default function Home() {
       </section>
 
       {/* Feature 1: Project Management */}
-      <section className="py-20 bg-slate-50/50">
+      <section ref={feature1Ref} className="py-20 bg-slate-50/50">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
@@ -570,7 +625,7 @@ export default function Home() {
       </section>
 
       {/* Feature 2: Progress Tracking */}
-      <section className="py-20">
+      <section ref={feature2Ref} className="py-20">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
@@ -766,7 +821,7 @@ export default function Home() {
       </section>
 
       {/* Feature 3: Messaging */}
-      <section className="py-20 bg-slate-50/50">
+      <section ref={feature3Ref} className="py-20 bg-slate-50/50">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
@@ -989,7 +1044,7 @@ export default function Home() {
       </section>
 
       {/* Feature 5: Documentation */}
-      <section className="py-20 bg-slate-50/50">
+      <section ref={feature4Ref} className="py-20 bg-slate-50/50">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
@@ -1164,7 +1219,7 @@ export default function Home() {
       </section>
 
       {/* Meet Lean Section */}
-      <section className="py-20 bg-gradient-to-br from-primary/5 via-primary/10 to-primary/5">
+      <section ref={meetLeanRef} className="py-20 bg-gradient-to-br from-primary/5 via-primary/10 to-primary/5">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-4xl mx-auto text-center">
             <div className="h-20 w-20 rounded-full bg-primary/20 flex items-center justify-center mb-8 mx-auto">
@@ -1182,14 +1237,18 @@ export default function Home() {
       </section>
 
       {/* CTA Section */}
-      <section className="container mx-auto px-4 sm:px-6 lg:px-8 py-20">
+      <section ref={ctaSectionRef} className="container mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div className="max-w-5xl mx-auto">
           <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-12 md:p-16 text-center text-white shadow-2xl">
             <h2 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-10">
               Ready to Transform Your Team's Workflow?
             </h2>
             <Link to="/login">
-              <Button size="lg" className="bg-white text-slate-900 hover:bg-slate-100 w-full sm:w-auto text-base px-8 py-6 h-auto">
+              <Button 
+                size="lg" 
+                className="bg-white text-slate-900 hover:bg-slate-100 w-full sm:w-auto text-base px-8 py-6 h-auto"
+                onClick={() => trackHomePageCTA('start_free_trial', 'bottom_cta')}
+              >
                 Start Your Free Trial
                 <ArrowRight className="ml-2 h-5 w-5" />
               </Button>
@@ -1199,7 +1258,7 @@ export default function Home() {
       </section>
 
       {/* Contact Form Dialog */}
-      <Dialog open={isDemoDialogOpen} onOpenChange={setIsDemoDialogOpen}>
+      <Dialog open={isDemoDialogOpen} onOpenChange={handleDemoDialogChange}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>Request a Demo</DialogTitle>
@@ -1285,7 +1344,7 @@ export default function Home() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setIsDemoDialogOpen(false)}
+                  onClick={() => handleDemoDialogChange(false)}
                   disabled={isSubmitting}
                 >
                   Cancel

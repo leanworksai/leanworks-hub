@@ -3,6 +3,7 @@ import { ChatMessage } from "./ChatMessage";
 import { DateSeparator } from "./DateSeparator";
 import { Message, ChannelMessage, LikedByUser } from "./types";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
+import { trackLoadMoreMessages, trackScrollDepth } from "@/lib/analytics";
 
 const MESSAGE_LOAD_INCREMENT = 20;
 const SCROLL_BOTTOM_THRESHOLD = 10; // Pixels threshold for considering "at bottom"
@@ -186,6 +187,9 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   // Setup scroll listener for smart auto-scroll detection
   useEffect(() => {
     const setupScrollListener = (scrollable: HTMLElement) => {
+      // Track scroll depth milestones
+      const trackedDepths = new Set<number>();
+      
       // Track if user is near bottom (within 100px threshold) and manual scrolling
       const handleScroll = () => {
         try {
@@ -193,6 +197,19 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
           const threshold = 100;
           const isNearBottom = scrollHeight - scrollTop - clientHeight < threshold;
           isUserNearBottomRef.current = isNearBottom;
+          
+          // Track scroll depth milestones (25%, 50%, 75%, 100%)
+          if (scrollHeight > 0) {
+            const scrollPercent = Math.round((scrollTop / (scrollHeight - clientHeight)) * 100);
+            const milestones = [25, 50, 75, 100];
+            milestones.forEach(depth => {
+              if (scrollPercent >= depth && !trackedDepths.has(depth)) {
+                trackedDepths.add(depth);
+                const pagePath = window.location.pathname;
+                trackScrollDepth(pagePath, depth as 25 | 50 | 75 | 100);
+              }
+            });
+          }
           
           // If user scrolls away from bottom, mark as manually scrolled
           if (!isNearBottom && scrollTop > 100) {
@@ -499,6 +516,12 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   const handleLoadMore = () => {
     const container = scrollContainerRef.current;
     const increment = Math.min(MESSAGE_LOAD_INCREMENT, totalMessages - visibleCount);
+    
+    // Track load more action (use window location as chat identifier)
+    const chatId = window.location.pathname.includes('/chats/') 
+      ? window.location.pathname.split('/chats/')[1]?.split('/')[0] || 'unknown'
+      : 'ai-chat';
+    trackLoadMoreMessages(chatId, increment, visibleCount + increment);
     
     if (!container) {
       // If container not available, just load more without preserving position

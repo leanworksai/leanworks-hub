@@ -67,27 +67,27 @@ function ProjectCard({
   return (
     <div className="group">
       {/* Mobile: Single card, Desktop: Side-by-side cards */}
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-stretch gap-3">
         {/* Main Project Card */}
         <Card 
           className={cn(
             "relative cursor-pointer group-hover:shadow-md transition-shadow overflow-hidden",
-            "flex-1" // Always use flex-1 to maintain consistent container size
+            "flex-1 h-[120px] flex flex-col" // Fixed height and flex column
           )}
           onClick={() => handleCardClick(project.id)}
         >
           {/* Mobile-only hover popover for progress update */}
           {hasUpdate && <ProjectUpdateSummaryCard projectId={project.id} />}
-          <CardHeader className="pb-3">
+          <CardHeader className="pb-3 flex-shrink-0 overflow-hidden">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3 flex-1 min-w-0">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                    <CardTitle className="text-base">{project.name}</CardTitle>
+                    <CardTitle className="text-base line-clamp-1">{project.name}</CardTitle>
                   </div>
                   
                   {/* Project Meta Info */}
-                  <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground overflow-hidden">
                     <div className="flex items-center gap-1">
                       <Users className="h-3.5 w-3.5" />
                       <span>{project.team} members</span>
@@ -147,12 +147,12 @@ function ProjectCard({
         {hasUpdate ? (
           <ProjectUpdateSummaryCard projectId={project.id} desktopOnly />
         ) : (
-          <div className="hidden sm:flex items-center gap-3 flex-1">
+          <div className="hidden sm:flex items-stretch gap-3 flex-1">
             {/* Empty placeholder to maintain consistent container size */}
             <div className="flex items-center justify-center w-4 flex-shrink-0">
               <div className="w-0.5 h-full min-h-[100px] bg-transparent" />
             </div>
-            <Card className="flex-1 opacity-0 pointer-events-none">
+            <Card className="flex-1 h-[120px] opacity-0 pointer-events-none">
               <CardHeader className="pb-3">
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">

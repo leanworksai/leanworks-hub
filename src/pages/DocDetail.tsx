@@ -12,6 +12,7 @@ import { fileUploadService } from "@/services/api";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
 import type { DocFile } from "@/data/docsData";
 import { useAutoSave } from "@/hooks/useAutoSave";
+import { trackEvent, trackView } from "@/lib/analytics";
 import { DraftRecoveryDialog } from "@/components/DraftRecoveryDialog";
 import { getDraft, removeDraft, isDraftNewer } from "@/services/draftService";
 import { initOfflineQueue } from "@/services/offlineQueue";
@@ -74,7 +75,20 @@ export default function DocDetail() {
     visibleToMembers: Array.from(visibleToMembers),
     files,
     enabled: true,
-    onSaveSuccess: () => {
+    onSaveSuccess: (savedDocId: string, isManual: boolean) => {
+      // Track document save
+      trackEvent('doc_saved', {
+        doc_id: savedDocId,
+        save_method: isManual ? 'manual' : 'auto',
+      });
+      
+      // Track document edit if it's an existing doc
+      if (docId !== 'new' && savedDocId) {
+        trackEvent('doc_edited', {
+          doc_id: savedDocId,
+        });
+      }
+      
       // Show success toast only for manual saves or first-time saves
       if (docId === 'new') {
         toast({
@@ -94,6 +108,13 @@ export default function DocDetail() {
     const cleanup = initOfflineQueue();
     return cleanup;
   }, []);
+
+  // Track document view
+  useEffect(() => {
+    if (docId && docId !== 'new' && doc) {
+      trackView('doc', docId);
+    }
+  }, [docId, doc]);
 
   // Check for draft recovery on mount
   useEffect(() => {
