@@ -44,7 +44,17 @@ let journeyState: JourneyState = {
 async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
   // Return cached ID if available and not forcing refresh
   if (ga4MeasurementId && !forceRefresh) {
-    return ga4MeasurementId;
+    // Verify environment hasn't changed
+    const isDev = import.meta.env.DEV;
+    const cachedIsDev = ga4MeasurementId === 'G-CTKJB29L9E';
+    if (isDev === cachedIsDev) {
+      return ga4MeasurementId;
+    } else {
+      // Environment changed, clear cache and re-fetch
+      console.warn('⚠️ Environment changed, clearing GA4 cache');
+      ga4MeasurementId = null;
+      ga4Initialized = false;
+    }
   }
 
   // If fetch is already in progress, return that promise
@@ -127,6 +137,7 @@ async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
 
 /**
  * Initialize Google Analytics 4
+ * Ensures only one GA4 instance is loaded based on environment
  */
 async function initializeGA4(): Promise<void> {
   if (ga4Initialized) {
@@ -142,11 +153,34 @@ async function initializeGA4(): Promise<void> {
       return;
     }
 
+    // Remove any existing GA4 scripts to prevent duplicate tracking
+    const existingScripts = document.querySelectorAll('script[src*="googletagmanager.com/gtag/js"]');
+    existingScripts.forEach(script => script.remove());
+
+    // Clear any existing dataLayer to prevent conflicts
+    if ((window as any).dataLayer) {
+      // Keep only non-GA4 entries if any
+      const filtered = ((window as any).dataLayer || []).filter((entry: any) => {
+        // Keep entries that aren't GA4 configs
+        return !(Array.isArray(entry) && entry[0] === 'config' && typeof entry[1] === 'string' && entry[1].startsWith('G-'));
+      });
+      (window as any).dataLayer = filtered;
+    }
+
     // Load gtag script dynamically
     const script = document.createElement('script');
     script.async = true;
     script.src = `https://www.googletagmanager.com/gtag/js?id=${measurementId}`;
+    script.id = `ga4-script-${measurementId}`; // Add ID to track which script is loaded
     document.head.appendChild(script);
+
+    // Wait for script to load before initializing
+    await new Promise<void>((resolve, reject) => {
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load GA4 script'));
+      // Timeout after 10 seconds
+      setTimeout(() => reject(new Error('GA4 script load timeout')), 10000);
+    });
 
     // Initialize dataLayer and gtag
     (window as any).dataLayer = (window as any).dataLayer || [];
@@ -161,9 +195,11 @@ async function initializeGA4(): Promise<void> {
     });
 
     ga4Initialized = true;
-    console.log('✅ Google Analytics 4 initialized');
+    const env = import.meta.env.DEV ? 'DEV' : 'PROD';
+    console.log(`✅ Google Analytics 4 initialized (${env}): ${measurementId}`);
   } catch (error: any) {
     console.error('❌ Failed to initialize Google Analytics 4:', error);
+    ga4Initialized = false; // Reset on error to allow retry
   }
 }
 
@@ -270,6 +306,7 @@ function updateSessionActivity(): void {
 
 /**
  * Send event to Google Analytics 4
+ * Only sends to the initialized measurement ID
  */
 function gtagEvent(eventName: string, eventParams?: Record<string, any>): void {
   if (!ga4Initialized || !ga4MeasurementId) {
@@ -278,12 +315,23 @@ function gtagEvent(eventName: string, eventParams?: Record<string, any>): void {
 
   try {
     const gtag = (window as any).gtag;
-    if (gtag) {
-      gtag('event', eventName, {
-        ...eventParams,
-        session_id: currentSession?.sessionId,
-      });
+    if (!gtag) {
+      return;
     }
+
+    // Verify the script is still loaded for the correct measurement ID
+    const scriptId = `ga4-script-${ga4MeasurementId}`;
+    const script = document.getElementById(scriptId);
+    if (!script) {
+      console.warn('⚠️ GA4 script not found, skipping event');
+      return;
+    }
+
+    // Send event - it will automatically go to the measurement ID set in gtag('config')
+    gtag('event', eventName, {
+      ...eventParams,
+      session_id: currentSession?.sessionId,
+    });
   } catch (error: any) {
     console.error('Failed to send GA4 event:', error);
   }
@@ -357,11 +405,15 @@ export function trackPageView(pageName: string, pagePath?: string): void {
     try {
       const gtag = (window as any).gtag;
       if (gtag) {
-        gtag('event', 'page_view', {
-          page_title: pageName,
-          page_location: window.location.href,
-          page_path: pagePathValue,
-        });
+        // Verify script is still loaded for the correct measurement ID
+        const scriptId = `ga4-script-${ga4MeasurementId}`;
+        if (document.getElementById(scriptId)) {
+          gtag('event', 'page_view', {
+            page_title: pageName,
+            page_location: window.location.href,
+            page_path: pagePathValue,
+          });
+        }
       }
     } catch (error) {
       // Ignore
@@ -413,15 +465,24 @@ export function setAnalyticsUserId(userId: string | null): void {
   if (ga4Initialized && ga4MeasurementId) {
     try {
       const gtag = (window as any).gtag;
-      if (gtag) {
-        gtag('config', ga4MeasurementId, {
-          user_id: userId || undefined,
-        });
-        // Automatically set is_logged_in property for easy segmentation
-        gtag('set', {
-          is_logged_in: isLoggedIn,
-        });
+      if (!gtag) {
+        return;
       }
+
+      // Verify the script is still loaded for the correct measurement ID
+      const scriptId = `ga4-script-${ga4MeasurementId}`;
+      if (!document.getElementById(scriptId)) {
+        console.warn('⚠️ GA4 script not found, skipping user ID update');
+        return;
+      }
+
+      gtag('config', ga4MeasurementId, {
+        user_id: userId || undefined,
+      });
+      // Automatically set is_logged_in property for easy segmentation
+      gtag('set', {
+        is_logged_in: isLoggedIn,
+      });
     } catch (error: any) {
       console.error('Failed to set GA4 user ID:', error);
     }
@@ -447,14 +508,23 @@ export function setAnalyticsUserProperties(properties: {
   if (ga4Initialized && ga4MeasurementId) {
     try {
       const gtag = (window as any).gtag;
-      if (gtag) {
-        // GA4 uses set to update user properties
-        Object.entries(properties).forEach(([key, value]) => {
-          if (value !== null) {
-            gtag('set', { [key]: value });
-          }
-        });
+      if (!gtag) {
+        return;
       }
+
+      // Verify the script is still loaded for the correct measurement ID
+      const scriptId = `ga4-script-${ga4MeasurementId}`;
+      if (!document.getElementById(scriptId)) {
+        console.warn('⚠️ GA4 script not found, skipping user properties update');
+        return;
+      }
+
+      // GA4 uses set to update user properties
+      Object.entries(properties).forEach(([key, value]) => {
+        if (value !== null) {
+          gtag('set', { [key]: value });
+        }
+      });
     } catch (error: any) {
       console.error('Failed to set GA4 user properties:', error);
     }
