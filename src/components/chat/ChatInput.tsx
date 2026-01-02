@@ -199,8 +199,15 @@ export function ChatInput({
     }
   }, [showMentions, onMentionDetect, input]);
 
+  const isPurpleTheme = theme === "purple";
+  
   return (
-    <div className="border-t bg-background border-border">
+    <div className={cn(
+      "border-t border-border",
+      isPurpleTheme 
+        ? "bg-white/70 backdrop-blur-md border-purple-200/60 shadow-lg shadow-purple-100/50 dark:shadow-purple-900/20" 
+        : "bg-background"
+    )}>
       {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
         <div className="px-4 pt-3 pb-2">
           <ContextBadges
@@ -317,7 +324,7 @@ export function ChatInput({
               <EmojiPicker
                 onEmojiClick={insertEmoji}
                 autoFocusSearch={false}
-                theme="light"
+                theme={"light" as any}
                 width={350}
                 height={400}
               />

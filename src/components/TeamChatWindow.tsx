@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { X, Hash, Users, ChevronLeft, MessageSquare } from "lucide-react";
+import { Hash, Users, ChevronLeft, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -13,7 +13,6 @@ import { messagesService, imageUploadService, type ChatMessage } from "@/service
 import { useChatId, getDirectMessageChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
-import { ContextBadges } from "@/components/ContextBadges";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
@@ -365,6 +364,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
           chatId: chatId,
           role: 'user',
           content: messageContent,
+          citedContext: citedContext,
           imageUrls: finalImageUrls.length > 0 ? finalImageUrls : undefined,
         });
       }
@@ -633,8 +633,13 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
 
   const getMessageDisplayInfo = useCallback((message: Message | ChannelMessage) => {
     const isChannelMessage = 'memberName' in message;
+    // Check if message is from lean/AI assistant
+    // For ChannelMessage: check memberName (case-insensitive), userId, or role
+    // For regular Message: check role
     const isLean = isChannelMessage 
-      ? (message.memberName === "lean" || message.userId === "ai-assistant")
+      ? (message.memberName?.toLowerCase() === "lean" || 
+         message.userId === "ai-assistant" || 
+         (message as any).role === "assistant")
       : (message as Message).role === "assistant";
     
     const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
@@ -769,85 +774,54 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
                   </div>
                 }
                 className="flex-1 min-h-0"
+                hideContext={false}
               />
             )}
             <div ref={messagesEndRef} />
           </div>
         </ScrollArea>
 
-        {/* Input Area */}
-        <div className="border-t bg-background p-4">
-          <ContextBadges
-            projects={selectedProjects}
-            tasks={selectedTasks}
-            teams={selectedTeams}
-            docs={selectedDocs}
+        {/* Input Area - Optimized single container */}
+        <div className="flex-shrink-0">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageSelect}
+            accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+            multiple
+            className="hidden"
+          />
+          <ChatInput
+            onSend={handleSend}
+            disabled={isSendingMessage}
+            isLoading={isSendingMessage}
+            uploadingImages={uploadingImages}
+            imagePreviewUrls={imagePreviewUrls}
+            onImageSelect={handleImageSelect}
+            onImageRemove={handleImageRemove}
+            selectedProjects={selectedProjects}
+            selectedTasks={selectedTasks}
+            selectedTeams={selectedTeams}
+            selectedDocs={selectedDocs}
             onRemoveProject={toggleProject}
             onRemoveTask={toggleTask}
             onRemoveTeam={toggleTeam}
             onRemoveDoc={toggleDoc}
-            variant="inline"
+            placeholder="Type your message..."
+            showMentions={isProjectChannel || isTeamChannel || isDM}
+            mentionUsers={getMentionableUsers}
+            onMentionDetect={detectMention}
+            showMentionSuggestions={showMentionSuggestions}
+            filteredMentionUsers={filteredMentionUsers}
+            selectedMentionIndex={selectedMentionIndex}
+            onMentionSelect={handleMentionSelect}
+            onMentionIndexChange={setSelectedMentionIndex}
+            onMentionClose={() => {
+              setShowMentionSuggestions(false);
+              setMentionQuery("");
+              setSelectedMentionIndex(0);
+            }}
           />
-          <div className="mt-2">
-            {imagePreviewUrls.length > 0 && (
-              <div className="mb-2 flex gap-2 flex-wrap">
-                {imagePreviewUrls.map((url, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={url}
-                      alt={`Preview ${index + 1}`}
-                      className="h-16 w-16 object-cover rounded-md border"
-                    />
-                    <button
-                      onClick={() => handleImageRemove(index)}
-                      className="absolute -top-1 -right-1 bg-destructive text-destructive-foreground rounded-full p-0.5 opacity-100 group-hover:opacity-100 transition-opacity"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleImageSelect}
-              accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
-              multiple
-              className="hidden"
-            />
-            <ChatInput
-              onSend={handleSend}
-              disabled={isSendingMessage}
-              isLoading={isSendingMessage}
-              uploadingImages={uploadingImages}
-              imagePreviewUrls={imagePreviewUrls}
-              onImageSelect={handleImageSelect}
-              onImageRemove={handleImageRemove}
-              selectedProjects={selectedProjects}
-              selectedTasks={selectedTasks}
-              selectedTeams={selectedTeams}
-              selectedDocs={selectedDocs}
-              onRemoveProject={toggleProject}
-              onRemoveTask={toggleTask}
-              onRemoveTeam={toggleTeam}
-              onRemoveDoc={toggleDoc}
-              placeholder="Type your message..."
-              showMentions={isProjectChannel || isTeamChannel || isDM}
-              mentionUsers={getMentionableUsers}
-              onMentionDetect={detectMention}
-              showMentionSuggestions={showMentionSuggestions}
-              filteredMentionUsers={filteredMentionUsers}
-              selectedMentionIndex={selectedMentionIndex}
-              onMentionSelect={handleMentionSelect}
-              onMentionIndexChange={setSelectedMentionIndex}
-              onMentionClose={() => {
-                setShowMentionSuggestions(false);
-                setMentionQuery("");
-                setSelectedMentionIndex(0);
-              }}
-            />
-          </div>
         </div>
       </SheetContent>
     </Sheet>

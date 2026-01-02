@@ -1032,8 +1032,12 @@ export function Chatbot() {
     const isChannelMessage = 'memberName' in message;
     
     // Check if message is from lean/AI assistant
+    // For ChannelMessage: check memberName (case-insensitive), userId, or role
+    // For regular Message: check role
     const isLean = isChannelMessage 
-      ? (message.memberName === "lean" || message.userId === "ai-assistant")
+      ? (message.memberName?.toLowerCase() === "lean" || 
+         message.userId === "ai-assistant" || 
+         (message as any).role === "assistant")
       : (message as Message).role === "assistant";
     
     // Determine if message is from current user

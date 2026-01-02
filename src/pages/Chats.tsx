@@ -6,27 +6,28 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { Users, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { useOrg } from "@/contexts/OrgContext";
 import { getAIAssistantChatId, isAIAssistantChatId, isProjectChannelId, isTeamChannelId, isDirectMessageId, getDirectMessageChatId } from "@/hooks/useChatId";
 
 type MobileTab = "contacts" | "messages";
 
-// Helper functions for localStorage
-const getLastSelectedChatKey = (userEmail: string) => {
-  return `last_selected_chat_${userEmail.toLowerCase()}`;
+// Helper functions for localStorage - scoped per organization
+const getLastSelectedChatKey = (userEmail: string, orgId: string) => {
+  return `last_selected_chat_${userEmail.toLowerCase()}_${orgId}`;
 };
 
-const saveLastSelectedChat = (userEmail: string, chatId: string, selectedMember: string) => {
+const saveLastSelectedChat = (userEmail: string, orgId: string, chatId: string, selectedMember: string) => {
   try {
-    const key = getLastSelectedChatKey(userEmail);
+    const key = getLastSelectedChatKey(userEmail, orgId);
     localStorage.setItem(key, JSON.stringify({ chatId, selectedMember }));
   } catch (error) {
     console.error('Failed to save last selected chat:', error);
   }
 };
 
-const loadLastSelectedChat = (userEmail: string): { chatId: string; selectedMember: string } | null => {
+const loadLastSelectedChat = (userEmail: string, orgId: string): { chatId: string; selectedMember: string } | null => {
   try {
-    const key = getLastSelectedChatKey(userEmail);
+    const key = getLastSelectedChatKey(userEmail, orgId);
     const stored = localStorage.getItem(key);
     if (stored) {
       return JSON.parse(stored);
@@ -39,11 +40,13 @@ const loadLastSelectedChat = (userEmail: string): { chatId: string; selectedMemb
 
 export default function Chats() {
   const { user } = useAuth();
+  const { currentOrg } = useOrg();
   const [selectedChat, setSelectedChat] = useState<{ chatId: string; selectedMember: string } | null>(null);
   const { setSelectedChat: setSelectedChatInHook, allTeamMembers, projects, teams } = useTeamChats();
   const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState<MobileTab>("contacts");
   const hasInitializedRef = useRef(false);
+  const previousOrgIdRef = useRef<string | null>(null);
 
   // Validate if a chat still exists
   const validateChatExists = (chatId: string, selectedMember: string): boolean => {
@@ -78,11 +81,25 @@ export default function Chats() {
     return false;
   };
 
-  // Restore last selected chat on mount
+  // Reset selected chat when organization changes
   useEffect(() => {
-    if (!user?.email || hasInitializedRef.current || selectedChat) return;
+    const previousOrgId = previousOrgIdRef.current;
+    const currentOrgId = currentOrg?.id || null;
     
-    const lastChat = loadLastSelectedChat(user.email);
+    // If org changed, clear selected chat and reset initialization
+    if (previousOrgId !== null && previousOrgId !== currentOrgId) {
+      setSelectedChat(null);
+      hasInitializedRef.current = false;
+    }
+    
+    previousOrgIdRef.current = currentOrgId;
+  }, [currentOrg?.id]);
+
+  // Restore last selected chat on mount or when org changes
+  useEffect(() => {
+    if (!user?.email || !currentOrg?.id || hasInitializedRef.current || selectedChat) return;
+    
+    const lastChat = loadLastSelectedChat(user.email, currentOrg.id);
     
     // Always try to restore last chat (validation is best-effort)
     // If chat doesn't exist, UI will handle it gracefully
@@ -110,16 +127,16 @@ export default function Chats() {
     if (isMobile) {
       setActiveTab("messages");
     }
-  }, [user?.email, allTeamMembers, projects, teams, setSelectedChatInHook, isMobile, selectedChat]);
+  }, [user?.email, currentOrg?.id, allTeamMembers, projects, teams, setSelectedChatInHook, isMobile, selectedChat]);
 
   // Handle chat selection from TeamChatSidebar
   const handleSelectChat = (chatId: string, selectedMember: string) => {
     setSelectedChat({ chatId, selectedMember });
     setSelectedChatInHook(chatId); // Update the hook's selectedChat to trigger unread count clearing
     
-    // Save to localStorage
-    if (user?.email) {
-      saveLastSelectedChat(user.email, chatId, selectedMember);
+    // Save to localStorage (scoped per organization)
+    if (user?.email && currentOrg?.id) {
+      saveLastSelectedChat(user.email, currentOrg.id, chatId, selectedMember);
     }
     
     // On mobile, switch to messages tab when a chat is selected
@@ -135,9 +152,9 @@ export default function Chats() {
       setSelectedChat({ chatId, selectedMember });
       setSelectedChatInHook(chatId); // Update the hook's selectedChat to trigger unread count clearing
       
-      // Save to localStorage
-      if (user?.email) {
-        saveLastSelectedChat(user.email, chatId, selectedMember);
+      // Save to localStorage (scoped per organization)
+      if (user?.email && currentOrg?.id) {
+        saveLastSelectedChat(user.email, currentOrg.id, chatId, selectedMember);
       }
       
       // On mobile, switch to messages tab when a chat is opened
@@ -150,10 +167,10 @@ export default function Chats() {
     return () => {
       window.removeEventListener('openTeamChat', handleOpenTeamChat as EventListener);
     };
-  }, [setSelectedChatInHook, isMobile, user?.email]);
+  }, [setSelectedChatInHook, isMobile, user?.email, currentOrg?.id]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem-2rem)] max-h-[calc(100vh-4rem-2rem)] overflow-hidden -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 -mb-4 sm:-mb-6">
+    <div className="flex flex-col h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 -mb-4 sm:-mb-6">
       {/* Desktop: Side-by-side layout */}
       <div className="hidden sm:flex flex-1 overflow-hidden min-h-0">
         <div className="w-64 border-r bg-muted/30 flex flex-col flex-shrink-0 h-full">

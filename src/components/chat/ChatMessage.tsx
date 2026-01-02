@@ -15,6 +15,80 @@ import { getCurrentOrgSlug } from "@/services/api";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatTimeInTimezone } from "@/lib/dateTimeUtils";
 
+// Parse cited context from message content
+function parseCitedContext(content: string): { citedContext: CitedContext | null; cleanContent: string } {
+  const citedContextRegex = /<cited_context>([\s\S]*?)<\/cited_context>/i;
+  const match = content.match(citedContextRegex);
+  
+  if (!match) {
+    return { citedContext: null, cleanContent: content };
+  }
+  
+  const citedContextText = match[1].trim();
+  const cleanContent = content.replace(citedContextRegex, '').trim();
+  
+  const citedContext: CitedContext = {};
+  
+  // Helper function to parse items from a section
+  const parseItems = (text: string): Array<{ id: string; name: string }> => {
+    const items: Array<{ id: string; name: string }> = [];
+    // Match pattern: - Title (ID: uuid)
+    // The title can contain any characters except the sequence " (ID:"
+    const itemRegex = /-\s*([^(]+?)\s*\(ID:\s*([a-f0-9-]+)\)/gi;
+    let match;
+    while ((match = itemRegex.exec(text)) !== null) {
+      items.push({
+        id: match[2],
+        name: match[1].trim(),
+      });
+    }
+    return items;
+  };
+  
+  // Parse Selected Docs
+  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Teams):|$)/i);
+  if (docsMatch) {
+    const docs = parseItems(docsMatch[1]).map(item => ({ id: item.id, title: item.name }));
+    if (docs.length > 0) {
+      citedContext.docs = docs;
+    }
+  }
+  
+  // Parse Selected Projects
+  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Teams):|$)/i);
+  if (projectsMatch) {
+    const projects = parseItems(projectsMatch[1]).map(item => ({ id: item.id, name: item.name }));
+    if (projects.length > 0) {
+      citedContext.projects = projects;
+    }
+  }
+  
+  // Parse Selected Tasks
+  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Teams):|$)/i);
+  if (tasksMatch) {
+    const tasks = parseItems(tasksMatch[1]).map(item => ({ id: item.id, title: item.name }));
+    if (tasks.length > 0) {
+      citedContext.tasks = tasks;
+    }
+  }
+  
+  // Parse Selected Teams
+  const teamsMatch = citedContextText.match(/Selected Teams:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks):|$)/i);
+  if (teamsMatch) {
+    const teams = parseItems(teamsMatch[1]).map(item => ({ id: item.id, name: item.name }));
+    if (teams.length > 0) {
+      citedContext.teams = teams;
+    }
+  }
+  
+  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.teams;
+  
+  return {
+    citedContext: hasAnyContext ? citedContext : null,
+    cleanContent,
+  };
+}
+
 // Render message content with highlighted mentions and clickable links
 function renderMessageContent(content: string): (string | JSX.Element)[] | string {
   // Match @mentions
@@ -299,38 +373,40 @@ export function ChatMessage({
       data-message-role={role}
       className={cn(
         "flex gap-3 w-full min-w-0 max-w-full group",
-        isSent ? "justify-end" : "justify-start"
+        "justify-start"
       )}
     >
-      {/* Avatar for received messages */}
-      {!isSent && (
-        <Avatar className={cn(
-          "flex-shrink-0",
-          isLean && isAIChatTheme ? "h-9 w-9 ring-2 ring-purple-200/50" : "h-8 w-8"
-        )}>
-          {isLean ? (
-            <>
-              <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
-              <AvatarFallback className={cn(
-                isAIChatTheme 
-                  ? "bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold"
-                  : "bg-muted-foreground/20 text-foreground"
-              )}>
-                L
-              </AvatarFallback>
-            </>
-          ) : (
-            <AvatarFallback className={getAvatarColor(userId?.toLowerCase())}>
-              {displayInitials || <User className="h-4 w-4" />}
+      {/* Avatar for all messages (left side) */}
+      <Avatar className={cn(
+        "flex-shrink-0",
+        isLean && isAIChatTheme ? "h-9 w-9 ring-2 ring-purple-200/50" : "h-8 w-8"
+      )}>
+        {isLean ? (
+          <>
+            <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+            <AvatarFallback className={cn(
+              isAIChatTheme 
+                ? "bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold"
+                : "bg-muted-foreground/20 text-foreground"
+            )}>
+              L
             </AvatarFallback>
-          )}
-        </Avatar>
-      )}
+          </>
+        ) : isSent ? (
+          <AvatarFallback className={getAvatarColor(currentUserEmail.toLowerCase())}>
+            {displayInitials || <User className="h-4 w-4" />}
+          </AvatarFallback>
+        ) : (
+          <AvatarFallback className={getAvatarColor(userId?.toLowerCase())}>
+            {displayInitials || <User className="h-4 w-4" />}
+          </AvatarFallback>
+        )}
+      </Avatar>
       
       {/* Message bubble wrapper */}
       <div className={cn(
         "flex flex-col min-w-0 shrink relative",
-        isSent ? "max-w-[75%] ml-auto" : "max-w-[75%]"
+        "max-w-[75%]"
       )}>
         {/* Sender info for received messages */}
         {!isSent && showSenderInfo && (
@@ -349,21 +425,21 @@ export function ChatMessage({
             </span>
           </div>
         )}
-        {/* Sender info for sent messages in AI chat (when displayName is "You") */}
-        {isSent && displayName === "You" && (
-          <div className="flex items-center gap-2 mb-1.5 px-1 justify-end">
-            <span className={cn(
-              "text-xs",
-              isAIChatTheme ? "text-black/70" : "text-muted-foreground"
-            )}>
-              {formatTimeInTimezone(timestamp, userTimezone)}
-            </span>
+        {/* Sender info for sent messages */}
+        {isSent && showSenderInfo && (
+          <div className="flex items-center gap-2 mb-1.5 px-1">
             <p className={cn(
               "font-medium text-sm",
               isAIChatTheme ? "text-black" : "text-foreground"
             )}>
               {displayName}
             </p>
+            <span className={cn(
+              "text-xs",
+              isAIChatTheme ? "text-black/70" : "text-muted-foreground"
+            )}>
+              {formatTimeInTimezone(timestamp, userTimezone)}
+            </span>
           </div>
         )}
         
@@ -373,7 +449,7 @@ export function ChatMessage({
           currentUserEmail={currentUserEmail}
           onToggle={() => onToggleLike(message.id, message.likes || [])}
           getLikedByUsers={getLikedByUsers}
-          position={isSent ? "left" : "right"}
+          position="right"
           showOnHover={false}
         />
         
@@ -384,7 +460,7 @@ export function ChatMessage({
             currentUserEmail={currentUserEmail}
             onToggle={() => onToggleLike(message.id, message.likes || [])}
             getLikedByUsers={getLikedByUsers}
-            position={isSent ? "left" : "right"}
+            position="right"
             showOnHover={true}
           />
         )}
@@ -406,47 +482,64 @@ export function ChatMessage({
           )}
           style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
         >
-          {/* Cited context */}
-          {!hideContext && message.citedContext && (
-            <CitedContextBadges 
-              citedContext={message.citedContext}
-              className="mb-2 pb-2 border-b border-border/50 w-full min-w-0"
-            />
-          )}
-          
-          {/* Message content */}
           {(() => {
+            // Parse cited context from message content
+            const { citedContext: parsedCitedContext, cleanContent } = parseCitedContext(message.content);
+            // Use parsed cited context if available, otherwise fall back to message.citedContext
+            const displayCitedContext = parsedCitedContext || message.citedContext;
+            
             // Check if this is a call notification message
-            const callMatch = message.content.match(/\[CALL:([^:]+):([^\]]+)\]/);
-            if (callMatch) {
-              const [, callId, roomName] = callMatch;
-              const displayContent = message.content.replace(/\[CALL:[^\]]+\]/, '').trim();
-              return (
-                <div className="space-y-2">
+            const callMatch = cleanContent.match(/\[CALL:([^:]+):([^\]]+)\]/);
+            const displayContent = callMatch 
+              ? cleanContent.replace(/\[CALL:[^\]]+\]/, '').trim()
+              : cleanContent;
+            
+            // Check if we have any cited context to display
+            const hasCitedContext = displayCitedContext && (
+              (displayCitedContext.projects && displayCitedContext.projects.length > 0) ||
+              (displayCitedContext.tasks && displayCitedContext.tasks.length > 0) ||
+              (displayCitedContext.teams && displayCitedContext.teams.length > 0) ||
+              (displayCitedContext.docs && displayCitedContext.docs.length > 0)
+            );
+            
+            return (
+              <>
+                {/* Cited context */}
+                {!hideContext && hasCitedContext && displayCitedContext && (
+                  <CitedContextBadges 
+                    citedContext={displayCitedContext}
+                    className="mb-3 w-full min-w-0"
+                    theme={theme}
+                  />
+                )}
+                
+                {/* Message content */}
+                {callMatch ? (
+                  <div className="space-y-2">
+                    <p 
+                      className={cn(
+                        "text-sm whitespace-pre-wrap font-medium break-words",
+                        isAIChatTheme && isSent ? "text-white" : "text-foreground"
+                      )}
+                      style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                    >
+                      {renderMessageContent(displayContent)}
+                    </p>
+                    <CallJoinButton callId={callMatch[1]} roomName={callMatch[2]} />
+                  </div>
+                ) : (
                   <p 
                     className={cn(
-                      "text-sm whitespace-pre-wrap font-medium break-words",
-                      isAIChatTheme && isSent ? "text-white" : "text-foreground"
+                      "text-sm whitespace-pre-wrap break-words font-medium text-foreground",
+                      isAIChatTheme && isSent && "text-white leading-relaxed",
+                      isAIChatTheme && isLean && !isSent && "leading-relaxed"
                     )}
                     style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                   >
                     {renderMessageContent(displayContent)}
                   </p>
-                  <CallJoinButton callId={callId} roomName={roomName} />
-                </div>
-              );
-            }
-            return (
-              <p 
-                className={cn(
-                  "text-sm whitespace-pre-wrap break-words font-medium text-foreground",
-                  isAIChatTheme && isSent && "text-white leading-relaxed",
-                  isAIChatTheme && isLean && !isSent && "leading-relaxed"
                 )}
-                style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-              >
-                {renderMessageContent(message.content)}
-              </p>
+              </>
             );
           })()}
           
@@ -473,15 +566,6 @@ export function ChatMessage({
           )}
         </div>
       </div>
-      
-      {/* Avatar for sent messages - hidden when displayName is "You" (AI chat) */}
-      {isSent && displayName !== "You" && (
-        <Avatar className="h-8 w-8 flex-shrink-0">
-          <AvatarFallback className={getAvatarColor(currentUserEmail.toLowerCase())}>
-            {displayInitials || <User className="h-4 w-4" />}
-          </AvatarFallback>
-        </Avatar>
-      )}
       
       {/* Image Modal */}
       <Dialog open={selectedImage !== null} onOpenChange={(open) => !open && setSelectedImage(null)}>

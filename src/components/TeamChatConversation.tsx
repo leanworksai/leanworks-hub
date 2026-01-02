@@ -361,6 +361,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           chatId: chatId,
           role: 'user',
           content: messageContent,
+          citedContext: citedContext,
           imageUrls: finalImageUrls.length > 0 ? finalImageUrls : undefined,
         });
       }
@@ -629,8 +630,13 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
 
   const getMessageDisplayInfo = useCallback((message: Message | ChannelMessage) => {
     const isChannelMessage = 'memberName' in message;
+    // Check if message is from lean/AI assistant
+    // For ChannelMessage: check memberName, userId, or role
+    // For regular Message: check role
     const isLean = isChannelMessage 
-      ? (message.memberName === "lean" || message.userId === "ai-assistant")
+      ? (message.memberName?.toLowerCase() === "lean" || 
+         message.userId === "ai-assistant" || 
+         (message as any).role === "assistant")
       : (message as Message).role === "assistant";
     
     const isSent = !isLean && message.userId?.toLowerCase() === user?.email?.toLowerCase();
@@ -775,6 +781,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
                 </div>
               }
               className="flex-1 min-h-0"
+              hideContext={false}
             />
           )}
           <div ref={messagesEndRef} />

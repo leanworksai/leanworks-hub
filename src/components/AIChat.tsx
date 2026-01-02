@@ -576,7 +576,7 @@ export function AIChat() {
     
     if (isSent) {
       displayName = "You";
-      displayInitials = "";
+      displayInitials = currentUserDisplayInfo.initials;
     } else if (isLean) {
       displayName = "lean";
       displayInitials = "L";
@@ -721,7 +721,7 @@ export function AIChat() {
                 </div>
               }
               className="flex-1 min-h-0"
-              hideContext={true}
+              hideContext={false}
             />
           )}
           {isLoading && (
@@ -745,58 +745,36 @@ export function AIChat() {
         </div>
       </ScrollArea>
 
-      {/* Input Area */}
-      <div className="bg-white/60 backdrop-blur-md border-t border-purple-200/60 flex-shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
-        <div className="p-4">
-          {imagePreviewUrls.length > 0 && (
-            <div className="mb-3 flex gap-2 flex-wrap">
-              {imagePreviewUrls.map((url, index) => (
-                <div key={index} className="relative group">
-                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500/20 to-indigo-500/20 rounded-lg blur-sm opacity-0 group-hover:opacity-100 transition-opacity" />
-                  <img
-                    src={url}
-                    alt={`Preview ${index + 1}`}
-                    className="relative h-20 w-20 object-cover rounded-lg border-2 border-purple-200/60 shadow-sm group-hover:border-purple-300 transition-colors"
-                  />
-                  <button
-                    onClick={() => handleImageRemove(index)}
-                    className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full p-1 shadow-md hover:shadow-lg transition-shadow opacity-100 group-hover:scale-110"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleImageSelect}
-            accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
-            multiple
-            className="hidden"
-          />
-          <ChatInput
-            onSend={handleSend}
-            disabled={isSendingMessage || isFreePlan}
-            isLoading={isSendingMessage}
-            uploadingImages={uploadingImages}
-            imagePreviewUrls={imagePreviewUrls}
-            onImageSelect={handleImageSelect}
-            onImageRemove={handleImageRemove}
-            selectedProjects={selectedProjects}
-            selectedTasks={selectedTasks}
-            selectedTeams={selectedTeams}
-            selectedDocs={selectedDocs}
-            onRemoveProject={toggleProject}
-            onRemoveTask={toggleTask}
-            onRemoveTeam={toggleTeam}
-            onRemoveDoc={toggleDoc}
-            placeholder="Ask lean anything..."
-            hideContext={true}
-            theme="purple"
-          />
-        </div>
+      {/* Input Area - Single optimized container */}
+      <div className="flex-shrink-0">
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleImageSelect}
+          accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+          multiple
+          className="hidden"
+        />
+        <ChatInput
+          onSend={handleSend}
+          disabled={isSendingMessage || isFreePlan}
+          isLoading={isSendingMessage}
+          uploadingImages={uploadingImages}
+          imagePreviewUrls={imagePreviewUrls}
+          onImageSelect={handleImageSelect}
+          onImageRemove={handleImageRemove}
+          selectedProjects={selectedProjects}
+          selectedTasks={selectedTasks}
+          selectedTeams={selectedTeams}
+          selectedDocs={selectedDocs}
+          onRemoveProject={toggleProject}
+          onRemoveTask={toggleTask}
+          onRemoveTeam={toggleTeam}
+          onRemoveDoc={toggleDoc}
+          placeholder="Ask lean anything..."
+          hideContext={false}
+          theme="purple"
+        />
       </div>
     </div>
   );
