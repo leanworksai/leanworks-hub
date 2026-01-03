@@ -36,6 +36,10 @@ import {
   Columns,
   Rows,
   Heading,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Input } from '@/components/ui/input';
@@ -634,43 +638,50 @@ export function RichTextEditor({
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().addRowBefore().run()}
                 >
-                  <Plus className="h-4 w-4" />
+                  <ArrowUp className="h-4 w-4 mr-2" />
+                  <span>Add row above</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().addRowAfter().run()}
                 >
-                  <Rows className="h-4 w-4" />
+                  <ArrowDown className="h-4 w-4 mr-2" />
+                  <span>Add row below</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().deleteRow().run()}
                   disabled={!editor.can().deleteRow()}
                 >
-                  <Minus className="h-4 w-4" />
+                  <Minus className="h-4 w-4 mr-2" />
+                  <span>Delete row</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>Columns</DropdownMenuLabel>
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().addColumnBefore().run()}
                 >
-                  <Plus className="h-4 w-4" />
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  <span>Add column on the left</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().addColumnAfter().run()}
                 >
-                  <Columns className="h-4 w-4" />
+                  <ArrowRight className="h-4 w-4 mr-2" />
+                  <span>Add column on the right</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().deleteColumn().run()}
                   disabled={!editor.can().deleteColumn()}
                 >
-                  <Minus className="h-4 w-4" />
+                  <Minus className="h-4 w-4 mr-2" />
+                  <span>Delete column</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => editor.chain().focus().deleteTable().run()}
                   className="text-destructive focus:text-destructive"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  <span>Delete table</span>
                 </DropdownMenuItem>
               </>
             )}
