@@ -9,7 +9,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
-import { messagesService, imageUploadService, type ChatMessage } from "@/services/api";
+import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useChatId, getDirectMessageChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -148,7 +148,11 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
         
         if (isProjectChannel && selectedProjectId) {
           const channelMsgs: ChannelMessage[] = firestoreMessages
-            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
+            .filter(msg => 
+              !msg.chatId.startsWith('ai-assistant-') && 
+              (msg.role === 'user' || msg.role === 'assistant') && 
+              msg.projectId === selectedProjectId
+            )
             .map(msg => ({
               id: msg.id,
               memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -169,7 +173,11 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
           });
         } else if (isTeamChannel && selectedTeamId) {
           const channelMsgs: ChannelMessage[] = firestoreMessages
-            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
+            .filter(msg => 
+              !msg.chatId.startsWith('ai-assistant-') && 
+              (msg.role === 'user' || msg.role === 'assistant') && 
+              msg.teamId === selectedTeamId
+            )
             .map(msg => ({
               id: msg.id,
               memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -189,9 +197,9 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
             return newMap;
           });
         } else {
-          // Direct message - only show user messages
+          // Direct message - only show user messages, exclude AI assistant chat messages
           const regularMsgs: Message[] = firestoreMessages
-            .filter(msg => msg.role === 'user')
+            .filter(msg => msg.role === 'user' && !msg.chatId.startsWith('ai-assistant-'))
             .map(msg => ({
               id: msg.id,
               role: msg.role as "user" | "assistant",
@@ -218,7 +226,11 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     const unsubscribe = messagesService.subscribeViaFirestore(chatId, (newMessages) => {
       if (isProjectChannel && selectedProjectId) {
         const channelMsgs: ChannelMessage[] = newMessages
-          .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
+          .filter(msg => 
+            !msg.chatId.startsWith('ai-assistant-') && 
+            (msg.role === 'user' || msg.role === 'assistant') && 
+            msg.projectId === selectedProjectId
+          )
           .map(msg => ({
             id: msg.id,
             memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -239,7 +251,11 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
         });
       } else if (isTeamChannel && selectedTeamId) {
         const channelMsgs: ChannelMessage[] = newMessages
-          .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
+          .filter(msg => 
+            !msg.chatId.startsWith('ai-assistant-') && 
+            (msg.role === 'user' || msg.role === 'assistant') && 
+            msg.teamId === selectedTeamId
+          )
           .map(msg => ({
             id: msg.id,
             memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -259,8 +275,9 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
           return newMap;
         });
       } else {
+        // Direct message - only show user messages, exclude AI assistant chat messages
         const regularMsgs: Message[] = newMessages
-          .filter(msg => msg.role === 'user')
+          .filter(msg => msg.role === 'user' && !msg.chatId.startsWith('ai-assistant-'))
           .map(msg => ({
             id: msg.id,
             role: msg.role as "user" | "assistant",
@@ -280,6 +297,188 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
       unsubscribe();
     };
   }, [open, chatId, user?.email, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId]);
+
+  // Check if "lean" is mentioned in a message
+  const isLeanMentioned = useCallback((message: string): boolean => {
+    const mentionRegex = /@lean\b/i;
+    return mentionRegex.test(message);
+  }, []);
+
+  // Extract query from message, removing @lean mention
+  const extractQueryFromMessage = useCallback((message: string): string => {
+    // Remove @lean mentions (case-insensitive)
+    return message.replace(/@lean\b/gi, '').trim();
+  }, []);
+
+  // Generate AI response for channel mentions
+  const generateChannelAIResponse = useCallback(async (
+    query: string,
+    chatId: string,
+    channelContext?: { type: 'project' | 'team'; id: string; name: string; description?: string }
+  ): Promise<string> => {
+    if (!user?.email) {
+      throw new Error('User must be authenticated to use AI assistant');
+    }
+
+    const isLocalDev = import.meta.env.DEV;
+    // Get authentication token (with fallback to localStorage)
+    const customToken = await getAuthToken();
+    if (!isLocalDev && !customToken) {
+      throw new Error('Authentication token not found. Please sign in again.');
+    }
+
+    // Build context from channel and selected items
+    let citedContext = "";
+    const contextParts: string[] = [];
+
+    // Add channel context
+    if (channelContext) {
+      if (channelContext.type === 'project') {
+        contextParts.push(`Channel Context: Project Channel - ${channelContext.name}`);
+        if (channelContext.description) {
+          contextParts.push(`Project Description: ${channelContext.description}`);
+        }
+      } else if (channelContext.type === 'team') {
+        contextParts.push(`Channel Context: Team Channel - ${channelContext.name}`);
+        if (channelContext.description) {
+          contextParts.push(`Team Description: ${channelContext.description}`);
+        }
+      }
+    }
+
+    // Add selected projects, tasks, teams, and docs if any
+    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) {
+      if (selectedProjects.length > 0) {
+        contextParts.push("Selected Projects:");
+        selectedProjects.forEach((project) => {
+          contextParts.push(`- ${project.name} (ID: ${project.id}): ${project.description}`);
+          contextParts.push(`  Status: ${project.status}, Due: ${project.dueDate}`);
+          contextParts.push(`  Team: ${project.team} members`);
+          contextParts.push(`  Summary: ${project.summary.accomplishment}`);
+          contextParts.push(`  Tasks: ${project.tasks.length} total (${project.tasks.filter(t => t.status === "completed").length} completed, ${project.tasks.filter(t => t.status === "in-progress").length} in progress)`);
+        });
+      }
+
+      if (selectedTasks.length > 0) {
+        contextParts.push("Selected Tasks:");
+        selectedTasks.forEach((task) => {
+          const assigneeName = task.assignee || "Unassigned";
+          contextParts.push(`- ${task.title} (ID: ${task.id}): ${task.description}`);
+          contextParts.push(`  Status: ${task.status}, Priority: ${task.priority}`);
+          contextParts.push(`  Assignee: ${assigneeName}, Due: ${task.dueDate}`);
+          contextParts.push(`  Project: ${task.project}`);
+          contextParts.push(`  Progress Updates: ${task.progressUpdates.length}`);
+        });
+      }
+
+      if (selectedTeams.length > 0) {
+        contextParts.push("Selected Teams:");
+        selectedTeams.forEach((team) => {
+          contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
+          contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
+        });
+      }
+
+      if (selectedDocs.length > 0) {
+        contextParts.push("Selected Docs:");
+        selectedDocs.forEach((doc) => {
+          // Remove HTML tags for context
+          const textContent = doc.content.replace(/<[^>]*>/g, '').substring(0, 500);
+          contextParts.push(`- ${doc.title} (ID: ${doc.id})`);
+          contextParts.push(`  Content: ${textContent}${doc.content.length > 500 ? '...' : ''}`);
+        });
+      }
+    }
+
+    if (contextParts.length > 0) {
+      citedContext = contextParts.join("\n");
+    }
+
+    // Determine API base URL and authentication method
+    const API_BASE = isLocalDev ? 'http://0.0.0.0:8081' : '';
+    const apiUrl = `${API_BASE}/api/ask`;
+
+    // Prepare headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (isLocalDev) {
+      try {
+        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
+        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${customToken || ''}`,
+          },
+        });
+
+        if (!apiKeyResponse.ok) {
+          throw new Error('Failed to fetch API key from backend');
+        }
+
+        const apiKeyData = await apiKeyResponse.json();
+        headers['X-API-Key'] = apiKeyData.apiKey;
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.error('Failed to fetch API key from backend:', error);
+        }
+        const fallbackKey = import.meta.env.VITE_ASK_API_KEY;
+        if (fallbackKey) {
+          headers['X-API-Key'] = fallbackKey;
+        } else {
+          throw new Error('API key not available');
+        }
+      }
+    } else {
+      headers['Authorization'] = `Bearer ${customToken}`;
+    }
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          user_id: user.email.toLowerCase(),
+          org_slug: currentOrg?.slug || currentOrg?.name || '',
+          query: query,
+          session_id: chatId,
+          cited_context: citedContext || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status} ${response.statusText}` }));
+        throw new Error(errorData.error || `API request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // Handle different possible response formats
+      if (typeof data === 'string') {
+        return data;
+      } else if (data.content) {
+        return data.content;
+      } else if (data.response) {
+        return data.response;
+      } else if (data.text) {
+        return data.text;
+      } else {
+        console.warn('Unexpected API response format:', data);
+        return JSON.stringify(data);
+      }
+    } catch (error) {
+      console.error('Error calling ask API:', error);
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Failed to generate response. Please try again.');
+    }
+  }, [user?.email, currentOrg, selectedProjects, selectedTasks, selectedTeams, selectedDocs]);
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {
@@ -376,6 +575,62 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
         clearSelectedTeams();
         clearSelectedDocs();
       }
+
+      setIsSendingMessage(false);
+
+      // Check if lean is mentioned and generate AI response for project channels
+      if (isProjectChannel && selectedProjectId && isLeanMentioned(messageContent) && !isFreePlan) {
+        const query = extractQueryFromMessage(messageContent);
+        if (query) {
+          // Generate AI response asynchronously (don't block UI)
+          generateChannelAIResponse(
+            query,
+            selectedMember,
+            selectedProject ? {
+              type: 'project',
+              id: selectedProject.id,
+              name: selectedProject.name,
+              description: selectedProject.description,
+            } : undefined
+          ).then((aiResponse) => {
+            // Create AI assistant message for the channel
+            const aiChannelMessage: ChannelMessage = {
+              id: `temp-ai-${Date.now()}`,
+              memberName: "lean",
+              memberAvatar: "AI",
+              content: aiResponse,
+              timestamp: new Date(),
+              projectId: selectedProjectId,
+              userId: "ai-assistant",
+            };
+
+            // Add AI message to state
+            setChannelMessages((prev) => {
+              const projectMessages = prev.get(selectedProjectId) || [];
+              const newMap = new Map(prev);
+              newMap.set(selectedProjectId, [...projectMessages, aiChannelMessage]);
+              return newMap;
+            });
+
+            // Save AI response to Firestore
+            messagesService.create({
+              chatId: selectedMember,
+              role: 'assistant',
+              content: aiResponse,
+              projectId: selectedProjectId,
+            }).catch((error) => {
+              console.error('Failed to save AI response:', error);
+            });
+          }).catch((error) => {
+            console.error('Failed to generate AI response:', error);
+            toast({
+              title: "AI Response Failed",
+              description: error.message || "Failed to generate AI response. Please try again.",
+              variant: "destructive",
+            });
+          });
+        }
+      }
     } catch (error) {
       console.error('Failed to send message:', error);
       toast({
@@ -383,10 +638,9 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
         description: "Please try again.",
         variant: "destructive",
       });
-    } finally {
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedTeams, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedTeams, clearSelectedDocs]);
+  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedTeams, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedTeams, clearSelectedDocs, isLeanMentioned, extractQueryFromMessage, generateChannelAIResponse, selectedProject]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -808,7 +1062,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
             onRemoveTeam={toggleTeam}
             onRemoveDoc={toggleDoc}
             placeholder="Type your message..."
-            showMentions={isProjectChannel || isTeamChannel || isDM}
+            showMentions={isProjectChannel || isTeamChannel}
             mentionUsers={getMentionableUsers}
             onMentionDetect={detectMention}
             showMentionSuggestions={showMentionSuggestions}

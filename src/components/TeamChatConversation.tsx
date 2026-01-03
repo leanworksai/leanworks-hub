@@ -145,7 +145,11 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
         
         if (isProjectChannel && selectedProjectId) {
           const channelMsgs: ChannelMessage[] = firestoreMessages
-            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
+            .filter(msg => 
+              !msg.chatId.startsWith('ai-assistant-') && 
+              (msg.role === 'user' || msg.role === 'assistant') && 
+              msg.projectId === selectedProjectId
+            )
             .map(msg => ({
               id: msg.id,
               memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -166,7 +170,11 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           });
         } else if (isTeamChannel && selectedTeamId) {
           const channelMsgs: ChannelMessage[] = firestoreMessages
-            .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
+            .filter(msg => 
+              !msg.chatId.startsWith('ai-assistant-') && 
+              (msg.role === 'user' || msg.role === 'assistant') && 
+              msg.teamId === selectedTeamId
+            )
             .map(msg => ({
               id: msg.id,
               memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -186,9 +194,9 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
             return newMap;
           });
         } else {
-          // Direct message - only show user messages
+          // Direct message - only show user messages, exclude AI assistant chat messages
           const regularMsgs: Message[] = firestoreMessages
-            .filter(msg => msg.role === 'user')
+            .filter(msg => msg.role === 'user' && !msg.chatId.startsWith('ai-assistant-'))
             .map(msg => ({
               id: msg.id,
               role: msg.role as "user" | "assistant",
@@ -215,7 +223,11 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     const unsubscribe = messagesService.subscribeViaFirestore(chatId, (newMessages) => {
       if (isProjectChannel && selectedProjectId) {
         const channelMsgs: ChannelMessage[] = newMessages
-          .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.projectId === selectedProjectId)
+          .filter(msg => 
+            !msg.chatId.startsWith('ai-assistant-') && 
+            (msg.role === 'user' || msg.role === 'assistant') && 
+            msg.projectId === selectedProjectId
+          )
           .map(msg => ({
             id: msg.id,
             memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -236,7 +248,11 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
         });
       } else if (isTeamChannel && selectedTeamId) {
         const channelMsgs: ChannelMessage[] = newMessages
-          .filter(msg => (msg.role === 'user' || msg.role === 'assistant') && msg.teamId === selectedTeamId)
+          .filter(msg => 
+            !msg.chatId.startsWith('ai-assistant-') && 
+            (msg.role === 'user' || msg.role === 'assistant') && 
+            msg.teamId === selectedTeamId
+          )
           .map(msg => ({
             id: msg.id,
             memberName: msg.memberName || (msg.role === 'assistant' ? 'lean' : 'You'),
@@ -256,8 +272,9 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           return newMap;
         });
       } else {
+        // Direct message - only show user messages, exclude AI assistant chat messages
         const regularMsgs: Message[] = newMessages
-          .filter(msg => msg.role === 'user')
+          .filter(msg => msg.role === 'user' && !msg.chatId.startsWith('ai-assistant-'))
           .map(msg => ({
             id: msg.id,
             role: msg.role as "user" | "assistant",

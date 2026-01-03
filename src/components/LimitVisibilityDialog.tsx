@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   Dialog,
   DialogContent,
@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Users, UserCheck, Search, Mail, X, EyeOff, Globe, Shield, CheckCircle2 } from "lucide-react";
+import { Users, UserCheck, Search, Mail, X, Globe, Shield, CheckCircle2, Loader2, CheckCircle } from "lucide-react";
 import { useUsers } from "@/hooks/useUsers";
 import { cn } from "@/lib/utils";
 import { trackModal } from "@/lib/analytics";
@@ -44,7 +44,7 @@ export function LimitVisibilityDialog({
   const [memberDialogOpen, setMemberDialogOpen] = useState(false);
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-  const { data: users = [] } = useUsers();
+  const { data: users = [], isLoading: usersLoading } = useUsers();
 
   // Update state when props change
   useEffect(() => {
@@ -71,7 +71,7 @@ export function LimitVisibilityDialog({
   }, [users, memberSearchQuery]);
 
   // Toggle member selection
-  const toggleMemberSelection = (email: string) => {
+  const toggleMemberSelection = useCallback((email: string) => {
     const newSelected = new Set(visibleToMembers);
     if (newSelected.has(email.toLowerCase())) {
       newSelected.delete(email.toLowerCase());
@@ -79,12 +79,47 @@ export function LimitVisibilityDialog({
       newSelected.add(email.toLowerCase());
     }
     setVisibleToMembers(newSelected);
-  };
+  }, [visibleToMembers]);
 
   // Check if a member is selected
-  const isMemberSelected = (email: string): boolean => {
+  const isMemberSelected = useCallback((email: string): boolean => {
     return visibleToMembers.has(email.toLowerCase());
-  };
+  }, [visibleToMembers]);
+
+  // Select all filtered members
+  const selectAllFiltered = useCallback(() => {
+    const newSelected = new Set(visibleToMembers);
+    filteredUsers.forEach(user => {
+      if (user.email) {
+        newSelected.add(user.email.toLowerCase());
+      }
+    });
+    setVisibleToMembers(newSelected);
+  }, [filteredUsers, visibleToMembers]);
+
+  // Deselect all filtered members
+  const deselectAllFiltered = useCallback(() => {
+    const newSelected = new Set(visibleToMembers);
+    filteredUsers.forEach(user => {
+      if (user.email) {
+        newSelected.delete(user.email.toLowerCase());
+      }
+    });
+    setVisibleToMembers(newSelected);
+  }, [filteredUsers, visibleToMembers]);
+
+  // Check if all filtered members are selected
+  const allFilteredSelected = useMemo(() => {
+    if (filteredUsers.length === 0) return false;
+    return filteredUsers.every(user => 
+      user.email && visibleToMembers.has(user.email.toLowerCase())
+    );
+  }, [filteredUsers, visibleToMembers]);
+
+  // Clear search
+  const clearSearch = useCallback(() => {
+    setMemberSearchQuery("");
+  }, []);
 
   const handleSave = async () => {
     // Validate specific_members visibility
@@ -114,9 +149,9 @@ export function LimitVisibilityDialog({
           initials: user
             ? `${user.firstName?.charAt(0) || ''}${user.lastName?.charAt(0) || ''}`.toUpperCase() || email.substring(0, 2).toUpperCase()
             : email.substring(0, 2).toUpperCase(),
+          jobTitle: user?.jobTitle,
         };
-      })
-      .slice(0, 5); // Show first 5 for preview
+      });
   }, [visibleToMembers, users]);
 
   return (
@@ -125,21 +160,22 @@ export function LimitVisibilityDialog({
         trackModal('limit_visibility', open ? 'open' : 'close');
         onOpenChange(open);
       }}>
-        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-xl">
-              <Shield className="h-5 w-5 text-primary" />
-              Limit Visibility
+            <DialogTitle className="flex items-center gap-2">
+              <Shield className="h-4 w-4" />
+              {title}
             </DialogTitle>
-            <DialogDescription className="text-base">
-              {itemName ? `Control who can view "${itemName}"` : "Control who can view this item"}
-            </DialogDescription>
+            {itemName && (
+              <DialogDescription>
+                Control who can view "{itemName}"
+              </DialogDescription>
+            )}
           </DialogHeader>
 
-          <div className="flex-1 overflow-y-auto space-y-6 py-2">
+          <div className="flex-1 overflow-y-auto space-y-4 py-2">
             {/* Visibility Options */}
-            <div className="space-y-4">
-              <Label className="text-base font-semibold">Who can view this item?</Label>
+            <div className="space-y-3">
               <RadioGroup
                 value={visibility}
                 onValueChange={(value: 'all_members' | 'specific_members') => {
@@ -153,9 +189,9 @@ export function LimitVisibilityDialog({
                 {/* All Members Option */}
                 <div
                   className={cn(
-                    "relative flex items-start space-x-3 rounded-lg border-2 p-4 cursor-pointer transition-all",
+                    "relative flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors",
                     visibility === 'all_members'
-                      ? "border-primary bg-primary/5 shadow-sm"
+                      ? "border-primary bg-primary/5"
                       : "border-border hover:border-primary/50 hover:bg-accent/50"
                   )}
                   onClick={() => setVisibility('all_members')}
@@ -163,46 +199,33 @@ export function LimitVisibilityDialog({
                   <RadioGroupItem
                     value="all_members"
                     id="all_members"
-                    className="mt-1"
+                    className="mt-0.5"
                   />
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "flex h-10 w-10 items-center justify-center rounded-full transition-colors",
-                        visibility === 'all_members'
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-muted-foreground"
-                      )}>
-                        <Globe className="h-5 w-5" />
-                      </div>
-                      <div className="flex-1">
-                        <Label
-                          htmlFor="all_members"
-                          className="text-base font-semibold cursor-pointer"
-                        >
-                          All Organization Members
-                        </Label>
-                        <p className="text-sm text-muted-foreground mt-0.5">
-                          Everyone in your organization can view this item
-                        </p>
-                      </div>
-                      {visibility === 'all_members' && (
-                        <CheckCircle2 className="h-5 w-5 text-primary" />
-                      )}
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <Globe className={cn(
+                        "h-4 w-4",
+                        visibility === 'all_members' ? "text-primary" : "text-muted-foreground"
+                      )} />
+                      <Label
+                        htmlFor="all_members"
+                        className="text-sm font-medium cursor-pointer"
+                      >
+                        All Members
+                      </Label>
                     </div>
-                    <div className="ml-[52px] flex items-center gap-2 text-xs text-muted-foreground">
-                      <Users className="h-3 w-3" />
-                      <span>Default setting - visible to all {users.length} members</span>
-                    </div>
+                    <p className="text-xs text-muted-foreground mt-1 ml-6">
+                      Visible to all {users.length} member{users.length !== 1 ? 's' : ''}
+                    </p>
                   </div>
                 </div>
 
                 {/* Limited to Specific Members Option */}
                 <div
                   className={cn(
-                    "relative flex items-start space-x-3 rounded-lg border-2 p-4 cursor-pointer transition-all",
+                    "relative flex items-start space-x-3 rounded-lg border p-3 cursor-pointer transition-colors",
                     visibility === 'specific_members'
-                      ? "border-primary bg-primary/5 shadow-sm"
+                      ? "border-primary bg-primary/5"
                       : "border-border hover:border-primary/50 hover:bg-accent/50"
                   )}
                   onClick={() => setVisibility('specific_members')}
@@ -210,42 +233,27 @@ export function LimitVisibilityDialog({
                   <RadioGroupItem
                     value="specific_members"
                     id="specific_members"
-                    className="mt-1"
+                    className="mt-0.5"
                   />
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "flex h-10 w-10 items-center justify-center rounded-full transition-colors",
-                        visibility === 'specific_members'
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-muted-foreground"
-                      )}>
-                        <UserCheck className="h-5 w-5" />
-                      </div>
-                      <div className="flex-1">
-                        <Label
-                          htmlFor="specific_members"
-                          className="text-base font-semibold cursor-pointer"
-                        >
-                          Limited to Specific Members
-                        </Label>
-                        <p className="text-sm text-muted-foreground mt-0.5">
-                          Only selected members can view this item
-                        </p>
-                      </div>
-                      {visibility === 'specific_members' && (
-                        <CheckCircle2 className="h-5 w-5 text-primary" />
-                      )}
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <UserCheck className={cn(
+                        "h-4 w-4",
+                        visibility === 'specific_members' ? "text-primary" : "text-muted-foreground"
+                      )} />
+                      <Label
+                        htmlFor="specific_members"
+                        className="text-sm font-medium cursor-pointer"
+                      >
+                        Specific Members
+                      </Label>
                     </div>
                     {visibility === 'specific_members' && (
-                      <div className="ml-[52px] space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Badge variant="secondary" className="gap-1.5">
-                              <UserCheck className="h-3 w-3" />
-                              {visibleToMembers.size} member{visibleToMembers.size !== 1 ? 's' : ''} selected
-                            </Badge>
-                          </div>
+                      <div className="ml-6 mt-2 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">
+                            {visibleToMembers.size} member{visibleToMembers.size !== 1 ? 's' : ''} selected
+                          </span>
                           <Button
                             variant="outline"
                             size="sm"
@@ -253,56 +261,44 @@ export function LimitVisibilityDialog({
                               e.stopPropagation();
                               setMemberDialogOpen(true);
                             }}
-                            className="gap-2"
+                            className="h-7 text-xs"
                           >
-                            <UserCheck className="h-4 w-4" />
-                            {visibleToMembers.size > 0 ? 'Change Members' : 'Select Members'}
+                            {visibleToMembers.size > 0 ? 'Change' : 'Select'}
                           </Button>
                         </div>
-                        
-                        {visibleToMembers.size > 0 ? (
-                          <div className="space-y-2">
-                            <p className="text-xs font-medium text-muted-foreground">Selected members:</p>
-                            <div className="flex flex-wrap gap-2">
-                              {selectedMembersInfo.map((member) => (
-                                <Badge
-                                  key={member.email}
-                                  variant="secondary"
-                                  className="flex items-center gap-2 px-2.5 py-1.5 h-auto"
+                        {visibleToMembers.size > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedMembersInfo.slice(0, 5).map((member) => (
+                              <Badge
+                                key={member.email}
+                                variant="secondary"
+                                className="flex items-center gap-1.5 px-2 py-0.5 h-auto text-xs"
+                              >
+                                <Avatar className="h-4 w-4">
+                                  <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
+                                    {member.initials}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span className="truncate max-w-[80px]">{member.name}</span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const newSet = new Set(visibleToMembers);
+                                    newSet.delete(member.email);
+                                    setVisibleToMembers(newSet);
+                                  }}
+                                  className="ml-0.5 rounded-full hover:bg-destructive/20 p-0.5"
+                                  aria-label={`Remove ${member.name}`}
                                 >
-                                  <Avatar className="h-5 w-5">
-                                    <AvatarFallback className="bg-primary/10 text-primary text-xs font-medium">
-                                      {member.initials}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                  <span className="text-sm font-medium">{member.name}</span>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      const newSet = new Set(visibleToMembers);
-                                      newSet.delete(member.email);
-                                      setVisibleToMembers(newSet);
-                                    }}
-                                    className="ml-1 rounded-full hover:bg-destructive/20 p-0.5 transition-colors"
-                                    aria-label={`Remove ${member.name}`}
-                                  >
-                                    <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
-                                  </button>
-                                </Badge>
-                              ))}
-                              {visibleToMembers.size > 5 && (
-                                <Badge variant="outline" className="px-2.5 py-1.5">
-                                  +{visibleToMembers.size - 5} more
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900 rounded-lg">
-                            <EyeOff className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
-                            <p className="text-xs text-amber-800 dark:text-amber-200">
-                              No members selected. Please select at least one member to limit visibility.
-                            </p>
+                                  <X className="h-3 w-3 text-muted-foreground hover:text-destructive" />
+                                </button>
+                              </Badge>
+                            ))}
+                            {visibleToMembers.size > 5 && (
+                              <Badge variant="outline" className="px-2 py-0.5 text-xs">
+                                +{visibleToMembers.size - 5}
+                              </Badge>
+                            )}
                           </div>
                         )}
                       </div>
@@ -311,58 +307,29 @@ export function LimitVisibilityDialog({
                 </div>
               </RadioGroup>
             </div>
-
-            {/* Info Box */}
-            <div className={cn(
-              "flex items-start gap-3 p-4 rounded-lg border",
-              visibility === 'all_members'
-                ? "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900"
-                : "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900"
-            )}>
-              {visibility === 'all_members' ? (
-                <>
-                  <Globe className="h-5 w-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
-                      Public to Organization
-                    </p>
-                    <p className="text-xs text-blue-700 dark:text-blue-300">
-                      All {users.length} members of your organization can view this item. This is the default and recommended setting for collaboration.
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <Shield className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
-                      Limited Visibility
-                    </p>
-                    <p className="text-xs text-amber-700 dark:text-amber-300">
-                      Only the {visibleToMembers.size} selected member{visibleToMembers.size !== 1 ? 's' : ''} can view this item. Other organization members won't see it.
-                    </p>
-                  </div>
-                </>
-              )}
-            </div>
           </div>
 
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => onOpenChange(false)} 
+              disabled={isSaving}
+              size="sm"
+            >
               Cancel
             </Button>
             <Button
               onClick={handleSave}
               disabled={isSaving || (visibility === 'specific_members' && visibleToMembers.size === 0)}
-              className="min-w-[120px]"
+              size="sm"
             >
               {isSaving ? (
                 <>
-                  <span className="animate-spin mr-2">⏳</span>
+                  <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
                   Saving...
                 </>
               ) : (
-                "Save Changes"
+                "Save"
               )}
             </Button>
           </DialogFooter>
@@ -371,63 +338,86 @@ export function LimitVisibilityDialog({
 
       {/* Member Selection Dialog */}
       <Dialog open={memberDialogOpen} onOpenChange={setMemberDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
+        <DialogContent className="max-w-xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <UserCheck className="h-5 w-5" />
+              <UserCheck className="h-4 w-4" />
               Select Members
             </DialogTitle>
-            <DialogDescription>
-              Choose which organization members can view this item. You can search and select multiple members.
-            </DialogDescription>
           </DialogHeader>
 
-          <div className="flex-1 overflow-hidden flex flex-col gap-4">
+          <div className="flex-1 overflow-hidden flex flex-col gap-3">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                placeholder="Search by name, email, or job title..."
+                placeholder="Search members..."
                 value={memberSearchQuery}
                 onChange={(e) => setMemberSearchQuery(e.target.value)}
-                className="pl-9"
+                className="pl-8 pr-8 h-9 text-sm"
               />
+              {memberSearchQuery && (
+                <button
+                  onClick={clearSearch}
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 rounded hover:bg-muted p-1"
+                  aria-label="Clear search"
+                >
+                  <X className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              )}
             </div>
 
-            {visibleToMembers.size > 0 && (
-              <div className="flex items-center gap-2 px-3 py-2 bg-primary/10 border border-primary/20 rounded-lg">
-                <Badge variant="default" className="gap-1.5">
-                  <UserCheck className="h-3 w-3" />
-                  {visibleToMembers.size} member{visibleToMembers.size !== 1 ? 's' : ''} selected
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setVisibleToMembers(new Set())}
-                  className="ml-auto h-7 text-xs"
-                >
-                  Clear all
-                </Button>
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">
+                {visibleToMembers.size} selected
+              </span>
+              <div className="flex items-center gap-1.5">
+                {filteredUsers.length > 0 && (
+                  <>
+                    {!allFilteredSelected ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={selectAllFiltered}
+                        className="h-7 text-xs px-2"
+                      >
+                        Select all
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={deselectAllFiltered}
+                        className="h-7 text-xs px-2"
+                      >
+                        Deselect all
+                      </Button>
+                    )}
+                  </>
+                )}
+                {visibleToMembers.size > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setVisibleToMembers(new Set())}
+                    className="h-7 text-xs px-2 text-destructive hover:text-destructive"
+                  >
+                    Clear
+                  </Button>
+                )}
               </div>
-            )}
+            </div>
 
-            <div className="flex-1 overflow-y-auto border rounded-lg bg-background">
-              {filteredUsers.length === 0 ? (
-                <div className="p-12 text-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center">
-                      <Search className="h-6 w-6 text-muted-foreground" />
-                    </div>
-                    <div>
-                      <p className="font-medium text-sm">
-                        {memberSearchQuery ? "No members found" : "No members available"}
-                      </p>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {memberSearchQuery
-                          ? "Try adjusting your search terms"
-                          : "There are no members in your organization"}
-                      </p>
-                    </div>
-                  </div>
+            <div className="flex-1 overflow-y-auto border rounded-md">
+              {usersLoading ? (
+                <div className="p-8 text-center">
+                  <Loader2 className="h-5 w-5 text-primary animate-spin mx-auto mb-2" />
+                  <p className="text-xs text-muted-foreground">Loading...</p>
+                </div>
+              ) : filteredUsers.length === 0 ? (
+                <div className="p-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    {memberSearchQuery ? "No members found" : "No members available"}
+                  </p>
                 </div>
               ) : (
                 <div className="divide-y">
@@ -440,9 +430,9 @@ export function LimitVisibilityDialog({
                       <div
                         key={user.email}
                         className={cn(
-                          "flex items-center gap-3 p-4 cursor-pointer transition-colors",
+                          "flex items-center gap-3 p-2.5 cursor-pointer transition-colors",
                           isSelected
-                            ? "bg-primary/5 border-l-2 border-l-primary"
+                            ? "bg-primary/5"
                             : "hover:bg-secondary/50"
                         )}
                         onClick={() => toggleMemberSelection(user.email || '')}
@@ -451,32 +441,21 @@ export function LimitVisibilityDialog({
                           checked={isSelected}
                           onCheckedChange={() => toggleMemberSelection(user.email || '')}
                           onClick={(e) => e.stopPropagation()}
-                          className="data-[state=checked]:bg-primary data-[state=checked]:border-primary"
+                          className="h-4 w-4"
                         />
-                        <Avatar className="h-10 w-10">
-                          <AvatarFallback className="bg-primary text-primary-foreground font-medium">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback className={cn(
+                            "text-xs",
+                            isSelected 
+                              ? "bg-primary text-primary-foreground" 
+                              : "bg-muted"
+                          )}>
                             {initials}
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="font-medium truncate">{fullName}</p>
-                            {isSelected && (
-                              <Badge variant="secondary" className="h-5 text-xs px-1.5">
-                                Selected
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-sm text-muted-foreground flex items-center gap-1.5 truncate mt-0.5">
-                            <Mail className="h-3 w-3 flex-shrink-0" />
-                            {user.email}
-                          </p>
-                          {user.jobTitle && (
-                            <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
-                              <span className="h-1 w-1 rounded-full bg-muted-foreground/40" />
-                              {user.jobTitle}
-                            </p>
-                          )}
+                          <p className="text-sm font-medium truncate">{fullName}</p>
+                          <p className="text-xs text-muted-foreground truncate">{user.email}</p>
                         </div>
                       </div>
                     );
@@ -487,7 +466,17 @@ export function LimitVisibilityDialog({
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setMemberDialogOpen(false)}>
+            <Button 
+              variant="outline" 
+              onClick={() => setMemberDialogOpen(false)}
+              size="sm"
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={() => setMemberDialogOpen(false)}
+              size="sm"
+            >
               Done
             </Button>
           </DialogFooter>
