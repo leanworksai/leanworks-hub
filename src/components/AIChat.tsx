@@ -12,7 +12,6 @@ import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useOrg } from "@/contexts/OrgContext";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -35,7 +34,6 @@ export function AIChat() {
   const location = useLocation();
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
-  const { selectedTeams, toggleTeam, clearSelection: clearSelectedTeams } = useSelectedTeams();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -322,10 +320,9 @@ export function AIChat() {
     setImagePreviewUrls([]);
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) ? {
+    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
       projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
       tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-      teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
       docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
     } : undefined;
 
@@ -382,7 +379,7 @@ export function AIChat() {
 
       // Generate AI response
       setIsLoading(true);
-      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
+      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
 
       try {
         // Pass only the current message - backend will load conversation from Firestore
@@ -391,7 +388,6 @@ export function AIChat() {
         if (hadSelections) {
           clearSelectedProjects();
           clearSelectedTasks();
-          clearSelectedTeams();
           clearSelectedDocs();
         }
         
@@ -468,7 +464,7 @@ export function AIChat() {
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedTeams, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedTeams, clearSelectedDocs, generateResponse, saveCachedMessages]);
+  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, generateResponse, saveCachedMessages]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -733,7 +729,7 @@ export function AIChat() {
                     Chat with lean
                   </h3>
                   <p className="text-sm text-muted-foreground max-w-sm leading-relaxed">
-                    Ask me anything about your projects, tasks, or team. I'm here to help you stay productive!
+                    Ask me anything about your projects or tasks. I'm here to help you stay productive!
                   </p>
                   <div className="mt-6 flex flex-wrap gap-2 justify-center">
                     <span className="text-xs px-3 py-1.5 bg-purple-100/50 text-purple-700 rounded-full border border-purple-200/50">
@@ -741,9 +737,6 @@ export function AIChat() {
                     </span>
                     <span className="text-xs px-3 py-1.5 bg-indigo-100/50 text-indigo-700 rounded-full border border-indigo-200/50">
                       📋 Task management
-                    </span>
-                    <span className="text-xs px-3 py-1.5 bg-purple-100/50 text-purple-700 rounded-full border border-purple-200/50">
-                      👥 Team collaboration
                     </span>
                   </div>
                 </div>
@@ -793,7 +786,6 @@ export function AIChat() {
           onImageRemove={handleImageRemove}
           selectedProjects={selectedProjects}
           selectedTasks={selectedTasks}
-          selectedTeams={selectedTeams}
           selectedDocs={selectedDocs}
           onRemoveProject={(project) => {
             trackContextRemove('project', project.id);
@@ -802,10 +794,6 @@ export function AIChat() {
           onRemoveTask={(task) => {
             trackContextRemove('task', task.id);
             toggleTask(task);
-          }}
-          onRemoveTeam={(team) => {
-            trackContextRemove('team', team.id);
-            toggleTeam(team);
           }}
           onRemoveDoc={(doc) => {
             trackContextRemove('doc', doc.id);

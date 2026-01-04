@@ -39,7 +39,6 @@ import { useOrg } from "@/contexts/OrgContext";
 import { usersService } from "@/services/api";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation, useSystemNotifications, useMarkNotificationRead, useDismissNotification } from "@/hooks/useTeams";
 import { useProjects } from "@/hooks/useProjects";
 import { useTasks } from "@/hooks/useTasks";
@@ -68,7 +67,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const userTimezone = useUserTimezone();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
-  const { selectedTeams, clearSelection: clearTeams } = useSelectedTeams();
   const { data: joinRequests = [], isLoading: isLoadingRequests } = useJoinRequests();
   const { data: invitations = [], isLoading: isLoadingInvitations } = useInvitations();
   const { data: systemNotifications = [], isLoading: isLoadingSystemNotifications } = useSystemNotifications();

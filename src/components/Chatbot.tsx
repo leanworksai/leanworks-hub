@@ -11,7 +11,6 @@ import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import { cn, getUserById, getUserDisplayName, getUserInitials, getAvatarColor } from "@/lib/utils";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { ContextBadges } from "@/components/ContextBadges";
 import { Badge } from "@/components/ui/badge";
@@ -115,7 +114,6 @@ interface SearchResult {
 export function Chatbot() {
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
-  const { selectedTeams, toggleTeam, clearSelection: clearSelectedTeams } = useSelectedTeams();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
@@ -1656,7 +1654,7 @@ export function Chatbot() {
         }
       }, 100);
     }
-  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedTeams, selectedDocs, isProjectChannel, isTeamChannel, isSearching, selectedMember, user?.email, allTeamMembers, lastReadTimestamps, selectedProjectId, selectedTeamId]);
+  }, [messages, channelMessages, isOpen, selectedProjects, selectedTasks, selectedDocs, isProjectChannel, isTeamChannel, isSearching, selectedMember, user?.email, allTeamMembers, lastReadTimestamps, selectedProjectId, selectedTeamId]);
 
   // Calculate unread counts for all chats when chatbot opens or when user/projects/teams change
   useEffect(() => {
@@ -3174,8 +3172,8 @@ export function Chatbot() {
       }
     }
 
-    // Add selected projects, tasks, teams, and docs if any
-    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) {
+    // Add selected projects, tasks, and docs if any
+    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) {
       if (selectedProjects.length > 0) {
         contextParts.push("Selected Projects:");
         selectedProjects.forEach((project) => {
@@ -3196,14 +3194,6 @@ export function Chatbot() {
           contextParts.push(`  Assignee: ${assigneeName}, Due: ${task.dueDate}`);
           contextParts.push(`  Project: ${task.project}`);
           contextParts.push(`  Progress Updates: ${task.progressUpdates.length}`);
-        });
-      }
-
-      if (selectedTeams.length > 0) {
-        contextParts.push("Selected Teams:");
-        selectedTeams.forEach((team) => {
-          contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
-          contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
         });
       }
 
@@ -3321,9 +3311,9 @@ export function Chatbot() {
       throw new Error('Authentication token not found. Please sign in again.');
     }
 
-    // Build context from selected projects, tasks, teams, and docs for cited_context
+    // Build context from selected projects, tasks, and docs for cited_context
     let citedContext = "";
-    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) {
+    if (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) {
       const contextParts: string[] = [];
       
       if (selectedProjects.length > 0) {
@@ -3346,14 +3336,6 @@ export function Chatbot() {
           contextParts.push(`  Assignee: ${assigneeName}, Due: ${task.dueDate}`);
           contextParts.push(`  Project: ${task.project}`);
           contextParts.push(`  Progress Updates: ${task.progressUpdates.length}`);
-        });
-      }
-
-      if (selectedTeams.length > 0) {
-        contextParts.push("Selected Teams:");
-        selectedTeams.forEach((team) => {
-          contextParts.push(`- ${team.name} (ID: ${team.id}): ${team.description}`);
-          contextParts.push(`  Members: ${team.members}, Projects: ${team.projects}`);
         });
       }
 
@@ -3710,10 +3692,9 @@ export function Chatbot() {
       const userInitials = currentUserDisplayInfo.initials;
       
       // Capture cited context before clearing (for display purposes)
-      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) ? {
+      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
         projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
         tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-        teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
         docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
       } : undefined;
       
@@ -3918,10 +3899,9 @@ export function Chatbot() {
       const userInitials = currentUserDisplayInfo.initials;
       
       // Capture cited context before clearing (for display purposes)
-      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) ? {
+      const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
         projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
         tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-        teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
         docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
       } : undefined;
       
@@ -4106,10 +4086,9 @@ export function Chatbot() {
 
 
     // Capture cited context before clearing (for display purposes)
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0) ? {
+    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0) ? {
       projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
       tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-      teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
     } : undefined;
 
     // Create message object and add to state immediately (optimistic update)
@@ -4181,7 +4160,7 @@ export function Chatbot() {
     setIsLoading(true);
 
       // Capture selection state before API call to ensure we clear the correct selections
-      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
+      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
 
       try {
         const response = await generateResponse(userMessage.content, chatId);
@@ -4190,7 +4169,6 @@ export function Chatbot() {
         if (hadSelections) {
           clearSelectedProjects();
           clearSelectedTasks();
-          clearSelectedTeams();
           clearSelectedDocs();
         }
         
@@ -5407,11 +5385,9 @@ export function Chatbot() {
               <ContextBadges
                 projects={selectedProjects}
                 tasks={selectedTasks}
-                teams={selectedTeams}
                 docs={selectedDocs}
                 onRemoveProject={toggleProject}
                 onRemoveTask={toggleTask}
-                onRemoveTeam={toggleTeam}
                 onRemoveDoc={toggleDoc}
                 variant="inline"
               />

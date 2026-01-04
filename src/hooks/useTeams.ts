@@ -1,264 +1,150 @@
-import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
-import { teamsService, teamJoinRequestsService, teamInvitationsService, systemNotificationsService } from '@/services/api';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { systemNotificationsService } from '@/services/api';
 import type { Team, TeamDetailData, TeamJoinRequest, TeamInvitation } from '@/data/teamsData';
 import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
 
+// Teams functionality has been removed - return empty data
 export const useTeams = () => {
-  const { user, loading } = useAuth();
-  const { currentOrg, loading: orgLoading } = useOrg();
-  
-  return useQuery({
-    queryKey: ['teams', currentOrg?.id],
-    queryFn: async () => {
-      const teams = await teamsService.getAll();
-      return teams;
-    },
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
-    staleTime: 1000 * 60 * 5, // 5 minutes
-  });
+  return {
+    data: [] as Team[],
+    isLoading: false,
+    error: null,
+  };
 };
 
 // Hook to get teams filtered by current user membership
 export const useUserTeams = () => {
-  const { user } = useAuth();
-  const { data: allTeams = [], isLoading: isLoadingTeams } = useTeams();
-
-  // Fetch team details for all teams in parallel (only if user and teams exist)
-  const teamDetailsQueries = useQueries({
-    queries: allTeams.length > 0 && user?.email
-      ? allTeams.map((team) => ({
-          queryKey: ['teams', team.id],
-          queryFn: () => teamsService.getById(team.id),
-          enabled: !!team.id && !!user?.email,
-          staleTime: 1000 * 60 * 5,
-        }))
-      : [],
-  });
-
-  // If no user or no teams, return early
-  if (!user?.email || allTeams.length === 0) {
-    return {
-      data: [],
-      isLoading: isLoadingTeams,
-    };
-  }
-
-  // Check if all team details are loaded
-  const isLoadingDetails = teamDetailsQueries.some((query) => query.isLoading);
-  
-  // Check if all queries have completed (either success or error)
-  const allQueriesCompleted = teamDetailsQueries.length > 0 && teamDetailsQueries.every(
-    (query) => !query.isLoading && (query.data !== undefined || query.error !== undefined)
-  );
-
-        // Filter teams where the user is a member
-  // Only filter after all queries have completed to avoid filtering out teams prematurely
-  const userTeams = allQueriesCompleted && !isLoadingDetails
-    ? allTeams.filter((team) => {
-        const teamDetailQuery = teamDetailsQueries.find(
-          (query) => query.data?.id === team.id
-        );
-        const teamDetail = teamDetailQuery?.data;
-        
-        if (!teamDetail) return false;
-        
-        // Check if user's email is in the team members list
-        return teamDetail.members.some(
-          (member) => member.email.toLowerCase() === user.email?.toLowerCase()
-        );
-      })
-    : [];
-
   return {
-    data: userTeams,
-    isLoading: isLoadingTeams || isLoadingDetails || !allQueriesCompleted,
+    data: [] as Team[],
+    isLoading: false,
   };
 };
 
 export const useTeam = (teamId: string) => {
-  const { user, loading } = useAuth();
-  const { currentOrg, loading: orgLoading } = useOrg();
-  
-  return useQuery({
-    queryKey: ['teams', teamId, currentOrg?.id],
-    queryFn: () => teamsService.getById(teamId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!teamId, // Only fetch when user is authenticated and teamId is provided
-    staleTime: 1000 * 60 * 5,
-  });
+  return {
+    data: null as TeamDetailData | null,
+    isLoading: false,
+    error: null,
+  };
 };
 
+// Teams functionality has been removed - return no-op mutations
 export const useCreateTeam = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ team, teamDetail }: { team: Team; teamDetail: TeamDetailData }) =>
-      teamsService.create(team, teamDetail),
-    onSuccess: (_, variables) => {
-      // Invalidate and refetch all team queries to show the new team immediately
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.refetchQueries({ queryKey: ['teams'] });
-      // Invalidate the specific team detail query so useUserTeams can find it
-      queryClient.invalidateQueries({ queryKey: ['teams', variables.team.id] });
-      queryClient.refetchQueries({ queryKey: ['teams', variables.team.id] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useUpdateTeam = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ teamName, updates }: { teamName: string; updates: Partial<Team> }) =>
-      teamsService.update(teamName, updates),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.invalidateQueries({ queryKey: ['teams', variables.teamName] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useUpdateTeamDetail = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ teamName, updates }: { teamName: string; updates: Partial<TeamDetailData> }) =>
-      teamsService.updateDetail(teamName, updates),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.invalidateQueries({ queryKey: ['teams', variables.teamName] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useDeleteTeam = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (teamId: string) => teamsService.delete(teamId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
-// Team join request hooks
+// Team join request hooks - return empty data
 export const useJoinRequests = () => {
-  const { user, loading } = useAuth();
-  const { currentOrg, loading: orgLoading } = useOrg();
-  
-  return useQuery({
-    queryKey: ['teamJoinRequests', currentOrg?.id],
-    queryFn: () => teamJoinRequestsService.getPendingRequests(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
-    staleTime: 0, // Always consider data stale to allow immediate refetches
-    refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
-    refetchOnWindowFocus: true, // Refetch when user returns to the tab
-    refetchOnMount: true, // Always refetch when component mounts
-  });
+  return {
+    data: [] as TeamJoinRequest[],
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useRequestJoinTeam = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (teamName: string) => teamJoinRequestsService.requestJoin(teamName),
-    onSuccess: () => {
-      // Immediately refetch to show the new request
-      queryClient.refetchQueries({ queryKey: ['teamJoinRequests'] });
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useApproveJoinRequest = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (requestId: string) => teamJoinRequestsService.approveRequest(requestId),
-    onSuccess: () => {
-      // Immediately refetch to remove the approved request from the list
-      queryClient.refetchQueries({ queryKey: ['teamJoinRequests'] });
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useRejectJoinRequest = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (requestId: string) => teamJoinRequestsService.rejectRequest(requestId),
-    onSuccess: () => {
-      // Immediately refetch to remove the rejected request from the list
-      queryClient.refetchQueries({ queryKey: ['teamJoinRequests'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useRemoveTeamMember = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ teamName, memberEmail }: { teamName: string; memberEmail: string }) =>
-      teamsService.removeMember(teamName, memberEmail),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.invalidateQueries({ queryKey: ['teams', variables.teamName] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useLeaveTeam = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (teamName: string) => teamsService.leaveTeam(teamName),
-    onSuccess: (_, teamName) => {
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.invalidateQueries({ queryKey: ['teams', teamName] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
-// Team invitation hooks
+// Team invitation hooks - return empty data
 export const useInvitations = () => {
-  const { user, loading } = useAuth();
-  const { currentOrg, loading: orgLoading } = useOrg();
-  
-  return useQuery({
-    queryKey: ['teamInvitations', currentOrg?.id],
-    queryFn: () => teamInvitationsService.getInvitations(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
-    staleTime: 0, // Always consider data stale to allow immediate refetches
-    refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
-    refetchOnWindowFocus: true, // Refetch when user returns to the tab
-    refetchOnMount: true, // Always refetch when component mounts
-  });
+  return {
+    data: [] as TeamInvitation[],
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useInviteTeamMember = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: ({ teamName, inviteeEmail }: { teamName: string; inviteeEmail: string }) =>
-      teamInvitationsService.inviteMember(teamName, inviteeEmail),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['teamInvitations'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 export const useAcceptInvitation = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (invitationId: string) => teamInvitationsService.acceptInvitation(invitationId),
-    onSuccess: () => {
-      queryClient.refetchQueries({ queryKey: ['teamInvitations'] });
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 
 // System notifications hooks
@@ -299,13 +185,11 @@ export const useDismissNotification = () => {
 };
 
 export const useDeclineInvitation = () => {
-  const queryClient = useQueryClient();
-  
-  return useMutation({
-    mutationFn: (invitationId: string) => teamInvitationsService.declineInvitation(invitationId),
-    onSuccess: () => {
-      queryClient.refetchQueries({ queryKey: ['teamInvitations'] });
-    },
-  });
+  return {
+    mutate: () => {},
+    mutateAsync: async () => {},
+    isLoading: false,
+    error: null,
+  };
 };
 

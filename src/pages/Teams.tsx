@@ -8,7 +8,6 @@ import { Plus, Search, Mail, Briefcase, Check, ChevronsUpDown, Edit, Trash2, Bel
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useNavigate } from "react-router-dom";
-import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import {
   Dialog,
   DialogContent,
@@ -54,7 +53,6 @@ import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 
 export default function Teams() {
   const navigate = useNavigate();
-  const { toggleTeam, isTeamSelected, selectedTeams } = useSelectedTeams();
   const { data: allTeams = [], isLoading: isLoadingAllTeams } = useTeams(); // All teams in domain
   const { data: userTeams = [], isLoading: isLoadingUserTeams } = useUserTeams(); // Teams user is member of
   const { data: users = [], isLoading: isLoadingUsers } = useUsers();
@@ -462,10 +460,10 @@ export default function Teams() {
                     <MoreOptionsMenu
                       items={[
                         {
-                          icon: isTeamSelected(team.name) ? X : Plus,
-                          label: isTeamSelected(team.name) ? "Remove from Context" : "Add to Context",
+                          icon: Plus,
+                          label: "Add to Context",
                           onClick: (e) => {
-                            toggleTeam(team);
+                            // Team selection removed
                           },
                         },
                         {

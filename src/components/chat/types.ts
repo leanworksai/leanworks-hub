@@ -1,12 +1,10 @@
 import { Project } from "@/data/projectsData";
 import { Task } from "@/data/tasksData";
-import { Team } from "@/data/teamsData";
 import { Doc } from "@/data/docsData";
 
 export interface CitedContext {
   projects?: Project[];
   tasks?: Task[];
-  teams?: Team[];
   docs?: Doc[];
 }
 

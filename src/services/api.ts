@@ -1,6 +1,5 @@
 import type { Project, Comment } from '@/data/projectsData';
 import type { Task, TaskComment } from '@/data/tasksData';
-import type { Team, TeamDetailData } from '@/data/teamsData';
 import type { Doc } from '@/data/docsData';
 import type { Event } from '@/data/eventsData';
 import { auth, db } from '@/lib/firebase-client';
@@ -397,127 +396,6 @@ export const usersService = {
   },
 };
 
-// Teams Service
-export const teamsService = {
-  async getAll(): Promise<Team[]> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams` : `${API_BASE}/teams`;
-    const response = await authenticatedFetch(url);
-    if (!response.ok) throw new Error('Failed to fetch teams');
-    return response.json();
-  },
-
-  async getById(teamId: string): Promise<TeamDetailData | null> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}` : `${API_BASE}/teams/${encodeURIComponent(teamId)}`;
-    const response = await authenticatedFetch(url);
-    if (response.status === 404) return null;
-    if (!response.ok) throw new Error('Failed to fetch team');
-    return response.json();
-  },
-
-  async create(team: Team, teamDetail: TeamDetailData): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams` : `${API_BASE}/teams`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-      body: JSON.stringify({ team, teamDetail }),
-    });
-    if (!response.ok) throw new Error('Failed to create team');
-  },
-
-  async update(teamId: string, updates: Partial<Team>): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}` : `${API_BASE}/teams/${encodeURIComponent(teamId)}`;
-    const response = await authenticatedFetch(url, {
-      method: 'PATCH',
-      body: JSON.stringify(updates),
-    });
-    if (!response.ok) throw new Error('Failed to update team');
-  },
-
-  async updateDetail(teamId: string, updates: Partial<TeamDetailData>): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}/detail` : `${API_BASE}/teams/${encodeURIComponent(teamId)}/detail`;
-    const response = await authenticatedFetch(url, {
-      method: 'PATCH',
-      body: JSON.stringify(updates),
-    });
-    if (!response.ok) throw new Error('Failed to update team detail');
-  },
-
-  async delete(teamId: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamId)}` : `${API_BASE}/teams/${encodeURIComponent(teamId)}`;
-    const response = await authenticatedFetch(url, {
-      method: 'DELETE',
-    });
-    if (!response.ok) throw new Error('Failed to delete team');
-  },
-
-  async removeMember(teamName: string, memberEmail: string): Promise<void> {
-    const url = import.meta.env.DEV 
-      ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(memberEmail)}`
-      : `${API_BASE}/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(memberEmail)}`;
-    const response = await authenticatedFetch(url, {
-      method: 'DELETE',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to remove member' }));
-      throw new Error(error.error || 'Failed to remove member');
-    }
-  },
-
-  async leaveTeam(teamName: string): Promise<void> {
-    const url = import.meta.env.DEV 
-      ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}/leave`
-      : `${API_BASE}/teams/${encodeURIComponent(teamName)}/leave`;
-    const response = await authenticatedFetch(url, {
-      method: 'DELETE',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to leave team' }));
-      throw new Error(error.error || 'Failed to leave team');
-    }
-  },
-};
-
-// Team Join Requests Service
-export const teamJoinRequestsService = {
-  async requestJoin(teamName: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}/join-request` : `${API_BASE}/teams/${encodeURIComponent(teamName)}/join-request`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to send join request' }));
-      throw new Error(error.error || 'Failed to send join request');
-    }
-  },
-
-  async getPendingRequests(): Promise<any[]> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/join-requests` : `${API_BASE}/teams/join-requests`;
-    const response = await authenticatedFetch(url);
-    if (!response.ok) throw new Error('Failed to fetch join requests');
-    return response.json();
-  },
-
-  async approveRequest(requestId: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/join-requests/${requestId}/approve` : `${API_BASE}/teams/join-requests/${requestId}/approve`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to approve request' }));
-      throw new Error(error.error || 'Failed to approve request');
-    }
-  },
-
-  async rejectRequest(requestId: string): Promise<void> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/join-requests/${requestId}/reject` : `${API_BASE}/teams/join-requests/${requestId}/reject`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to reject request' }));
-      throw new Error(error.error || 'Failed to reject request');
-    }
-  },
-};
 
 // Team Invitations Service
 export const systemNotificationsService = {
@@ -573,54 +451,6 @@ export const systemNotificationsService = {
   },
 };
 
-export const teamInvitationsService = {
-  async inviteMember(teamName: string, inviteeEmail: string): Promise<void> {
-    const url = import.meta.env.DEV 
-      ? `${API_BASE}/api/teams/${encodeURIComponent(teamName)}/invitations`
-      : `${API_BASE}/teams/${encodeURIComponent(teamName)}/invitations`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-      body: JSON.stringify({ inviteeEmail }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to send invitation' }));
-      throw new Error(error.error || 'Failed to send invitation');
-    }
-  },
-
-  async getInvitations(): Promise<any[]> {
-    const url = import.meta.env.DEV ? `${API_BASE}/api/teams/invitations` : `${API_BASE}/teams/invitations`;
-    const response = await authenticatedFetch(url);
-    if (!response.ok) throw new Error('Failed to fetch invitations');
-    return response.json();
-  },
-
-  async acceptInvitation(invitationId: string): Promise<void> {
-    const url = import.meta.env.DEV 
-      ? `${API_BASE}/api/teams/invitations/${invitationId}/accept`
-      : `${API_BASE}/teams/invitations/${invitationId}/accept`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to accept invitation' }));
-      throw new Error(error.error || 'Failed to accept invitation');
-    }
-  },
-
-  async declineInvitation(invitationId: string): Promise<void> {
-    const url = import.meta.env.DEV 
-      ? `${API_BASE}/api/teams/invitations/${invitationId}/decline`
-      : `${API_BASE}/teams/invitations/${invitationId}/decline`;
-    const response = await authenticatedFetch(url, {
-      method: 'POST',
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ error: 'Failed to decline invitation' }));
-      throw new Error(error.error || 'Failed to decline invitation');
-    }
-  },
-};
 
 // Integrations Service
 export interface Integration {
@@ -684,7 +514,6 @@ export interface ChatMessage {
   citedContext?: {
     projects?: any[];
     tasks?: any[];
-    teams?: any[];
   };
 }
 

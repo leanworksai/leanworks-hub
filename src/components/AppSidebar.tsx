@@ -25,7 +25,6 @@ import {
 import { useOrg } from "@/contexts/OrgContext";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -48,7 +47,6 @@ export function AppSidebar() {
   const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations } = useOrg();
   const { selectedProjects, toggleProject } = useSelectedProjects();
   const { selectedTasks, toggleTask } = useSelectedTasks();
-  const { selectedTeams, toggleTeam } = useSelectedTeams();
   const { selectedDocs, toggleDoc } = useSelectedDocs();
   const { totalUnreadCount } = useTeamChats();
   
@@ -62,7 +60,7 @@ export function AppSidebar() {
     }
   };
 
-  const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0;
+  const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -247,11 +245,9 @@ export function AppSidebar() {
               <ContextBadges
                 projects={selectedProjects}
                 tasks={selectedTasks}
-                teams={selectedTeams}
                 docs={selectedDocs}
                 onRemoveProject={toggleProject}
                 onRemoveTask={toggleTask}
-                onRemoveTeam={toggleTeam}
                 onRemoveDoc={toggleDoc}
                 variant="sidebar"
               />

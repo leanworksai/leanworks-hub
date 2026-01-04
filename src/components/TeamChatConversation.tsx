@@ -14,7 +14,6 @@ import { ChatInput } from "@/components/chat/ChatInput";
 import { ContextBadges } from "@/components/ContextBadges";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useSelectedTeams } from "@/contexts/SelectedTeamsContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useOrg } from "@/contexts/OrgContext";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -38,7 +37,6 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
   const { data: userTeams = [] } = useUserTeams();
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
-  const { selectedTeams, toggleTeam, clearSelection: clearSelectedTeams } = useSelectedTeams();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
   const { callStatus, currentCallId } = useWebRTCContext();
 
@@ -340,10 +338,9 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     setImagePreviewUrls([]);
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) ? {
+    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
       projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
       tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-      teams: selectedTeams.length > 0 ? [...selectedTeams] : undefined,
       docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
     } : undefined;
 
@@ -387,7 +384,6 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
       if (citedContext) {
         clearSelectedProjects();
         clearSelectedTasks();
-        clearSelectedTeams();
         clearSelectedDocs();
       }
     } catch (error) {
@@ -400,7 +396,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     } finally {
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedTeams, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedTeams, clearSelectedDocs]);
+  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -817,11 +813,9 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           onImageRemove={handleImageRemove}
           selectedProjects={selectedProjects}
           selectedTasks={selectedTasks}
-          selectedTeams={selectedTeams}
           selectedDocs={selectedDocs}
           onRemoveProject={toggleProject}
           onRemoveTask={toggleTask}
-          onRemoveTeam={toggleTeam}
           onRemoveDoc={toggleDoc}
           placeholder="Type your message..."
           showMentions={isProjectChannel || isTeamChannel || isDM}

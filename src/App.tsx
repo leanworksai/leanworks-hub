@@ -12,7 +12,6 @@ import { useTimeOnPage } from "@/hooks/useTimeOnPage";
 import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
-import { SelectedTeamsProvider } from "@/contexts/SelectedTeamsContext";
 import { SelectedDocsProvider } from "@/contexts/SelectedDocsContext";
 import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
 import { DashboardLayout } from "./components/DashboardLayout";
@@ -320,13 +319,11 @@ const App = () => {
               <SelectionModeProvider>
                 <SelectedProjectsProvider>
                   <SelectedTasksProvider>
-                    <SelectedTeamsProvider>
-                      <SelectedDocsProvider>
+                    <SelectedDocsProvider>
                       <Toaster />
                       <Sonner />
                       <AppRoutes />
-                      </SelectedDocsProvider>
-                    </SelectedTeamsProvider>
+                    </SelectedDocsProvider>
                   </SelectedTasksProvider>
                 </SelectedProjectsProvider>
               </SelectionModeProvider>

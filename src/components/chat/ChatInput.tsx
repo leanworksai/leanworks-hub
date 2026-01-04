@@ -9,7 +9,6 @@ import EmojiPicker, { EmojiClickData } from "emoji-picker-react";
 import { CitedContext, TeamMember } from "./types";
 import { Project } from "@/data/projectsData";
 import { Task } from "@/data/tasksData";
-import { Team } from "@/data/teamsData";
 import { Doc } from "@/data/docsData";
 import { ContextBadges } from "@/components/ContextBadges";
 import { trackEmojiPicker, trackMention } from "@/lib/analytics";
@@ -34,11 +33,9 @@ export interface ChatInputProps {
   // Cited context
   selectedProjects?: Project[];
   selectedTasks?: Task[];
-  selectedTeams?: Team[];
   selectedDocs?: Doc[];
   onRemoveProject?: (project: Project) => void;
   onRemoveTask?: (task: Task) => void;
-  onRemoveTeam?: (team: Team) => void;
   onRemoveDoc?: (doc: Doc) => void;
   
   // Image handling
@@ -73,11 +70,9 @@ export function ChatInput({
   onMentionClose,
   selectedProjects = [],
   selectedTasks = [],
-  selectedTeams = [],
   selectedDocs = [],
   onRemoveProject,
   onRemoveTask,
-  onRemoveTeam,
   onRemoveDoc,
   imagePreviewUrls = [],
   onImageSelect,
@@ -217,16 +212,14 @@ export function ChatInput({
         ? "bg-white/70 backdrop-blur-md border-purple-200/60 shadow-lg shadow-purple-100/50 dark:shadow-purple-900/20" 
         : "bg-background"
     )}>
-      {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedTeams.length > 0 || selectedDocs.length > 0) && (
+      {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) && (
         <div className="px-4 pt-3 pb-2">
           <ContextBadges
             projects={selectedProjects}
             tasks={selectedTasks}
-            teams={selectedTeams}
             docs={selectedDocs}
             onRemoveProject={onRemoveProject}
             onRemoveTask={onRemoveTask}
-            onRemoveTeam={onRemoveTeam}
             onRemoveDoc={onRemoveDoc}
             variant="inline"
           />

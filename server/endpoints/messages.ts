@@ -58,26 +58,6 @@ async function isProjectMember(orgId: string, userEmail: string, projectId: stri
   }
 }
 
-/**
- * Check if a user has access to a team (either as a member or owner)
- */
-async function isTeamMember(orgId: string, userEmail: string, teamId: string): Promise<boolean> {
-  try {
-    const pool = await getOrgPool(orgId);
-    const result = await pool.query(
-      `SELECT 1 
-       FROM teams t
-       LEFT JOIN team_members tm ON t.id = tm.team_id AND tm.user_email = $2
-       WHERE t.id = $1 
-         AND (t.owner_email = $2 OR tm.user_email IS NOT NULL)`,
-      [teamId, userEmail.toLowerCase()]
-    );
-    return result.rows.length > 0;
-  } catch (error) {
-    console.error('Error checking team access:', error);
-    return false;
-  }
-}
 
 /**
  * Check if user is on free plan
@@ -121,14 +101,6 @@ export function setupMessageEndpoints(
         }
       }
       
-      // Check authorization for team channels
-      if (chatId.startsWith('team-') && orgId) {
-        const teamId = chatId.replace('team-', '');
-        const isMember = await isTeamMember(orgId, userEmail, teamId);
-        if (!isMember) {
-          return res.status(403).json({ error: 'Access denied: You must be a team member or owner to view messages' });
-        }
-      }
       
       // Use org slug for Firestore path (sanitized name instead of ID)
       let messagesPath: string;
@@ -162,11 +134,6 @@ export function setupMessageEndpoints(
         query = query.where('projectId', '==', projectId);
       }
       
-      // For team channels, also filter by teamId to ensure we only get messages for this team
-      if (chatId.startsWith('team-')) {
-        const teamId = chatId.replace('team-', '');
-        query = query.where('teamId', '==', teamId);
-      }
       
       if (afterTimestamp) {
         query = query.where('timestamp', '>', afterTimestamp);
@@ -215,7 +182,7 @@ export function setupMessageEndpoints(
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
-      const { chatId, role, content, memberName, memberAvatar, projectId, teamId, citedContext, imageUrls } = req.body;
+      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls } = req.body;
 
       if (!chatId || !content) {
         return res.status(400).json({ error: 'chatId and content are required' });
@@ -238,29 +205,11 @@ export function setupMessageEndpoints(
         }
       }
       
-      // Check authorization for team channels
-      // Check both chatId (if it's a team channel) and teamId (if provided)
-      let actualTeamId: string | null = null;
-      
-      if (chatId.startsWith('team-')) {
-        actualTeamId = chatId.replace('team-', '');
-      } else if (teamId) {
-        actualTeamId = teamId;
-      }
-      
-      if (actualTeamId && orgId) {
-        const isMember = await isTeamMember(orgId, userEmail, actualTeamId);
-        if (!isMember) {
-          return res.status(403).json({ error: 'Access denied: You must be a team member or owner to post messages' });
-        }
-      }
-
-      // Check if this is a team or project channel message
-      const isTeamChannel = actualTeamId !== null;
+      // Check if this is a project channel message
       const isProjectChannel = actualProjectId !== null;
 
-      // Block @lean mentions in team/group channels for free tier users
-      if ((isTeamChannel || isProjectChannel) && containsLeanMention(content)) {
+      // Block @lean mentions in group channels for free tier users
+      if (isProjectChannel && containsLeanMention(content)) {
         const isFree = await isFreePlanUser(userEmail);
         if (isFree) {
           return res.status(403).json({ 
@@ -294,7 +243,6 @@ export function setupMessageEndpoints(
         timestamp: new Date(),
         userId: userEmail.toLowerCase(),
         projectId: finalProjectId,
-        teamId: teamId || null,
         memberName: finalMemberName,
         memberAvatar: finalMemberAvatar,
         likes: [], // Initialize likes as empty array for new messages
@@ -561,15 +509,6 @@ export function setupMessageEndpoints(
           continue;
         }
         
-        // Team channels - check if user has access
-        if (chatId.startsWith('team-') && orgId) {
-          const teamId = chatId.replace('team-', '');
-          const hasAccess = await isTeamMember(orgId, userEmail, teamId);
-          if (hasAccess) {
-            filteredConversations.push(conv);
-          }
-          continue;
-        }
         
         // Direct messages - verify the other user is in the same org
         if (chatId.startsWith('dm-') && orgId) {
