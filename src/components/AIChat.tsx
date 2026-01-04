@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-import { X, Bot } from "lucide-react";
+import { X } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -721,13 +721,15 @@ export function AIChat() {
               theme="ai-chat"
               emptyState={
                 <div className="flex flex-col items-center justify-center h-full text-center py-16 px-4">
-                  <div className="relative mb-6">
-                    <div className="absolute inset-0 bg-gradient-to-br from-purple-400/20 to-indigo-400/20 rounded-full blur-2xl" />
-                    <div className="relative bg-gradient-to-br from-purple-500 to-indigo-500 p-6 rounded-2xl shadow-lg">
-                      <Bot className="h-12 w-12 text-white" />
-                    </div>
+                  <div className="mb-6">
+                    <Avatar className="h-12 w-12">
+                      <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+                      <AvatarFallback className="bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold">
+                        L
+                      </AvatarFallback>
+                    </Avatar>
                   </div>
-                  <h3 className="text-xl font-semibold mb-2 bg-gradient-to-r from-purple-600 to-indigo-600 bg-clip-text text-transparent">
+                  <h3 className="text-xl font-semibold mb-2 text-black">
                     Chat with lean
                   </h3>
                   <p className="text-sm text-muted-foreground max-w-sm leading-relaxed">
