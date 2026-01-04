@@ -168,6 +168,9 @@ export function setupIntegrationEndpoints(
         { id: 'atlassian', name: 'Atlassian' },
         { id: 'github', name: 'GitHub' },
         { id: 'outlook', name: 'Outlook' },
+        { id: 'notion', name: 'Notion' },
+        { id: 'linear', name: 'Linear' },
+        { id: 'clickup', name: 'ClickUp' },
       ].map(integration => {
         const existing = connectedIntegrations.find((i: any) => i.integration_id === integration.id);
         return {
@@ -202,7 +205,7 @@ export function setupIntegrationEndpoints(
       const pool = await getOrgPool(orgId);
 
       // Validate integration ID
-      if (!['slack', 'atlassian', 'outlook'].includes(integrationId)) {
+      if (!['slack', 'atlassian', 'outlook', 'notion', 'linear', 'clickup'].includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 
@@ -241,6 +244,30 @@ export function setupIntegrationEndpoints(
             tenantId: body.tenantId 
           };
           integrationName = 'Outlook';
+          break;
+
+        case 'notion':
+          if (!body.integrationToken) {
+            return res.status(400).json({ error: 'Integration token is required' });
+          }
+          credentials = { integrationToken: body.integrationToken };
+          integrationName = 'Notion';
+          break;
+
+        case 'linear':
+          if (!body.apiKey) {
+            return res.status(400).json({ error: 'API key is required' });
+          }
+          credentials = { apiKey: body.apiKey };
+          integrationName = 'Linear';
+          break;
+
+        case 'clickup':
+          if (!body.apiToken) {
+            return res.status(400).json({ error: 'API token is required' });
+          }
+          credentials = { apiToken: body.apiToken };
+          integrationName = 'ClickUp';
           break;
 
         default:
@@ -296,7 +323,7 @@ export function setupIntegrationEndpoints(
       
       const pool = await getOrgPool(orgId);
 
-      if (!['slack', 'atlassian', 'github', 'outlook'].includes(integrationId)) {
+      if (!['slack', 'atlassian', 'github', 'outlook', 'notion', 'linear', 'clickup'].includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 

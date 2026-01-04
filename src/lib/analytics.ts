@@ -136,6 +136,127 @@ async function fetchGA4Config(forceRefresh = false): Promise<string | null> {
 }
 
 /**
+ * Load GA4 script with retry mechanism
+ */
+async function loadGA4Script(measurementId: string, retries = 2): Promise<void> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (attempt > 0) {
+        // Wait before retrying (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        console.log(`🔄 Retrying GA4 script load (attempt ${attempt + 1}/${retries + 1})...`);
+      }
+
+      // Remove any existing GA4 scripts to prevent duplicate tracking
+      const existingScripts = document.querySelectorAll('script[src*="googletagmanager.com/gtag/js"]');
+      existingScripts.forEach(script => script.remove());
+
+      // Load gtag script dynamically
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = `https://www.googletagmanager.com/gtag/js?id=${measurementId}`;
+      script.id = `ga4-script-${measurementId}`;
+      
+      // Wait for script to load before initializing
+      await new Promise<void>((resolve, reject) => {
+        let resolved = false;
+        const timeoutId = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            // Check if script actually loaded despite timeout
+            const scriptElement = document.getElementById(script.id);
+            if (scriptElement && (window as any).dataLayer && (window as any).dataLayer.length > 0) {
+              // Script might have loaded, check for gtag
+              if ((window as any).gtag) {
+                resolve();
+                return;
+              }
+            }
+            reject(new Error('GA4 script load timeout'));
+          }
+        }, 15000); // Increased timeout to 15 seconds
+        
+        script.onload = () => {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeoutId);
+            // Poll for gtag availability (script might need a moment to initialize)
+            let attempts = 0;
+            const maxAttempts = 50; // 5 seconds max (50 * 100ms)
+            const checkGtag = () => {
+              attempts++;
+              // Check if Google's gtag is available (it will be different from our fallback)
+              const hasGtag = typeof (window as any).gtag === 'function';
+              const hasDataLayer = Array.isArray((window as any).dataLayer);
+              
+              if (hasGtag && hasDataLayer) {
+                resolve();
+              } else if (attempts < maxAttempts) {
+                setTimeout(checkGtag, 100);
+              } else {
+                // Script loaded but gtag not available - use our fallback
+                console.warn('⚠️ GA4 script loaded but gtag not initialized, using fallback');
+                resolve();
+              }
+            };
+            setTimeout(checkGtag, 100);
+          }
+        };
+        
+        script.onerror = (event) => {
+          if (!resolved) {
+            // Wait a moment to see if script actually loaded (sometimes onerror fires incorrectly)
+            setTimeout(() => {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeoutId);
+                
+                // Double-check if script actually loaded despite onerror
+                const scriptElement = document.getElementById(script.id);
+                const hasGtag = typeof (window as any).gtag === 'function';
+                const hasDataLayer = Array.isArray((window as any).dataLayer);
+                
+                // If gtag is available, script actually loaded successfully
+                if (hasGtag && hasDataLayer && scriptElement) {
+                  resolve();
+                  return;
+                }
+                
+                // Check if script was blocked (common with ad blockers)
+                const isBlocked = !scriptElement || !scriptElement.src || scriptElement.src === '';
+                const errorMsg = isBlocked 
+                  ? 'GA4 script blocked (likely by ad blocker or privacy extension)'
+                  : 'Failed to load GA4 script (network error or CORS issue)';
+                reject(new Error(errorMsg));
+              }
+            }, 500); // Give it 500ms to see if script actually loaded
+          }
+        };
+        
+        // Append script to head
+        document.head.appendChild(script);
+      });
+
+      // If we get here, script loaded successfully
+      return;
+    } catch (error: any) {
+      lastError = error;
+      // If this is the last attempt, throw the error
+      if (attempt === retries) {
+        throw error;
+      }
+    }
+  }
+  
+  // Should never reach here, but just in case
+  if (lastError) {
+    throw lastError;
+  }
+}
+
+/**
  * Initialize Google Analytics 4
  * Ensures only one GA4 instance is loaded based on environment
  */
@@ -153,10 +274,6 @@ async function initializeGA4(): Promise<void> {
       return;
     }
 
-    // Remove any existing GA4 scripts to prevent duplicate tracking
-    const existingScripts = document.querySelectorAll('script[src*="googletagmanager.com/gtag/js"]');
-    existingScripts.forEach(script => script.remove());
-
     // Clear any existing dataLayer to prevent conflicts
     if ((window as any).dataLayer) {
       // Keep only non-GA4 entries if any
@@ -167,28 +284,22 @@ async function initializeGA4(): Promise<void> {
       (window as any).dataLayer = filtered;
     }
 
-    // Load gtag script dynamically
-    const script = document.createElement('script');
-    script.async = true;
-    script.src = `https://www.googletagmanager.com/gtag/js?id=${measurementId}`;
-    script.id = `ga4-script-${measurementId}`; // Add ID to track which script is loaded
-    document.head.appendChild(script);
-
-    // Wait for script to load before initializing
-    await new Promise<void>((resolve, reject) => {
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error('Failed to load GA4 script'));
-      // Timeout after 10 seconds
-      setTimeout(() => reject(new Error('GA4 script load timeout')), 10000);
-    });
-
-    // Initialize dataLayer and gtag
+    // Initialize dataLayer first (before loading script)
     (window as any).dataLayer = (window as any).dataLayer || [];
-    function gtag(...args: any[]) {
-      (window as any).dataLayer.push(args);
+    
+    // Create gtag function immediately (Google's script will override it if it loads)
+    if (!(window as any).gtag) {
+      function gtag(...args: any[]) {
+        (window as any).dataLayer.push(args);
+      }
+      (window as any).gtag = gtag;
     }
-    (window as any).gtag = gtag;
 
+    // Load script with retry mechanism
+    await loadGA4Script(measurementId);
+
+    // Initialize GA4
+    const gtag = (window as any).gtag;
     gtag('js', new Date());
     gtag('config', measurementId, {
       send_page_view: false, // We'll handle page views manually
@@ -198,7 +309,10 @@ async function initializeGA4(): Promise<void> {
     const env = import.meta.env.DEV ? 'DEV' : 'PROD';
     console.log(`✅ Google Analytics 4 initialized (${env}): ${measurementId}`);
   } catch (error: any) {
-    console.error('❌ Failed to initialize Google Analytics 4:', error);
+    // Log as warning instead of error since GA4 is not critical for app functionality
+    const errorMessage = error?.message || 'Unknown error';
+    console.warn(`⚠️ Google Analytics 4 initialization skipped: ${errorMessage}`);
+    console.warn('   Analytics will continue to work, but GA4 events will not be sent.');
     ga4Initialized = false; // Reset on error to allow retry
   }
 }

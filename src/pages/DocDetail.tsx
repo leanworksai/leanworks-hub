@@ -13,8 +13,6 @@ import { DetailPageHeader } from "@/components/DetailPageHeader";
 import type { DocFile } from "@/data/docsData";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { trackEvent, trackView } from "@/lib/analytics";
-import { DraftRecoveryDialog } from "@/components/DraftRecoveryDialog";
-import { getDraft, removeDraft, isDraftNewer } from "@/services/draftService";
 import { initOfflineQueue } from "@/services/offlineQueue";
 import { useScrollTracking } from "@/hooks/useScrollTracking";
 import {
@@ -63,8 +61,6 @@ export default function DocDetail() {
   const [files, setFiles] = useState<DocFile[]>([]);
   const [fileToDelete, setFileToDelete] = useState<DocFile | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [draftRecoveryOpen, setDraftRecoveryOpen] = useState(false);
-  const [hasCheckedDraft, setHasCheckedDraft] = useState(false);
   
   // Auto-save hook - always enabled since we're always in edit mode
   const autoSave = useAutoSave({
@@ -88,14 +84,6 @@ export default function DocDetail() {
           doc_id: savedDocId,
         });
       }
-      
-      // Show success toast only for manual saves or first-time saves
-      if (docId === 'new') {
-        toast({
-          title: "Doc created",
-          description: `"${title}" has been created successfully.`,
-        });
-      }
     },
     onSaveError: (error) => {
       // Errors are handled by the hook's status
@@ -115,33 +103,6 @@ export default function DocDetail() {
       trackView('doc', docId);
     }
   }, [docId, doc]);
-
-  // Check for draft recovery on mount
-  useEffect(() => {
-    if (hasCheckedDraft || !user?.email) return;
-    
-    const checkDraft = () => {
-      const draft = getDraft(docId || 'new', user.email);
-      
-      if (draft) {
-        // Check if draft is newer than server version
-        const serverUpdatedAt = doc?.updatedAt;
-        if (isDraftNewer(docId || 'new', user.email, serverUpdatedAt)) {
-          setDraftRecoveryOpen(true);
-        } else {
-          // Draft is older, discard it
-          removeDraft(docId || 'new', user.email);
-        }
-      }
-      
-      setHasCheckedDraft(true);
-    };
-
-    // Wait for doc to load before checking draft
-    if (isNew || (doc && !isLoading)) {
-      checkDraft();
-    }
-  }, [doc, isNew, isLoading, user?.email, docId, hasCheckedDraft]);
 
   // Load doc data
   useEffect(() => {
@@ -267,34 +228,6 @@ export default function DocDetail() {
     }
   };
 
-  // Handle draft recovery
-  const handleDraftRestore = () => {
-    if (!user?.email) return;
-    
-    const draft = getDraft(docId || 'new', user.email);
-    if (draft) {
-      setTitle(draft.title);
-      setContent(draft.content);
-      setVisibility(draft.visibility);
-      setVisibleToMembers(new Set(draft.visibleToMembers));
-      setFiles(draft.files || []);
-      removeDraft(docId || 'new', user.email);
-    }
-    
-    setDraftRecoveryOpen(false);
-  };
-
-  const handleDraftDiscard = () => {
-    if (!user?.email) return;
-    removeDraft(docId || 'new', user.email);
-    setDraftRecoveryOpen(false);
-  };
-
-  const handleUseServerVersion = () => {
-    if (!user?.email) return;
-    removeDraft(docId || 'new', user.email);
-    setDraftRecoveryOpen(false);
-  };
 
   if (isLoading && !isNew) {
     return (
@@ -521,18 +454,6 @@ export default function DocDetail() {
         />
       )}
 
-      {/* Draft Recovery Dialog */}
-      {user?.email && (
-        <DraftRecoveryDialog
-          open={draftRecoveryOpen}
-          onOpenChange={setDraftRecoveryOpen}
-          draft={user.email ? getDraft(docId || 'new', user.email) : null}
-          serverUpdatedAt={doc?.updatedAt}
-          onRestore={handleDraftRestore}
-          onDiscard={handleDraftDiscard}
-          onUseServer={handleUseServerVersion}
-        />
-      )}
     </div>
   );
 }

@@ -9,34 +9,90 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useOrg } from "@/contexts/OrgContext";
 import { useToast } from "@/hooks/use-toast";
 
+// Integration logo component with fallback
+function IntegrationLogo({ logo, name }: { logo?: string; name: string }) {
+  const [imgError, setImgError] = useState(false);
+  
+  if (!logo || imgError) {
+    // Fallback: first letter of integration name in a colored circle
+    const firstLetter = name.charAt(0).toUpperCase();
+    const colors: Record<string, string> = {
+      'S': 'bg-purple-600',
+      'A': 'bg-blue-600',
+      'G': 'bg-gray-800',
+      'O': 'bg-blue-500',
+      'N': 'bg-black',
+      'L': 'bg-indigo-600',
+      'C': 'bg-violet-600',
+    };
+    const bgColor = colors[firstLetter] || 'bg-gray-600';
+    
+    return (
+      <div className={`h-full w-full flex items-center justify-center text-white text-sm font-semibold ${bgColor}`}>
+        {firstLetter}
+      </div>
+    );
+  }
+  
+  return (
+    <img 
+      src={logo} 
+      alt={`${name} logo`}
+      className="h-full w-full object-contain p-2"
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 const integrations = [
   {
     id: "slack",
     name: "Slack",
     description: "Team communication and notifications",
     category: "Communication",
-    icon: "💬",
+    logo: "/integration-logos/slack.png",
   },
   {
     id: "atlassian",
     name: "Atlassian",
     description: "Project tracking and issue management",
     category: "Project Management",
-    icon: "📊",
+    logo: "/integration-logos/atlassian.svg",
   },
   {
     id: "github",
     name: "GitHub",
     description: "Code repository and version control",
     category: "Development",
-    icon: "🔧",
+    logo: "/integration-logos/github.png",
   },
   {
     id: "outlook",
     name: "Outlook",
     description: "Email and calendar integration",
     category: "Communication",
-    icon: "📧",
+    logo: "/integration-logos/outlook.png",
+  },
+  {
+    id: "notion",
+    name: "Notion",
+    description: "Workspace and knowledge management",
+    category: "Productivity",
+    logo: "/integration-logos/notion.png",
+  },
+  {
+    id: "linear",
+    name: "Linear",
+    description: "Issue tracking and project management",
+    category: "Project Management",
+    logo: "/integration-logos/linear.svg",
+  },
+  {
+    id: "clickup",
+    name: "ClickUp",
+    description: "Task and project management",
+    category: "Project Management",
+    logo: "/integration-logos/clickup.svg",
   },
 ];
 
@@ -168,8 +224,8 @@ export default function Integrations() {
               <CardHeader>
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-secondary text-2xl">
-                      {integration.icon}
+                    <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-secondary overflow-hidden">
+                      <IntegrationLogo logo={integration.logo} name={integration.name} />
                     </div>
                     <div>
                       <CardTitle className="text-base">{integration.name}</CardTitle>
