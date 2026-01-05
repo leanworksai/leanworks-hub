@@ -24,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { useCreateEvent, useUpdateEvent, useDeleteEvent } from "@/hooks/useEvents";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { trackEvent, trackModal } from "@/lib/analytics";
@@ -58,6 +59,7 @@ export function EventDialog({ open, onOpenChange, event, initialDate }: EventDia
   const updateEvent = useUpdateEvent();
   const deleteEvent = useDeleteEvent();
   const { data: users = [] } = useUsers();
+  const userMap = useUserMap();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [startDateOpen, setStartDateOpen] = useState(false);
   const [endDateOpen, setEndDateOpen] = useState(false);
@@ -573,10 +575,8 @@ export function EventDialog({ open, onOpenChange, event, initialDate }: EventDia
                     {selectedAttendees.length > 0 && (
                       <div className="flex flex-wrap gap-2 mt-2">
                         {selectedAttendees.map((email) => {
-                          const user = users.find(u => u.email?.toLowerCase() === email);
-                          const userName = user?.firstName && user?.lastName
-                            ? `${user.firstName} ${user.lastName}`
-                            : email;
+                          const userEntry = userMap.get(email.toLowerCase());
+                          const userName = userEntry ? userEntry.displayName : email;
                           return (
                             <Badge
                               key={email}

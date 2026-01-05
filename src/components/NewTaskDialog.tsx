@@ -25,6 +25,7 @@ import { useCreateTask } from "@/hooks/useTasks";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useAuth } from "@/contexts/AuthContext";
 import { useOrg } from "@/contexts/OrgContext";
 import type { Task } from "@/data/tasksData";
@@ -93,6 +94,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
+  const userMap = useUserMap();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
   const { isFreePlan } = useSubscription();
@@ -430,12 +432,12 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
         // If not found in project members, look up by email in users list
         if (!assigneeName && generatedTask.assignee_id) {
           const assigneeEmail = generatedTask.assignee_id.toLowerCase();
-          const foundUser = users.find((u) => u.email.toLowerCase() === assigneeEmail);
+          const foundUserEntry = userMap.get(assigneeEmail);
           
-          if (foundUser) {
-            assigneeName = `${foundUser.firstName} ${foundUser.lastName}`.trim();
-            assigneeId = foundUser.email;
-            assigneeAvatar = `${foundUser.firstName.charAt(0)}${foundUser.lastName.charAt(0)}`.toUpperCase();
+          if (foundUserEntry) {
+            assigneeName = foundUserEntry.displayName;
+            assigneeId = foundUserEntry.email;
+            assigneeAvatar = foundUserEntry.initials;
           }
         }
 

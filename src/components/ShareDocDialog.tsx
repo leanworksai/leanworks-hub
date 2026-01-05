@@ -23,6 +23,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Lock, Users, UserCheck, Search, Mail, X } from "lucide-react";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import type { Doc } from "@/data/docsData";
 
 interface ShareDocDialogProps {
@@ -48,6 +49,7 @@ export function ShareDocDialog({
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const { data: users = [] } = useUsers();
+  const userMap = useUserMap();
 
   // Update state when props change
   useEffect(() => {
@@ -211,11 +213,9 @@ export function ShareDocDialog({
                   {visibleToMembers.size > 0 && (
                     <div className="flex flex-wrap gap-2 p-3 bg-muted/50 rounded-lg border border-dashed">
                       {Array.from(visibleToMembers).map((email) => {
-                        const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
-                        const name = user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email : email;
-                        const initials = user
-                          ? `${user.firstName?.charAt(0) || ''}${user.lastName?.charAt(0) || ''}`.toUpperCase() || email.substring(0, 2).toUpperCase()
-                          : email.substring(0, 2).toUpperCase();
+                        const userEntry = userMap.get(email.toLowerCase());
+                        const name = userEntry ? userEntry.displayName : email;
+                        const initials = userEntry ? userEntry.initials : email.substring(0, 2).toUpperCase();
                         return (
                           <Badge
                             key={email}

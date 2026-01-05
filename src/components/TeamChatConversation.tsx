@@ -5,6 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn, getAvatarColor, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { messagesService, imageUploadService, type ChatMessage } from "@/services/api";
@@ -33,6 +34,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
   const { isFreePlan } = useSubscription();
   const { toast } = useToast();
   const { data: allDomainUsers = [] } = useUsers();
+  const userMap = useUserMap();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
@@ -114,8 +116,13 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
   // Get current user display info
   const currentUserProfile = useMemo(() => {
     if (!user?.email) return null;
-    return allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase()) || null;
-  }, [allDomainUsers, user?.email]);
+    const userEntry = userMap.get(user.email.toLowerCase());
+    return userEntry ? {
+      email: userEntry.email,
+      firstName: userEntry.firstName,
+      lastName: userEntry.lastName,
+    } : null;
+  }, [userMap, user?.email]);
 
   const currentUserDisplayInfo = useMemo(() => {
     if (!currentUserProfile) {
@@ -434,9 +441,10 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     if (isProjectChannel && selectedProject) {
       // Add project members
       selectedProject.members?.forEach(member => {
-        const user = allDomainUsers.find(u => u.email === member.id || u.email === member.email);
-        if (user) {
-          const firstName = user.firstName || '';
+        const memberEmail = (member.id || member.email)?.toLowerCase();
+        const userEntry = memberEmail ? userMap.get(memberEmail) : null;
+        if (userEntry) {
+          const firstName = userEntry.firstName || '';
           const lastName = user.lastName || '';
           const name = `${firstName} ${lastName}`.trim() || user.email || '';
           const avatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || user.email?.charAt(0).toUpperCase() || 'U';

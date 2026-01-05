@@ -45,6 +45,79 @@ export function getUserById(users: User[], assigneeId?: string): User | undefine
 }
 
 /**
+ * Get user display name from email address
+ * Looks up user in the users list and returns display name, or falls back to email
+ * 
+ * Note: For better performance in components with many lookups, consider creating
+ * a memoized user map and using it directly instead of calling this function repeatedly.
+ */
+export function getUserDisplayNameFromEmail(users: User[], email?: string | null): string {
+  if (!email) return "";
+  const user = getUserById(users, email);
+  if (user) {
+    return getUserDisplayName(user);
+  }
+  return email;
+}
+
+/**
+ * Get user initials from email address
+ * Looks up user in the users list and returns initials, or generates from email
+ * 
+ * Note: For better performance in components with many lookups, consider creating
+ * a memoized user map and using it directly instead of calling this function repeatedly.
+ */
+export function getUserInitialsFromEmail(users: User[], email?: string | null): string {
+  if (!email) return "?";
+  const user = getUserById(users, email);
+  if (user) {
+    return getUserInitials(user);
+  }
+  // Fallback: use first two characters of email
+  return email.substring(0, 2).toUpperCase();
+}
+
+/**
+ * User map entry structure for efficient lookups
+ */
+export interface UserMapEntry {
+  displayName: string;
+  initials: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  jobTitle?: string;
+}
+
+/**
+ * Create a memoized user map for efficient lookups
+ * Use this in components that need to look up many users
+ * 
+ * @example
+ * const userMap = useMemo(() => createUserMap(users), [users]);
+ * const displayName = userMap.get(email.toLowerCase())?.displayName || email;
+ */
+export function createUserMap(users: User[]): Map<string, UserMapEntry> {
+  const map = new Map<string, UserMapEntry>();
+  users.forEach(user => {
+    if (user.email) {
+      const emailLower = user.email.toLowerCase();
+      const displayName = getUserDisplayName(user);
+      const initials = getUserInitials(user);
+      map.set(emailLower, {
+        displayName,
+        initials,
+        email: user.email,
+        firstName: user.firstName || '',
+        lastName: user.lastName || '',
+        jobTitle: user.jobTitle,
+      });
+    }
+  });
+  return map;
+}
+
+/**
  * Get avatar color class based on user identifier
  * Returns consistent colors for the same user
  */

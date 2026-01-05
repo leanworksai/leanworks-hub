@@ -44,6 +44,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useTeams, useUserTeams, useCreateTeam, useUpdateTeam, useUpdateTeamDetail, useDeleteTeam, useTeam, useRequestJoinTeam, useJoinRequests, useApproveJoinRequest, useRejectJoinRequest } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import type { Team, TeamDetailData, TeamMember, TeamJoinRequest } from "@/data/teamsData";
 import { toast } from "@/components/ui/sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -56,6 +57,7 @@ export default function Teams() {
   const { data: allTeams = [], isLoading: isLoadingAllTeams } = useTeams(); // All teams in domain
   const { data: userTeams = [], isLoading: isLoadingUserTeams } = useUserTeams(); // Teams user is member of
   const { data: users = [], isLoading: isLoadingUsers } = useUsers();
+  const userMap = useUserMap();
   const { user } = useAuth();
   const userTimezone = useUserTimezone();
   const createTeamMutation = useCreateTeam();
@@ -104,17 +106,17 @@ export default function Teams() {
   
   // Auto-select current user when create dialog opens
   useEffect(() => {
-    if (isDialogOpen && user?.email && users.length > 0) {
-      const currentUser = users.find(u => u.email.toLowerCase() === user.email?.toLowerCase());
-      if (currentUser) {
+    if (isDialogOpen && user?.email) {
+      const currentUserEntry = userMap.get(user.email.toLowerCase());
+      if (currentUserEntry) {
         setSelectedMemberEmails(prev => {
           const newSet = new Set(prev);
-          newSet.add(currentUser.email);
+          newSet.add(currentUserEntry.email);
           return newSet;
         });
       }
     }
-  }, [isDialogOpen, user?.email, users]);
+  }, [isDialogOpen, user?.email, userMap]);
 
   // Populate form when editing
   useEffect(() => {
@@ -169,13 +171,13 @@ export default function Teams() {
   const convertUsersToTeamMembers = (selectedEmails: Set<string>): TeamMember[] => {
     return Array.from(selectedEmails)
       .map(email => {
-        const user = users.find(u => u.email === email);
-        if (!user) return null;
+        const userEntry = userMap.get(email.toLowerCase());
+        if (!userEntry) return null;
         return {
-          name: `${user.firstName} ${user.lastName}`,
-          role: user.jobTitle || "Member",
-          email: user.email,
-          avatar: getUserInitials(user),
+          name: userEntry.displayName,
+          role: userEntry.jobTitle || "Member",
+          email: userEntry.email,
+          avatar: userEntry.initials,
         };
       })
       .filter((member): member is TeamMember => member !== null);
@@ -223,10 +225,10 @@ export default function Teams() {
     // Convert selected users to team members
     const teamMembers = convertUsersToTeamMembers(selectedMemberEmails);
     
-    // Find current user in users list and add them as a member if not already included
-    const currentUser = users.find(u => u.email.toLowerCase() === user.email?.toLowerCase());
-    if (currentUser) {
-      const currentUserEmail = currentUser.email.toLowerCase();
+    // Find current user in userMap and add them as a member if not already included
+    const currentUserEntry = userMap.get(user.email?.toLowerCase() || '');
+    if (currentUserEntry) {
+      const currentUserEmail = currentUserEntry.email.toLowerCase();
       const isCurrentUserInMembers = teamMembers.some(
         member => member.email.toLowerCase() === currentUserEmail
       );

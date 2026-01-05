@@ -23,6 +23,7 @@ import { Team } from "@/data/teamsData";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
@@ -118,6 +119,7 @@ export function Chatbot() {
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { data: allDomainUsers = [] } = useUsers();
+  const userMap = useUserMap();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
   const { isFreePlan } = useSubscription();
@@ -128,8 +130,18 @@ export function Chatbot() {
   // AuthContext user only has email, not firstName/lastName
   const currentUserProfile = useMemo(() => {
     if (!user?.email) return null;
-    return allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase()) || null;
-  }, [allDomainUsers, user?.email]);
+    const userEntry = userMap.get(user.email.toLowerCase());
+    if (userEntry) {
+      // Return a User-like object for compatibility
+      return {
+        email: userEntry.email,
+        firstName: userEntry.firstName,
+        lastName: userEntry.lastName,
+        jobTitle: userEntry.jobTitle,
+      };
+    }
+    return null;
+  }, [userMap, user?.email]);
   
   // Calculate current user's display info once for reuse
   const currentUserDisplayInfo = useMemo(() => {
@@ -1002,15 +1014,15 @@ export function Chatbot() {
   // Helper function to get user display info from userId
   const getUserInfo = useCallback((userId?: string) => {
     if (!userId) return { name: "Unknown", initials: "U" };
-    const foundUser = allDomainUsers.find(u => u.email?.toLowerCase() === userId.toLowerCase());
-    if (foundUser) {
+    const userEntry = userMap.get(userId.toLowerCase());
+    if (userEntry) {
       return {
-        name: getUserDisplayName(foundUser),
-        initials: getUserInitials(foundUser),
+        name: userEntry.displayName,
+        initials: userEntry.initials,
       };
     }
     return { name: "Unknown", initials: "U" };
-  }, [allDomainUsers]);
+  }, [userMap]);
 
   // Helper function to get user names from like emails
   const getLikedByUsers = useCallback((likes: string[] = []): LikedByUser[] => {
@@ -1145,12 +1157,13 @@ export function Chatbot() {
     // Add channel-specific members
     if (isProjectChannel && selectedProject) {
       // Add project members
-      selectedProject.members?.forEach(member => {
-        const user = allDomainUsers.find(u => u.email === member.id || u.email === member.email);
-        if (user) {
+        selectedProject.members?.forEach(member => {
+        const memberEmail = (member.id || member.email)?.toLowerCase();
+        const userEntry = memberEmail ? userMap.get(memberEmail) : null;
+        if (userEntry) {
           mentionable.push({
-            id: user.email,
-            name: `${user.firstName} ${user.lastName}`,
+            id: userEntry.email,
+            name: userEntry.displayName,
             role: member.role,
             avatar: getUserInitials(`${user.firstName} ${user.lastName}`),
             email: user.email,
@@ -1179,6 +1192,23 @@ export function Chatbot() {
       user.email?.toLowerCase().includes(query)
     );
   }, [getMentionableUsers, mentionQuery]);
+
+  // Function to get user display name from email
+  const getUserDisplayName = useCallback((email: string): string | null => {
+    if (!email) return null;
+    const emailLower = email.toLowerCase();
+    // Try to find in userMap first
+    const userEntry = userMap.get(emailLower);
+    if (userEntry) {
+      return userEntry.displayName;
+    }
+    // Try to find in allTeamMembers
+    const member = allTeamMembers.find(m => m.email?.toLowerCase() === emailLower || m.id?.toLowerCase() === emailLower);
+    if (member) {
+      return member.name;
+    }
+    return null;
+  }, [allDomainUsers, allTeamMembers]);
 
   // Detect @ mentions in input
   const detectMention = useCallback((text: string, cursorPos: number) => {
@@ -1285,9 +1315,9 @@ export function Chatbot() {
 
   // Render message content with highlighted mentions and clickable links
   const renderMessageContent = useCallback((content: string) => {
-    // Match @mentions - matches @username (single word) or @"Full Name" (with spaces in quotes)
-    // Simple pattern: @word where word can contain letters, numbers, and underscores
-    const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?)(?=\s|$|[.,!?;:])/g;
+    // Match @mentions - matches @username (single word), @"Full Name" (with spaces), or @user@example.com (email format)
+    // Improved email pattern: more robust validation
+    const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
     
     // Match URLs - supports http, https, www, and common TLDs
     const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s]*)/gi;
@@ -1349,13 +1379,27 @@ export function Chatbot() {
       
       // Add match (mention or URL)
       if (match.type === 'mention') {
-        const mentionName = match.content.substring(1); // Remove @
+        const mentionValue = match.content.substring(1); // Remove @
+        // Check if it's an email format and try to get display name
+        let displayName = mentionValue;
+        if (mentionValue.includes('@')) {
+          // Try to find user in userMap or allTeamMembers
+          const userEntry = userMap.get(mentionValue.toLowerCase());
+          if (userEntry) {
+            displayName = userEntry.displayName;
+          } else {
+            const member = allTeamMembers.find(m => m.email === mentionValue || m.id === mentionValue);
+            if (member) {
+              displayName = member.name;
+            }
+          }
+        }
         parts.push(
           <span
             key={`mention-${keyCounter++}`}
             className="text-primary font-semibold"
           >
-            @{mentionName}
+            @{displayName}
           </span>
         );
       } else if (match.type === 'url') {
@@ -5063,10 +5107,10 @@ export function Chatbot() {
 
                       if (selectedMember.includes('@')) {
                         otherUserEmail = selectedMember;
-                        const otherUser = allDomainUsers.find(u => u.email === selectedMember);
-                        if (otherUser) {
-                          otherUserName = `${otherUser.firstName || ''} ${otherUser.lastName || ''}`.trim() || otherUser.email;
-                          otherUserAvatar = `${otherUser.firstName?.charAt(0) || ''}${otherUser.lastName?.charAt(0) || ''}`.toUpperCase() || otherUser.email.charAt(0).toUpperCase();
+                        const otherUserEntry = userMap.get(selectedMember.toLowerCase());
+                        if (otherUserEntry) {
+                          otherUserName = otherUserEntry.displayName;
+                          otherUserAvatar = otherUserEntry.initials;
                         }
                       } else {
                         const selectedMemberData = allTeamMembers.find(m => m.id === selectedMember);
@@ -5128,7 +5172,12 @@ export function Chatbot() {
                         const currentUserInMembers = groupMembers.some(m => m.email.toLowerCase() === user.email.toLowerCase());
                         if (!currentUserInMembers && user.email) {
                           // Find user in allDomainUsers to get name
-                          const currentUserData = allDomainUsers.find(u => u.email === user.email);
+                          const currentUserEntry = userMap.get(user.email?.toLowerCase() || '');
+                          const currentUserData = currentUserEntry ? {
+                            email: currentUserEntry.email,
+                            firstName: currentUserEntry.firstName,
+                            lastName: currentUserEntry.lastName,
+                          } : null;
                           const userName = currentUserData 
                             ? `${currentUserData.firstName || ''} ${currentUserData.lastName || ''}`.trim() || user.email
                             : user.email;
@@ -5313,6 +5362,7 @@ export function Chatbot() {
                 </div>
               }
               className="flex-1 min-h-0"
+              getUserDisplayName={getUserDisplayName}
             />
           )}
 
@@ -5340,6 +5390,7 @@ export function Chatbot() {
                 </div>
               }
               className="flex-1 min-h-0"
+              getUserDisplayName={getUserDisplayName}
             />
           )}
 
@@ -5357,6 +5408,7 @@ export function Chatbot() {
               isGeneratingDraft={isGeneratingDraft}
               generatingDraftMessageId={generatingDraftMessageId}
               className="flex-1 min-h-0"
+              getUserDisplayName={getUserDisplayName}
             />
           )}
           {!isLoadingMessages && isLoading && !isProjectChannel && !isTeamChannel && (
@@ -5620,14 +5672,24 @@ export function Chatbot() {
             callSignal={incomingCallSignal}
             chatId={dialogChatId || incomingCallSignal.chatId}
             callerName={(() => {
-              const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
+              const callerEntry = userMap.get(incomingCallSignal.callerEmail?.toLowerCase() || '');
+              const caller = callerEntry ? {
+                email: callerEntry.email,
+                firstName: callerEntry.firstName,
+                lastName: callerEntry.lastName,
+              } : null;
               if (caller) {
                 return `${caller.firstName || ''} ${caller.lastName || ''}`.trim() || caller.email;
               }
               return incomingCallSignal.callerEmail;
             })()}
             callerAvatar={(() => {
-              const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
+              const callerEntry = userMap.get(incomingCallSignal.callerEmail?.toLowerCase() || '');
+              const caller = callerEntry ? {
+                email: callerEntry.email,
+                firstName: callerEntry.firstName,
+                lastName: callerEntry.lastName,
+              } : null;
               if (caller) {
                 return `${caller.firstName?.charAt(0) || ''}${caller.lastName?.charAt(0) || ''}`.toUpperCase() || incomingCallSignal.callerEmail.charAt(0).toUpperCase();
               }

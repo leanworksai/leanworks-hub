@@ -66,10 +66,11 @@ import { useTask, useUpdateTask, useDeleteTask } from "@/hooks/useTasks";
 import { useToast } from "@/hooks/use-toast";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useSubscription } from "@/hooks/useSubscription";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
@@ -243,6 +244,37 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const { parseDateString, formatDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   const userTimezone = useUserTimezone();
   
+  // Global user map for efficient lookups (scoped per organization)
+  const userMap = useUserMap();
+
+  // Memoized lookup functions
+  const getAssigneeDisplayName = useCallback((assigneeId?: string, fallbackAssignee?: string): string | null => {
+    if (fallbackAssignee) return fallbackAssignee;
+    if (!assigneeId) return null;
+    const user = userMap.get(assigneeId.toLowerCase());
+    if (user) {
+      return user.displayName || user.email;
+    }
+    return assigneeId;
+  }, [userMap]);
+
+  const getAssigneeInitials = useCallback((assigneeId?: string, fallbackAvatar?: string, fallbackAssignee?: string): string => {
+    if (fallbackAvatar) return fallbackAvatar;
+    if (!assigneeId) return "?";
+    const user = userMap.get(assigneeId.toLowerCase());
+    if (user) {
+      return user.initials;
+    }
+    if (fallbackAssignee) {
+      return fallbackAssignee.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    }
+    return assigneeId.substring(0, 2).toUpperCase();
+  }, [userMap]);
+  
+  // Get assignee display info using memoized lookups
+  const assigneeDisplayName = task ? getAssigneeDisplayName(task.assigneeId, task.assignee) : null;
+  const assigneeInitials = task ? getAssigneeInitials(task.assigneeId, task.assigneeAvatar, task.assignee) : "?";
+  
   // Check if user has access to the task
   const hasAccess = task ? (() => {
     // If task has a projectId, check if user has access to that project
@@ -289,10 +321,15 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const queryClient = useQueryClient();
   const teamMembers = getAllTeamMembers(projects, users, task);
 
-  // Find creator user from users list
-  const creator = task?.createdBy 
-    ? users.find(user => user.email === task.createdBy)
+  // Find creator user from userMap
+  const creatorEntry = task?.createdBy 
+    ? userMap.get(task.createdBy.toLowerCase())
     : null;
+  const creator = creatorEntry ? {
+    email: creatorEntry.email,
+    firstName: creatorEntry.firstName,
+    lastName: creatorEntry.lastName,
+  } : null;
   
   const getCreatorInitials = () => {
     if (creator) {
@@ -624,10 +661,10 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                     <div className="flex items-center gap-2">
                       <Avatar className="h-5 w-5">
                         <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                          {editedTask.assigneeAvatar || (editedTask.assignee ? getInitials(editedTask.assignee) : "?")}
+                          {getAssigneeInitials(editedTask.assigneeId, editedTask.assigneeAvatar, editedTask.assignee)}
                         </AvatarFallback>
                       </Avatar>
-                      <span>{editedTask.assignee || "Select assignee..."}</span>
+                      <span>{getAssigneeDisplayName(editedTask.assigneeId, editedTask.assignee) || "Select assignee..."}</span>
                     </div>
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -684,14 +721,14 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
               <div className="flex items-center gap-2">
                 <Avatar className="h-6 w-6">
                   <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                    {(editedTask?.assigneeAvatar || task.assigneeAvatar) || ((editedTask?.assignee || task.assignee) ? getInitials(editedTask?.assignee || task.assignee || "") : "?")}
+                    {getAssigneeInitials(editedTask?.assigneeId || task?.assigneeId, editedTask?.assigneeAvatar || task?.assigneeAvatar, editedTask?.assignee || task?.assignee)}
                   </AvatarFallback>
                 </Avatar>
                 <span 
                   className="text-foreground font-medium cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors"
                   onClick={() => handleFieldClick('assigneeId')}
                 >
-                  {editedTask?.assignee || task.assignee || "Unassigned"}
+                  {getAssigneeDisplayName(editedTask?.assigneeId || task?.assigneeId, editedTask?.assignee || task?.assignee) || "Unassigned"}
                 </span>
               </div>
             )}

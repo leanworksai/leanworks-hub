@@ -31,6 +31,7 @@ import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useSubscription } from "@/hooks/useSubscription";
 import { cn } from "@/lib/utils";
 import { TaskTooltip } from "@/components/TaskTooltip";
@@ -123,6 +124,7 @@ export default function ProjectDetail() {
   const { data: projects = [] } = useUserProjects();
   const { user } = useAuth();
   const { data: users = [] } = useUsers();
+  const userMap = useUserMap();
   const userTimezone = useUserTimezone();
   const { data: allSummaries = [] } = useAllUpdateSummaries(projectId || '');
   
@@ -321,8 +323,8 @@ export default function ProjectDetail() {
     if (!project || !selectedMemberEmail) return;
     
     try {
-      const selectedUser = users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase());
-      if (!selectedUser) {
+      const selectedUserEntry = userMap.get(selectedMemberEmail.toLowerCase());
+      if (!selectedUserEntry) {
         toast({
           title: "Error",
           description: "Selected user not found",
@@ -331,11 +333,11 @@ export default function ProjectDetail() {
         return;
       }
       
-      const firstName = selectedUser.firstName || '';
-      const lastName = selectedUser.lastName || '';
+      const firstName = selectedUserEntry.firstName || '';
+      const lastName = selectedUserEntry.lastName || '';
       const avatar = firstName && lastName 
         ? (firstName.charAt(0) + lastName.charAt(0)).toUpperCase()
-        : selectedUser.email?.substring(0, 2).toUpperCase() || 'U';
+        : selectedUserEntry.email?.substring(0, 2).toUpperCase() || 'U';
       
       await addMember.mutateAsync({
         projectId: project.id,
@@ -825,9 +827,12 @@ export default function ProjectDetail() {
                   className="w-full justify-between"
                 >
                   {selectedMemberEmail
-                    ? users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase()) 
-                      ? `${users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase())?.firstName} ${users.find(u => u.email?.toLowerCase() === selectedMemberEmail.toLowerCase())?.lastName}`
-                      : selectedMemberEmail
+                    ? (() => {
+                        const userEntry = userMap.get(selectedMemberEmail.toLowerCase());
+                        return userEntry 
+                          ? `${userEntry.firstName} ${userEntry.lastName}`.trim() || selectedMemberEmail
+                          : selectedMemberEmail;
+                      })()
                     : "Select a user..."}
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>

@@ -511,6 +511,7 @@ export interface ChatMessage {
   memberAvatar?: string;
   imageUrls?: string[];
   likes?: string[]; // Array of user emails who liked the message
+  mentions?: string[]; // Array of user emails mentioned in the message
   citedContext?: {
     projects?: any[];
     tasks?: any[];

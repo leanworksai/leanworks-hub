@@ -53,12 +53,13 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Task } from "@/data/tasksData";
-import { useState } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useDateSelection } from "@/hooks/useDateSelection";
@@ -186,6 +187,33 @@ export default function Tasks() {
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover (mobile only)
   const [openDropdowns, setOpenDropdowns] = useState<Record<string, { status?: boolean; priority?: boolean; assignee?: boolean; dueDate?: boolean }>>({});
   const [taskToLimitVisibility, setTaskToLimitVisibility] = useState<{ id: string; task: Task } | null>(null);
+
+  // Global user map for efficient lookups (scoped per organization)
+  const userMap = useUserMap();
+
+  // Memoized lookup functions
+  const getAssigneeDisplayName = useCallback((assigneeId?: string, fallbackAssignee?: string): string | null => {
+    if (fallbackAssignee) return fallbackAssignee;
+    if (!assigneeId) return null;
+    const user = userMap.get(assigneeId.toLowerCase());
+    if (user) {
+      return user.displayName || user.email;
+    }
+    return assigneeId;
+  }, [userMap]);
+
+  const getAssigneeInitials = useCallback((assigneeId?: string, fallbackAvatar?: string, fallbackAssignee?: string): string => {
+    if (fallbackAvatar) return fallbackAvatar;
+    if (!assigneeId) return "?";
+    const user = userMap.get(assigneeId.toLowerCase());
+    if (user) {
+      return user.initials;
+    }
+    if (fallbackAssignee) {
+      return fallbackAssignee.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+    }
+    return assigneeId.substring(0, 2).toUpperCase();
+  }, [userMap]);
 
   const filteredTasks = tasks
     .filter((task) => {
@@ -417,6 +445,10 @@ export default function Tasks() {
           }) : [];
           const latestUpdate = sortedUpdates[0];
           const hasProgressUpdate = latestUpdate && latestUpdate.update;
+          
+          // Get assignee display name using memoized lookup
+          const assigneeDisplayName = getAssigneeDisplayName(task.assigneeId, task.assignee);
+          const assigneeInitials = getAssigneeInitials(task.assigneeId, task.assigneeAvatar, task.assignee);
 
           return (
             <div key={task.id} className="group">
@@ -563,7 +595,7 @@ export default function Tasks() {
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <User className="h-3.5 w-3.5" />
-                                <span className="cursor-pointer">{task.assignee || "Unassigned"}</span>
+                                <span className="cursor-pointer">{assigneeDisplayName || "Unassigned"}</span>
                               </button>
                             </PopoverTrigger>
                             <PopoverContent className="w-[calc(100vw-2rem)] sm:w-[300px] max-w-sm p-0" align="start" onClick={(e) => e.stopPropagation()}>
@@ -587,7 +619,7 @@ export default function Tasks() {
                                     >
                                       <Check
                                         className={`mr-2 h-4 w-4 ${
-                                          !task.assignee ? "opacity-100" : "opacity-0"
+                                          !assigneeDisplayName ? "opacity-100" : "opacity-0"
                                         }`}
                                       />
                                       Unassigned

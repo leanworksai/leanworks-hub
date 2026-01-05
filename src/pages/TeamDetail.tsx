@@ -29,6 +29,7 @@ import {
 import { useTeam, useRemoveTeamMember, useLeaveTeam, useInviteTeamMember } from "@/hooks/useTeams";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useEffect, useState, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -37,6 +38,7 @@ export default function TeamDetail() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { data: users = [] } = useUsers();
+  const userMap = useUserMap();
   const { toast } = useToast();
   
   const { data: team, isLoading } = useTeam(teamId || '');
@@ -57,8 +59,8 @@ export default function TeamDetail() {
   // Get owner name from email
   const getOwnerName = (ownerEmail?: string): string | null => {
     if (!ownerEmail) return null;
-    const owner = users.find(u => u.email.toLowerCase() === ownerEmail.toLowerCase());
-    return owner ? `${owner.firstName} ${owner.lastName}` : null;
+    const ownerEntry = userMap.get(ownerEmail.toLowerCase());
+    return ownerEntry ? ownerEntry.displayName : null;
   };
 
   // Check if user is a member of the team

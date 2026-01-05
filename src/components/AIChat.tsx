@@ -6,6 +6,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { messagesService, imageUploadService, type ChatMessage } from "@/services/api";
 import { getAIAssistantChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
@@ -29,6 +30,7 @@ export function AIChat() {
   const { isFreePlan } = useSubscription();
   const { toast } = useToast();
   const { data: allDomainUsers = [] } = useUsers();
+  const userMap = useUserMap();
   const { isOpen, setIsOpen, chatId } = useAIChat();
   const isMobile = useIsMobile();
   const location = useLocation();
@@ -53,8 +55,13 @@ export function AIChat() {
   // Get current user display info
   const currentUserProfile = useMemo(() => {
     if (!user?.email) return null;
-    return allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase()) || null;
-  }, [allDomainUsers, user?.email]);
+    const userEntry = userMap.get(user.email.toLowerCase());
+    return userEntry ? {
+      email: userEntry.email,
+      firstName: userEntry.firstName,
+      lastName: userEntry.lastName,
+    } : null;
+  }, [userMap, user?.email]);
 
   const currentUserDisplayInfo = useMemo(() => {
     if (!currentUserProfile) {

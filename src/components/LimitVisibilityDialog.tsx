@@ -17,6 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Users, UserCheck, Search, Mail, X, Globe, Shield, CheckCircle2, Loader2, CheckCircle } from "lucide-react";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { cn } from "@/lib/utils";
 import { trackModal } from "@/lib/analytics";
 
@@ -45,6 +46,7 @@ export function LimitVisibilityDialog({
   const [memberSearchQuery, setMemberSearchQuery] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const { data: users = [], isLoading: usersLoading } = useUsers();
+  const userMap = useUserMap();
 
   // Update state when props change
   useEffect(() => {
@@ -142,17 +144,15 @@ export function LimitVisibilityDialog({
   const selectedMembersInfo = useMemo(() => {
     return Array.from(visibleToMembers)
       .map(email => {
-        const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
+        const userEntry = userMap.get(email.toLowerCase());
         return {
           email,
-          name: user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email : email,
-          initials: user
-            ? `${user.firstName?.charAt(0) || ''}${user.lastName?.charAt(0) || ''}`.toUpperCase() || email.substring(0, 2).toUpperCase()
-            : email.substring(0, 2).toUpperCase(),
-          jobTitle: user?.jobTitle,
+          name: userEntry ? userEntry.displayName || email : email,
+          initials: userEntry ? userEntry.initials : email.substring(0, 2).toUpperCase(),
+          jobTitle: userEntry?.jobTitle,
         };
       });
-  }, [visibleToMembers, users]);
+  }, [visibleToMembers, userMap]);
 
   return (
     <>

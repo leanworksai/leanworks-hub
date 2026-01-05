@@ -17,8 +17,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { usersService } from "@/services/api";
-import { Trash2, AlertTriangle, Loader2, Mic } from "lucide-react";
-import { VoiceRecordingTest } from "@/components/VoiceRecordingTest";
+import { Trash2, AlertTriangle, Loader2 } from "lucide-react";
 
 export default function Settings() {
   const { logout } = useAuth();
@@ -70,22 +69,6 @@ export default function Settings() {
       </div>
 
       <div className="grid gap-6">
-        {/* Voice & Audio - Test Recording */}
-        <Card className="bg-gradient-card border-border shadow-card">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Mic className="h-5 w-5" />
-              Voice & Audio
-            </CardTitle>
-            <CardDescription>
-              Test your microphone and audio settings
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <VoiceRecordingTest />
-          </CardContent>
-        </Card>
-
         {/* Danger Zone - Delete Account */}
         <Card className="bg-gradient-card border-destructive/50 shadow-card">
           <CardHeader>

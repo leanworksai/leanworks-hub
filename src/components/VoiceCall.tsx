@@ -9,6 +9,7 @@ import { useWebRTCContext } from '@/contexts/WebRTCContext';
 import { callSignalingService, type CallSignal, messagesService } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUsers } from '@/hooks/useUsers';
+import { useUserMap } from '@/hooks/useUserMap';
 import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase-client';
@@ -48,6 +49,7 @@ export function VoiceCallButton({
 }: VoiceCallButtonProps) {
   const { user, loading: authLoading } = useAuth();
   const { data: allDomainUsers = [] } = useUsers();
+  const userMap = useUserMap();
   const [isCalling, setIsCalling] = useState(false);
   const [callSignal, setCallSignal] = useState<CallSignal | null>(null);
   const [showRecordingConsent, setShowRecordingConsent] = useState(false);
@@ -491,14 +493,10 @@ export function VoiceCallButton({
           
           // Create a message in the chat (for both 1:1 and group calls) to notify participants
             try {
-              // Get user's display name from allDomainUsers
-              const currentUserData = allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase());
-              const firstName = currentUserData?.firstName || '';
-              const lastName = currentUserData?.lastName || '';
-              const callerName = `${firstName} ${lastName}`.trim() || user?.email || 'Someone';
-              const callerInitials = firstName && lastName
-                ? `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase()
-                : user?.email?.charAt(0).toUpperCase() || 'U';
+              // Get user's display name from userMap
+              const currentUserEntry = userMap.get(user.email?.toLowerCase() || '');
+              const callerName = currentUserEntry ? currentUserEntry.displayName : (user?.email || 'Someone');
+              const callerInitials = currentUserEntry ? currentUserEntry.initials : (user?.email?.charAt(0).toUpperCase() || 'S');
               
             // Determine projectId or teamId from chatId (only for group calls)
               let projectId: string | undefined;

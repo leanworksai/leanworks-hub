@@ -7,6 +7,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { cn, getAvatarColor, getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
+import { useUserMap } from "@/hooks/useUserMap";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
@@ -36,6 +37,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   const { isFreePlan } = useSubscription();
   const { toast } = useToast();
   const { data: allDomainUsers = [] } = useUsers();
+  const userMap = useUserMap();
   const { data: projects = [] } = useUserProjects();
   const { data: userTeams = [] } = useUserTeams();
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
@@ -117,8 +119,16 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   // Get current user display info
   const currentUserProfile = useMemo(() => {
     if (!user?.email) return null;
-    return allDomainUsers.find(u => u.email?.toLowerCase() === user.email?.toLowerCase()) || null;
-  }, [allDomainUsers, user?.email]);
+    const userEntry = userMap.get(user.email.toLowerCase());
+    if (userEntry) {
+      return {
+        email: userEntry.email,
+        firstName: userEntry.firstName,
+        lastName: userEntry.lastName,
+      };
+    }
+    return null;
+  }, [userMap, user?.email]);
 
   const currentUserDisplayInfo = useMemo(() => {
     if (!currentUserProfile) {
@@ -666,12 +676,11 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     if (isProjectChannel && selectedProject) {
       // Add project members
       selectedProject.members?.forEach(member => {
-        const user = allDomainUsers.find(u => u.email === member.id || u.email === member.email);
-        if (user) {
-          const firstName = user.firstName || '';
-          const lastName = user.lastName || '';
-          const name = `${firstName} ${lastName}`.trim() || user.email || '';
-          const avatar = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() || user.email?.charAt(0).toUpperCase() || 'U';
+        const memberEmail = (member.id || member.email)?.toLowerCase();
+        const userEntry = memberEmail ? userMap.get(memberEmail) : null;
+        if (userEntry) {
+          const name = userEntry.displayName;
+          const avatar = userEntry.initials;
           mentionable.push({
             id: user.email || '',
             name: name,
@@ -852,15 +861,15 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   // Helper functions for message display
   const getUserInfo = useCallback((userId?: string) => {
     if (!userId) return { name: "Unknown", initials: "U" };
-    const foundUser = allDomainUsers.find(u => u.email?.toLowerCase() === userId.toLowerCase());
-    if (foundUser) {
+    const userEntry = userMap.get(userId.toLowerCase());
+    if (userEntry) {
       return {
-        name: getUserDisplayName(foundUser),
-        initials: getUserInitials(foundUser),
+        name: userEntry.displayName,
+        initials: userEntry.initials,
       };
     }
     return { name: "Unknown", initials: "U" };
-  }, [allDomainUsers]);
+  }, [userMap]);
 
   const getLikedByUsers = useCallback((likes: string[] = []): LikedByUser[] => {
     return likes.map(email => {

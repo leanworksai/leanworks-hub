@@ -4,6 +4,7 @@ import { db, auth } from '@/lib/firebase-client';
 import { callSignalingService, type CallSignal, getCurrentOrgSlug } from '@/services/api';
 import { IncomingCallDialog } from './VoiceCall';
 import { useUsers } from '@/hooks/useUsers';
+import { useUserMap } from '@/hooks/useUserMap';
 import { useWebRTCContext } from '@/contexts/WebRTCContext';
 
 /**
@@ -13,6 +14,7 @@ import { useWebRTCContext } from '@/contexts/WebRTCContext';
 export function GlobalCallListener() {
   const { user, loading: authLoading } = useAuth();
   const { data: allDomainUsers = [] } = useUsers();
+  const userMap = useUserMap();
   const [incomingCallSignal, setIncomingCallSignal] = useState<CallSignal | null>(null);
   const lastCallIdRef = useRef<string | null>(null);
   const unsubscribeFnRef = useRef<(() => void) | null>(null);
@@ -314,18 +316,12 @@ export function GlobalCallListener() {
           callSignal={incomingCallSignal}
           chatId={incomingCallSignal.chatId}
             callerName={(() => {
-              const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
-              if (caller) {
-                return `${caller.firstName || ''} ${caller.lastName || ''}`.trim() || caller.email;
-              }
-              return incomingCallSignal.callerEmail;
+              const callerEntry = userMap.get(incomingCallSignal.callerEmail?.toLowerCase() || '');
+              return callerEntry ? callerEntry.displayName : incomingCallSignal.callerEmail;
             })()}
             callerAvatar={(() => {
-              const caller = allDomainUsers.find(u => u.email === incomingCallSignal.callerEmail);
-              if (caller) {
-                return `${caller.firstName?.charAt(0) || ''}${caller.lastName?.charAt(0) || ''}`.toUpperCase() || incomingCallSignal.callerEmail.charAt(0).toUpperCase();
-              }
-              return incomingCallSignal.callerEmail.charAt(0).toUpperCase();
+              const callerEntry = userMap.get(incomingCallSignal.callerEmail?.toLowerCase() || '');
+              return callerEntry ? callerEntry.initials : incomingCallSignal.callerEmail.charAt(0).toUpperCase();
             })()}
             onAccept={() => {
               setIncomingCallSignal(null);

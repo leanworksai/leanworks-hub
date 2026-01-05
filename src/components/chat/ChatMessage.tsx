@@ -1,5 +1,5 @@
 import React from "react";
-import { User, Phone } from "lucide-react";
+import { User, Phone, ExternalLink } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -89,13 +89,41 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   };
 }
 
+// Helper function to extract domain from URL
+function getDomainFromUrl(url: string): string {
+  try {
+    const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+    return urlObj.hostname.replace('www.', '');
+  } catch {
+    // If URL parsing fails, try to extract domain manually
+    const match = url.match(/(?:https?:\/\/)?(?:www\.)?([^\/\s]+)/);
+    return match ? match[1] : url;
+  }
+}
+
+// Helper function to truncate URL for display
+function truncateUrl(url: string, maxLength: number = 50): string {
+  if (url.length <= maxLength) return url;
+  const domain = getDomainFromUrl(url);
+  if (domain.length >= maxLength - 3) {
+    return domain.substring(0, maxLength - 3) + '...';
+  }
+  return domain + '...';
+}
+
 // Render message content with highlighted mentions and clickable links
-function renderMessageContent(content: string): (string | JSX.Element)[] | string {
-  // Match @mentions
-  const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?)(?=\s|$|[.,!?;:])/g;
+function renderMessageContent(
+  content: string, 
+  isAIChatTheme: boolean = false, 
+  isSent: boolean = false,
+  getUserDisplayName?: (email: string) => string | null
+): (string | JSX.Element)[] | string {
+  // Match @mentions - supports both @username and @user@example.com formats
+  // Improved email pattern: more robust validation
+  const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
   
-  // Match URLs
-  const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s]*)/gi;
+  // Match URLs - improved regex to catch more URL patterns
+  const urlRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s<>"']*)/gi;
   
   const parts: (string | JSX.Element)[] = [];
   const matches: Array<{ type: 'mention' | 'url'; index: number; length: number; content: string; url?: string }> = [];
@@ -121,6 +149,8 @@ function renderMessageContent(content: string): (string | JSX.Element)[] | strin
     
     if (!overlapsWithMention) {
       let url = match[0];
+      // Remove trailing punctuation that might not be part of the URL
+      url = url.replace(/[.,!?;:]+$/, '');
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         url = 'https://' + url;
       }
@@ -128,7 +158,7 @@ function renderMessageContent(content: string): (string | JSX.Element)[] | strin
         type: 'url',
         index: match.index,
         length: match[0].length,
-        content: match[0],
+        content: match[0].replace(/[.,!?;:]+$/, ''), // Store original without trailing punctuation
         url: url,
       });
     }
@@ -148,25 +178,47 @@ function renderMessageContent(content: string): (string | JSX.Element)[] | strin
     }
     
     if (match.type === 'mention') {
-      const mentionName = match.content.substring(1);
+      const mentionValue = match.content.substring(1); // Remove @
+      // Check if it's an email format and try to get display name
+      let displayName = mentionValue;
+      if (mentionValue.includes('@') && getUserDisplayName) {
+        const userDisplayName = getUserDisplayName(mentionValue);
+        if (userDisplayName) {
+          displayName = userDisplayName;
+        }
+      }
       parts.push(
         <span
           key={`mention-${keyCounter++}`}
           className="text-primary font-semibold"
         >
-          @{mentionName}
+          @{displayName}
         </span>
       );
     } else if (match.type === 'url') {
+      const displayUrl = truncateUrl(match.content);
+      const domain = getDomainFromUrl(match.url || match.content);
+      
+      // Different styling for AI chat theme
+      const linkClasses = isAIChatTheme
+        ? isSent
+          ? "inline-flex items-center gap-1.5 text-white/90 hover:text-white underline decoration-white/50 hover:decoration-white transition-colors font-medium"
+          : "inline-flex items-center gap-1.5 text-purple-600 hover:text-purple-700 underline decoration-purple-300 hover:decoration-purple-500 transition-colors font-medium"
+        : "inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-700 underline decoration-blue-300 hover:decoration-blue-500 transition-colors font-medium";
+      
       parts.push(
         <a
           key={`url-${keyCounter++}`}
           href={match.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-blue-600 underline hover:text-blue-700 break-all"
+          className={cn(linkClasses, "break-all")}
+          title={match.url}
         >
-          {match.content}
+          <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
+          <span className="truncate max-w-[200px]" title={match.url}>
+            {displayUrl}
+          </span>
         </a>
       );
     }
@@ -328,6 +380,7 @@ export interface ChatMessageProps {
   isGeneratingDraft?: boolean;
   hideContext?: boolean;
   theme?: "default" | "ai-chat"; // Theme for styling - only "ai-chat" gets special styling
+  getUserDisplayName?: (email: string) => string | null; // Function to get user display name from email
 }
 
 export function ChatMessage({
@@ -339,6 +392,7 @@ export function ChatMessage({
   currentUserEmail,
   onToggleLike,
   getLikedByUsers,
+  getUserDisplayName,
   onImageError,
   showSenderInfo = true,
   onDraftResponse,
@@ -523,7 +577,7 @@ export function ChatMessage({
                       )}
                       style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                     >
-                      {renderMessageContent(displayContent)}
+                      {renderMessageContent(displayContent, isAIChatTheme, isSent, getUserDisplayName)}
                     </p>
                     <CallJoinButton callId={callMatch[1]} roomName={callMatch[2]} />
                   </div>
@@ -536,7 +590,7 @@ export function ChatMessage({
                     )}
                     style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                   >
-                    {renderMessageContent(displayContent)}
+                    {renderMessageContent(displayContent, isAIChatTheme, isSent)}
                   </p>
                 )}
               </>

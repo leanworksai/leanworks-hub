@@ -24,6 +24,7 @@ import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
+import { useUserMap } from "@/hooks/useUserMap";
 
 const truncateText = (html: string, maxLength: number) => {
   // Remove HTML tags for truncation
@@ -36,6 +37,7 @@ export default function Docs() {
   const navigate = useNavigate();
   const { data: docs = [], isLoading } = useDocs();
   const { data: users = [] } = useUsers();
+  const userMap = useUserMap();
   const deleteDoc = useDeleteDoc();
   const updateDoc = useUpdateDoc();
   const { toast } = useToast();
@@ -52,24 +54,12 @@ export default function Docs() {
 
   // Helper function to get user display name from email
   const getUserDisplayName = (email: string): string => {
-    const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
-    return user?.name || user?.email || email;
+    return userMap.get(email.toLowerCase())?.displayName || email;
   };
 
   // Helper function to get user avatar initials
   const getUserInitials = (email: string): string => {
-    const user = users.find(u => u.email?.toLowerCase() === email.toLowerCase());
-    if (user?.name) {
-      const names = user.name.split(' ');
-      if (names.length >= 2) {
-        return (names[0][0] + names[names.length - 1][0]).toUpperCase();
-      }
-      return user.name.substring(0, 2).toUpperCase();
-    }
-    if (user?.email) {
-      return user.email.substring(0, 2).toUpperCase();
-    }
-    return email.substring(0, 2).toUpperCase();
+    return userMap.get(email.toLowerCase())?.initials || email.substring(0, 2).toUpperCase();
   };
 
   const handleDeleteClick = (e: React.MouseEvent, docId: string) => {

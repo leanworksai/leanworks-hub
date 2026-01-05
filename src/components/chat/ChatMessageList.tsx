@@ -31,6 +31,7 @@ export interface ChatMessageListProps {
   generatingDraftMessageId?: string | null;
   hideContext?: boolean;
   theme?: "default" | "ai-chat"; // Theme for styling - only "ai-chat" gets special styling
+  getUserDisplayName?: (email: string) => string | null; // Function to get user display name from email
 }
 
 export interface ChatMessageListRef {
@@ -48,6 +49,7 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
   onImageError,
   emptyState,
   isLoading,
+  getUserDisplayName,
   loadingIndicator,
   className,
   onDraftResponse,
@@ -615,6 +617,7 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
           isGeneratingDraft={isGeneratingDraft && generatingDraftMessageId === message.id}
           hideContext={hideContext}
           theme={theme}
+          getUserDisplayName={getUserDisplayName}
         />
       );
       
