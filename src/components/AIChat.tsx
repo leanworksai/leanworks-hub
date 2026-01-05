@@ -266,7 +266,8 @@ export function AIChat() {
   // Generate AI response - takes current message and chatId
   const generateResponse = useCallback(async (
     message: string,  // Just the current message
-    chatId: string
+    chatId: string,
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[] }  // Add citedContext parameter
   ): Promise<string> => {
     // Use chatId as sessionId for conversation continuity
     // This ensures the AI service maintains context within the conversation
@@ -274,6 +275,7 @@ export function AIChat() {
       chatId,
       message,
       sessionId: chatId, // Conversation-scoped session ID
+      citedContext,  // Pass citedContext
     });
 
     return response.response || response.content;
@@ -389,8 +391,15 @@ export function AIChat() {
       const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
 
       try {
+        // Build citedContext from selected items
+        const citedContextForAPI = hadSelections ? {
+          projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
+          tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
+          docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
+        } : undefined;
+
         // Pass only the current message - backend will load conversation from Firestore
-        const response = await generateResponse(messageContent, chatId);
+        const response = await generateResponse(messageContent, chatId, citedContextForAPI);
         
         if (hadSelections) {
           clearSelectedProjects();

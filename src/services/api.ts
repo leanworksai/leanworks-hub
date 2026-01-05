@@ -592,6 +592,7 @@ export const messagesService = {
     chatId: string;
     message: string;  // Just the current message
     sessionId?: string;
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[] } | string;  // Add citedContext parameter
   }): Promise<{ response: string; content: string }> {
     const userEmail = auth?.currentUser?.email;
     if (!userEmail) {
@@ -651,12 +652,68 @@ export const messagesService = {
       }
     }
 
+    // Build cited_context string if citedContext object is provided
+    let cited_context: string | undefined = undefined;
+    if (params.citedContext) {
+      if (typeof params.citedContext === 'string') {
+        cited_context = params.citedContext;
+      } else {
+        // Build context string from selected items (similar to Chatbot.tsx)
+        const contextParts: string[] = [];
+        
+        if (params.citedContext.projects && params.citedContext.projects.length > 0) {
+          contextParts.push("Selected Projects:");
+          params.citedContext.projects.forEach((project: any) => {
+            contextParts.push(`- ${project.name} (ID: ${project.id}): ${project.description || ''}`);
+            if (project.status) contextParts.push(`  Status: ${project.status}`);
+            if (project.dueDate) contextParts.push(`  Due: ${project.dueDate}`);
+            if (project.team) contextParts.push(`  Team: ${project.team}`);
+            if (project.summary?.accomplishment) contextParts.push(`  Summary: ${project.summary.accomplishment}`);
+            if (project.tasks) {
+              const completed = project.tasks.filter((t: any) => t.status === "completed").length;
+              const inProgress = project.tasks.filter((t: any) => t.status === "in-progress").length;
+              contextParts.push(`  Tasks: ${project.tasks.length} total (${completed} completed, ${inProgress} in progress)`);
+            }
+          });
+        }
+
+        if (params.citedContext.tasks && params.citedContext.tasks.length > 0) {
+          contextParts.push("Selected Tasks:");
+          params.citedContext.tasks.forEach((task: any) => {
+            const assigneeName = task.assignee || "Unassigned";
+            contextParts.push(`- ${task.title} (ID: ${task.id}): ${task.description || ''}`);
+            if (task.status) contextParts.push(`  Status: ${task.status}`);
+            if (task.priority) contextParts.push(`  Priority: ${task.priority}`);
+            contextParts.push(`  Assignee: ${assigneeName}`);
+            if (task.dueDate) contextParts.push(`  Due: ${task.dueDate}`);
+            if (task.project) contextParts.push(`  Project: ${task.project}`);
+            if (task.progressUpdates) contextParts.push(`  Progress Updates: ${task.progressUpdates.length}`);
+          });
+        }
+
+        if (params.citedContext.docs && params.citedContext.docs.length > 0) {
+          contextParts.push("Selected Docs:");
+          params.citedContext.docs.forEach((doc: any) => {
+            // Remove HTML tags for context
+            const textContent = (doc.content || '').replace(/<[^>]*>/g, '').substring(0, 500);
+            contextParts.push(`- ${doc.title} (ID: ${doc.id})`);
+            contextParts.push(`  Content: ${textContent}${(doc.content?.length || 0) > 500 ? '...' : ''}`);
+          });
+        }
+
+        if (contextParts.length > 0) {
+          cited_context = contextParts.join("\n");
+        }
+      }
+    }
+
     const requestPayload = {
       user_id: userEmail.toLowerCase(),
       org_slug: orgSlug,
       message: params.message,
       chatId: params.chatId,
       session_id: params.sessionId,
+      cited_context: cited_context,  // Add cited_context to payload
     };
 
     // Log the payload being sent to the ask API (development only)
