@@ -1089,6 +1089,18 @@ export const messagesService = {
     });
     return map;
   },
+
+  async clearChatHistory(chatId: string): Promise<{ success: boolean; deletedCount: number; message: string }> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/messages/${encodeURIComponent(chatId)}` : `${API_BASE}/messages/${encodeURIComponent(chatId)}`;
+    const response = await authenticatedFetch(url, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to clear chat history' }));
+      throw new Error(error.error || 'Failed to clear chat history');
+    }
+    return response.json();
+  },
 };
 
 // Image Upload Service

@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-import { X } from "lucide-react";
+import { X, Trash2 } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
@@ -47,6 +48,7 @@ export function AIChat() {
   const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
   const [uploadingImages, setUploadingImages] = useState(false);
   const [pendingLikeOperations, setPendingLikeOperations] = useState<Set<string>>(new Set());
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<Message[]>([]); // Ref to track latest messages for building message window
@@ -178,7 +180,7 @@ export function AIChat() {
           setMessages([{
             id: "greeting",
             role: "assistant",
-            content: "Hello! I'm lean. How can I help you today?",
+            content: "Hi! I'm Lean. I can answer any questions and help you take actions across your workspace. What would you like to know or do?",
             timestamp: new Date(),
           }]);
         } else {
@@ -212,7 +214,7 @@ export function AIChat() {
           setMessages([{
             id: "greeting",
             role: "assistant",
-            content: "Hello! I'm lean. How can I help you today?",
+            content: "Hi! I'm Lean. I can answer any questions and help you take actions across your workspace. What would you like to know or do?",
             timestamp: new Date(),
           }]);
         } else {
@@ -225,7 +227,7 @@ export function AIChat() {
           setMessages([{
             id: "greeting",
             role: "assistant",
-            content: "Hello! I'm lean. How can I help you today?",
+            content: "Hi! I'm Lean. I can answer any questions and help you take actions across your workspace. What would you like to know or do?",
             timestamp: new Date(),
           }]);
         }
@@ -623,6 +625,51 @@ export function AIChat() {
     return { isSent, isLean, displayName, displayInitials };
   }, [user?.email, currentUserDisplayInfo, getUserInfo]);
 
+  // Handle clear chat history
+  const handleClearHistory = useCallback(async () => {
+    if (!chatId || !user?.email || isClearingHistory) return;
+
+    // Confirm with user
+    if (!confirm('Are you sure you want to clear all chat history? This action cannot be undone.')) {
+      return;
+    }
+
+    setIsClearingHistory(true);
+    try {
+      // Clear messages from backend
+      await messagesService.clearChatHistory(chatId);
+      
+      // Clear local cache
+      const cacheKey = getCacheKey(chatId);
+      if (cacheKey) {
+        localStorage.removeItem(cacheKey);
+      }
+      
+      // Reset messages state to show greeting
+      setMessages([{
+        id: "greeting",
+        role: "assistant",
+        content: "Hi! I'm Lean. I can answer any questions and help you take actions across your workspace. What would you like to know or do?",
+        timestamp: new Date(),
+      }]);
+      
+      toast({
+        title: "Chat history cleared",
+        description: "All messages have been removed. The conversation summary has also been reset.",
+        variant: "default",
+      });
+    } catch (error) {
+      console.error('Failed to clear chat history:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : 'Failed to clear chat history. Please try again.',
+        variant: "destructive",
+      });
+    } finally {
+      setIsClearingHistory(false);
+    }
+  }, [chatId, user?.email, isClearingHistory, getCacheKey, toast]);
+
   // Listen for toggle chat event
   useEffect(() => {
     const handleToggleChat = () => {
@@ -705,6 +752,29 @@ export function AIChat() {
       {/* Header gradient accent */}
       <div className="h-1 bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-500 flex-shrink-0" />
       
+      {/* Header with clear button */}
+      <div className="flex items-center justify-between px-3 py-2 border-b border-purple-200/60 bg-white/50 backdrop-blur-sm flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Avatar className="h-6 w-6">
+            <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
+            <AvatarFallback className="bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold text-xs">
+              L
+            </AvatarFallback>
+          </Avatar>
+          <h2 className="text-sm font-semibold text-gray-900">Lean</h2>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleClearHistory}
+          disabled={isClearingHistory || messages.length <= 1}
+          className="h-7 px-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+          title="Clear chat history"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      
       {/* Messages */}
       <ScrollArea className="flex-1 min-h-0 overflow-hidden">
         <div className="p-6 space-y-6">
@@ -732,27 +802,53 @@ export function AIChat() {
               getUserDisplayInfo={getMessageDisplayInfo}
               theme="ai-chat"
               emptyState={
-                <div className="flex flex-col items-center justify-center h-full text-center py-16 px-4">
+                <div className="flex flex-col items-center justify-center h-full text-center py-12 px-4">
                   <div className="mb-6">
-                    <Avatar className="h-12 w-12">
+                    <Avatar className="h-14 w-14">
                       <AvatarImage src="/logo.png" alt="lean" className="object-contain" />
                       <AvatarFallback className="bg-gradient-to-br from-purple-500 to-indigo-500 text-white font-semibold">
                         L
                       </AvatarFallback>
                     </Avatar>
                   </div>
-                  <h3 className="text-xl font-semibold mb-2 text-black">
-                    Chat with lean
+                  <h3 className="text-xl font-semibold mb-3 text-gray-900">
+                    Hi! I'm Lean
                   </h3>
-                  <p className="text-sm text-muted-foreground max-w-sm leading-relaxed">
-                    Ask me anything about your projects or tasks. I'm here to help you stay productive!
+                  <p className="text-sm text-gray-700 max-w-md leading-relaxed mb-6">
+                    I can answer any questions and help you take actions across your workspace. Ask me anything!
                   </p>
-                  <div className="mt-6 flex flex-wrap gap-2 justify-center">
+                  
+                  {/* Examples Section */}
+                  <div className="w-full max-w-md space-y-3 mb-6">
+                    <div className="text-left">
+                      <p className="text-xs font-medium text-gray-500 mb-2 px-1">Try asking me:</p>
+                      <div className="space-y-2">
+                        <div className="bg-white/80 backdrop-blur-sm border border-purple-100 rounded-lg p-3 text-left hover:border-purple-200 transition-colors">
+                          <p className="text-xs text-gray-600 font-medium mb-1">💬 Questions</p>
+                          <p className="text-xs text-gray-500">"What's the status of my Q4 projects?"</p>
+                        </div>
+                        <div className="bg-white/80 backdrop-blur-sm border border-indigo-100 rounded-lg p-3 text-left hover:border-indigo-200 transition-colors">
+                          <p className="text-xs text-gray-600 font-medium mb-1">⚡ Actions</p>
+                          <p className="text-xs text-gray-500">"Create a task for reviewing the budget proposal"</p>
+                        </div>
+                        <div className="bg-white/80 backdrop-blur-sm border border-purple-100 rounded-lg p-3 text-left hover:border-purple-200 transition-colors">
+                          <p className="text-xs text-gray-600 font-medium mb-1">📊 Analysis</p>
+                          <p className="text-xs text-gray-500">"Show me overdue tasks across all projects"</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Capabilities Tags */}
+                  <div className="flex flex-wrap gap-2 justify-center">
                     <span className="text-xs px-3 py-1.5 bg-purple-100/50 text-purple-700 rounded-full border border-purple-200/50">
-                      💡 Project insights
+                      💡 Answer questions
                     </span>
                     <span className="text-xs px-3 py-1.5 bg-indigo-100/50 text-indigo-700 rounded-full border border-indigo-200/50">
-                      📋 Task management
+                      ⚡ Take actions
+                    </span>
+                    <span className="text-xs px-3 py-1.5 bg-purple-100/50 text-purple-700 rounded-full border border-purple-200/50">
+                      📊 Analyze data
                     </span>
                   </div>
                 </div>

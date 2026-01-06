@@ -742,5 +742,75 @@ export function setupMessageEndpoints(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // DELETE /api/messages/:chatId - Delete all messages for a chat (clear chat history)
+  app.delete('/api/messages/:chatId', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const chatId = req.params.chatId;
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // For AI assistant conversations, ensure user can only clear their own chat
+      if (chatId.startsWith('ai-assistant-')) {
+        if (!chatId.endsWith(`-${userEmail}`)) {
+          return res.status(403).json({ error: 'Access denied: You can only clear your own AI chat history' });
+        }
+      }
+
+      // Use org slug for Firestore path
+      let messagesPath: string;
+      if (orgId) {
+        try {
+          const orgSlug = await getOrgSlugById(orgId);
+          messagesPath = `orgs/${orgSlug}/messages`;
+        } catch (error) {
+          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
+          messagesPath = `orgs/default/messages`;
+        }
+      } else {
+        messagesPath = `orgs/default/messages`;
+      }
+
+      // Query all messages for this chatId
+      let query = db.collection(messagesPath).where('chatId', '==', chatId);
+      
+      // For AI assistant conversations, also filter by userId for additional security
+      if (chatId.startsWith('ai-assistant-')) {
+        query = query.where('userId', '==', userEmail);
+      }
+
+      const snapshot = await query.get();
+      
+      // Delete all messages in batches (Firestore batch limit is 500)
+      const BATCH_SIZE = 500;
+      const docs = snapshot.docs;
+      let deletedCount = 0;
+
+      for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+        const batch = docs.slice(i, i + BATCH_SIZE);
+        const writeBatch = db.batch();
+        
+        batch.forEach((doc) => {
+          writeBatch.delete(doc.ref);
+        });
+        
+        await writeBatch.commit();
+        deletedCount += batch.length;
+      }
+
+      res.json({ 
+        success: true, 
+        deletedCount,
+        message: `Successfully cleared ${deletedCount} message(s) from chat history` 
+      });
+    } catch (error) {
+      console.error('Clear chat history error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
 }
 
