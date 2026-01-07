@@ -1,7 +1,7 @@
-import { useRef, useState, useCallback, KeyboardEvent, ChangeEvent } from "react";
+import { useRef, useState, useCallback, KeyboardEvent, ChangeEvent, useEffect } from "react";
 import { X, Send, Image as ImageIcon, Smile } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn, getAvatarColor } from "@/lib/utils";
@@ -85,21 +85,59 @@ export function ChatInput({
   const [input, setInput] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [mentionCursorPos, setMentionCursorPos] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Track key hold state to detect accent menu trigger
+  const keyHoldTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isKeyHeldRef = useRef(false);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (keyHoldTimeoutRef.current) {
+        clearTimeout(keyHoldTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Auto-resize textarea based on content
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+
+    // Reset height to auto to get the correct scrollHeight
+    textarea.style.height = 'auto';
+    
+    // Calculate the new height (min 40px, max ~200px for ~8 lines)
+    const scrollHeight = textarea.scrollHeight;
+    const minHeight = 40; // ~1 line
+    const maxHeight = 200; // ~8 lines at ~25px per line
+    const newHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+    
+    textarea.style.height = `${newHeight}px`;
+    
+    // Enable scrolling if content exceeds max height
+    if (scrollHeight > maxHeight) {
+      textarea.style.overflowY = 'auto';
+    } else {
+      textarea.style.overflowY = 'hidden';
+    }
+  }, [input]);
 
   const handleSend = useCallback(() => {
     if (!input.trim() && imagePreviewUrls.length === 0) return;
     onSend(input.trim(), imagePreviewUrls);
     setInput("");
+    // Reset textarea height after sending
+    setTimeout(() => {
+      const textarea = inputRef.current;
+      if (textarea) {
+        textarea.style.height = '40px';
+      }
+    }, 0);
   }, [input, imagePreviewUrls, onSend]);
-
-  const handleKeyPress = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !showMentionSuggestions) {
-      e.preventDefault();
-      handleSend();
-    }
-  }, [handleSend, showMentionSuggestions]);
 
   const insertMention = useCallback((user: TeamMember) => {
     const beforeMention = input.substring(0, mentionCursorPos);
@@ -121,29 +159,264 @@ export function ChatInput({
     }, 0);
   }, [input, mentionCursorPos, onMentionClose]);
 
-  const handleMentionKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
-    if (!showMentionSuggestions || filteredMentionUsers.length === 0) return;
-
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      onMentionIndexChange?.((selectedMentionIndex + 1) % filteredMentionUsers.length);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      onMentionIndexChange?.(
-        selectedMentionIndex > 0 ? selectedMentionIndex - 1 : filteredMentionUsers.length - 1
-      );
-    } else if (e.key === 'Enter' && showMentionSuggestions) {
-      e.preventDefault();
-      const selectedUser = filteredMentionUsers[selectedMentionIndex];
-      if (selectedUser) {
-        insertMention(selectedUser);
-        onMentionSelect?.(selectedUser);
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
+    const isSingleLetter = e.key.length === 1 && /^[a-zA-Z]$/.test(e.key);
+    
+    // Detect if key is being held down (accent menu trigger on macOS)
+    if (isSingleLetter) {
+      if (e.repeat) {
+        // Key is being held - mark as held and prevent accent menu
+        isKeyHeldRef.current = true;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
       }
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      onMentionClose?.();
+      
+      // Set a flag after a short delay - if composition starts during this time, it's accent menu
+      isKeyHeldRef.current = false;
+      if (keyHoldTimeoutRef.current) {
+        clearTimeout(keyHoldTimeoutRef.current);
+      }
+      keyHoldTimeoutRef.current = setTimeout(() => {
+        isKeyHeldRef.current = true;
+      }, 200); // After 200ms, consider it a hold
+    } else {
+      // Reset on non-letter keys
+      isKeyHeldRef.current = false;
+      if (keyHoldTimeoutRef.current) {
+        clearTimeout(keyHoldTimeoutRef.current);
+      }
     }
-  }, [showMentionSuggestions, filteredMentionUsers, selectedMentionIndex, onMentionIndexChange, onMentionSelect, onMentionClose, insertMention]);
+
+    // Handle mention suggestions navigation first
+    if (showMentionSuggestions && filteredMentionUsers.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        onMentionIndexChange?.((selectedMentionIndex + 1) % filteredMentionUsers.length);
+        return;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        onMentionIndexChange?.(
+          selectedMentionIndex > 0 ? selectedMentionIndex - 1 : filteredMentionUsers.length - 1
+        );
+        return;
+      } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const selectedUser = filteredMentionUsers[selectedMentionIndex];
+        if (selectedUser) {
+          insertMention(selectedUser);
+          onMentionSelect?.(selectedUser);
+        }
+        return;
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onMentionClose?.();
+        return;
+      }
+    }
+    
+    // Handle Enter key: Shift+Enter = new line, Enter = send
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+    // Let Shift+Enter pass through naturally for new lines
+  }, [handleSend, showMentionSuggestions, filteredMentionUsers, selectedMentionIndex, onMentionIndexChange, onMentionSelect, onMentionClose, insertMention]);
+
+  // Prevent accent character menu by blocking composition events
+  const handleCompositionStart = useCallback((e: React.CompositionEvent<HTMLTextAreaElement>) => {
+    // If key is being held or was recently held, this is likely the accent menu
+    if (isKeyHeldRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      // Clear the flag
+      isKeyHeldRef.current = false;
+      if (keyHoldTimeoutRef.current) {
+        clearTimeout(keyHoldTimeoutRef.current);
+      }
+      return;
+    }
+    
+    // Also check if composition starts immediately after a single letter (accent menu pattern)
+    const textarea = e.currentTarget;
+    const cursorPos = textarea.selectionStart;
+    const textBefore = textarea.value.substring(0, cursorPos);
+    const lastChar = textBefore.slice(-1);
+    
+    // If composition starts right after a single letter, it's likely the accent menu
+    if (lastChar && lastChar.length === 1 && /^[a-zA-Z]$/.test(lastChar)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, []);
+
+  const handleCompositionUpdate = useCallback((e: React.CompositionEvent<HTMLTextAreaElement>) => {
+    // Prevent all composition updates if we're blocking accent menu
+    if (isKeyHeldRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, []);
+
+  const handleCompositionEnd = useCallback((e: React.CompositionEvent<HTMLTextAreaElement>) => {
+    // Prevent composition end if we blocked it
+    if (isKeyHeldRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      isKeyHeldRef.current = false;
+      if (keyHoldTimeoutRef.current) {
+        clearTimeout(keyHoldTimeoutRef.current);
+      }
+      return;
+    }
+  }, []);
+
+  // Handle paste events to support pasting images directly
+  const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles: File[] = [];
+
+    // Process all clipboard items
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      
+      // Check if item is an image
+      if (item.type.indexOf('image') !== -1) {
+        const file = item.getAsFile();
+        if (file) {
+          // Validate file type
+          const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+          const isValidType = validTypes.includes(file.type);
+          
+          if (!isValidType) {
+            continue; // Skip invalid image types
+          }
+
+          // Validate file size (10MB max)
+          if (file.size > 10 * 1024 * 1024) {
+            continue; // Skip files that are too large
+          }
+
+          imageFiles.push(file);
+        }
+      }
+    }
+
+    // If images were pasted, process them
+    if (imageFiles.length > 0) {
+      e.preventDefault(); // Prevent default paste behavior for images
+      
+      // Create a synthetic event that mimics the file input change event
+      // This allows us to reuse the existing onImageSelect handler
+      if (onImageSelect && fileInputRef.current) {
+        // Create a DataTransfer object to simulate file input
+        const dataTransfer = new DataTransfer();
+        imageFiles.forEach(file => dataTransfer.items.add(file));
+        
+        // Create a synthetic change event that mimics a real file input change event
+        // The handler reads from e.target.files, so we need to ensure that's set correctly
+        const syntheticEvent = {
+          target: {
+            files: dataTransfer.files,
+          },
+          currentTarget: {
+            files: dataTransfer.files,
+          },
+        } as React.ChangeEvent<HTMLInputElement>;
+        
+        // Call the existing image select handler
+        onImageSelect(syntheticEvent);
+        
+        // Reset the file input
+        fileInputRef.current.value = '';
+      }
+    }
+    // If no images, let the default paste behavior handle text
+  }, [onImageSelect]);
+
+  // Handle drag and drop events
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Check if dragging files
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true);
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Only set dragging to false if we're leaving the container itself
+    // (not just moving between child elements)
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // Filter and validate image files
+    const imageFiles = files.filter(file => {
+      // Validate file type
+      const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+      const validExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+      const fileName = file.name.toLowerCase();
+      const isValidType = validTypes.includes(file.type) || 
+                          validExtensions.some(ext => fileName.endsWith(ext));
+      
+      if (!isValidType) {
+        return false;
+      }
+
+      // Validate file size (10MB max)
+      if (file.size > 10 * 1024 * 1024) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (imageFiles.length > 0 && onImageSelect && fileInputRef.current) {
+      // Create a DataTransfer object to simulate file input
+      const dataTransfer = new DataTransfer();
+      imageFiles.forEach(file => dataTransfer.items.add(file));
+      
+      // Create a synthetic change event that mimics a real file input change event
+      // The handler reads from e.target.files, so we need to ensure that's set correctly
+      const syntheticEvent = {
+        target: {
+          files: dataTransfer.files,
+        },
+        currentTarget: {
+          files: dataTransfer.files,
+        },
+      } as React.ChangeEvent<HTMLInputElement>;
+      
+      // Call the existing image select handler
+      onImageSelect(syntheticEvent);
+      
+      // Reset the file input
+      fileInputRef.current.value = '';
+    }
+  }, [onImageSelect]);
 
   const insertEmoji = useCallback((emojiData: EmojiClickData) => {
     const cursorPos = inputRef.current?.selectionStart || input.length;
@@ -162,7 +435,7 @@ export function ChatInput({
     }, 0);
   }, [input]);
 
-  const handleInputChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = useCallback((e: ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     if (showMentions && onMentionDetect) {
       const cursorPos = e.target.selectionStart || 0;
@@ -174,7 +447,7 @@ export function ChatInput({
         const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
         if (charBeforeAt === ' ' || lastAtIndex === 0) {
           const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
-          if (!afterAt.includes(' ')) {
+          if (!afterAt.includes(' ') && !afterAt.includes('\n')) {
             setMentionCursorPos(lastAtIndex);
             // Track mention detection
             trackMention('detect');
@@ -184,9 +457,9 @@ export function ChatInput({
     }
   }, [showMentions, onMentionDetect]);
 
-  const handleInputClick = useCallback((e: React.MouseEvent<HTMLInputElement>) => {
+  const handleInputClick = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
     if (showMentions && onMentionDetect) {
-      const cursorPos = (e.target as HTMLInputElement).selectionStart || 0;
+      const cursorPos = (e.target as HTMLTextAreaElement).selectionStart || 0;
       onMentionDetect(input, cursorPos);
       // Track mention cursor position
       const textBeforeCursor = input.substring(0, cursorPos);
@@ -195,7 +468,7 @@ export function ChatInput({
         const charBeforeAt = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
         if (charBeforeAt === ' ' || lastAtIndex === 0) {
           const afterAt = textBeforeCursor.substring(lastAtIndex + 1);
-          if (!afterAt.includes(' ')) {
+          if (!afterAt.includes(' ') && !afterAt.includes('\n')) {
             setMentionCursorPos(lastAtIndex);
           }
         }
@@ -301,7 +574,15 @@ export function ChatInput({
           </div>
         )}
         
-        <div className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-all bg-background border border-border focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20">
+        <div 
+          className={cn(
+            "flex items-end gap-2 rounded-lg px-2 py-1.5 transition-all bg-background border border-border focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20",
+            isDragging && "border-primary ring-2 ring-primary/50 bg-primary/5"
+          )}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <input
             type="file"
             ref={fileInputRef}
@@ -345,16 +626,23 @@ export function ChatInput({
           >
             <ImageIcon className="h-4 w-4" />
           </Button>
-          <Input
+          <Textarea
             ref={inputRef}
             value={input}
             onChange={handleInputChange}
-            onKeyDown={handleMentionKeyDown}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onCompositionStart={handleCompositionStart}
+            onCompositionUpdate={handleCompositionUpdate}
+            onCompositionEnd={handleCompositionEnd}
             onClick={handleInputClick}
             placeholder={placeholder}
             disabled={disabled || isLoading}
-            className="flex-1 h-8 border-0 bg-transparent text-foreground placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 px-2"
+            rows={1}
+            spellCheck={false}
+            autoComplete="off"
+            className="flex-1 min-h-[40px] max-h-[200px] resize-none border-0 bg-transparent text-foreground placeholder:text-muted-foreground focus-visible:ring-0 focus-visible:ring-offset-0 px-2 py-2 overflow-y-auto"
+            style={{ height: '40px' }}
           />
           <Button
             onClick={handleSend}

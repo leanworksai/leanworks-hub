@@ -14,6 +14,7 @@ import { db } from "@/lib/firebase-client";
 import { getCurrentOrgSlug } from "@/services/api";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatTimeInTimezone } from "@/lib/dateTimeUtils";
+import { marked } from "marked";
 
 // Parse cited context from message content
 function parseCitedContext(content: string): { citedContext: CitedContext | null; cleanContent: string } {
@@ -111,28 +112,101 @@ function truncateUrl(url: string, maxLength: number = 50): string {
   return domain + '...';
 }
 
-// Render message content with highlighted mentions and clickable links
+// Configure marked for safe HTML output
+marked.setOptions({
+  breaks: true, // Convert \n to <br>
+  gfm: true, // GitHub Flavored Markdown
+});
+
+// Check if content has markdown formatting
+function hasMarkdownFormatting(content: string): boolean {
+  // Check for common markdown patterns
+  const markdownPatterns = [
+    /\*\*[^*]+\*\*/, // Bold **text**
+    /\*[^*]+\*/, // Italic *text*
+    /__[^_]+__/, // Bold __text__
+    /_[^_]+_/, // Italic _text_
+    /`[^`]+`/, // Inline code `code`
+    /```[\s\S]*?```/, // Code blocks
+    /^#{1,6}\s/m, // Headers
+    /^\s*[-*+]\s/m, // Unordered lists
+    /^\s*\d+\.\s/m, // Ordered lists
+    /\[.+\]\(.+\)/, // Links [text](url)
+    /^\s*>/m, // Blockquotes
+    /~~[^~]+~~/, // Strikethrough
+  ];
+  
+  return markdownPatterns.some(pattern => pattern.test(content));
+}
+
+// Render message content with markdown support and highlighted mentions
 function renderMessageContent(
   content: string, 
   isAIChatTheme: boolean = false, 
   isSent: boolean = false,
   getUserDisplayName?: (email: string) => string | null
-): (string | JSX.Element)[] | string {
-  // Match @mentions - supports both @username and @user@example.com formats
-  // Improved email pattern: more robust validation
+): JSX.Element | string {
+  // First, process @mentions to create styled spans
   const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
   
-  // Match URLs - improved regex to catch more URL patterns
+  // Replace mentions with styled HTML spans
+  let processedContent = content.replace(mentionRegex, (match) => {
+    const mentionValue = match.substring(1); // Remove @
+    let displayName = mentionValue;
+    if (mentionValue.includes('@') && getUserDisplayName) {
+      const userDisplayName = getUserDisplayName(mentionValue);
+      if (userDisplayName) {
+        displayName = userDisplayName;
+      }
+    }
+    return `<span class="text-primary font-semibold">@${displayName}</span>`;
+  });
+  
+  // Check if content has markdown formatting
+  const shouldParseMarkdown = hasMarkdownFormatting(processedContent);
+  
+  if (shouldParseMarkdown) {
+    // Parse markdown to HTML
+    const htmlContent = marked.parse(processedContent, { async: false }) as string;
+    
+    // Determine the wrapper classes based on theme
+    const wrapperClasses = cn(
+      "prose prose-sm max-w-none break-words",
+      // Dark mode support
+      "dark:prose-invert",
+      // Customize prose for chat context
+      "prose-p:my-1 prose-p:leading-relaxed",
+      "prose-headings:my-2 prose-headings:font-semibold",
+      "prose-ul:my-1 prose-ol:my-1",
+      "prose-li:my-0.5",
+      "prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:bg-muted prose-code:text-foreground prose-code:before:content-none prose-code:after:content-none",
+      "prose-pre:my-2 prose-pre:p-3 prose-pre:rounded-lg prose-pre:bg-muted",
+      "prose-blockquote:my-2 prose-blockquote:border-l-primary prose-blockquote:pl-4",
+      "prose-a:text-primary prose-a:underline prose-a:decoration-primary/50 hover:prose-a:decoration-primary",
+      // Theme-specific overrides
+      isAIChatTheme && isSent && "prose-invert prose-p:text-white prose-headings:text-white prose-strong:text-white prose-code:bg-white/20 prose-code:text-white prose-pre:bg-white/10 prose-a:text-white/90 hover:prose-a:text-white prose-blockquote:border-white/50 prose-blockquote:text-white/90 prose-li:text-white",
+    );
+    
+    return (
+      <div 
+        className={wrapperClasses}
+        dangerouslySetInnerHTML={{ __html: htmlContent }}
+      />
+    );
+  }
+  
+  // If no markdown, fall back to the original plain text rendering with URL detection
   const urlRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s<>"']*)/gi;
   
   const parts: (string | JSX.Element)[] = [];
-  const matches: Array<{ type: 'mention' | 'url'; index: number; length: number; content: string; url?: string }> = [];
+  const mentionMatches: Array<{ index: number; length: number; content: string }> = [];
+  const urlMatches: Array<{ index: number; length: number; content: string; url: string }> = [];
   
-  // Find all mentions
+  // Find all mentions in original content
   let match;
-  while ((match = mentionRegex.exec(content)) !== null) {
-    matches.push({
-      type: 'mention',
+  const mentionRegexCopy = new RegExp(mentionRegex.source, mentionRegex.flags);
+  while ((match = mentionRegexCopy.exec(content)) !== null) {
+    mentionMatches.push({
       index: match.index,
       length: match[0].length,
       content: match[0],
@@ -141,45 +215,45 @@ function renderMessageContent(
   
   // Find all URLs
   while ((match = urlRegex.exec(content)) !== null) {
-    const overlapsWithMention = matches.some(m => 
-      m.type === 'mention' && 
-      match.index < m.index + m.length && 
-      match.index + match[0].length > m.index
+    const overlapsWithMention = mentionMatches.some(m => 
+      match!.index < m.index + m.length && 
+      match!.index + match![0].length > m.index
     );
     
     if (!overlapsWithMention) {
       let url = match[0];
-      // Remove trailing punctuation that might not be part of the URL
       url = url.replace(/[.,!?;:]+$/, '');
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         url = 'https://' + url;
       }
-      matches.push({
-        type: 'url',
+      urlMatches.push({
         index: match.index,
         length: match[0].length,
-        content: match[0].replace(/[.,!?;:]+$/, ''), // Store original without trailing punctuation
+        content: match[0].replace(/[.,!?;:]+$/, ''),
         url: url,
       });
     }
   }
   
-  matches.sort((a, b) => a.index - b.index);
+  // Combine and sort all matches
+  const allMatches = [
+    ...mentionMatches.map(m => ({ ...m, type: 'mention' as const })),
+    ...urlMatches.map(m => ({ ...m, type: 'url' as const })),
+  ].sort((a, b) => a.index - b.index);
   
   let lastIndex = 0;
   let keyCounter = 0;
   
-  matches.forEach((match) => {
-    if (match.index > lastIndex) {
-      const textBefore = content.substring(lastIndex, match.index);
+  allMatches.forEach((matchItem) => {
+    if (matchItem.index > lastIndex) {
+      const textBefore = content.substring(lastIndex, matchItem.index);
       if (textBefore) {
         parts.push(textBefore);
       }
     }
     
-    if (match.type === 'mention') {
-      const mentionValue = match.content.substring(1); // Remove @
-      // Check if it's an email format and try to get display name
+    if (matchItem.type === 'mention') {
+      const mentionValue = matchItem.content.substring(1);
       let displayName = mentionValue;
       if (mentionValue.includes('@') && getUserDisplayName) {
         const userDisplayName = getUserDisplayName(mentionValue);
@@ -195,11 +269,9 @@ function renderMessageContent(
           @{displayName}
         </span>
       );
-    } else if (match.type === 'url') {
-      const displayUrl = truncateUrl(match.content);
-      const domain = getDomainFromUrl(match.url || match.content);
+    } else if (matchItem.type === 'url') {
+      const displayUrl = truncateUrl(matchItem.content);
       
-      // Different styling for AI chat theme
       const linkClasses = isAIChatTheme
         ? isSent
           ? "inline-flex items-center gap-1.5 text-white/90 hover:text-white underline decoration-white/50 hover:decoration-white transition-colors font-medium"
@@ -209,28 +281,28 @@ function renderMessageContent(
       parts.push(
         <a
           key={`url-${keyCounter++}`}
-          href={match.url}
+          href={matchItem.url}
           target="_blank"
           rel="noopener noreferrer"
           className={cn(linkClasses, "break-all")}
-          title={match.url}
+          title={matchItem.url}
         >
           <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
-          <span className="truncate max-w-[200px]" title={match.url}>
+          <span className="truncate max-w-[200px]" title={matchItem.url}>
             {displayUrl}
           </span>
         </a>
       );
     }
     
-    lastIndex = match.index + match.length;
+    lastIndex = matchItem.index + matchItem.length;
   });
   
   if (lastIndex < content.length) {
     parts.push(content.substring(lastIndex));
   }
   
-  return parts.length > 0 ? parts : content;
+  return parts.length > 0 ? <>{parts}</> : content;
 }
 
 // Component to render "Join Call" button for call notification messages
@@ -570,7 +642,7 @@ export function ChatMessage({
                 {/* Message content */}
                 {callMatch ? (
                   <div className="space-y-2">
-                    <p 
+                    <div 
                       className={cn(
                         "text-sm whitespace-pre-wrap font-medium break-words",
                         isAIChatTheme && isSent ? "text-white" : "text-foreground"
@@ -578,20 +650,20 @@ export function ChatMessage({
                       style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                     >
                       {renderMessageContent(displayContent, isAIChatTheme, isSent, getUserDisplayName)}
-                    </p>
+                    </div>
                     <CallJoinButton callId={callMatch[1]} roomName={callMatch[2]} />
                   </div>
                 ) : (
-                  <p 
+                  <div 
                     className={cn(
-                      "text-sm whitespace-pre-wrap break-words font-medium text-foreground",
+                      "text-sm break-words font-medium text-foreground",
                       isAIChatTheme && isSent && "text-white leading-relaxed",
                       isAIChatTheme && isLean && !isSent && "leading-relaxed"
                     )}
                     style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                   >
                     {renderMessageContent(displayContent, isAIChatTheme, isSent)}
-                  </p>
+                  </div>
                 )}
               </>
             );

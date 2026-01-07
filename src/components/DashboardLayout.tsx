@@ -121,6 +121,17 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   // Keyboard shortcut for search (Cmd+K / Ctrl+K)
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input field
+      const target = e.target as HTMLElement;
+      const isInputElement = target.tagName === 'INPUT' || 
+                             target.tagName === 'TEXTAREA' || 
+                             target.isContentEditable ||
+                             target.closest('[contenteditable="true"]');
+      
+      if (isInputElement) {
+        return; // Ignore shortcut when typing
+      }
+
       if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         setSearchOpen((open) => {

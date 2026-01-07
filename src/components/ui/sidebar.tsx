@@ -78,6 +78,17 @@ const SidebarProvider = React.forwardRef<
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input field
+      const target = event.target as HTMLElement;
+      const isInputElement = target.tagName === 'INPUT' || 
+                             target.tagName === 'TEXTAREA' || 
+                             target.isContentEditable ||
+                             target.closest('[contenteditable="true"]');
+      
+      if (isInputElement) {
+        return; // Ignore shortcut when typing
+      }
+
       if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         toggleSidebar();
