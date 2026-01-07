@@ -469,20 +469,13 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                     <Button variant="ghost" size="icon" className="relative">
                       <Bell className="h-5 w-5" />
                       {totalNotificationsCount > 0 && (
-                        <span className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 h-5 w-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center font-medium border-2 border-background shadow-sm z-10">
-                          {totalNotificationsCount > 9 ? '9+' : totalNotificationsCount}
-                        </span>
+                        <span className="absolute top-1 right-1 h-2.5 w-2.5 rounded-full bg-red-500 border-2 border-background shadow-sm z-10" />
                       )}
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent className="w-[calc(100vw-2rem)] sm:w-80 max-w-sm" align="end" forceMount>
                     <DropdownMenuLabel className="flex items-center justify-between">
                       <span>Notifications</span>
-                      {totalNotificationsCount > 0 && (
-                        <Badge variant="secondary" className="text-xs">
-                          {totalNotificationsCount} pending
-                        </Badge>
-                      )}
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     {isLoadingRequests || isLoadingInvitations || isLoadingSystemNotifications ? (
@@ -500,7 +493,32 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                         {(() => {
                           // Filter and sort notifications
                           const filteredNotifications = systemNotifications
-                            .filter(n => n.status !== 'dismissed')
+                            .filter(n => {
+                              // Filter out dismissed notifications
+                              if (n.status === 'dismissed') return false;
+                              
+                              // For org invitations, check if they're still active (not expired)
+                              if (n.type === 'org_invitation' && n.metadata) {
+                                try {
+                                  const metadata = typeof n.metadata === 'string' 
+                                    ? JSON.parse(n.metadata) 
+                                    : n.metadata;
+                                  
+                                  // Check if invitation has expired
+                                  if (metadata.expires_at) {
+                                    const expiresAt = new Date(metadata.expires_at);
+                                    if (expiresAt < new Date()) {
+                                      return false; // Expired invitation
+                                    }
+                                  }
+                                } catch (e) {
+                                  console.warn('Error parsing invitation metadata:', e);
+                                  return false; // Skip if metadata is invalid
+                                }
+                              }
+                              
+                              return true;
+                            })
                             .sort((a, b) => {
                               const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
                               const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;

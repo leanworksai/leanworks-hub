@@ -176,9 +176,7 @@ export function AppSidebar() {
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
                       {item.title === "Chats" && totalUnreadCount > 0 && (
-                        <Badge variant="destructive" className="ml-auto h-5 min-w-5 px-1.5 flex items-center justify-center text-xs">
-                          {totalUnreadCount > 9 ? '9+' : totalUnreadCount}
-                        </Badge>
+                        <span className="ml-auto h-2 w-2 rounded-full bg-red-500" />
                       )}
                     </NavLink>
                   </SidebarMenuButton>

@@ -1740,23 +1740,32 @@ app.get('/api/notifications', authenticateUser, async (req, res) => {
     const sharedPool = await getSharedPool();
     
     // Get unread and read (but not dismissed) notifications, ordered by most recent
+    // For org_invitation type, only include if the invitation is still pending and not expired
     const result = await sharedPool.query(`
       SELECT 
-        id,
-        user_email,
-        org_id,
-        type,
-        title,
-        message,
-        status,
-        metadata,
-        action_url,
-        created_at,
-        read_at,
-        dismissed_at
-      FROM notifications
-      WHERE user_email = $1 AND status != 'dismissed'
-      ORDER BY created_at DESC
+        n.id,
+        n.user_email,
+        n.org_id,
+        n.type,
+        n.title,
+        n.message,
+        n.status,
+        n.metadata,
+        n.action_url,
+        n.created_at,
+        n.read_at,
+        n.dismissed_at
+      FROM notifications n
+      LEFT JOIN org_invitations oi ON 
+        n.type = 'org_invitation' AND 
+        n.metadata->>'invitation_id' = oi.id::text
+      WHERE n.user_email = $1 
+        AND n.status != 'dismissed'
+        AND (
+          n.type != 'org_invitation' OR
+          (oi.status = 'pending' AND oi.expires_at > NOW())
+        )
+      ORDER BY n.created_at DESC
       LIMIT 50
     `, [userEmail]);
     
