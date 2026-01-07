@@ -244,7 +244,7 @@ export default function Chats() {
   }, [setSelectedChatInHook, isMobile, user?.email, currentOrg?.id]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] max-h-[calc(100vh-4rem)] overflow-hidden -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 -mb-4 sm:-mb-6">
+    <div className="flex flex-col h-[calc(100dvh-4rem)] max-h-[calc(100dvh-4rem)] overflow-hidden -mx-4 sm:-mx-6 -mt-4 sm:-mt-6 -mb-4 sm:-mb-6">
       {/* Desktop: Side-by-side layout */}
       <div className="hidden sm:flex flex-1 overflow-hidden min-h-0">
         <div className="w-64 border-r bg-muted/30 flex flex-col flex-shrink-0 h-full">
@@ -313,7 +313,7 @@ export default function Chats() {
         </div>
 
         {/* Mobile Bottom Navigation Bar */}
-        <div className="sm:hidden border-t bg-background z-50">
+        <div className="sm:hidden border-t bg-background z-50 pb-[env(safe-area-inset-bottom)]">
           <div className="flex">
             <button
               onClick={() => setActiveTab("contacts")}

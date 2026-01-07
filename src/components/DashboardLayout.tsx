@@ -291,7 +291,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <SidebarProvider>
-      <div className="flex min-h-screen w-full">
+      <div className="flex min-h-[100dvh] w-full">
         <AppSidebar />
         <div className={cn("flex-1 flex flex-col transition-all duration-300", isAIChatOpen && "mr-96")}>
           <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-lg">

@@ -1043,7 +1043,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
         </ScrollArea>
 
         {/* Input Area - Optimized single container */}
-        <div className="flex-shrink-0">
+        <div className="flex-shrink-0 pb-[env(safe-area-inset-bottom)]">
           <input
             type="file"
             ref={fileInputRef}
