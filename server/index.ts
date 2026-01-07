@@ -3528,9 +3528,27 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
     const pool = await getOrgPool(orgId);
     const normalizedEmail = userEmail.toLowerCase();
     
+    // Helper function to safely parse JSONB fields
+    const parseJsonbField = (value: any): any => {
+      if (value === null || value === undefined) {
+        return [];
+      }
+      if (Array.isArray(value)) {
+        return value;
+      }
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    };
+    
     // Verify doc exists and user has access to edit
     const checkResult = await pool.query(
-      'SELECT id, owner_email FROM docs WHERE id = $1',
+      'SELECT id, owner_email, visibility, visible_to_members FROM docs WHERE id = $1',
       [docId]
     );
     
@@ -3538,10 +3556,49 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
       return res.status(404).json({ error: 'Doc not found' });
     }
     
-    // Only owner can edit docs
-    const isOwner = checkResult.rows[0].owner_email.toLowerCase() === normalizedEmail;
-    if (!isOwner) {
-      return res.status(403).json({ error: 'Only the document owner can edit it' });
+    const doc = checkResult.rows[0];
+    const isOwner = doc.owner_email?.toLowerCase() === normalizedEmail;
+    const docVisibility = doc.visibility || 'all_members';
+    
+    // Check if user has access to edit based on visibility
+    let hasEditAccess = isOwner || docVisibility === 'all_members';
+    
+    if (docVisibility === 'specific_members') {
+      const visibleToMembers = parseJsonbField(doc.visible_to_members);
+      const normalizedVisibleToMembers = Array.isArray(visibleToMembers) 
+        ? visibleToMembers.map((email: string) => email?.toLowerCase())
+        : [];
+      hasEditAccess = isOwner || normalizedVisibleToMembers.includes(normalizedEmail);
+    }
+    
+    if (!hasEditAccess) {
+      return res.status(403).json({ error: 'You do not have permission to edit this document' });
+    }
+    
+    // Check if user is trying to CHANGE visibility - only owners can do this
+    // Allow non-owners to include visibility fields if they're not changing
+    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
+      const currentVisibility = doc.visibility || 'all_members';
+      const currentVisibleToMembers = parseJsonbField(doc.visible_to_members);
+      const newVisibility = updates.visibility !== undefined ? updates.visibility : currentVisibility;
+      const newVisibleToMembers = updates.visibleToMembers !== undefined 
+        ? (Array.isArray(updates.visibleToMembers) ? updates.visibleToMembers.map((e: string) => e?.toLowerCase()) : [])
+        : currentVisibleToMembers;
+      
+      const visibilityChanged = newVisibility !== currentVisibility;
+      const visibleToMembersChanged = JSON.stringify(newVisibleToMembers.sort()) !== JSON.stringify(Array.isArray(currentVisibleToMembers) ? currentVisibleToMembers.map((e: string) => e?.toLowerCase()).sort() : []);
+      
+      if ((visibilityChanged || visibleToMembersChanged) && !isOwner) {
+        return res.status(403).json({ error: 'Only the document owner can update visibility settings' });
+      }
+      
+      // If visibility is not changing, remove it from updates to avoid unnecessary checks
+      if (!visibilityChanged && !isOwner) {
+        delete updates.visibility;
+      }
+      if (!visibleToMembersChanged && !isOwner) {
+        delete updates.visibleToMembers;
+      }
     }
     
     const setClauses: string[] = [];

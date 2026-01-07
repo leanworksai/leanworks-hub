@@ -84,6 +84,14 @@ export default function DocDetail() {
           doc_id: savedDocId,
         });
       }
+      
+      // Show toast for manual saves
+      if (isManual) {
+        toast({
+          title: "Saved",
+          description: "Document has been saved successfully.",
+        });
+      }
     },
     onSaveError: (error) => {
       // Errors are handled by the hook's status
@@ -297,6 +305,27 @@ export default function DocDetail() {
                 >
                   <ArrowLeft className="h-4 w-4" />
                 </Button>
+                <div>
+                  <Button 
+                    variant="default" 
+                    size="sm" 
+                    onClick={async () => {
+                      try {
+                        await autoSave.manualSave();
+                      } catch (error) {
+                        toast({
+                          title: "Error",
+                          description: error instanceof Error ? error.message : "Failed to save document",
+                          variant: "destructive",
+                        });
+                      }
+                    }}
+                    disabled={autoSave.saveStatus === 'saving'}
+                    className="bg-black text-white hover:bg-black/90"
+                  >
+                    Save
+                  </Button>
+                </div>
                 {!isNew && doc && (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>

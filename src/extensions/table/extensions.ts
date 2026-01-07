@@ -26,7 +26,7 @@ export const ConfiguredTable = Table.configure({
 export const ConfiguredTableRow = TableRow.extend({
   addAttributes() {
     return {
-      ...this.parent(),
+      ...(this.parent?.() || {}),
       role: {
         default: 'row',
         parseHTML: () => 'row',
@@ -42,7 +42,7 @@ export const ConfiguredTableRow = TableRow.extend({
 export const CustomTableCell = TableCell.extend({
   addAttributes() {
     return {
-      ...this.parent(),
+      ...(this.parent?.() || {}),
       role: {
         default: 'cell',
         parseHTML: () => 'cell',
@@ -69,7 +69,7 @@ export const CustomTableCell = TableCell.extend({
 export const CustomTableHeader = TableHeader.extend({
   addAttributes() {
     return {
-      ...this.parent(),
+      ...(this.parent?.() || {}),
       role: {
         default: 'columnheader',
         parseHTML: () => 'columnheader',

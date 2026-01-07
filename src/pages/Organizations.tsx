@@ -304,43 +304,70 @@ export default function Organizations() {
         {personalOrg && (
           <div>
             <h2 className="text-lg font-semibold mb-3">Personal Workspace</h2>
-            <Card className="bg-gradient-card border-border shadow-card">
+            <Card 
+              className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:border-primary/30"
+              onClick={() => openMembersDialog(personalOrg)}
+            >
               <CardHeader className="pb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className="flex-1 min-w-0">
-                      <CardTitle className="text-base flex items-center gap-2 flex-wrap">
-                        <span className="truncate">{personalOrg.name}</span>
-                        {currentOrg?.id === personalOrg.id && (
-                          <Badge variant="secondary" className="text-xs flex-shrink-0">Current</Badge>
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 min-w-0">
+                    <CardTitle className="text-base flex items-center gap-2 truncate">
+                      {personalOrg.name}
+                      {currentOrg?.id === personalOrg.id && (
+                        <Badge variant="secondary" className="text-xs shrink-0">Current</Badge>
+                      )}
+                    </CardTitle>
+                    <CardDescription className="flex items-center gap-1">
+                      {personalOrg.isOwner ? (
+                        <>
+                          <Crown className="h-3 w-3" />
+                          Owner
+                        </>
+                      ) : (
+                        <>
+                          <User className="h-3 w-3" />
+                          Member
+                        </>
+                      )}
+                      {personalOrg.memberCount !== undefined && (
+                        <span className="ml-2 flex items-center gap-1 text-xs">
+                          <Users className="h-3 w-3" />
+                          {personalOrg.memberCount}
+                        </span>
+                      )}
+                    </CardDescription>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-xs text-muted-foreground font-mono">{personalOrg.slug}</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={(e) => handleCopySlug(personalOrg.slug, e)}
+                        title="Copy slug"
+                      >
+                        {copiedSlug === personalOrg.slug ? (
+                          <Check className="h-3 w-3 text-green-600" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
                         )}
-                      </CardTitle>
-                      <CardDescription>Your personal workspace</CardDescription>
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <span className="text-xs text-muted-foreground font-mono">{personalOrg.slug}</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0"
-                          onClick={(e) => handleCopySlug(personalOrg.slug, e)}
-                          title="Copy slug"
-                        >
-                          {copiedSlug === personalOrg.slug ? (
-                            <Check className="h-3 w-3 text-green-600" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </Button>
-                      </div>
+                      </Button>
                     </div>
                   </div>
-                  {currentOrg?.id !== personalOrg.id && (
-                    <Button variant="outline" size="sm" onClick={() => switchOrg(personalOrg.id)} className="flex-shrink-0">
-                      Switch
-                    </Button>
-                  )}
                 </div>
               </CardHeader>
+              <CardFooter className="pt-0 flex gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                {currentOrg?.id !== personalOrg.id && (
+                  <Button variant="outline" size="sm" onClick={() => switchOrg(personalOrg.id)} className="flex-1 sm:flex-initial">
+                    Switch
+                  </Button>
+                )}
+                {personalOrg.isOwner && (
+                  <Button variant="outline" size="sm" onClick={() => openInviteDialog(personalOrg)}>
+                    <Send className="h-3 w-3 sm:mr-1" />
+                    <span className="sm:inline hidden">Invite</span>
+                  </Button>
+                )}
+              </CardFooter>
             </Card>
           </div>
         )}

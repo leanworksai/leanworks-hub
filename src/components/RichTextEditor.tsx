@@ -105,6 +105,8 @@ export function RichTextEditor({
         },
         // Disable paragraph from StarterKit so we can configure our own
         paragraph: false,
+        // Disable gapcursor from StarterKit since we use ConfiguredGapcursor from table extensions
+        gapcursor: false,
       }),
       // Custom paragraph extension that preserves trailing spaces
       Paragraph.extend({

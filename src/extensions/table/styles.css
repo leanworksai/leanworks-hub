@@ -23,7 +23,8 @@
 /* Table data cells */
 .prose-table td {
   @apply border border-border px-3 py-2 min-w-[100px];
-  @apply break-words overflow-wrap-anywhere;
+  @apply break-words;
+  overflow-wrap: anywhere;
   position: relative;
 }
 
@@ -73,7 +74,8 @@
 /* Table cell content */
 .prose-table td p,
 .prose-table th p {
-  @apply my-0 leading-relaxed break-words overflow-wrap-anywhere;
+  @apply my-0 leading-relaxed break-words;
+  overflow-wrap: anywhere;
 }
 
 /* Empty cell indicator */
