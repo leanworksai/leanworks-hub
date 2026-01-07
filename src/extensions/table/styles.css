@@ -1,0 +1,107 @@
+/**
+ * Table-specific styles for TipTap editor
+ * These styles complement the Tailwind classes used in RichTextEditor
+ */
+
+/* Table wrapper for horizontal scrolling */
+.prose-table {
+  @apply overflow-x-auto my-4;
+}
+
+/* Table base styles */
+.prose-table table {
+  @apply border-collapse w-full border border-border rounded-md;
+  width: 100%;
+}
+
+/* Table header cells */
+.prose-table th {
+  @apply border border-border bg-muted/50 px-3 py-2 text-left font-semibold;
+  position: relative;
+}
+
+/* Table data cells */
+.prose-table td {
+  @apply border border-border px-3 py-2 min-w-[100px];
+  @apply break-words overflow-wrap-anywhere;
+  position: relative;
+}
+
+/* Row hover states */
+.prose-table tr:hover td {
+  @apply bg-muted/30;
+}
+
+.prose-table tr:hover th {
+  @apply bg-muted/60;
+}
+
+/* Cell selection highlight */
+.prose-table td:focus,
+.prose-table th:focus {
+  @apply outline-2 outline-offset-[-2px] outline-primary;
+}
+
+/* Cell with selected content */
+.prose-table td[data-selected="true"],
+.prose-table th[data-selected="true"] {
+  @apply bg-primary/10;
+}
+
+/* Resize handle styles */
+.prose-table .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: transparent;
+  cursor: col-resize;
+  z-index: 10;
+}
+
+.prose-table .column-resize-handle:hover {
+  background: theme('colors.primary.DEFAULT');
+  opacity: 0.5;
+}
+
+.prose-table .column-resize-handle.active {
+  background: theme('colors.primary.DEFAULT');
+  opacity: 1;
+}
+
+/* Table cell content */
+.prose-table td p,
+.prose-table th p {
+  @apply my-0 leading-relaxed break-words overflow-wrap-anywhere;
+}
+
+/* Empty cell indicator */
+.prose-table td:empty::after,
+.prose-table th:empty::after {
+  content: '\00a0'; /* Non-breaking space for empty cells */
+}
+
+/* Focus visible for keyboard navigation */
+.prose-table td:focus-visible,
+.prose-table th:focus-visible {
+  @apply ring-2 ring-offset-2 ring-primary;
+}
+
+/* Table wrapper scrollbar styling */
+.prose-table::-webkit-scrollbar {
+  height: 8px;
+}
+
+.prose-table::-webkit-scrollbar-track {
+  @apply bg-muted/30 rounded;
+}
+
+.prose-table::-webkit-scrollbar-thumb {
+  @apply bg-muted-foreground/30 rounded;
+}
+
+.prose-table::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/50;
+}
+

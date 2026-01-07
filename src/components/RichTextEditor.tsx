@@ -6,10 +6,9 @@ import { TextAlign } from '@tiptap/extension-text-align';
 import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
-import { Table } from '@tiptap/extension-table';
-import { TableRow } from '@tiptap/extension-table-row';
-import { TableCell } from '@tiptap/extension-table-cell';
-import { TableHeader } from '@tiptap/extension-table-header';
+import { tableExtensions, handleTableDblClick } from '@/extensions/table';
+import '@/extensions/table/styles.css';
+import { TableToolbar } from '@/components/editor/TableToolbar';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -29,17 +28,7 @@ import {
   Link as LinkIcon,
   Eraser,
   Paperclip,
-  Table as TableIcon,
-  Plus,
-  Minus,
-  Trash2,
-  Columns,
-  Rows,
   Heading,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { Input } from '@/components/ui/input';
@@ -102,7 +91,6 @@ export function RichTextEditor({
   const [isToolbarSticky, setIsToolbarSticky] = useState(false);
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
-  const [hoveredTableSize, setHoveredTableSize] = useState<{ rows: number; cols: number } | null>(null);
 
   const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-75';
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
@@ -137,15 +125,8 @@ export function RichTextEditor({
       TextAlign.configure({
         types: ['heading', 'paragraph', 'tableCell'],
       }),
-      Table.configure({
-        resizable: true,
-        HTMLAttributes: {
-          class: 'table-wrapper',
-        },
-      }),
-      TableRow,
-      TableHeader,
-      TableCell,
+      // Table extensions with best practices
+      ...tableExtensions,
       Color,
       TextStyle,
     ],
@@ -202,6 +183,9 @@ export function RichTextEditor({
         return html;
       },
       handleDOMEvents: {
+        dblclick: (view, event) => {
+          return handleTableDblClick(view, event);
+        },
         keydown: (view, event) => {
           // Handle undo/redo keyboard shortcuts
           const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
@@ -570,123 +554,7 @@ export function RichTextEditor({
         <Separator orientation="vertical" className="h-6 opacity-30" />
 
         {/* Table Menu */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={getButtonClasses(editor.isActive('table'))}
-              title="Table"
-            >
-              <TableIcon className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <TableIcon className="h-4 w-4" />
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-auto p-2">
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">Select table size</Label>
-                  <div className="grid grid-cols-8 gap-1">
-                    {Array.from({ length: 64 }).map((_, index) => {
-                      const row = Math.floor(index / 8) + 1;
-                      const col = (index % 8) + 1;
-                      const isSelected = hoveredTableSize
-                        ? row <= hoveredTableSize.rows && col <= hoveredTableSize.cols
-                        : false;
-                      
-                      return (
-                        <button
-                          key={index}
-                          type="button"
-                          className={cn(
-                            "w-6 h-6 border border-border rounded-sm transition-colors",
-                            isSelected
-                              ? "bg-primary border-primary"
-                              : "bg-muted hover:bg-muted/80"
-                          )}
-                          onMouseEnter={() => setHoveredTableSize({ rows: row, cols: col })}
-                          onClick={() => {
-                            editor
-                              .chain()
-                              .focus()
-                              .insertTable({ rows: row, cols: col, withHeaderRow: true })
-                              .run();
-                            setHoveredTableSize(null);
-                          }}
-                          aria-label={`${row} rows, ${col} columns`}
-                        />
-                      );
-                    })}
-                  </div>
-                  {hoveredTableSize && (
-                    <p className="text-xs text-center text-muted-foreground">
-                      {hoveredTableSize.rows} × {hoveredTableSize.cols}
-                    </p>
-                  )}
-                </div>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-
-            {editor.isActive('table') && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuLabel>Rows</DropdownMenuLabel>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().addRowBefore().run()}
-                >
-                  <ArrowUp className="h-4 w-4 mr-2" />
-                  <span>Add row above</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().addRowAfter().run()}
-                >
-                  <ArrowDown className="h-4 w-4 mr-2" />
-                  <span>Add row below</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().deleteRow().run()}
-                  disabled={!editor.can().deleteRow()}
-                >
-                  <Minus className="h-4 w-4 mr-2" />
-                  <span>Delete row</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuLabel>Columns</DropdownMenuLabel>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().addColumnBefore().run()}
-                >
-                  <ArrowLeft className="h-4 w-4 mr-2" />
-                  <span>Add column on the left</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().addColumnAfter().run()}
-                >
-                  <ArrowRight className="h-4 w-4 mr-2" />
-                  <span>Add column on the right</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().deleteColumn().run()}
-                  disabled={!editor.can().deleteColumn()}
-                >
-                  <Minus className="h-4 w-4 mr-2" />
-                  <span>Delete column</span>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => editor.chain().focus().deleteTable().run()}
-                  className="text-destructive focus:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  <span>Delete table</span>
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <TableToolbar editor={editor} getButtonClasses={getButtonClasses} />
 
         <Separator orientation="vertical" className="h-6 opacity-30" />
 
