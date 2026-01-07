@@ -1,6 +1,6 @@
 import { TeamChatSidebar } from "@/components/TeamChatSidebar";
 import { TeamChatConversation } from "@/components/TeamChatConversation";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useTeamChats } from "@/hooks/useTeamChats";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Users, MessageSquare } from "lucide-react";
@@ -49,27 +49,37 @@ export default function Chats() {
   const previousOrgIdRef = useRef<string | null>(null);
 
   // Validate if a chat still exists
-  const validateChatExists = (chatId: string, selectedMember: string): boolean => {
+  const validateChatExists = useCallback((chatId: string, selectedMember: string): boolean => {
     if (isAIAssistantChatId(chatId)) {
       return true; // AI chat always exists
     }
     
-    // If data isn't loaded yet, assume valid (will fail gracefully if chat doesn't exist)
-    if (projects.length === 0 && teams.length === 0 && allTeamMembers.length === 0) {
-      return true;
-    }
-    
     if (isProjectChannelId(chatId)) {
-      const projectId = selectedMember.replace("project-", "");
-      return projects.some(p => p.name.toLowerCase().replace(/\s+/g, '-') === projectId);
+      // If we have projects loaded, validate; otherwise assume valid for now
+      if (projects.length > 0) {
+        const projectId = selectedMember.replace("project-", "");
+        return projects.some(p => p.name.toLowerCase().replace(/\s+/g, '-') === projectId);
+      }
+      return true; // Data not loaded yet, assume valid
     }
     
     if (isTeamChannelId(chatId)) {
-      const teamId = selectedMember.replace("team-", "");
-      return teams.some(t => t.name.toLowerCase().replace(/\s+/g, '-') === teamId);
+      // If we have teams loaded, validate; otherwise assume valid for now
+      if (teams.length > 0) {
+        const teamId = selectedMember.replace("team-", "");
+        return teams.some(t => t.name.toLowerCase().replace(/\s+/g, '-') === teamId);
+      }
+      return true; // Data not loaded yet, assume valid
     }
     
     if (isDirectMessageId(chatId)) {
+      // For DMs, we need to be more strict - if we have members loaded, validate
+      // If no members are loaded yet, we can't validate, so return false to be safe
+      if (allTeamMembers.length === 0) {
+        // No members loaded - if this is a DM, it's likely invalid
+        return false;
+      }
+      
       // For DMs, check if the other user still exists
       if (selectedMember.includes('@')) {
         return allTeamMembers.some(m => m.email?.toLowerCase() === selectedMember.toLowerCase());
@@ -79,7 +89,7 @@ export default function Chats() {
     }
     
     return false;
-  };
+  }, [projects, teams, allTeamMembers]);
 
   // Reset selected chat when organization changes
   useEffect(() => {
@@ -116,21 +126,85 @@ export default function Chats() {
           setActiveTab("messages");
         }
         return;
+      } else {
+        // Invalid chat - clear it from storage
+        if (user?.email && currentOrg?.id) {
+          const key = getLastSelectedChatKey(user.email, currentOrg.id);
+          localStorage.removeItem(key);
+        }
       }
     }
     
-    // Fallback to AI chat if no valid last chat
-    const chatId = getAIAssistantChatId(user.email);
-    setSelectedChat({ chatId, selectedMember: "ai-assistant" });
-    setSelectedChatInHook(chatId);
-    hasInitializedRef.current = true;
-    if (isMobile) {
-      setActiveTab("messages");
+    // Only fallback to AI chat if there are other members, projects, or teams
+    // If there are no other members, don't set a default chat (show nothing)
+    const hasOtherMembers = allTeamMembers.length > 0;
+    const hasProjectsOrTeams = projects.length > 0 || teams.length > 0;
+    
+    if (hasOtherMembers || hasProjectsOrTeams) {
+      // Fallback to AI chat if no valid last chat but there are other members/projects/teams
+      const chatId = getAIAssistantChatId(user.email);
+      setSelectedChat({ chatId, selectedMember: "ai-assistant" });
+      setSelectedChatInHook(chatId);
+      hasInitializedRef.current = true;
+      if (isMobile) {
+        setActiveTab("messages");
+      }
+    } else {
+      // No other members, projects, or teams - don't set a default chat
+      hasInitializedRef.current = true;
     }
   }, [user?.email, currentOrg?.id, allTeamMembers, projects, teams, setSelectedChatInHook, isMobile, selectedChat]);
 
+  // Check if a chat is valid to display (not Unknown when there are no members)
+  const isChatValidToDisplay = useCallback((chatId: string, selectedMember: string): boolean => {
+    // If it's a direct message and there are no other members, it's invalid
+    if (isDirectMessageId(chatId) && allTeamMembers.length === 0) {
+      return false;
+    }
+    
+    // For DMs, also check that the member actually exists in allTeamMembers
+    if (isDirectMessageId(chatId) && allTeamMembers.length > 0) {
+      const memberExists = selectedMember.includes('@')
+        ? allTeamMembers.some(m => m.email?.toLowerCase() === selectedMember.toLowerCase())
+        : allTeamMembers.some(m => m.id === selectedMember);
+      
+      if (!memberExists) {
+        return false;
+      }
+    }
+    
+    // Validate the chat exists
+    return validateChatExists(chatId, selectedMember);
+  }, [allTeamMembers, validateChatExists]);
+
+  // Validate and clear invalid chats after data loads
+  useEffect(() => {
+    if (!selectedChat || !user?.email || !currentOrg?.id) return;
+    
+    // Re-validate the current chat after data loads
+    const isValid = isChatValidToDisplay(selectedChat.chatId, selectedChat.selectedMember);
+    
+    if (!isValid) {
+      // Chat is invalid - clear it
+      setSelectedChat(null);
+      setSelectedChatInHook(null);
+      
+      // Clear from storage
+      const key = getLastSelectedChatKey(user.email, currentOrg.id);
+      localStorage.removeItem(key);
+    }
+  }, [selectedChat, allTeamMembers, projects, teams, user?.email, currentOrg?.id, setSelectedChatInHook, isChatValidToDisplay]);
+
+
   // Handle chat selection from TeamChatSidebar
   const handleSelectChat = (chatId: string, selectedMember: string) => {
+    // Only set chat if it's valid
+    if (!isChatValidToDisplay(chatId, selectedMember)) {
+      setSelectedChat(null);
+      setSelectedChatInHook(null);
+      return;
+    }
+    
     setSelectedChat({ chatId, selectedMember });
     setSelectedChatInHook(chatId); // Update the hook's selectedChat to trigger unread count clearing
     
@@ -182,7 +256,7 @@ export default function Chats() {
           </div>
         </div>
         <div className="flex-1 flex flex-col overflow-hidden min-h-0 h-full border-l">
-          {selectedChat ? (
+          {selectedChat && isChatValidToDisplay(selectedChat.chatId, selectedChat.selectedMember) ? (
             <TeamChatConversation 
               chatId={selectedChat.chatId} 
               selectedMember={selectedChat.selectedMember} 
@@ -192,7 +266,9 @@ export default function Chats() {
               <div className="text-center max-w-md">
                 <h3 className="text-lg font-semibold mb-2">Select a chat to start messaging</h3>
                 <p className="text-sm text-muted-foreground">
-                  Choose a conversation from the sidebar to view and send messages.
+                  {allTeamMembers.length === 0 && projects.length === 0 && teams.length === 0
+                    ? "There are no members, projects, or teams in this organization to chat with."
+                    : "Choose a conversation from the sidebar to view and send messages."}
                 </p>
               </div>
             </div>
@@ -215,7 +291,7 @@ export default function Chats() {
             </div>
           ) : (
             <div className="h-full flex flex-col overflow-hidden">
-              {selectedChat ? (
+              {selectedChat && isChatValidToDisplay(selectedChat.chatId, selectedChat.selectedMember) ? (
                 <TeamChatConversation 
                   chatId={selectedChat.chatId} 
                   selectedMember={selectedChat.selectedMember} 
@@ -225,7 +301,9 @@ export default function Chats() {
                   <div className="text-center max-w-md">
                     <h3 className="text-lg font-semibold mb-2">Select a chat to start messaging</h3>
                     <p className="text-sm text-muted-foreground">
-                      Choose a conversation from the contacts tab to view and send messages.
+                      {allTeamMembers.length === 0 && projects.length === 0 && teams.length === 0
+                        ? "There are no members, projects, or teams in this organization to chat with."
+                        : "Choose a conversation from the contacts tab to view and send messages."}
                     </p>
                   </div>
                 </div>

@@ -105,14 +105,15 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     ? userTeams.find(t => t.name.toLowerCase().replace(/\s+/g, '-') === selectedTeamId)
     : null;
 
-  // Get current member info
+  // Get current member info - return null if member not found (don't default to Unknown)
   const currentMember = useMemo(() => {
     if (isProjectChannel && selectedProject) {
       return { id: selectedMember, name: selectedProject.name, role: "Project Channel", avatar: "#" };
     } else if (isTeamChannel && selectedTeam) {
       return { id: selectedMember, name: selectedTeam.name, role: "Team Channel", avatar: "👥" };
     } else {
-      return allTeamMembers.find(m => m.id === selectedMember) || { id: selectedMember, name: "Unknown", role: "", avatar: "U" };
+      // For DMs, only return member if found - don't default to Unknown
+      return allTeamMembers.find(m => m.id === selectedMember) || null;
     }
   }, [isProjectChannel, isTeamChannel, selectedProject, selectedTeam, selectedMember, allTeamMembers]);
 
@@ -934,6 +935,15 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
 
   if (!chatId) return null;
 
+  // Don't show chat if member is not found (for DMs) - return null to not render anything
+  if (!isProjectChannel && !isTeamChannel && !currentMember) {
+    return null;
+  }
+
+  // At this point, currentMember is guaranteed to be non-null for DMs (we returned early if null)
+  // For project/team channels, currentMember is always set
+  const member = currentMember!;
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:w-[600px] p-0 flex flex-col">
@@ -945,19 +955,19 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
                 "text-primary-foreground",
                 (isProjectChannel || isTeamChannel) 
                   ? "bg-primary/10" 
-                  : getAvatarColor(currentMember.id?.toLowerCase())
+                  : getAvatarColor(member.id?.toLowerCase())
               )}>
                 {isProjectChannel ? (
                   <Hash className="h-4 w-4 text-primary" />
                 ) : isTeamChannel ? (
                   <Users className="h-4 w-4 text-primary" />
                 ) : (
-                  <span className="text-xs">{currentMember.avatar}</span>
+                  <span className="text-xs">{member.avatar}</span>
                 )}
               </AvatarFallback>
             </Avatar>
             <div className="flex flex-col min-w-0">
-              <h3 className="font-semibold text-sm truncate">{currentMember.name}</h3>
+              <h3 className="font-semibold text-sm truncate">{member.name}</h3>
               <p className="text-xs text-muted-foreground truncate">
                 {isProjectChannel ? "Project Channel" : isTeamChannel ? "Team Channel" : "Direct Message"}
               </p>
@@ -967,8 +977,8 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
             <VoiceCallButton
               chatId={chatId}
               otherUserEmail={selectedMember.includes('@') ? selectedMember : allTeamMembers.find(m => m.id === selectedMember)?.email || ''}
-              otherUserName={currentMember.name}
-              otherUserAvatar={currentMember.avatar}
+              otherUserName={member.name}
+              otherUserAvatar={member.avatar}
             />
           )}
         </div>

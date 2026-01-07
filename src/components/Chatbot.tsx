@@ -190,6 +190,28 @@ export function Chatbot() {
       setShowConversationList(false);
     }
   }, [isMobile]);
+
+  // Lock body scroll on mobile when conversation or conversation list is shown
+  useEffect(() => {
+    if (isMobile && (showMobileConversation || showConversationList)) {
+      // Save the current overflow style
+      const originalOverflow = document.body.style.overflow;
+      const originalPosition = document.body.style.position;
+      const originalWidth = document.body.style.width;
+      
+      // Lock body scroll
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'fixed';
+      document.body.style.width = '100%';
+      
+      return () => {
+        // Restore original styles
+        document.body.style.overflow = originalOverflow;
+        document.body.style.position = originalPosition;
+        document.body.style.width = originalWidth;
+      };
+    }
+  }, [isMobile, showMobileConversation, showConversationList]);
   
   // Clear old cache entries that don't have orgId (from domain-based system)
   const clearLegacyMessageCaches = useCallback(() => {

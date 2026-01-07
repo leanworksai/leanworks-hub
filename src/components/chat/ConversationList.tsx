@@ -190,10 +190,30 @@ export function ConversationList({
     );
   }
 
+  // Filter out "Unknown" conversations when there are no valid members to match them to
+  const filteredConversations = conversations.filter((conv) => {
+    const displayInfo = getConversationDisplayInfo(conv.chatId);
+    // If it's an "Unknown" conversation and there are no other team members, filter it out
+    if (displayInfo.name === "Unknown" && allTeamMembers.length === 0) {
+      return false;
+    }
+    return true;
+  });
+
+  if (filteredConversations.length === 0) {
+    return (
+      <ScrollArea className={className}>
+        <div className="p-4 text-center text-muted-foreground">
+          <p>No recent conversations</p>
+        </div>
+      </ScrollArea>
+    );
+  }
+
   return (
     <ScrollArea className={className}>
       <div className="p-2 space-y-1">
-        {conversations.map((conv) => {
+        {filteredConversations.map((conv) => {
           const displayInfo = getConversationDisplayInfo(conv.chatId);
           const Icon = displayInfo.icon;
 

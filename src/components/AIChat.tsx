@@ -732,6 +732,28 @@ export function AIChat() {
     previousPathnameRef.current = location.pathname;
   }, [location.pathname, isOpen, setIsOpen]);
 
+  // Lock body scroll on mobile when chat is open
+  useEffect(() => {
+    if (isOpen && isMobile) {
+      // Save the current overflow style
+      const originalOverflow = document.body.style.overflow;
+      const originalPosition = document.body.style.position;
+      const originalWidth = document.body.style.width;
+      
+      // Lock body scroll
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'fixed';
+      document.body.style.width = '100%';
+      
+      return () => {
+        // Restore original styles
+        document.body.style.overflow = originalOverflow;
+        document.body.style.position = originalPosition;
+        document.body.style.width = originalWidth;
+      };
+    }
+  }, [isOpen, isMobile]);
+
   if (!chatId) return null;
 
   if (!isOpen) return null;
