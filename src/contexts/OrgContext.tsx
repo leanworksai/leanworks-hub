@@ -66,8 +66,6 @@ interface OrgContextType {
   leaveOrg: (orgId: string) => Promise<void>;
   
   // Invitation actions
-  pendingInvitations: OrgInvitation[];
-  refreshInvitations: () => Promise<void>;
   acceptInvitation: (invitationId: string) => Promise<Organization>;
   declineInvitation: (invitationId: string) => Promise<void>;
   inviteToOrg: (orgId: string, email: string, message?: string) => Promise<void>;
@@ -157,7 +155,6 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   // Initialize from localStorage to avoid flash of "no org" on page refresh
   const [currentOrg, setCurrentOrgState] = useState<Organization | null>(() => restoreOrgFromStorage());
   const currentOrgRef = useRef<Organization | null>(currentOrg);
-  const [pendingInvitations, setPendingInvitations] = useState<OrgInvitation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
@@ -361,27 +358,6 @@ export function OrgProvider({ children }: { children: ReactNode }) {
     }
   }, [user, setCurrentOrg]);
 
-  // Fetch pending invitations
-  const refreshInvitations = useCallback(async () => {
-    if (!user) {
-      setPendingInvitations([]);
-      return;
-    }
-
-    // Wait for token to be available
-    const token = await getAuthToken();
-    if (!token) {
-      return;
-    }
-
-    try {
-      const invitations = await apiCall<OrgInvitation[]>('/orgs/invitations/pending');
-      setPendingInvitations(invitations);
-    } catch (err) {
-      console.error('Failed to fetch invitations:', err);
-    }
-  }, [user]);
-
   // Create a new organization
   const createOrg = useCallback(async (name: string, description?: string): Promise<Organization> => {
     const newOrg = await apiCall<Organization>('/orgs', {
@@ -464,8 +440,8 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       team_id: result.orgId,
     });
     
-    // Refresh orgs and invitations
-    await Promise.all([refreshOrgs(), refreshInvitations()]);
+    // Refresh orgs list
+    await refreshOrgs();
     
     // Return the org info
     const org = organizations.find(o => o.id === result.orgId);
@@ -480,7 +456,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
       role: 'member',
       isOwner: false,
     };
-  }, [refreshOrgs, refreshInvitations, organizations]);
+  }, [refreshOrgs, organizations]);
 
   // Decline invitation
   const declineInvitation = useCallback(async (invitationId: string) => {
@@ -506,10 +482,7 @@ export function OrgProvider({ children }: { children: ReactNode }) {
         team_id: invitationOrgId,
       });
     }
-    
-    // Refresh invitations
-    await refreshInvitations();
-  }, [refreshInvitations]);
+  }, []);
 
   // Invite user to org
   const inviteToOrg = useCallback(async (orgId: string, email: string, message?: string) => {
@@ -535,8 +508,43 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   // Load orgs when user changes
   useEffect(() => {
     refreshOrgs();
-    refreshInvitations();
-  }, [user, refreshOrgs, refreshInvitations]);
+  }, [user, refreshOrgs]);
+
+  // Auto-accept pending invitation after orgs are loaded (from signup flow)
+  useEffect(() => {
+    if (!user || loading || organizations.length === 0) {
+      return;
+    }
+
+    const pendingInvitationId = localStorage.getItem('pending_invitation');
+    if (!pendingInvitationId) {
+      return;
+    }
+
+    // Auto-accept the invitation
+    const autoAcceptInvitation = async () => {
+      try {
+        if (import.meta.env.DEV) {
+          console.log('OrgContext: Auto-accepting pending invitation:', pendingInvitationId);
+        }
+        const acceptedOrg = await acceptInvitation(pendingInvitationId);
+        localStorage.removeItem('pending_invitation');
+        // Switch to the newly joined org
+        if (acceptedOrg) {
+          setCurrentOrg(acceptedOrg);
+          if (import.meta.env.DEV) {
+            console.log('OrgContext: ✅ Auto-accepted invitation and switched to org:', acceptedOrg.name);
+          }
+        }
+      } catch (err: any) {
+        // Invitation may have expired or already accepted - clear it
+        console.warn('OrgContext: Failed to auto-accept invitation:', err.message);
+        localStorage.removeItem('pending_invitation');
+      }
+    };
+
+    autoAcceptInvitation();
+  }, [user, loading, organizations.length, acceptInvitation, setCurrentOrg]);
 
   return (
     <OrgContext.Provider
@@ -552,8 +560,6 @@ export function OrgProvider({ children }: { children: ReactNode }) {
         updateOrg,
         deleteOrg,
         leaveOrg,
-        pendingInvitations,
-        refreshInvitations,
         acceptInvitation,
         declineInvitation,
         inviteToOrg,

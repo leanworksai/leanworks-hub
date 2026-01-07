@@ -713,14 +713,13 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     );
   }
 
-  // Don't show chat if member is not found (for DMs) - return null to not render anything
-  if (!isProjectChannel && !isTeamChannel && !currentMember) {
+  // Don't show chat if member/project/team is not found - return null to not render anything
+  if (!currentMember) {
     return null;
   }
 
-  // At this point, currentMember is guaranteed to be non-null for DMs (we returned early if null)
-  // For project/team channels, currentMember is always set
-  const member = currentMember!;
+  // At this point, currentMember is guaranteed to be non-null
+  const member = currentMember;
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden min-h-0 max-h-full">

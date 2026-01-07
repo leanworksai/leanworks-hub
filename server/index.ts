@@ -1940,41 +1940,73 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
       ? `${inviterData.first_name} ${inviterData.last_name}`
       : inviterData.first_name || inviterData.last_name || userEmail.split('@')[0];
     
-    // Create notification for the invitee
+    // Create or update notification for the invitee
     try {
-      await sharedPool.query(`
-        INSERT INTO notifications (
-          user_email,
-          org_id,
-          type,
-          title,
-          message,
-          status,
-          metadata,
-          created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-        ON CONFLICT DO NOTHING
-      `, [
-        normalizedInviteeEmail,
-        orgId,
-        'org_invitation',
-        `${inviterName} invited you to join ${orgName}`,
-        message || `You have been invited to join ${orgName}`,
-        'unread',
-        JSON.stringify({
-          invitation_id: invitation.id,
-          inviter_email: userEmail,
-          inviter_name: inviterName,
-          org_name: orgName,
-          org_slug: orgSlug,
-          role: 'member',
-          expires_at: invitation.expires_at
-        })
-      ]);
+      const notificationMetadata = JSON.stringify({
+        invitation_id: invitation.id,
+        org_id: orgId,
+        inviter_email: userEmail,
+        inviter_name: inviterName,
+        org_name: orgName,
+        org_slug: orgSlug,
+        expires_at: invitation.expires_at
+      });
+
+      // Check if notification already exists for this invitation
+      const existingNotif = await sharedPool.query(`
+        SELECT id FROM notifications 
+        WHERE user_email = $1 
+          AND type = 'org_invitation' 
+          AND metadata->>'invitation_id' = $2
+      `, [normalizedInviteeEmail, invitation.id]);
+
+      if (existingNotif.rows.length > 0) {
+        // Update existing notification - reset to unread, update metadata and timestamps
+        await sharedPool.query(`
+          UPDATE notifications 
+          SET title = $1,
+              message = $2,
+              status = 'unread',
+              metadata = $3::jsonb,
+              created_at = NOW(),
+              read_at = NULL,
+              dismissed_at = NULL
+          WHERE id = $4
+        `, [
+          `${inviterName} invited you to join ${orgName}`,
+          message || `You have been invited to join ${orgName}`,
+          notificationMetadata,
+          existingNotif.rows[0].id
+        ]);
+        console.log(`✅ Updated notification for invitation ${invitation.id}`);
+      } else {
+        // Create new notification
+        await sharedPool.query(`
+          INSERT INTO notifications (
+            user_email,
+            org_id,
+            type,
+            title,
+            message,
+            status,
+            metadata,
+            created_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+        `, [
+          normalizedInviteeEmail,
+          orgId,
+          'org_invitation',
+          `${inviterName} invited you to join ${orgName}`,
+          message || `You have been invited to join ${orgName}`,
+          'unread',
+          notificationMetadata
+        ]);
+        console.log(`✅ Created notification for invitation ${invitation.id}`);
+      }
     } catch (notifError: any) {
       // Don't fail invitation if notification creation fails
-      console.warn(`⚠️ Failed to create notification for invitation: ${notifError.message}`);
+      console.warn(`⚠️ Failed to create/update notification for invitation: ${notifError.message}`);
     }
     
     // Get invitee's name if they already have an account
@@ -2031,6 +2063,61 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
       body: req.body,
       error: errorMessage
     });
+    res.status(500).json({ error: errorMessage });
+  }
+});
+
+// Get invitation preview (public endpoint for signup page)
+app.get('/api/orgs/invitations/:invitationId/preview', async (req, res) => {
+  try {
+    const invitationId = req.params.invitationId;
+    const sharedPool = await getSharedPool();
+    
+    // Get invitation details
+    const result = await sharedPool.query(`
+      SELECT 
+        i.id,
+        i.invitee_email,
+        i.inviter_email,
+        i.expires_at,
+        o.name as org_name,
+        o.slug as org_slug,
+        u.first_name as inviter_first_name,
+        u.last_name as inviter_last_name
+      FROM org_invitations i
+      INNER JOIN organizations o ON i.org_id = o.id
+      LEFT JOIN users u ON i.inviter_email = u.email
+      WHERE i.id = $1 AND i.status = 'pending'
+    `, [invitationId]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Invitation not found or already processed' });
+    }
+    
+    const invitation = result.rows[0];
+    
+    // Check if invitation has expired
+    if (new Date(invitation.expires_at) < new Date()) {
+      return res.status(400).json({ error: 'Invitation has expired' });
+    }
+    
+    // Build inviter name
+    const inviterName = invitation.inviter_first_name && invitation.inviter_last_name
+      ? `${invitation.inviter_first_name} ${invitation.inviter_last_name}`
+      : invitation.inviter_first_name || invitation.inviter_last_name || invitation.inviter_email.split('@')[0];
+    
+    res.json({
+      invitationId: invitation.id,
+      orgName: invitation.org_name,
+      orgSlug: invitation.org_slug,
+      inviterName: inviterName,
+      inviterEmail: invitation.inviter_email,
+      inviteeEmail: invitation.invitee_email,
+      expiresAt: invitation.expires_at
+    });
+  } catch (error) {
+    console.error('Invitation preview error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     res.status(500).json({ error: errorMessage });
   }
 });

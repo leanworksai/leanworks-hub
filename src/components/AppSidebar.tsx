@@ -44,7 +44,7 @@ const menuItems = [
 
 export function AppSidebar() {
   const { open, isMobile, setOpenMobile, toggleSidebar } = useSidebar();
-  const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations } = useOrg();
+  const { currentOrg, organizations, switchOrg } = useOrg();
   const { selectedProjects, toggleProject } = useSelectedProjects();
   const { selectedTasks, toggleTask } = useSelectedTasks();
   const { selectedDocs, toggleDoc } = useSelectedDocs();
@@ -103,17 +103,7 @@ export function AppSidebar() {
               </span>
                     </div>
                     <ChevronDown className="h-4 w-4 text-sidebar-foreground/70 flex-shrink-0 ml-auto" />
-                    {orgInvitations.length > 0 && (
-                      <Badge variant="destructive" className="h-5 min-w-5 px-1.5 flex items-center justify-center text-xs flex-shrink-0">
-                        {orgInvitations.length}
-                      </Badge>
-                    )}
                   </>
-                )}
-                {!open && orgInvitations.length > 0 && (
-                  <Badge variant="destructive" className="absolute -top-1 -right-1 h-4 min-w-4 px-1 flex items-center justify-center text-[10px]">
-                    {orgInvitations.length}
-                  </Badge>
                 )}
               </Button>
             </DropdownMenuTrigger>
@@ -152,23 +142,6 @@ export function AppSidebar() {
                   </DropdownMenuItem>
                 ))}
           </div>
-              {orgInvitations.length > 0 && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <NavLink 
-                      to="/organizations" 
-                      onClick={handleNavClick}
-                      className="flex items-center gap-2 py-2"
-                    >
-                      <Badge variant="destructive" className="h-5 min-w-5 px-1.5">
-                        {orgInvitations.length}
-                      </Badge>
-                      <span>Pending Invitations</span>
-                    </NavLink>
-                  </DropdownMenuItem>
-                </>
-              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem asChild>
                 <NavLink 

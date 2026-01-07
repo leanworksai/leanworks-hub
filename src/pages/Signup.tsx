@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,7 +9,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { trackClick, trackFormSubmit } from '@/lib/analytics';
-import { CheckCircle2, Mail } from 'lucide-react';
+import { CheckCircle2, Mail, Building2, User } from 'lucide-react';
 
 // Common timezones list
 const TIMEZONES = [
@@ -43,7 +43,20 @@ const TIMEZONES = [
   { value: 'Pacific/Auckland', label: 'Auckland (NZDT/NZST)' },
 ];
 
+interface InvitationPreview {
+  invitationId: string;
+  orgName: string;
+  orgSlug: string;
+  inviterName: string;
+  inviterEmail: string;
+  inviteeEmail: string;
+  expiresAt: string;
+}
+
 export default function Signup() {
+  const [searchParams] = useSearchParams();
+  const invitationId = searchParams.get('invitation');
+  
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -56,6 +69,8 @@ export default function Signup() {
   const [loading, setLoading] = useState(false);
   const [signupSuccess, setSignupSuccess] = useState(false);
   const [submittedEmail, setSubmittedEmail] = useState('');
+  const [invitationPreview, setInvitationPreview] = useState<InvitationPreview | null>(null);
+  const [loadingInvitation, setLoadingInvitation] = useState(false);
   const { signUp, user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
 
@@ -65,6 +80,41 @@ export default function Signup() {
       navigate('/projects', { replace: true });
     }
   }, [user, authLoading, navigate]);
+
+  // Fetch invitation preview if invitation ID is present
+  useEffect(() => {
+    if (invitationId && !authLoading && !user) {
+      setLoadingInvitation(true);
+      const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
+      
+      fetch(`${API_BASE}/api/orgs/invitations/${invitationId}/preview`)
+        .then(async (res) => {
+          if (!res.ok) {
+            const error = await res.json().catch(() => ({ error: 'Failed to load invitation' }));
+            throw new Error(error.error || 'Invalid or expired invitation');
+          }
+          return res.json();
+        })
+        .then((data: InvitationPreview) => {
+          setInvitationPreview(data);
+          // Pre-fill email if available
+          if (data.inviteeEmail) {
+            setEmail(data.inviteeEmail);
+          }
+          // Store invitation ID for auto-accept after signup
+          localStorage.setItem('pending_invitation', data.invitationId);
+        })
+        .catch((err) => {
+          console.error('Failed to load invitation:', err);
+          setError(err.message || 'Invalid or expired invitation link');
+          // Remove invalid invitation from URL
+          navigate('/signup', { replace: true });
+        })
+        .finally(() => {
+          setLoadingInvitation(false);
+        });
+    }
+  }, [invitationId, authLoading, user, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,6 +167,10 @@ export default function Signup() {
       // Show success message instead of redirecting
       setSubmittedEmail(email);
       setSignupSuccess(true);
+      // Keep invitation ID in localStorage for auto-accept after email verification
+      if (invitationId) {
+        localStorage.setItem('pending_invitation', invitationId);
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to sign up');
     } finally {
@@ -197,6 +251,23 @@ export default function Signup() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {loadingInvitation && (
+            <Alert className="mb-4">
+              <AlertDescription>Loading invitation details...</AlertDescription>
+            </Alert>
+          )}
+          {invitationPreview && (
+            <Alert className="mb-4 border-primary/50 bg-primary/5">
+              <Building2 className="h-4 w-4 text-primary" />
+              <AlertDescription className="text-sm">
+                <div className="flex items-center gap-2 mb-1">
+                  <User className="h-3 w-3" />
+                  <span className="font-medium">{invitationPreview.inviterName}</span>
+                </div>
+                <span>invited you to join <strong>{invitationPreview.orgName}</strong></span>
+              </AlertDescription>
+            </Alert>
+          )}
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
               <Alert variant="destructive">

@@ -63,7 +63,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { isOpen: isAIChatOpen } = useAIChat();
-  const { currentOrg, organizations, switchOrg, pendingInvitations: orgInvitations, acceptInvitation: acceptOrgInvitation, declineInvitation: declineOrgInvitation } = useOrg();
+  const { currentOrg, organizations, switchOrg, acceptInvitation: acceptOrgInvitation, declineInvitation: declineOrgInvitation } = useOrg();
   const userTimezone = useUserTimezone();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
@@ -98,13 +98,9 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   // Get total pending notifications count (unified notifications + team invitations + join requests)
   const pendingRequestsCount = manageableRequests.length;
   const pendingInvitationsCount = userInvitations.length;
-  // Count org invitations from unified notifications table
-  const orgInvitationsFromNotifications = systemNotifications.filter(n => n.type === 'org_invitation' && n.status === 'unread').length;
-  // Count legacy org invitations (from org_invitations table) that aren't in notifications yet
-  const legacyOrgInvitationsCount = orgInvitations.length;
-  const unreadSystemNotificationsCount = systemNotifications.filter(n => n.status === 'unread' && n.type !== 'org_invitation').length;
-  // Total: system notifications + org invitations (from notifications) + legacy org invitations + team invitations + join requests
-  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + Math.max(orgInvitationsFromNotifications, legacyOrgInvitationsCount) + unreadSystemNotificationsCount;
+  const unreadNotificationsCount = systemNotifications.filter(n => n.status === 'unread').length;
+  // Total: system notifications + team invitations + join requests
+  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + unreadNotificationsCount;
 
 
   useEffect(() => {
@@ -500,64 +496,20 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       </div>
                     ) : (
                       <div className="max-h-96 overflow-y-auto">
-                        {/* Unified Notifications - sorted by date, deduplicated */}
+                        {/* Unified Notifications - sorted by date */}
                         {(() => {
-                          // Collect all notifications
-                          const allNotifications: any[] = [
-                            // System notifications (deployment, etc.)
-                            ...systemNotifications
-                              .filter(n => n.status !== 'dismissed' && n.type !== 'org_invitation')
-                              .map(n => ({ ...n, notificationType: 'system' as const })),
-                            // Org invitations from notifications table
-                            ...systemNotifications
-                              .filter(n => n.status !== 'dismissed' && n.type === 'org_invitation')
-                              .map(n => ({ ...n, notificationType: 'org_invitation' as const })),
-                            // Legacy org invitations (from org_invitations table - only if not already in notifications)
-                            ...orgInvitations
-                              .filter(inv => {
-                                // Only include if there's no matching notification with same invitation_id
-                                const hasMatchingNotification = systemNotifications.some(n => {
-                                  if (n.type === 'org_invitation' && n.metadata) {
-                                    const metadata = typeof n.metadata === 'string' ? JSON.parse(n.metadata) : n.metadata;
-                                    return metadata.invitation_id === inv.id;
-                                  }
-                                  return false;
-                                });
-                                return !hasMatchingNotification;
-                              })
-                              .map(inv => ({ ...inv, notificationType: 'org_invitation_legacy' as const }))
-                          ];
+                          // Filter and sort notifications
+                          const filteredNotifications = systemNotifications
+                            .filter(n => n.status !== 'dismissed')
+                            .sort((a, b) => {
+                              const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                              const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                              return dateB - dateA;
+                            });
 
-                          // Deduplicate by invitation_id for org invitations
-                          const seenInvitationIds = new Set<string>();
-                          const deduplicated = allNotifications.filter((notif: any) => {
-                            if (notif.notificationType === 'org_invitation' && notif.metadata) {
-                              const metadata = typeof notif.metadata === 'string' ? JSON.parse(notif.metadata) : notif.metadata;
-                              if (metadata.invitation_id) {
-                                if (seenInvitationIds.has(metadata.invitation_id)) {
-                                  return false;
-                                }
-                                seenInvitationIds.add(metadata.invitation_id);
-                              }
-                            } else if (notif.notificationType === 'org_invitation_legacy') {
-                              if (seenInvitationIds.has(notif.id)) {
-                                return false;
-                              }
-                              seenInvitationIds.add(notif.id);
-                            }
-                            return true;
-                          });
-
-                          // Sort by date (most recent first)
-                          deduplicated.sort((a, b) => {
-                            const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                            const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-                            return dateB - dateA;
-                          });
-
-                          return deduplicated.map((notification: any) => {
+                          return filteredNotifications.map((notification: any) => {
                             // Handle org invitations (from unified notifications table)
-                            if (notification.notificationType === 'org_invitation' && notification.metadata) {
+                            if (notification.type === 'org_invitation' && notification.metadata) {
                               const metadata = typeof notification.metadata === 'string' 
                                 ? JSON.parse(notification.metadata) 
                                 : notification.metadata;
@@ -634,64 +586,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                                               markNotificationRead.mutate(notification.id);
                                             }
                                           }}
-                                        >
-                                          <Check className="mr-1.5 h-3 w-3" />
-                                          Accept
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              );
-                            }
-                            
-                            // Handle legacy org invitations (from org_invitations table)
-                            if (notification.notificationType === 'org_invitation_legacy') {
-                              return (
-                                <div
-                                  key={notification.id}
-                                  className="relative p-3 border-b border-border/50 last:border-b-0 hover:bg-muted/30 transition-colors"
-                                >
-                                  <div className="flex items-start gap-3">
-                                    <Avatar className="h-9 w-9 flex-shrink-0 border border-border">
-                                      <AvatarFallback className={`${getAvatarColor(notification.inviterEmail || notification.inviterName)} text-xs`}>
-                                        {getUserInitials(notification.inviterName, notification.inviterEmail)}
-                                      </AvatarFallback>
-                                    </Avatar>
-                                    <div className="flex-1 min-w-0 space-y-1.5">
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div className="flex-1 min-w-0">
-                                          <p className="font-medium text-sm truncate">{notification.inviterName}</p>
-                                          <p className="text-xs text-muted-foreground truncate">
-                                            {notification.inviterEmail}
-                                          </p>
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                        <Building2 className="h-3 w-3 flex-shrink-0" />
-                                        <span className="truncate">
-                                          Invited you to join <span className="font-medium text-foreground">{notification.orgName}</span>
-                                        </span>
-                                      </div>
-                                      {notification.createdAt && (
-                                        <p className="text-xs text-muted-foreground">
-                                          {formatDate(new Date(notification.createdAt))}
-                                        </p>
-                                      )}
-                                      <div className="flex items-center gap-2 pt-1">
-                                        <Button
-                                          size="sm"
-                                          variant="outline"
-                                          className="flex-1 h-8 text-xs text-muted-foreground hover:text-destructive hover:border-destructive/50"
-                                          onClick={() => handleDeclineOrgInvitation(notification.id)}
-                                        >
-                                          <X className="mr-1.5 h-3 w-3" />
-                                          Decline
-                                        </Button>
-                                        <Button
-                                          size="sm"
-                                          className="flex-1 h-8 text-xs bg-primary hover:bg-primary/90"
-                                          onClick={() => handleAcceptOrgInvitation(notification.id)}
                                         >
                                           <Check className="mr-1.5 h-3 w-3" />
                                           Accept
@@ -811,66 +705,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                                 size="sm"
                                 className="flex-1 bg-primary hover:bg-primary/90"
                                 onClick={() => handleAcceptOrgInvitation(invitation.id)}
-                              >
-                                <Check className="mr-2 h-3 w-3" />
-                                Accept
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-
-                        {/* Team Invitations */}
-                        {userInvitations.map((invitation: TeamInvitation) => (
-                          <div
-                            key={invitation.id}
-                            className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"
-                          >
-                            <div className="flex items-start gap-3 mb-3">
-                              <Avatar className="h-10 w-10 flex-shrink-0">
-                                <AvatarFallback className={`${getAvatarColor(invitation.inviterEmail || invitation.inviterName)} text-xs`}>
-                                  {getUserInitials(invitation.inviterName, invitation.inviterEmail)}
-                                </AvatarFallback>
-                              </Avatar>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <p className="font-semibold text-sm truncate">{invitation.inviterName}</p>
-                                  <Badge variant="outline" className="text-xs flex-shrink-0">
-                                    <Clock className="mr-1 h-3 w-3" />
-                                    Invitation
-                                  </Badge>
-                                </div>
-                                <p className="text-xs text-muted-foreground truncate mb-1">
-                                  {invitation.inviterEmail}
-                                </p>
-                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                  <Users className="h-3 w-3 flex-shrink-0" />
-                                  <span className="truncate">
-                                    Invited you to join <span className="font-medium text-foreground">{invitation.teamName}</span>
-                                  </span>
-                                </div>
-                                {invitation.createdAt && (
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    {formatDate(invitation.createdAt)}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="flex-1 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                onClick={() => handleDeclineInvitation(invitation.id)}
-                                disabled={declineInvitationMutation.isPending}
-                              >
-                                <X className="mr-2 h-3 w-3" />
-                                Decline
-                              </Button>
-                              <Button
-                                size="sm"
-                                className="flex-1 bg-primary hover:bg-primary/90"
-                                onClick={() => handleAcceptInvitation(invitation.id)}
-                                disabled={acceptInvitationMutation.isPending}
                               >
                                 <Check className="mr-2 h-3 w-3" />
                                 Accept

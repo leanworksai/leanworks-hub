@@ -243,8 +243,9 @@ export default function Organizations() {
     );
   }
 
-  const teamOrgs = organizations.filter(org => org.type === 'team');
-  const personalOrg = organizations.find(org => org.type === 'personal');
+  // Filter out personal orgs from the main list (they're always shown separately if needed)
+  // But for now, show all orgs together without categorization
+  const allOrgs = organizations;
 
   return (
     <div className="container mx-auto py-4 sm:py-6 space-y-4 sm:space-y-6 px-4 sm:px-6">
@@ -300,178 +301,111 @@ export default function Organizations() {
       </div>
 
       <div className="space-y-6">
-        {/* Personal Workspace */}
-        {personalOrg && (
-          <div>
-            <h2 className="text-lg font-semibold mb-3">Personal Workspace</h2>
-            <Card 
-              className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:border-primary/30"
-              onClick={() => openMembersDialog(personalOrg)}
-            >
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-3">
-                  <div className="flex-1 min-w-0">
-                    <CardTitle className="text-base flex items-center gap-2 truncate">
-                      {personalOrg.name}
-                      {currentOrg?.id === personalOrg.id && (
-                        <Badge variant="secondary" className="text-xs shrink-0">Current</Badge>
-                      )}
-                    </CardTitle>
-                    <CardDescription className="flex items-center gap-1">
-                      {personalOrg.isOwner ? (
-                        <>
-                          <Crown className="h-3 w-3" />
-                          Owner
-                        </>
-                      ) : (
-                        <>
-                          <User className="h-3 w-3" />
-                          Member
-                        </>
-                      )}
-                      {personalOrg.memberCount !== undefined && (
-                        <span className="ml-2 flex items-center gap-1 text-xs">
-                          <Users className="h-3 w-3" />
-                          {personalOrg.memberCount}
-                        </span>
-                      )}
-                    </CardDescription>
-                    <div className="flex items-center gap-2 mt-1.5">
-                      <span className="text-xs text-muted-foreground font-mono">{personalOrg.slug}</span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 p-0"
-                        onClick={(e) => handleCopySlug(personalOrg.slug, e)}
-                        title="Copy slug"
-                      >
-                        {copiedSlug === personalOrg.slug ? (
-                          <Check className="h-3 w-3 text-green-600" />
-                        ) : (
-                          <Copy className="h-3 w-3" />
+        {allOrgs.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-medium">No organizations yet</h3>
+              <p className="text-muted-foreground mb-4">
+                Create an organization to collaborate with your team
+              </p>
+              <Button onClick={() => setIsCreateDialogOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                Create Organization
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {allOrgs.map(org => (
+              <Card
+                key={org.id}
+                className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:border-primary/30"
+                onClick={() => openMembersDialog(org)}
+              >
+                <CardHeader className="pb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <CardTitle className="text-base flex items-center gap-2 truncate">
+                        {org.name}
+                        {currentOrg?.id === org.id && (
+                          <Badge variant="secondary" className="text-xs shrink-0">Current</Badge>
                         )}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardFooter className="pt-0 flex gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                {currentOrg?.id !== personalOrg.id && (
-                  <Button variant="outline" size="sm" onClick={() => switchOrg(personalOrg.id)} className="flex-1 sm:flex-initial">
-                    Switch
-                  </Button>
-                )}
-                {personalOrg.isOwner && (
-                  <Button variant="outline" size="sm" onClick={() => openInviteDialog(personalOrg)}>
-                    <Send className="h-3 w-3 sm:mr-1" />
-                    <span className="sm:inline hidden">Invite</span>
-                  </Button>
-                )}
-              </CardFooter>
-            </Card>
-          </div>
-        )}
-
-        {/* Team Organizations */}
-        <div>
-          {teamOrgs.length === 0 ? (
-            <Card>
-              <CardContent className="py-8 text-center">
-                <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                <h3 className="text-lg font-medium">No team organizations yet</h3>
-                <p className="text-muted-foreground mb-4">
-                  Create an organization to collaborate with your team
-                </p>
-                <Button onClick={() => setIsCreateDialogOpen(true)}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create Organization
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {teamOrgs.map(org => (
-                <Card 
-                  key={org.id} 
-                  className="bg-gradient-card border-border shadow-card cursor-pointer transition-all hover:shadow-lg hover:border-primary/30"
-                  onClick={() => openMembersDialog(org)}
-                >
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex-1 min-w-0">
-                        <CardTitle className="text-base flex items-center gap-2 truncate">
-                          {org.name}
-                          {currentOrg?.id === org.id && (
-                            <Badge variant="secondary" className="text-xs shrink-0">Current</Badge>
-                          )}
-                        </CardTitle>
-                        <CardDescription className="flex items-center gap-1">
-                          {org.isOwner ? (
-                            <>
-                              <Crown className="h-3 w-3" />
-                              Owner
-                            </>
+                      </CardTitle>
+                      <CardDescription className="flex items-center gap-1">
+                        {org.isOwner ? (
+                          <>
+                            <Crown className="h-3 w-3" />
+                            Owner
+                          </>
+                        ) : (
+                          <>
+                            <User className="h-3 w-3" />
+                            Member
+                          </>
+                        )}
+                        {org.memberCount !== undefined && (
+                          <span className="ml-2 flex items-center gap-1 text-xs">
+                            <Users className="h-3 w-3" />
+                            {org.memberCount}
+                          </span>
+                        )}
+                      </CardDescription>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <span className="text-xs text-muted-foreground font-mono">{org.slug}</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0"
+                          onClick={(e) => handleCopySlug(org.slug, e)}
+                          title="Copy slug"
+                        >
+                          {copiedSlug === org.slug ? (
+                            <Check className="h-3 w-3 text-green-600" />
                           ) : (
-                            <>
-                              <User className="h-3 w-3" />
-                              Member
-                            </>
+                            <Copy className="h-3 w-3" />
                           )}
-                          {org.memberCount !== undefined && (
-                            <span className="ml-2 flex items-center gap-1 text-xs">
-                              <Users className="h-3 w-3" />
-                              {org.memberCount}
-                            </span>
-                          )}
-                        </CardDescription>
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span className="text-xs text-muted-foreground font-mono">{org.slug}</span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 w-6 p-0"
-                            onClick={(e) => handleCopySlug(org.slug, e)}
-                            title="Copy slug"
-                          >
-                            {copiedSlug === org.slug ? (
-                              <Check className="h-3 w-3 text-green-600" />
-                            ) : (
-                              <Copy className="h-3 w-3" />
-                            )}
-                          </Button>
-                        </div>
+                        </Button>
                       </div>
                     </div>
-                  </CardHeader>
-                  {org.description && (
-                    <CardContent className="pt-0 pb-3">
-                      <p className="text-sm text-muted-foreground line-clamp-2">{org.description}</p>
-                    </CardContent>
+                  </div>
+                </CardHeader>
+                {org.description && (
+                  <CardContent className="pt-0 pb-3">
+                    <p className="text-sm text-muted-foreground line-clamp-2">{org.description}</p>
+                  </CardContent>
+                )}
+                <CardFooter className="pt-0 flex gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
+                  {currentOrg?.id !== org.id && (
+                    <Button variant="outline" size="sm" onClick={() => switchOrg(org.id)} className="flex-1 sm:flex-initial">
+                      Switch
+                    </Button>
                   )}
-                  <CardFooter className="pt-0 flex gap-2 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                    {currentOrg?.id !== org.id && (
-                      <Button variant="outline" size="sm" onClick={() => switchOrg(org.id)} className="flex-1 sm:flex-initial">
-                        Switch
+                  {org.isOwner && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => openInviteDialog(org)}>
+                        <Send className="h-3 w-3 sm:mr-1" />
+                        <span className="sm:inline hidden">Invite</span>
                       </Button>
-                    )}
-                    {org.isOwner && (
-                      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleDeleteOrg(org)}>
-                        <Trash2 className="h-3 w-3 sm:mr-0" />
-                        <span className="sm:hidden ml-1">Delete</span>
-                      </Button>
-                    )}
-                    {!org.isOwner && (
-                      <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleLeaveOrg(org)}>
-                        <LogOut className="h-3 w-3 mr-1" />
-                        Leave
-                      </Button>
-                    )}
-                  </CardFooter>
-                </Card>
-              ))}
-            </div>
-          )}
-        </div>
+                      {org.type !== 'personal' && (
+                        <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleDeleteOrg(org)}>
+                          <Trash2 className="h-3 w-3 sm:mr-0" />
+                          <span className="sm:hidden ml-1">Delete</span>
+                        </Button>
+                      )}
+                    </>
+                  )}
+                  {!org.isOwner && (
+                    <Button variant="ghost" size="sm" className="text-destructive" onClick={() => handleLeaveOrg(org)}>
+                      <LogOut className="h-3 w-3 mr-1" />
+                      Leave
+                    </Button>
+                  )}
+                </CardFooter>
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Invite Dialog */}
