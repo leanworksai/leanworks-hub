@@ -64,6 +64,7 @@ import { Input } from "@/components/ui/input";
 import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
+import { usePageContext } from "@/contexts/PageContext";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -127,6 +128,7 @@ export default function ProjectDetail() {
   const userMap = useUserMap();
   const userTimezone = useUserTimezone();
   const { data: allSummaries = [] } = useAllUpdateSummaries(projectId || '');
+  const { setContext, clearContext } = usePageContext();
   
   // Track scroll depth for engagement
   useScrollTracking(true);
@@ -182,6 +184,20 @@ export default function ProjectDetail() {
   useEffect(() => {
     setTaskPageIndex(0);
   }, [projectId]);
+
+  // Set page context when project loads
+  useEffect(() => {
+    if (project && projectId && projectId !== 'new' && project.name) {
+      setContext('project', { id: projectId, title: project.name });
+    } else {
+      clearContext();
+    }
+
+    // Clear context on unmount
+    return () => {
+      clearContext();
+    };
+  }, [project, projectId, setContext, clearContext]);
 
   const handleDelete = async () => {
     if (!project) return;

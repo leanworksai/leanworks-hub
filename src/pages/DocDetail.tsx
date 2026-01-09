@@ -16,6 +16,7 @@ import { useAutoSave } from "@/hooks/useAutoSave";
 import { trackEvent, trackView } from "@/lib/analytics";
 import { initOfflineQueue } from "@/services/offlineQueue";
 import { useScrollTracking } from "@/hooks/useScrollTracking";
+import { usePageContext } from "@/contexts/PageContext";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -49,6 +50,7 @@ export default function DocDetail() {
   const deleteDoc = useDeleteDoc();
   const { toast } = useToast();
   const { user } = useAuth();
+  const { setContext, clearContext } = usePageContext();
   
   // Track scroll depth for engagement
   useScrollTracking(true);
@@ -136,6 +138,20 @@ export default function DocDetail() {
       setFiles([]);
     }
   }, [doc, isNew]);
+
+  // Set page context when doc loads
+  useEffect(() => {
+    if (doc && docId && docId !== 'new' && doc.title) {
+      setContext('doc', { id: docId, title: doc.title });
+    } else {
+      clearContext();
+    }
+
+    // Clear context on unmount
+    return () => {
+      clearContext();
+    };
+  }, [doc, docId, setContext, clearContext]);
 
   const handleFileUpload = async (file: File) => {
     if (!docId || docId === "new") {

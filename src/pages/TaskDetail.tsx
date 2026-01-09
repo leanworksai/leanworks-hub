@@ -87,6 +87,7 @@ import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
 import { useScrollTracking } from "@/hooks/useScrollTracking";
+import { usePageContext } from "@/contexts/PageContext";
 
 const getInitials = (name: string): string => {
   return name
@@ -238,6 +239,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   // Track scroll depth for engagement
   useScrollTracking(true);
   const { user } = useAuth();
+  const { setContext, clearContext } = usePageContext();
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
   const { isFreePlan } = useSubscription();
@@ -315,6 +317,21 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
       onClose();
     }
   }, [isLoading, task, hasAccess, navigate, projects.length, isDialog, onClose]);
+
+  // Set page context when task loads
+  useEffect(() => {
+    if (task && taskId && taskId !== 'new' && task.title) {
+      setContext('task', { id: taskId, title: task.title });
+    } else {
+      clearContext();
+    }
+
+    // Clear context on unmount
+    return () => {
+      clearContext();
+    };
+  }, [task, taskId, setContext, clearContext]);
+
   const updateTaskMutation = useUpdateTask();
   const deleteTask = useDeleteTask();
   const { toast } = useToast();

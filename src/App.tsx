@@ -14,6 +14,8 @@ import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedDocsProvider } from "@/contexts/SelectedDocsContext";
 import { SelectionModeProvider } from "@/contexts/SelectionModeContext";
+import { PageContextProvider } from "@/contexts/PageContext";
+import { SelectedTextContextProvider } from "@/contexts/SelectedTextContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { AIChat } from "./components/AIChat";
@@ -315,17 +317,21 @@ const App = () => {
         <AuthProvider>
           <OrgProvider>
             <WebRTCProvider>
-              <SelectionModeProvider>
-                <SelectedProjectsProvider>
-                  <SelectedTasksProvider>
-                    <SelectedDocsProvider>
-                      <Toaster />
-                      <Sonner />
-                      <AppRoutes />
-                    </SelectedDocsProvider>
-                  </SelectedTasksProvider>
-                </SelectedProjectsProvider>
-              </SelectionModeProvider>
+              <PageContextProvider>
+                <SelectedTextContextProvider>
+                  <SelectionModeProvider>
+                    <SelectedProjectsProvider>
+                      <SelectedTasksProvider>
+                        <SelectedDocsProvider>
+                          <Toaster />
+                          <Sonner />
+                          <AppRoutes />
+                        </SelectedDocsProvider>
+                      </SelectedTasksProvider>
+                    </SelectedProjectsProvider>
+                  </SelectionModeProvider>
+                </SelectedTextContextProvider>
+              </PageContextProvider>
             </WebRTCProvider>
           </OrgProvider>
         </AuthProvider>

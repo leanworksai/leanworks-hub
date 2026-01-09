@@ -460,8 +460,8 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                   size="icon"
                   className="relative group"
                   onClick={() => {
-                    // Dispatch event to open AI chat
-                    window.dispatchEvent(new CustomEvent('openAIChat'));
+                    // Dispatch event to toggle AI chat (open if closed, close if open)
+                    window.dispatchEvent(new CustomEvent('toggleChat'));
                   }}
                 >
                   <div className="relative flex items-center justify-center w-5 h-5">

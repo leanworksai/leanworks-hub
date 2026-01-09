@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-import { X, Trash2 } from "lucide-react";
+import { X, Trash2, FileText } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
@@ -16,6 +17,8 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useOrg } from "@/contexts/OrgContext";
+import { usePageContext } from "@/contexts/PageContext";
+import { useSelectedTextContext } from "@/contexts/SelectedTextContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
 import { useAIChat } from "@/hooks/useAIChat";
@@ -38,6 +41,8 @@ export function AIChat() {
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
+  const { contextType, contextRef } = usePageContext();
+  const { selectedTextPosition, clearSelectedText } = useSelectedTextContext();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -269,7 +274,8 @@ export function AIChat() {
   const generateResponse = useCallback(async (
     message: string,  // Just the current message
     chatId: string,
-    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[] }  // Add citedContext parameter
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[] },  // Add citedContext parameter
+    implicitContext?: string  // Add implicitContext parameter
   ): Promise<string> => {
     // Use chatId as sessionId for conversation continuity
     // This ensures the AI service maintains context within the conversation
@@ -278,6 +284,7 @@ export function AIChat() {
       message,
       sessionId: chatId, // Conversation-scoped session ID
       citedContext,  // Pass citedContext
+      implicitContext,  // Pass implicitContext
     });
 
     return response.response || response.content;
@@ -331,10 +338,11 @@ export function AIChat() {
     setImagePreviewUrls([]);
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
+    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || selectedTextPosition) ? {
       projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
       tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
       docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
+      selectedTextPosition: selectedTextPosition || undefined,
     } : undefined;
 
     // Create user message
@@ -390,7 +398,7 @@ export function AIChat() {
 
       // Generate AI response
       setIsLoading(true);
-      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
+      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!selectedTextPosition;
 
       try {
         // Build citedContext from selected items
@@ -398,15 +406,25 @@ export function AIChat() {
           projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
           tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
           docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
+          selectedTextPosition: selectedTextPosition || undefined,
         } : undefined;
 
+        // Build implicit context from current page
+        let implicitContext: string | undefined = undefined;
+        if (contextRef && contextType) {
+          implicitContext = `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})`;
+        }
+
         // Pass only the current message - backend will load conversation from Firestore
-        const response = await generateResponse(messageContent, chatId, citedContextForAPI);
+        const response = await generateResponse(messageContent, chatId, citedContextForAPI, implicitContext);
         
         if (hadSelections) {
           clearSelectedProjects();
           clearSelectedTasks();
           clearSelectedDocs();
+          if (selectedTextPosition) {
+            clearSelectedText();
+          }
         }
         
         const assistantMessage: Message = {
@@ -711,12 +729,13 @@ export function AIChat() {
       // Tracking is already done in the sidebar component
     };
     
-    window.addEventListener('openAIChat', handleToggleChat as EventListener);
+    // Use handleOpenChat for 'openAIChat' event so it doesn't close if already open
+    window.addEventListener('openAIChat', handleOpenChat as EventListener);
     window.addEventListener('toggleChat', handleToggleChat as EventListener); // Keep for backward compatibility
     window.addEventListener('openChatWithAI', handleOpenChat as EventListener);
     
     return () => {
-      window.removeEventListener('openAIChat', handleToggleChat as EventListener);
+      window.removeEventListener('openAIChat', handleOpenChat as EventListener);
       window.removeEventListener('toggleChat', handleToggleChat as EventListener);
       window.removeEventListener('openChatWithAI', handleOpenChat as EventListener);
     };
@@ -910,6 +929,27 @@ export function AIChat() {
           multiple
           className="hidden"
         />
+        {selectedTextPosition && (
+          <div className="px-4 pt-3 pb-2 border-t border-purple-200/60 bg-white/50 backdrop-blur-sm">
+            <div className="flex items-center gap-2 flex-wrap">
+              <FileText className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 flex-shrink-0" />
+              <span className="text-xs font-medium text-purple-700 dark:text-purple-300">Selected Text:</span>
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <Badge variant="secondary" className="text-xs bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/60 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800/60 dark:hover:bg-purple-900/60">
+                  Text selection from document
+                </Badge>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-4 w-4 opacity-70 hover:opacity-100"
+                  onClick={clearSelectedText}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         <ChatInput
           onSend={handleSend}
           disabled={isSendingMessage || isFreePlan}

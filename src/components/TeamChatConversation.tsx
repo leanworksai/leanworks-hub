@@ -17,6 +17,7 @@ import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useOrg } from "@/contexts/OrgContext";
+import { usePageContext } from "@/contexts/PageContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
 import { VoiceCallButton } from "./VoiceCall";
@@ -41,6 +42,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
   const { callStatus, currentCallId } = useWebRTCContext();
+  const { setContext, clearContext } = usePageContext();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [channelMessages, setChannelMessages] = useState<Map<string, ChannelMessage[]>>(new Map());
@@ -300,6 +302,30 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
       unsubscribe();
     };
   }, [chatId, user?.email, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId]);
+
+  // Set page context when team chat is active
+  useEffect(() => {
+    if (chatId && currentMember && (isProjectChannel || isTeamChannel || isDM)) {
+      // Only set context for project channels, team channels, or DMs (not AI assistant chats)
+      if (!chatId.startsWith('ai-assistant-')) {
+        const chatTitle = isProjectChannel 
+          ? `${selectedProject?.name} Channel`
+          : isTeamChannel
+          ? `${selectedTeam?.name} Channel`
+          : currentMember.name;
+        setContext('team-chat', { id: chatId, title: chatTitle });
+      } else {
+        clearContext();
+      }
+    } else {
+      clearContext();
+    }
+
+    // Clear context on unmount
+    return () => {
+      clearContext();
+    };
+  }, [chatId, currentMember, isProjectChannel, isTeamChannel, isDM, selectedProject, selectedTeam, setContext, clearContext]);
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {

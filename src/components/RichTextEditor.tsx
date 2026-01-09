@@ -15,6 +15,9 @@ import { TableToolbar } from '@/components/editor/TableToolbar';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { marked } from 'marked';
 import mermaid from 'mermaid';
+import { useTextSelection } from '@/hooks/useTextSelection';
+import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
+import { FloatingAskAI } from '@/components/FloatingAskAI';
 
 // Create lowlight instance with common languages
 const lowlight = createLowlight(common);
@@ -306,6 +309,13 @@ export function RichTextEditor({
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarContainerRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<any>(null);
+  const { selectedText, hasSelection, selectionBounds, selectionPosition } = useTextSelection(
+    editorContainerRef,
+    editorRef, // Pass ref instead of editor instance
+    docId
+  );
+  const { setSelectedTextPosition } = useSelectedTextContext();
   const [isUploading, setIsUploading] = useState(false);
   const [isToolbarSticky, setIsToolbarSticky] = useState(false);
   const [toolbarHeight, setToolbarHeight] = useState(0);
@@ -318,9 +328,6 @@ export function RichTextEditor({
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
   const getButtonClasses = (isActive: boolean) =>
     cn('rounded-md', isActive ? activeToolbarClasses : baseToolbarClasses);
-
-  // Store editor ref for paste handler
-  const editorRef = useRef<any>(null);
 
   const editor = useEditor({
     extensions: [
@@ -392,7 +399,7 @@ export function RichTextEditor({
       }
     },
     onCreate: ({ editor }) => {
-      editorRef.current = editor;
+      editorRef.current = editor; // Store editor in ref for useTextSelection hook
       editorInitializedRef.current = true;
       const initialHtml = editor.getHTML();
       contentRef.current = initialHtml;
@@ -860,6 +867,12 @@ export function RichTextEditor({
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
   };
 
+  const handleAskAI = useCallback((position: { docId: string; startOffset: number; endOffset: number }) => {
+    setSelectedTextPosition(position);
+    // Open AI chat
+    window.dispatchEvent(new CustomEvent('openAIChat'));
+  }, [setSelectedTextPosition]);
+
   return (
     <div className="border border-border/30 rounded-lg w-full max-w-full bg-background shadow-sm">
       {/* Title Input */}
@@ -1122,11 +1135,18 @@ export function RichTextEditor({
       )}
 
       {/* Editor Content */}
-      <div ref={editorContainerRef}>
+      <div ref={editorContainerRef} className="relative">
         <EditorContent 
           editor={editor} 
           className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:overflow-wrap-anywhere [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60" 
           style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+        />
+        <FloatingAskAI
+          visible={hasSelection && selectedText.length > 0 && !readOnly && !!selectionPosition}
+          position={selectionBounds}
+          onAskAI={handleAskAI}
+          selectionPosition={selectionPosition}
+          selectedText={selectedText}
         />
       </div>
     </div>
