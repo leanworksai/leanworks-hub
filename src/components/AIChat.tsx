@@ -782,8 +782,8 @@ export function AIChat() {
       "fixed top-16 h-[calc(100dvh-4rem)] flex flex-col overflow-hidden pb-[env(safe-area-inset-bottom)]",
       // Mobile: overlay entire screen under header
       "left-0 right-0 w-full z-[60]",
-      // Desktop: right side panel
-      "sm:right-0 sm:left-auto sm:w-96 sm:z-30 sm:pb-0",
+      // Desktop: right side panel - higher z-index than sticky toolbar (z-50)
+      "sm:right-0 sm:left-auto sm:w-96 sm:z-[60] sm:pb-0",
       // Modern gradient background with subtle border
       "bg-gradient-to-br from-purple-50 via-indigo-50/30 to-purple-50",
       "border-l border-purple-200/60",
