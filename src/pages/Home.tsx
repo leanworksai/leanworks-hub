@@ -81,13 +81,20 @@ export default function Home() {
   // Document/Notes demo states
   const [docDemoState, setDocDemoState] = useState<'initial' | 'adding-notes' | 'asking-ai' | 'ai-analyzing' | 'complete'>('initial');
   const [availableNotes, setAvailableNotes] = useState<Array<{id: number, title: string, content: string}>>([
-    { id: 1, title: 'User Feedback - Week 1', content: 'Users want faster load times. Mobile app crashes on iOS 15. Request for dark mode.' },
-    { id: 2, title: 'User Feedback - Week 2', content: 'More crashes reported on iOS 15. Performance issues on Android. Dark mode highly requested.' },
-    { id: 3, title: 'User Feedback - Week 3', content: 'iOS 15 compatibility critical. Dark mode still top request. Performance complaints increasing.' },
+    { id: 1, title: 'Q3 Sales Data.csv', content: 'SaaS: $1.2M (+24%), Hardware: $450k (-5%), Services: $300k (+10%). Churn rate: 1.2%.' },
+    { id: 2, title: 'Customer Feedback Logs', content: 'Highly positive sentiment on new UI. 15% request better data export. Support tickets down 20%.' },
+    { id: 3, title: 'Product Roadmap 2026', content: 'Focus on AI integration, mobile app redesign, and enterprise security features for Q4.' },
   ]);
   const [notesInContext, setNotesInContext] = useState<Array<{id: number, title: string, content: string}>>([]);
   const [userQuestion, setUserQuestion] = useState('');
-  const [aiResponse, setAiResponse] = useState<{patterns: string[], visible: boolean}>({patterns: [], visible: false});
+  const [aiResponse, setAiResponse] = useState<{
+    patterns: string[], 
+    visible: boolean,
+    table?: {
+      headers: string[],
+      rows: string[][]
+    }
+  }>({patterns: [], visible: false});
 
   // Section refs for visibility tracking
   const heroSectionRef = useRef<HTMLElement>(null);
@@ -287,28 +294,28 @@ export default function Home() {
     let resetTimeout: NodeJS.Timeout;
 
     if (docDemoState === 'initial') {
-      // Start with initial state, then move to adding notes
+      // Show empty chat state for a moment
       const timeout = setTimeout(() => {
         setDocDemoState('adding-notes');
       }, 1000);
       return () => clearTimeout(timeout);
     } else if (docDemoState === 'adding-notes') {
-      // Show notes being added to context one by one
+      // Show files being "uploaded" as messages
       availableNotes.forEach((note, index) => {
         setTimeout(() => {
           setNotesInContext((prev) => [...prev, note]);
           if (index === availableNotes.length - 1) {
             setTimeout(() => {
               setDocDemoState('asking-ai');
-            }, 2000);
+            }, 1500);
           }
-        }, index * 2000);
+        }, index * 1200);
       });
 
       return () => {};
     } else if (docDemoState === 'asking-ai') {
-      // Show user typing question
-      const question = "What patterns do you see in these user feedback notes?";
+      // Show user typing question in a chat bubble
+      const question = "Generate a summary table of Q3 performance. Only include departments with >15% growth.";
       let currentIndex = 0;
       const typingInterval = setInterval(() => {
         if (currentIndex < question.length) {
@@ -320,16 +327,15 @@ export default function Home() {
             setDocDemoState('ai-analyzing');
           }, 1500);
         }
-      }, 50);
+      }, 40);
 
       return () => clearInterval(typingInterval);
     } else if (docDemoState === 'ai-analyzing') {
-      // AI analyzes and finds patterns
+      // AI analyzes and finds patterns, showing progress
       const patterns = [
-        'iOS 15 compatibility issues are consistently reported across all weeks',
-        'Dark mode is the most frequently requested feature',
-        'Performance concerns are increasing over time',
-        'Mobile app stability is a recurring theme'
+        'Analyzing Q3 Sales Data.csv...',
+        'Filtering departments with growth > 15%...',
+        'Formatting results into a summary table...'
       ];
 
       // Show patterns appearing one by one
@@ -343,10 +349,23 @@ export default function Home() {
             }));
             if (index === patterns.length - 1) {
               setTimeout(() => {
-                setDocDemoState('complete');
-              }, 2000);
+                setAiResponse((prev) => ({
+                  ...prev,
+                  table: {
+                    headers: ['Department', 'Growth', 'Revenue'],
+                    rows: [
+                      ['SaaS Products', '+24.2%', '$1.2M'],
+                      ['Cloud Services', '+18.5%', '$850k'],
+                      ['Enterprise AI', '+32.1%', '$420k']
+                    ]
+                  }
+                }));
+                setTimeout(() => {
+                  setDocDemoState('complete');
+                }, 4000);
+              }, 1000);
             }
-          }, index * 800);
+          }, index * 1000);
         });
       }, 1000);
 
@@ -357,8 +376,8 @@ export default function Home() {
         setDocDemoState('initial');
         setNotesInContext([]);
         setUserQuestion('');
-        setAiResponse({patterns: [], visible: false});
-      }, 6000);
+        setAiResponse({patterns: [], visible: false, table: undefined});
+      }, 8000);
 
       return () => clearTimeout(resetTimeout);
     }
@@ -1044,176 +1063,194 @@ export default function Home() {
       </section>
 
       {/* Feature 5: Documentation */}
-      <section ref={feature4Ref} className="py-20 bg-slate-50/50">
+      <section ref={feature4Ref} className="py-24 bg-slate-50/50 overflow-hidden">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
           <div className="max-w-6xl mx-auto">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
-              <div>
-                <div className="h-14 w-14 rounded-xl bg-primary/10 flex items-center justify-center mb-6">
-                  <FileText className="h-7 w-7 text-primary" />
-                </div>
-                <h2 className="text-3xl sm:text-4xl font-bold mb-6">Write or Drop Any Document, and AI Helps You Manage Them</h2>
-                <p className="text-lg text-muted-foreground leading-relaxed">
-                  Write a new document or drop any file—PDFs, images, text files, or anything else. Our AI 
-                  automatically reads, understands, and organizes everything for you. It sorts your documents 
-                  into the right categories, extracts key information, and makes everything searchable. Ask the 
-                  AI any question about your documents and get instant answers with references. No manual 
-                  organization needed—just drop it, and AI takes care of the rest.
-                </p>
+            <div className="text-center max-w-3xl mx-auto mb-16">
+              <div className="h-14 w-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-6 mx-auto">
+                <FileText className="h-7 w-7 text-primary" />
               </div>
-              <Card className="w-full max-w-md mx-auto rotate-2 hover:rotate-0 transition-transform duration-500 bg-gradient-card border-border shadow-card overflow-hidden">
-                <CardHeader className="pb-2 border-b bg-muted/30">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-xl">Notes & AI Analysis</CardTitle>
-                    {docDemoState === 'adding-notes' && (
-                      <span className="text-xs text-primary flex items-center gap-1">
-                        <Plus className="h-3 w-3 animate-pulse" />
-                        Adding to context...
-                      </span>
-                    )}
-                    {docDemoState === 'ai-analyzing' && (
-                      <span className="text-xs text-primary flex items-center gap-1">
-                        <Brain className="h-3 w-3 animate-pulse" />
-                        Analyzing...
-                      </span>
-                    )}
+              <h2 className="text-4xl sm:text-5xl font-bold mb-6">Analyze data and write document through chats</h2>
+              <p className="text-xl text-muted-foreground leading-relaxed">
+                Transform raw data into professional documents through simple conversations. 
+                Our AI reads your files, analyzes complex patterns, and generates formatted 
+                reports, tables, and summaries directly into your documents.
+              </p>
+            </div>
+              <Card className="w-full max-w-5xl mx-auto border-border shadow-2xl overflow-hidden bg-background">
+              <div className="grid grid-cols-1 lg:grid-cols-12 h-[600px]">
+                {/* Left Pane: Document Editor */}
+                <div className="lg:col-span-7 border-r border-border bg-white flex flex-col">
+                  <div className="h-12 border-b flex items-center px-4 bg-muted/20">
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-3 w-3 rounded-sm bg-blue-500" />
+                        <span className="text-xs font-medium">Q3_Analysis_Report.doc</span>
+                      </div>
+                      <div className="h-4 w-[1px] bg-border" />
+                      <div className="flex gap-2">
+                        <div className="h-2 w-12 rounded-full bg-muted-foreground/10" />
+                        <div className="h-2 w-8 rounded-full bg-muted-foreground/10" />
+                        <div className="h-2 w-16 rounded-full bg-muted-foreground/10" />
+                      </div>
+                    </div>
                   </div>
-                </CardHeader>
-                <CardContent className="p-4 bg-background/50">
-                  <ScrollArea className="h-[450px]">
-                    <div className="space-y-4">
-                      {/* Available Notes Section */}
-                      {docDemoState === 'adding-notes' && availableNotes.length > 0 && (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2 mb-2">
-                            <FileText className="h-4 w-4 text-muted-foreground" />
-                            <h4 className="text-sm font-semibold">Available Notes</h4>
-                            <Badge variant="outline" className="text-[10px] px-1.5 h-5">
-                              {availableNotes.length}
-                            </Badge>
+                  <ScrollArea className="flex-1 p-8 lg:p-12">
+                    <div className="max-w-2xl mx-auto space-y-6">
+                      {docDemoState === 'initial' && (
+                        <div className="space-y-4 opacity-20">
+                          <div className="h-8 w-3/4 bg-muted rounded" />
+                          <div className="space-y-2">
+                            <div className="h-4 w-full bg-muted rounded" />
+                            <div className="h-4 w-full bg-muted rounded" />
+                            <div className="h-4 w-2/3 bg-muted rounded" />
                           </div>
-                          {availableNotes.map((note) => {
-                            const isInContext = notesInContext.some(n => n.id === note.id);
-                            return (
-                              <div
-                                key={note.id}
-                                className={`p-3 rounded-lg border transition-all duration-500 ${
-                                  isInContext 
-                                    ? 'bg-primary/5 border-primary/30 opacity-50' 
-                                    : 'bg-background border-border'
-                                }`}
-                              >
-                                <div className="flex items-center gap-2">
-                                  <FileText className={`h-4 w-4 flex-shrink-0 ${
-                                    isInContext ? 'text-primary' : 'text-muted-foreground'
-                                  }`} />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2">
-                                      <h5 className="font-semibold text-xs">{note.title}</h5>
-                                      {isInContext && (
-                                        <CheckCircle2 className="h-3 w-3 text-primary flex-shrink-0" />
-                                      )}
-                                    </div>
-                                    {!isInContext && (
-                                      <p className="text-xs text-muted-foreground line-clamp-1 mt-1">{note.content}</p>
-                                    )}
-                                    {isInContext && (
-                                      <div className="flex items-center gap-1 mt-1">
-                                        <ArrowRight className="h-3 w-3 text-primary" />
-                                        <span className="text-[10px] text-primary">Added to context</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
                         </div>
                       )}
 
-                      {/* Notes in Context Section */}
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2 mb-2">
-                          <FileText className="h-4 w-4 text-primary" />
-                          <h4 className="text-sm font-semibold">Notes in Context</h4>
-                          {notesInContext.length > 0 && (
-                            <Badge variant="outline" className="text-[10px] px-1.5 h-5 bg-primary/10 text-primary border-primary/20">
-                              {notesInContext.length}
-                            </Badge>
+                      {(docDemoState === 'ai-analyzing' || docDemoState === 'complete') && (
+                        <div className="animate-in fade-in slide-in-from-bottom-4 duration-1000">
+                          <h1 className="text-2xl font-bold mb-4">Q3 Department Performance Summary</h1>
+                          <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
+                            This report summarizes the high-growth departments for Q3 2025, based on the analyzed 
+                            sales data and performance logs. Growth is filtered for departments exceeding 15%.
+                          </p>
+                          
+                          {aiResponse.table ? (
+                            <div className="my-8 overflow-hidden rounded-xl border border-border shadow-sm animate-in zoom-in-95 duration-700">
+                              <table className="w-full text-sm text-left border-collapse">
+                                <thead className="bg-muted/50">
+                                  <tr>
+                                    {aiResponse.table.headers.map((header, i) => (
+                                      <th key={i} className="px-4 py-3 font-semibold border-b text-xs uppercase tracking-wider">{header}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {aiResponse.table.rows.map((row, i) => (
+                                    <tr key={i} className="border-b last:border-0">
+                                      {row.map((cell, j) => (
+                                        <td key={j} className="px-4 py-3 text-sm font-medium">
+                                          {j === 1 ? <span className="text-green-600 font-bold">{cell}</span> : cell}
+                                        </td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <div className="space-y-4 py-8">
+                              <div className="h-4 w-full bg-primary/5 animate-pulse rounded" />
+                              <div className="h-4 w-full bg-primary/5 animate-pulse rounded" />
+                              <div className="h-32 w-full bg-primary/5 animate-pulse rounded-xl" />
+                            </div>
+                          )}
+
+                          {docDemoState === 'complete' && (
+                            <div className="mt-8 p-4 bg-blue-50/50 rounded-lg border border-blue-100 text-sm text-blue-800 animate-in fade-in duration-500">
+                              <p className="font-semibold mb-1">AI Recommendation:</p>
+                              Based on the 32.1% growth in Enterprise AI, we recommend allocating 
+                              additional server capacity for Q4 to maintain this momentum.
+                            </div>
                           )}
                         </div>
-                        
-                        {notesInContext.length === 0 && docDemoState === 'initial' && (
-                          <div className="text-center py-4 text-xs text-muted-foreground">
-                            <FileText className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                            <p>Add notes to context to analyze patterns</p>
-                          </div>
-                        )}
+                      )}
+                    </div>
+                  </ScrollArea>
+                </div>
 
-                        {notesInContext.map((note) => (
-                          <div
-                            key={note.id}
-                            className="p-3 rounded-lg bg-primary/5 border-2 border-primary/20 animate-in fade-in slide-in-from-left-4 duration-500"
-                          >
-                            <h5 className="font-semibold text-xs mb-1">{note.title}</h5>
-                            <p className="text-xs text-muted-foreground line-clamp-2">{note.content}</p>
-                          </div>
-                        ))}
-                      </div>
+                {/* Right Pane: AI Chat */}
+                <div className="lg:col-span-5 flex flex-col bg-slate-50">
+                  <div className="h-12 border-b flex items-center justify-between px-4 bg-background">
+                    <div className="flex items-center gap-2">
+                      <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                      <span className="text-xs font-semibold uppercase tracking-wider">AI Assistant</span>
+                    </div>
+                  </div>
+                  <ScrollArea className="flex-1">
+                    <div className="p-4 space-y-4">
+                      {/* File Uploads */}
+                      {notesInContext.length > 0 && (
+                        <div className="flex flex-col items-end space-y-2">
+                          {notesInContext.map((note) => (
+                            <div
+                              key={note.id}
+                              className="flex items-center gap-2 max-w-[85%] animate-in slide-in-from-right-4 fade-in duration-500"
+                            >
+                              <div className="bg-white border border-border rounded-xl p-2 flex items-center gap-3 shadow-sm">
+                                <div className="h-7 w-7 rounded bg-primary/10 flex items-center justify-center">
+                                  <FileText className="h-3.5 w-3.5 text-primary" />
+                                </div>
+                                <span className="text-[10px] font-medium truncate max-w-[120px]">{note.title}</span>
+                                <CheckCircle2 className="h-3 w-3 text-primary" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
-                      {/* User Question Section */}
-                      {(docDemoState === 'asking-ai' || docDemoState === 'ai-analyzing' || docDemoState === 'complete') && (
-                        <div className="space-y-2 pt-4 border-t border-border">
-                          <div className="flex items-center gap-2 mb-2">
-                            <MessageSquare className="h-4 w-4 text-primary" />
-                            <h4 className="text-sm font-semibold">Your Question</h4>
-                          </div>
-                          <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
-                            <p className="text-sm">
-                              {userQuestion}
-                              {docDemoState === 'asking-ai' && (
-                                <span className="animate-pulse">|</span>
-                              )}
-                            </p>
+                      {/* User Question */}
+                      {userQuestion && (
+                        <div className="flex justify-end animate-in slide-in-from-right-4 fade-in duration-500">
+                          <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-none px-4 py-2 text-xs shadow-md max-w-[85%]">
+                            {userQuestion}
                           </div>
                         </div>
                       )}
 
-                      {/* AI Response Section */}
+                      {/* AI Response */}
                       {aiResponse.visible && (
-                        <div className="space-y-2 pt-4 border-t border-border">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Brain className="h-4 w-4 text-primary" />
-                            <h4 className="text-sm font-semibold">AI Pattern Analysis</h4>
-                            <Badge variant="outline" className="text-[9px] px-1.5 h-4 bg-primary/10 text-primary border-primary/20">
-                              AI
-                            </Badge>
-                          </div>
-                          <div className="p-3 rounded-lg bg-primary/5 border-2 border-primary/20 space-y-2">
-                            {aiResponse.patterns.length === 0 && (
-                              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                <Brain className="h-3 w-3 animate-pulse text-primary" />
-                                <span>Analyzing patterns...</span>
+                        <div className="flex justify-start animate-in slide-in-from-left-4 fade-in duration-500">
+                          <div className="flex items-start gap-2 max-w-[90%]">
+                            <Avatar className="h-6 w-6 mt-1 flex-shrink-0 border border-primary/20">
+                              <AvatarImage src="/logo.png" />
+                              <AvatarFallback className="bg-primary/10 text-primary text-[8px]">L</AvatarFallback>
+                            </Avatar>
+                            <div className="space-y-2">
+                              <div className="bg-white border border-border rounded-2xl rounded-tl-none p-3 shadow-sm">
+                                {aiResponse.patterns.length === 0 ? (
+                                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground py-1">
+                                    <div className="flex gap-1">
+                                      <span className="h-1 w-1 rounded-full bg-primary/40 animate-bounce" />
+                                      <span className="h-1 w-1 rounded-full bg-primary/40 animate-bounce [animation-delay:0.2s]" />
+                                      <span className="h-1 w-1 rounded-full bg-primary/40 animate-bounce [animation-delay:0.4s]" />
+                                    </div>
+                                    <span>Processing data...</span>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1.5">
+                                    {aiResponse.patterns.map((pattern, index) => (
+                                      <div
+                                        key={index}
+                                        className="flex items-start gap-2 text-[10px] animate-in fade-in slide-in-from-left-2 duration-300"
+                                      >
+                                        <div className="h-1 w-1 rounded-full bg-primary/60 mt-1.5 flex-shrink-0" />
+                                        <span className="text-foreground/80 leading-tight">{pattern}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            )}
-                            {aiResponse.patterns.map((pattern, index) => (
-                              <div
-                                key={index}
-                                className="flex items-start gap-2 text-xs animate-in fade-in slide-in-from-left-4 duration-500"
-                                style={{ animationDelay: `${index * 0.1}s` }}
-                              >
-                                <div className="h-1.5 w-1.5 rounded-full bg-primary mt-1.5 flex-shrink-0" />
-                                <span className="text-muted-foreground">{pattern}</span>
-                              </div>
-                            ))}
+                            </div>
                           </div>
                         </div>
                       )}
                     </div>
                   </ScrollArea>
-                </CardContent>
-              </Card>
-            </div>
+                  <div className="p-4 bg-background border-t">
+                    <div className="flex items-center gap-2 p-2 bg-slate-50 border rounded-xl">
+                      <div className="flex-1 text-[11px] text-muted-foreground px-2">
+                        {docDemoState === 'asking-ai' ? userQuestion : 'Ask AI to analyze data...'}
+                      </div>
+                      <Button size="icon" className="h-8 w-8 rounded-lg shadow-sm">
+                        <Send className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </Card>
           </div>
         </div>
       </section>
