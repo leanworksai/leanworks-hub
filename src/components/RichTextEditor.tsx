@@ -6,10 +6,18 @@ import { TextAlign } from '@tiptap/extension-text-align';
 import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
+import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { common, createLowlight } from 'lowlight';
 import { tableExtensions, handleTableDblClick } from '@/extensions/table';
 import '@/extensions/table/styles.css';
+import '@/components/code-highlight.css';
 import { TableToolbar } from '@/components/editor/TableToolbar';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { marked } from 'marked';
+import mermaid from 'mermaid';
+
+// Create lowlight instance with common languages
+const lowlight = createLowlight(common);
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -20,24 +28,14 @@ import {
   List,
   ListOrdered,
   Quote,
-  Undo,
-  Redo,
   AlignLeft,
   AlignCenter,
   AlignRight,
-  Link as LinkIcon,
   Eraser,
   Paperclip,
   Heading,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,6 +50,226 @@ import {
 
 // Note: Trailing spaces preservation is handled via keyboard handler and CSS
 // Removed complex plugin to avoid potential runtime errors
+
+// Helper function to extract text from HTML while preserving line breaks
+function extractTextPreservingLineBreaks(html: string): string {
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = html;
+  
+  // Replace block-level elements with newlines before extracting text
+  const blockElements = tempDiv.querySelectorAll('p, div, br, h1, h2, h3, h4, h5, h6, li, tr');
+  blockElements.forEach(el => {
+    if (el.tagName === 'BR') {
+      el.replaceWith('\n');
+    } else {
+      // Add newline after block elements
+      el.insertAdjacentText('afterend', '\n');
+    }
+  });
+  
+  // Get text content - now with preserved line breaks
+  let text = tempDiv.textContent || tempDiv.innerText || '';
+  
+  // Clean up excessive newlines but preserve paragraph breaks
+  text = text.replace(/\n{3,}/g, '\n\n');
+  
+  return text;
+}
+
+// Helper function to detect if content is markdown
+function isMarkdownContent(content: string): boolean {
+  if (!content || content.trim().length === 0) return false;
+  
+  // Extract text if HTML, preserving line breaks for pattern matching
+  let textContent = content;
+  if (content.includes('<')) {
+    textContent = extractTextPreservingLineBreaks(content);
+  }
+  
+  // Check for markdown patterns - ordered by likelihood and distinctiveness
+  const markdownPatterns = [
+    /```[\s\S]*?```/,        // Code blocks (including ```mermaid, ```tsx, etc.) - most distinctive
+    /^#{1,6}\s+\S/m,         // Headers (# followed by space and text)
+    /^\s*[-*+]\s+\S/m,       // Unordered lists (- or * followed by space and text)
+    /^\s*\d+\.\s+\S/m,       // Ordered lists (1. followed by space and text)
+    /^>\s/m,                 // Blockquotes
+    /\[([^\]]+)\]\(([^)]+)\)/, // Links [text](url)
+    /\*\*[^*]+\*\*/,         // Bold **text**
+    /\*[^*]+\*/,             // Italic *text*
+    /~~[^~]+~~/,             // Strikethrough ~~text~~
+    /`[^`\n]+`/,             // Inline code `code` (but not multiline)
+    /^---$/m,                // Horizontal rule
+    /^\|.*\|$/m,             // Table rows
+  ];
+  
+  // Count how many patterns match - if multiple match, it's very likely markdown
+  const matchCount = markdownPatterns.filter(pattern => pattern.test(textContent)).length;
+  
+  // If 2+ patterns match, definitely markdown
+  // If 1 pattern matches and it's a distinctive one (code block or header), also markdown
+  if (matchCount >= 2) return true;
+  if (matchCount === 1) {
+    // Check if it's a distinctive pattern
+    if (/```[\s\S]*?```/.test(textContent)) return true;  // Code block
+    if (/^#{1,6}\s+\S/m.test(textContent)) return true;   // Header
+    if (/^\|.*\|$/m.test(textContent)) return true;       // Table
+  }
+  
+  return false;
+}
+
+// Helper function to restore line breaks in markdown that was flattened to a single line
+function restoreMarkdownLineBreaks(text: string): string {
+  let result = text;
+  
+  // First, handle code blocks - they need careful treatment
+  // Add newlines before and after code block markers
+  // Match ```language and add newline before it
+  result = result.replace(/([^\n`])(```[a-zA-Z]*)/g, '$1\n\n$2');
+  // Match ``` (closing) followed by non-backtick and add newline after
+  result = result.replace(/(```)\s*([^`\n\s])/g, '$1\n\n$2');
+  
+  // Add newlines before headers (# ## ### etc.)
+  // Match any character (except newline) followed by # headers
+  result = result.replace(/([^\n#])(#{1,6}\s+[A-Z])/g, '$1\n\n$2');
+  
+  // Add newlines before numbered list items (1. 2. 3. etc.)
+  // Look for pattern like "text 1. Item" or "text1. Item"
+  result = result.replace(/([.!?:;\n])\s*(\d+\.\s+[A-Z])/g, '$1\n$2');
+  
+  // Add newlines before bullet list items (- * +)
+  // Look for pattern like "text - Item" where Item starts with capital
+  result = result.replace(/([.!?:;\n])\s*([-*+]\s+[A-Z**])/g, '$1\n$2');
+  
+  // Add newlines before blockquotes
+  result = result.replace(/([.!?:;\n])\s*(>\s+)/g, '$1\n$2');
+  
+  // Handle labels like "Query:", "Response:", "Note:" etc.
+  result = result.replace(/([.!?\n])\s*((?:Query|Response|Question|Answer|Note|Warning|Example|Summary|Implementation|Best Practices?):)/gi, '$1\n\n$2');
+  
+  // Inside code blocks, try to restore newlines at logical points
+  // This is tricky - we need to handle each code block separately
+  result = result.replace(/(```[a-zA-Z]*)([\s\S]*?)(```)/g, (match, open, content, close) => {
+    // Add newlines after opening and before closing
+    let fixedContent = content;
+    const language = open.replace('```', '').toLowerCase();
+    
+    // Add newline after opening if not present
+    if (!fixedContent.startsWith('\n')) {
+      fixedContent = '\n' + fixedContent;
+    }
+    
+    // Add newline before closing if not present
+    if (!fixedContent.endsWith('\n')) {
+      fixedContent = fixedContent + '\n';
+    }
+    
+    // Handle mermaid diagrams specifically
+    if (language === 'mermaid') {
+      // Add newlines for mermaid graph definitions
+      fixedContent = fixedContent.replace(/\s+(graph\s+(?:LR|RL|TD|TB|BT))\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(flowchart\s+(?:LR|RL|TD|TB|BT))\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(sequenceDiagram)\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(classDiagram)\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(stateDiagram(?:-v2)?)\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(erDiagram)\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(gantt)\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(pie)\s+/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(journey)\s+/g, '\n$1\n');
+      
+      // Add newlines before node definitions (A[...], B(...), etc.)
+      fixedContent = fixedContent.replace(/\s+([A-Za-z_][A-Za-z0-9_]*\s*[\[\(\{<])/g, '\n    $1');
+      
+      // Add newlines before arrows (--> , --- , ==> , etc.)
+      fixedContent = fixedContent.replace(/\s+(-->|--\>|---|==>|-.->|==)/g, ' $1');
+      
+      // Add newlines after arrow destinations
+      fixedContent = fixedContent.replace(/(-->|--\>|---|==>|-.->|==)\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*[\[\(\{<][^\]\)\}>]*[\]\)\}>])?)\s+/g, '$1 $2\n    ');
+      
+      // Add newlines for subgraph
+      fixedContent = fixedContent.replace(/\s+(subgraph\s+)/g, '\n$1');
+      fixedContent = fixedContent.replace(/\s+(end)\s+/g, '\n$1\n');
+      
+      // Clean up participant declarations in sequence diagrams
+      fixedContent = fixedContent.replace(/\s+(participant\s+)/g, '\n$1');
+      fixedContent = fixedContent.replace(/\s+(actor\s+)/g, '\n$1');
+      
+      // Handle class definitions in class diagrams
+      fixedContent = fixedContent.replace(/\s+(class\s+[A-Za-z_][A-Za-z0-9_]*)/g, '\n$1');
+    }
+    // Handle PlantUML
+    else if (language === 'plantuml' || language === 'puml') {
+      fixedContent = fixedContent.replace(/\s+(@startuml|@enduml)/g, '\n$1\n');
+      fixedContent = fixedContent.replace(/\s+(participant|actor|usecase|class|interface)\s+/g, '\n$1 ');
+      fixedContent = fixedContent.replace(/\s+(-->|->|<--|<-|--)\s+/g, ' $1 ');
+    }
+    // Handle regular code (tsx, ts, js, jsx, etc.)
+    else if (['tsx', 'ts', 'js', 'jsx', 'javascript', 'typescript'].includes(language)) {
+      // After semicolons followed by keywords
+      fixedContent = fixedContent.replace(/;\s*(const|let|var|function|class|interface|type|import|export|return|if|else|for|while|async|await)\s/g, ';\n$1 ');
+      
+      // After closing braces followed by keywords
+      fixedContent = fixedContent.replace(/}\s*(const|let|var|function|class|interface|type|export|return|if|else|for|while|async|catch|finally)\s/g, '}\n\n$1 ');
+      
+      // After closing braces followed by closing braces or parens
+      fixedContent = fixedContent.replace(/}\s*([)}])/g, '}\n$1');
+      
+      // Add newlines after import statements
+      fixedContent = fixedContent.replace(/(import\s+[^;]+;)\s*/g, '$1\n');
+      
+      // Add newlines before export statements
+      fixedContent = fixedContent.replace(/([;}\n])\s*(export\s+)/g, '$1\n\n$2');
+    }
+    // Handle Python
+    else if (language === 'python' || language === 'py') {
+      fixedContent = fixedContent.replace(/:\s*(def|class|if|elif|else|for|while|try|except|finally|with|import|from|return)\s/g, ':\n$1 ');
+    }
+    // Handle SQL
+    else if (language === 'sql') {
+      fixedContent = fixedContent.replace(/\s+(SELECT|FROM|WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AND|OR|ORDER BY|GROUP BY|HAVING|LIMIT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\s+/gi, '\n$1 ');
+    }
+    
+    return open + fixedContent + close;
+  });
+  
+  // Clean up multiple newlines (max 2)
+  result = result.replace(/\n{3,}/g, '\n\n');
+  result = result.trim();
+  
+  return result;
+}
+
+// Helper function to convert markdown to HTML
+function convertMarkdownToHTML(markdown: string): string {
+  try {
+    // Extract text content if it's wrapped in HTML, preserving line breaks
+    let textContent = markdown;
+    if (markdown.includes('<')) {
+      textContent = extractTextPreservingLineBreaks(markdown);
+    }
+    
+    // Check if the content appears to be flattened markdown (very few newlines but has markdown patterns)
+    // Use patterns that work even without line breaks
+    const hasMarkdownPatterns = /```[\s\S]*?```|#{1,6}\s+\S|[-*+]\s+\S|\d+\.\s+\S/.test(textContent);
+    const newlineCount = (textContent.match(/\n/g) || []).length;
+    const hasVeryFewNewlines = newlineCount < Math.max(5, textContent.length / 500);
+    const isLongContent = textContent.length > 200;
+    
+    if (hasMarkdownPatterns && hasVeryFewNewlines && isLongContent) {
+      console.log('[RichTextEditor] Restoring line breaks in flattened markdown');
+      textContent = restoreMarkdownLineBreaks(textContent);
+    }
+    
+    // Convert markdown to HTML with line break support
+    return marked.parse(textContent, {
+      breaks: true,  // Convert single newlines to <br>
+      gfm: true,     // GitHub Flavored Markdown
+    }) as string;
+  } catch (error) {
+    console.warn('Failed to convert markdown:', error);
+    return markdown; // Return original if conversion fails
+  }
+}
 
 interface RichTextEditorProps {
   content: string;
@@ -87,15 +305,22 @@ export function RichTextEditor({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarContainerRef = useRef<HTMLDivElement>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isToolbarSticky, setIsToolbarSticky] = useState(false);
   const [toolbarHeight, setToolbarHeight] = useState(0);
   const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
+  const mermaidInitialized = useRef(false);
+  const renderedMermaidIds = useRef<Set<string>>(new Set());
+  const mermaidRenderScheduled = useRef(false);
 
   const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-75';
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
   const getButtonClasses = (isActive: boolean) =>
     cn('rounded-md', isActive ? activeToolbarClasses : baseToolbarClasses);
+
+  // Store editor ref for paste handler
+  const editorRef = useRef<any>(null);
 
   const editor = useEditor({
     extensions: [
@@ -107,6 +332,16 @@ export function RichTextEditor({
         paragraph: false,
         // Disable gapcursor from StarterKit since we use ConfiguredGapcursor from table extensions
         gapcursor: false,
+        // Disable default codeBlock so we can use CodeBlockLowlight for syntax highlighting
+        codeBlock: false,
+      }),
+      // Code block with syntax highlighting
+      CodeBlockLowlight.configure({
+        lowlight,
+        defaultLanguage: 'plaintext',
+        HTMLAttributes: {
+          class: 'hljs',
+        },
       }),
       // Custom paragraph extension that preserves trailing spaces
       Paragraph.extend({
@@ -157,6 +392,7 @@ export function RichTextEditor({
       }
     },
     onCreate: ({ editor }) => {
+      editorRef.current = editor;
       editorInitializedRef.current = true;
       const initialHtml = editor.getHTML();
       contentRef.current = initialHtml;
@@ -180,6 +416,57 @@ export function RichTextEditor({
         style: 'white-space: pre-wrap !important; margin: 0; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; max-width: 100%; width: 100%; box-sizing: border-box;',
       },
       transformPastedHTML(html) {
+        // Extract text content from HTML to check for markdown
+        // Create a temporary DOM element to extract text
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = html;
+        const textContent = tempDiv.textContent || tempDiv.innerText || '';
+        
+        // Check if pasted content looks like markdown (heuristic check)
+        // Common markdown patterns: headers (#), lists (-, *, 1.), code blocks (```), links ([text](url))
+        const markdownPatterns = [
+          /^#{1,6}\s/m,           // Headers
+          /^\s*[-*+]\s/m,         // Unordered lists
+          /^\s*\d+\.\s/m,         // Ordered lists
+          /^>\s/m,                // Blockquotes
+          /```[\s\S]*?```/m,       // Code blocks (including ```mermaid)
+          /\[([^\]]+)\]\(([^)]+)\)/m, // Links
+          /\*\*[^*]+\*\*/,        // Bold
+          /\*[^*]+\*/,            // Italic
+          /~~[^~]+~~/,            // Strikethrough
+          /`[^`]+`/,              // Inline code
+        ];
+
+        // Check if text contains markdown patterns
+        const hasMarkdownSyntax = markdownPatterns.some(pattern => pattern.test(textContent));
+        
+        // If we detect markdown syntax in the text content, convert it
+        // This handles cases where markdown was pasted and browser converted some to HTML
+        if (hasMarkdownSyntax && textContent.trim().length > 0) {
+          // Check if HTML already has rich formatting that suggests it's already converted
+          // If HTML has many formatting tags, it might be from a rich text source (not raw markdown)
+          const formattingTagCount = html.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a|p)[^>]*>/gi)?.length || 0;
+          
+          // Only skip conversion if HTML has substantial formatting (likely from rich text editor)
+          // But if text clearly has markdown syntax, prioritize converting it
+          if (formattingTagCount < 10 || textContent.includes('```') || textContent.match(/^#{1,6}\s/m)) {
+            try {
+              // Convert markdown to HTML using marked
+              const htmlFromMarkdown = marked.parse(textContent, {
+                breaks: false,
+                gfm: true, // GitHub Flavored Markdown
+              }) as string;
+              
+              // Return converted HTML for TipTap to parse
+              return htmlFromMarkdown;
+            } catch (error) {
+              console.warn('Failed to parse markdown:', error);
+              // Fall back to original HTML if parsing fails
+              return html;
+            }
+          }
+        }
+        
         // Preserve formatting by returning the HTML as-is
         // TipTap will parse it and preserve supported formatting (bold, italic, colors, etc.)
         return html;
@@ -187,6 +474,57 @@ export function RichTextEditor({
       handleDOMEvents: {
         dblclick: (view, event) => {
           return handleTableDblClick(view, event);
+        },
+        paste: (view, event) => {
+          // Handle plain text paste that might be markdown
+          const clipboardData = event.clipboardData;
+          if (!clipboardData) return false;
+
+          const text = clipboardData.getData('text/plain');
+          const html = clipboardData.getData('text/html');
+
+          // Always check plain text for markdown first, regardless of HTML
+          // This ensures we catch markdown even when HTML is present
+          if (text && text.trim().length > 0) {
+            const markdownPatterns = [
+              /^#{1,6}\s/m,           // Headers
+              /^\s*[-*+]\s/m,         // Unordered lists
+              /^\s*\d+\.\s/m,         // Ordered lists
+              /^>\s/m,                // Blockquotes
+              /```[\s\S]*?```/m,       // Code blocks (including ```mermaid)
+              /\[([^\]]+)\]\(([^)]+)\)/m, // Links
+              /\*\*[^*]+\*\*/,        // Bold
+              /\*[^*]+\*/,            // Italic
+              /~~[^~]+~~/,            // Strikethrough
+            ];
+
+            const hasMarkdownSyntax = markdownPatterns.some(pattern => pattern.test(text));
+
+            if (hasMarkdownSyntax) {
+              try {
+                // Convert markdown to HTML
+                const htmlFromMarkdown = marked.parse(text, {
+                  breaks: false,
+                  gfm: true,
+                }) as string;
+
+                // Insert the HTML content using editor instance
+                event.preventDefault();
+                event.stopPropagation();
+                
+                if (editorRef.current) {
+                  editorRef.current.chain().focus().insertContent(htmlFromMarkdown).run();
+                  return true; // Handled
+                }
+              } catch (error) {
+                console.warn('Failed to parse markdown paste:', error);
+                // Fall through to default handler
+              }
+            }
+          }
+
+          // Let transformPastedHTML handle HTML-based markdown as fallback
+          return false; // Use default paste handler
         },
         keydown: (view, event) => {
           // Handle undo/redo keyboard shortcuts
@@ -226,6 +564,95 @@ export function RichTextEditor({
     },
   });
 
+  // Initialize mermaid once
+  useEffect(() => {
+    if (!mermaidInitialized.current) {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: 'default',
+        securityLevel: 'loose',
+        fontFamily: 'inherit',
+      });
+      mermaidInitialized.current = true;
+    }
+  }, []);
+
+  // Function to render mermaid diagrams - called manually after content is set
+  const renderMermaidDiagrams = useCallback(async () => {
+    if (!editorContainerRef.current || mermaidRenderScheduled.current) return;
+    
+    mermaidRenderScheduled.current = true;
+    
+    // Wait a bit for DOM to settle
+    await new Promise(resolve => setTimeout(resolve, 200));
+    
+    if (!editorContainerRef.current) {
+      mermaidRenderScheduled.current = false;
+      return;
+    }
+
+    const allPreBlocks = editorContainerRef.current.querySelectorAll('pre');
+    
+    for (const pre of allPreBlocks) {
+      const code = pre.querySelector('code');
+      if (!code) continue;
+      
+      const codeContent = code.textContent || '';
+      const trimmedContent = codeContent.trim();
+      
+      // Create a hash of the content to track if we've rendered this
+      const contentHash = trimmedContent.substring(0, 50) + trimmedContent.length;
+      
+      // Skip if already rendered this exact content
+      if (renderedMermaidIds.current.has(contentHash)) continue;
+      
+      // Skip if already has a rendered diagram next to it
+      if (pre.nextElementSibling?.classList.contains('mermaid-diagram')) {
+        renderedMermaidIds.current.add(contentHash);
+        continue;
+      }
+      
+      const isMermaid = code.classList.contains('language-mermaid') || 
+                        trimmedContent.startsWith('graph ') ||
+                        trimmedContent.startsWith('flowchart ') ||
+                        trimmedContent.startsWith('sequenceDiagram') ||
+                        trimmedContent.startsWith('classDiagram') ||
+                        trimmedContent.startsWith('stateDiagram') ||
+                        trimmedContent.startsWith('erDiagram') ||
+                        trimmedContent.startsWith('gantt') ||
+                        trimmedContent.startsWith('pie') ||
+                        trimmedContent.startsWith('journey');
+      
+      if (isMermaid && trimmedContent) {
+        // Mark as rendered BEFORE async operation to prevent duplicates
+        renderedMermaidIds.current.add(contentHash);
+        
+        try {
+          const id = `mermaid-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          const { svg } = await mermaid.render(id, trimmedContent);
+          
+          // Double-check the pre block still exists and doesn't have a diagram
+          if (pre.parentNode && !pre.nextElementSibling?.classList.contains('mermaid-diagram')) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mermaid-diagram';
+            wrapper.setAttribute('data-content-hash', contentHash);
+            wrapper.innerHTML = svg;
+            wrapper.style.cssText = 'display: flex; justify-content: center; padding: 1.5rem; background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border-radius: 12px; margin: 1rem 0; overflow-x: auto; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.05);';
+            
+            (pre as HTMLElement).style.display = 'none';
+            pre.parentNode.insertBefore(wrapper, pre.nextSibling);
+            
+            console.log('[RichTextEditor] Rendered mermaid diagram');
+          }
+        } catch (error) {
+          console.warn('[RichTextEditor] Failed to render mermaid diagram:', error);
+        }
+      }
+    }
+    
+    mermaidRenderScheduled.current = false;
+  }, []);
+
   // Update editor editability when readOnly changes
   useEffect(() => {
     if (!editor) return;
@@ -244,7 +671,53 @@ export function RichTextEditor({
       return;
     }
 
-    const normalizedContent = content || '<p></p>';
+    let normalizedContent = content || '<p></p>';
+    
+    // Check if content is markdown and convert it (only when loading a new doc, not during editing)
+    // This handles existing docs that contain raw markdown
+    if (normalizedContent && normalizedContent !== '<p></p>') {
+      // Extract text content to check for markdown, preserving line breaks
+      let textToCheck = normalizedContent;
+      if (normalizedContent.includes('<')) {
+        textToCheck = extractTextPreservingLineBreaks(normalizedContent);
+      }
+      
+      // Check if the TEXT content has markdown patterns
+      const hasMarkdown = isMarkdownContent(textToCheck);
+      
+      
+      if (hasMarkdown) {
+        // Check if content is ALREADY properly converted rich HTML
+        // Look for actual semantic formatting tags (not just wrapper <p> tags)
+        const richTagMatches = normalizedContent.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a)[^>]*>/gi) || [];
+        const hasProperFormatting = richTagMatches.length >= 5;
+        
+        // Check if the HTML structure matches markdown patterns (lists, code blocks, headers, etc.)
+        // Only consider it "converted" if the HTML actually contains the rendered versions
+        const hasCodeBlock = /<pre[^>]*>[\s\S]*?<code[^>]*>/i.test(normalizedContent);
+        const hasHtmlHeader = /<h[1-6][^>]*>[^<]+<\/h[1-6]>/i.test(normalizedContent);
+        const hasHtmlList = /<[uo]l[^>]*>[\s\S]*?<li[^>]*>/i.test(normalizedContent);
+        
+        // Check if markdown patterns exist but HTML equivalents don't
+        const markdownHasCodeBlock = /```[\s\S]*?```/.test(textToCheck);
+        const markdownHasHeader = /^#{1,6}\s+\S/m.test(textToCheck);
+        const markdownHasList = /^\s*[-*+]\s+\S|^\s*\d+\.\s+\S/m.test(textToCheck);
+        
+        // Content needs conversion if markdown patterns exist but HTML equivalents don't
+        const needsConversion = 
+          (markdownHasCodeBlock && !hasCodeBlock) ||
+          (markdownHasHeader && !hasHtmlHeader) ||
+          (markdownHasList && !hasHtmlList) ||
+          (!hasProperFormatting && hasMarkdown);
+        
+        
+        if (needsConversion) {
+          console.log('[RichTextEditor] Converting markdown content to HTML');
+          const convertedContent = convertMarkdownToHTML(normalizedContent);
+          normalizedContent = convertedContent;
+        }
+      }
+    }
     
     // Skip if content prop hasn't changed from what we last processed
     if (normalizedContent === lastContentPropRef.current) {
@@ -293,6 +766,9 @@ export function RichTextEditor({
             // Selection invalid (e.g., document structure changed significantly)
             // Editor will handle default cursor position
           }
+          
+          // Render mermaid diagrams after content is loaded
+          renderMermaidDiagrams();
         }
         isUpdatingRef.current = false;
       }, 100);
@@ -301,7 +777,7 @@ export function RichTextEditor({
     } catch {
       isUpdatingRef.current = false;
     }
-  }, [content, editor]);
+  }, [content, editor, renderMermaidDiagrams]);
 
   // Handle toolbar sticky positioning on scroll
   useEffect(() => {
@@ -596,60 +1072,6 @@ export function RichTextEditor({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <Separator orientation="vertical" className="h-6 opacity-30" />
-
-        {/* Link */}
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className={getButtonClasses(editor.isActive('link'))}
-            >
-              <LinkIcon className="h-4 w-4" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-[calc(100vw-2rem)] sm:w-80 max-w-sm">
-            <div className="space-y-2">
-              <Label htmlFor="link-url">URL</Label>
-              <Input
-                id="link-url"
-                placeholder="https://example.com"
-                defaultValue={editor.getAttributes('link').href || ''}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const url = e.currentTarget.value;
-                    if (url) {
-                      editor.chain().focus().setLink({ href: url }).run();
-                    } else {
-                      editor.chain().focus().unsetLink().run();
-                    }
-                  }
-                }}
-              />
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => {
-                  const input = document.getElementById('link-url') as HTMLInputElement;
-                  const url = input?.value;
-                  if (url) {
-                    editor.chain().focus().setLink({ href: url }).run();
-                  } else {
-                    editor.chain().focus().unsetLink().run();
-                  }
-                }}
-              >
-                Set Link
-              </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <Separator orientation="vertical" className="h-6 opacity-30" />
-
         {/* File Upload */}
         {onFileUpload && docId && (
           <>
@@ -695,43 +1117,18 @@ export function RichTextEditor({
           </>
         )}
 
-        <Separator orientation="vertical" className="h-6 opacity-30" />
-
-        {/* Undo/Redo */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            isUndoRedoRef.current = true;
-            editor.chain().focus().undo().run();
-          }}
-          disabled={!editor.can().chain().focus().undo().run()}
-        >
-          <Undo className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            isUndoRedoRef.current = true;
-            editor.chain().focus().redo().run();
-          }}
-          disabled={!editor.can().chain().focus().redo().run()}
-        >
-          <Redo className="h-4 w-4" />
-        </Button>
           </div>
         </div>
       )}
 
       {/* Editor Content */}
-      <EditorContent 
-        editor={editor} 
-        className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:overflow-wrap-anywhere [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60" 
-        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-      />
+      <div ref={editorContainerRef}>
+        <EditorContent 
+          editor={editor} 
+          className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:overflow-wrap-anywhere [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60" 
+          style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+        />
+      </div>
     </div>
   );
 }
