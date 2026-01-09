@@ -1,26 +1,22 @@
 import { useState } from 'react';
 import type { Editor } from '@tiptap/react';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
   Table as TableIcon,
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  Minus,
+  PlusCircle,
   Trash2,
+  ArrowUpToLine,
+  ArrowDownToLine,
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -31,6 +27,7 @@ interface TableToolbarProps {
 
 export function TableToolbar({ editor, getButtonClasses }: TableToolbarProps) {
   const [hoveredTableSize, setHoveredTableSize] = useState<{ rows: number; cols: number } | null>(null);
+  const isInTable = editor.isActive('table');
 
   return (
     <DropdownMenu>
@@ -39,125 +36,139 @@ export function TableToolbar({ editor, getButtonClasses }: TableToolbarProps) {
           type="button"
           variant="ghost"
           size="sm"
-          className={getButtonClasses(editor.isActive('table'))}
-          title="Table"
+          className={getButtonClasses(isInTable)}
+          title="Table Operations"
           aria-label="Table operations"
         >
           <TableIcon className="h-4 w-4" aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-56">
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger aria-label="Insert table">
-            <TableIcon className="h-4 w-4" aria-hidden="true" />
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-auto p-2">
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">Select table size</Label>
-              <div className="grid grid-cols-8 gap-1">
-                {Array.from({ length: 64 }).map((_, index) => {
-                  const row = Math.floor(index / 8) + 1;
-                  const col = (index % 8) + 1;
-                  const isSelected = hoveredTableSize
-                    ? row <= hoveredTableSize.rows && col <= hoveredTableSize.cols
-                    : false;
-                  
-                  return (
-                    <button
-                      key={index}
-                      type="button"
-                      className={cn(
-                        "w-6 h-6 border border-border rounded-sm transition-colors",
-                        isSelected
-                          ? "bg-primary border-primary"
-                          : "bg-muted hover:bg-muted/80"
-                      )}
-                      onMouseEnter={() => setHoveredTableSize({ rows: row, cols: col })}
-                      onClick={() => {
-                        editor
-                          .chain()
-                          .focus()
-                          .insertTable({ rows: row, cols: col, withHeaderRow: true })
-                          .run();
-                        setHoveredTableSize(null);
-                      }}
-                      aria-label={`${row} rows, ${col} columns`}
-                    />
-                  );
-                })}
-              </div>
-              {hoveredTableSize && (
-                <p className="text-xs text-center text-muted-foreground">
-                  {hoveredTableSize.rows} × {hoveredTableSize.cols}
-                </p>
-              )}
+      <DropdownMenuContent align="start" className="p-3 min-w-[180px]">
+        {/* Table Size Grid - Shown when not in a table */}
+        {!isInTable && (
+          <div className="flex flex-col items-center">
+            <div className="w-full text-left mb-3">
+              <h4 className="text-sm font-semibold text-foreground">Insert Table</h4>
+              <p className="text-[11px] text-muted-foreground">Select grid size</p>
             </div>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+            
+            <div 
+              className="grid grid-cols-6 gap-1.5 p-1 border rounded-md bg-muted/20"
+              onMouseLeave={() => setHoveredTableSize(null)}
+            >
+              {Array.from({ length: 36 }).map((_, index) => {
+                const row = Math.floor(index / 6) + 1;
+                const col = (index % 6) + 1;
+                const isSelected = hoveredTableSize
+                  ? row <= hoveredTableSize.rows && col <= hoveredTableSize.cols
+                  : false;
+                
+                return (
+                  <button
+                    key={index}
+                    type="button"
+                    className={cn(
+                      "w-5 h-5 border rounded-sm transition-all duration-100",
+                      isSelected
+                        ? "bg-primary border-primary shadow-sm scale-110 z-10"
+                        : "bg-background border-border hover:border-primary/50"
+                    )}
+                    onMouseEnter={() => setHoveredTableSize({ rows: row, cols: col })}
+                    onClick={() => {
+                      editor
+                        .chain()
+                        .focus()
+                        .insertTable({ rows: row, cols: col, withHeaderRow: true })
+                        .run();
+                      setHoveredTableSize(null);
+                    }}
+                    aria-label={`${row} rows, ${col} columns`}
+                  />
+                );
+              })}
+            </div>
+            <div className="mt-3 w-full bg-muted/30 rounded py-1 px-2 text-center">
+              <span className="text-xs font-mono text-primary font-medium">
+                {hoveredTableSize ? `${hoveredTableSize.rows} × ${hoveredTableSize.cols}` : '— × —'}
+              </span>
+            </div>
+          </div>
+        )}
 
-        {editor.isActive('table') && (
-          <>
+        {/* Table Operations - Shown when cursor is in a table */}
+        {isInTable && (
+          <div className="space-y-3">
+            <div className="w-full text-left">
+              <h4 className="text-sm font-semibold text-foreground">Table Actions</h4>
+              <p className="text-[11px] text-muted-foreground">Manage rows & columns</p>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground px-2 mb-1">Rows</p>
+              <DropdownMenuItem
+                onClick={() => editor.chain().focus().addRowBefore().run()}
+                className="cursor-pointer"
+              >
+                <ArrowUpToLine className="h-3.5 w-3.5 mr-2 text-primary" />
+                <span className="text-xs">Add row above</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => editor.chain().focus().addRowAfter().run()}
+                className="cursor-pointer"
+              >
+                <ArrowDownToLine className="h-3.5 w-3.5 mr-2 text-primary" />
+                <span className="text-xs">Add row below</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => editor.chain().focus().deleteRow().run()}
+                disabled={!editor.can().deleteRow()}
+                className="cursor-pointer text-destructive focus:text-destructive"
+              >
+                <XCircle className="h-3.5 w-3.5 mr-2" />
+                <span className="text-xs">Delete row</span>
+              </DropdownMenuItem>
+            </div>
+
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Rows</DropdownMenuLabel>
-            <DropdownMenuItem
-              onClick={() => editor.chain().focus().addRowBefore().run()}
-              aria-label="Add row above current row"
-            >
-              <ArrowUp className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Add row above</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => editor.chain().focus().addRowAfter().run()}
-              aria-label="Add row below current row"
-            >
-              <ArrowDown className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Add row below</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => editor.chain().focus().deleteRow().run()}
-              disabled={!editor.can().deleteRow()}
-              aria-label="Delete current row"
-            >
-              <Minus className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Delete row</span>
-            </DropdownMenuItem>
+
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground px-2 mb-1">Columns</p>
+              <DropdownMenuItem
+                onClick={() => editor.chain().focus().addColumnBefore().run()}
+                className="cursor-pointer"
+              >
+                <ArrowLeftToLine className="h-3.5 w-3.5 mr-2 text-primary" />
+                <span className="text-xs">Add column left</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => editor.chain().focus().addColumnAfter().run()}
+                className="cursor-pointer"
+              >
+                <ArrowRightToLine className="h-3.5 w-3.5 mr-2 text-primary" />
+                <span className="text-xs">Add column right</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => editor.chain().focus().deleteColumn().run()}
+                disabled={!editor.can().deleteColumn()}
+                className="cursor-pointer text-destructive focus:text-destructive"
+              >
+                <XCircle className="h-3.5 w-3.5 mr-2" />
+                <span className="text-xs">Delete column</span>
+              </DropdownMenuItem>
+            </div>
+
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Columns</DropdownMenuLabel>
-            <DropdownMenuItem
-              onClick={() => editor.chain().focus().addColumnBefore().run()}
-              aria-label="Add column to the left of current column"
-            >
-              <ArrowLeft className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Add column on the left</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => editor.chain().focus().addColumnAfter().run()}
-              aria-label="Add column to the right of current column"
-            >
-              <ArrowRight className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Add column on the right</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => editor.chain().focus().deleteColumn().run()}
-              disabled={!editor.can().deleteColumn()}
-              aria-label="Delete current column"
-            >
-              <Minus className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Delete column</span>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
+
             <DropdownMenuItem
               onClick={() => editor.chain().focus().deleteTable().run()}
-              className="text-destructive focus:text-destructive"
-              aria-label="Delete entire table"
+              className="cursor-pointer text-destructive focus:text-destructive focus:bg-destructive/10 font-medium"
             >
-              <Trash2 className="h-4 w-4 mr-2" aria-hidden="true" />
-              <span>Delete table</span>
+              <Trash2 className="h-3.5 w-3.5 mr-2" />
+              <span className="text-xs">Remove entire table</span>
             </DropdownMenuItem>
-          </>
+          </div>
         )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
-
