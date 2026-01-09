@@ -667,21 +667,10 @@ export function RichTextEditor({
   }, [editor, readOnly]);
 
   // Prevent mobile browser toolbar from appearing above keyboard
-  useEffect(() => {
-    if (!editor || readOnly) return;
-    
-    const editorElement = editor.view.dom;
-    if (editorElement) {
-      // For mobile browsers, set inputmode to 'none' to prevent the browser toolbar
-      // This prevents the toolbar (up/down/checkmark) but keyboard still appears
-      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-      if (isMobile) {
-        editorElement.setAttribute('inputmode', 'none');
-        // Also add data attribute for CSS targeting if needed
-        editorElement.setAttribute('data-mobile-editor', 'true');
-      }
-    }
-  }, [editor, readOnly]);
+  // Note: Unfortunately, mobile browsers show the toolbar for contentEditable elements
+  // and there's no reliable way to hide it without blocking the keyboard.
+  // The toolbar is a browser feature that can't be disabled via CSS or attributes.
+  // Users will need to dismiss it manually or we accept it as a browser limitation.
 
   // Update editor content when the content prop changes
   // Only update when loading a new note, not during user editing
