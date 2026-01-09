@@ -40,7 +40,7 @@ import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/
 import { setupMessageEndpoints } from './endpoints/messages.js';
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
-import { sendVerificationEmail, sendInvitationEmail } from './services/email.js';
+import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -3275,7 +3275,6 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
           team_id,
           tags,
           COALESCE(metadata, '{}'::jsonb) as metadata,
-          is_pinned,
           visibility,
           visible_to_members,
           created_at,
@@ -3285,7 +3284,7 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
           visibility = 'all_members'
           OR owner_email = $1
           OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
-        ORDER BY is_pinned DESC, created_at DESC
+        ORDER BY created_at DESC
       `, [normalizedEmail, JSON.stringify([normalizedEmail])]);
     } catch (error: any) {
       // If metadata column doesn't exist, query without it
@@ -3299,7 +3298,6 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
             project_id,
             team_id,
             tags,
-            is_pinned,
             visibility,
             visible_to_members,
             created_at,
@@ -3309,7 +3307,7 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
             visibility = 'all_members'
             OR owner_email = $1
             OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
-          ORDER BY is_pinned DESC, created_at DESC
+          ORDER BY created_at DESC
         `, [normalizedEmail, JSON.stringify([normalizedEmail])]);
       } else {
         throw error;
@@ -3454,7 +3452,6 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
           team_id,
           tags,
           COALESCE(metadata, '{}'::jsonb) as metadata,
-          is_pinned,
           visibility,
           visible_to_members,
           created_at,
@@ -3474,7 +3471,6 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
             project_id,
             team_id,
             tags,
-            is_pinned,
             visibility,
             visible_to_members,
             created_at,
@@ -3534,7 +3530,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    const { id, title, content, projectId, teamId, tags, isPinned, visibility, visibleToMembers, metadata } = req.body;
+    const { id, title, content, projectId, teamId, tags, visibility, visibleToMembers, metadata } = req.body;
     
     if (!title || !content) {
       return res.status(400).json({ error: 'Title and content are required' });
@@ -3559,8 +3555,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     // Check if metadata column exists, if not, insert without it
     try {
       await pool.query(`
-        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, metadata, is_pinned, visibility, visible_to_members, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, metadata, visibility, visible_to_members, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
       `, [
         docId,
         title,
@@ -3570,7 +3566,6 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
         teamId || null,
         tags ? JSON.stringify(tags) : '[]',
         metadata ? JSON.stringify(metadata) : '{}',
-        isPinned || false,
         docVisibility,
         JSON.stringify(visibleToMembersArray)
       ]);
@@ -3578,8 +3573,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
       // If metadata column doesn't exist, insert without it
       if (error.message?.includes('column "metadata" does not exist')) {
         await pool.query(`
-          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, visibility, visible_to_members, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, visibility, visible_to_members, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
         `, [
           docId,
           title,
@@ -3588,7 +3583,6 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
           projectId || null,
           teamId || null,
           tags ? JSON.stringify(tags) : '[]',
-          isPinned || false,
           docVisibility,
           JSON.stringify(visibleToMembersArray)
         ]);
@@ -3605,7 +3599,6 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
       projectId: projectId || null,
       teamId: teamId || null,
       tags: tags || [],
-      isPinned: isPinned || false,
       visibility: docVisibility,
       visibleToMembers: visibleToMembersArray
     });
@@ -3706,7 +3699,6 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
       content: 'content',
       projectId: 'project_id',
       teamId: 'team_id',
-      isPinned: 'is_pinned',
       visibility: 'visibility'
     };
     
@@ -3780,6 +3772,255 @@ app.delete('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, 
     res.json({ success: true });
   } catch (error) {
     console.error('Delete doc error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Share doc via email
+app.post('/api/docs/:docId/share', authenticateUser, requireOrgMembership, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const orgId = (req as any).orgId;
+    const docId = req.params.docId;
+    const { email: recipientEmail, message } = req.body;
+    const pool = await getOrgPool(orgId);
+    const sharedPool = await getSharedPool();
+    const normalizedEmail = userEmail.toLowerCase();
+
+    // Validate request
+    if (!recipientEmail) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const trimmedEmail = typeof recipientEmail === 'string' ? recipientEmail.trim() : String(recipientEmail).trim();
+    if (!trimmedEmail) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    const normalizedRecipientEmail = trimmedEmail.toLowerCase();
+
+    // Get doc details and verify ownership/permission
+    let docResult;
+    try {
+      docResult = await pool.query(`
+        SELECT id, title, owner_email, visibility, visible_to_members, COALESCE(metadata, '{}'::jsonb) as metadata
+        FROM docs WHERE id = $1
+      `, [docId]);
+    } catch (error: any) {
+      if (error.message?.includes('column "metadata" does not exist')) {
+        docResult = await pool.query(`
+          SELECT id, title, owner_email, visibility, visible_to_members
+          FROM docs WHERE id = $1
+        `, [docId]);
+      } else {
+        throw error;
+      }
+    }
+
+    if (docResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Doc not found' });
+    }
+
+    const doc = docResult.rows[0];
+    const isOwner = doc.owner_email?.toLowerCase() === normalizedEmail;
+
+    // Check if user has permission to share (owner or has edit access)
+    if (!isOwner) {
+      const docVisibility = doc.visibility || 'all_members';
+      let hasEditAccess = docVisibility === 'all_members';
+      
+      if (docVisibility === 'specific_members') {
+        const visibleToMembers = doc.visible_to_members ? 
+          (Array.isArray(doc.visible_to_members) ? doc.visible_to_members : JSON.parse(doc.visible_to_members)) : [];
+        const normalizedVisibleToMembers = Array.isArray(visibleToMembers) 
+          ? visibleToMembers.map((email: string) => email?.toLowerCase())
+          : [];
+        hasEditAccess = normalizedVisibleToMembers.includes(normalizedEmail);
+      }
+
+      if (!hasEditAccess) {
+        return res.status(403).json({ error: 'You do not have permission to share this document' });
+      }
+    }
+
+    // Get org info
+    const orgResult = await sharedPool.query('SELECT name, slug FROM organizations WHERE id = $1', [orgId]);
+    const orgName = orgResult.rows[0]?.name || 'Unknown Organization';
+    const orgSlug = orgResult.rows[0]?.slug;
+
+    // Get sharer's name
+    const sharerResult = await sharedPool.query(
+      'SELECT first_name, last_name FROM users WHERE email = $1',
+      [userEmail]
+    );
+    const sharerData = sharerResult.rows[0] || {};
+    const sharerName = sharerData.first_name && sharerData.last_name
+      ? `${sharerData.first_name} ${sharerData.last_name}`
+      : sharerData.first_name || sharerData.last_name || userEmail.split('@')[0];
+
+    // Check if recipient is already an org member
+    const memberCheck = await sharedPool.query(
+      'SELECT 1 FROM org_members WHERE org_id = $1 AND user_email = $2',
+      [orgId, normalizedRecipientEmail]
+    );
+
+    const isExistingMember = memberCheck.rows.length > 0;
+
+    if (isExistingMember) {
+      // Add to doc's visibleToMembers if not already there
+      const currentVisibleToMembers = doc.visible_to_members ? 
+        (Array.isArray(doc.visible_to_members) ? doc.visible_to_members : JSON.parse(doc.visible_to_members)) : [];
+      
+      const normalizedCurrentVisible = Array.isArray(currentVisibleToMembers) 
+        ? currentVisibleToMembers.map((email: string) => email?.toLowerCase())
+        : [];
+
+      if (!normalizedCurrentVisible.includes(normalizedRecipientEmail)) {
+        // Add recipient to visibleToMembers
+        const updatedVisibleToMembers = [...currentVisibleToMembers, normalizedRecipientEmail];
+        
+        // Update doc visibility to 'specific_members' if currently 'all_members'
+        const newVisibility = doc.visibility === 'all_members' ? 'specific_members' : doc.visibility;
+
+        await pool.query(`
+          UPDATE docs 
+          SET visible_to_members = $1::jsonb,
+              visibility = $2,
+              updated_at = NOW()
+          WHERE id = $3
+        `, [JSON.stringify(updatedVisibleToMembers), newVisibility, docId]);
+      }
+
+      // Get recipient's name
+      let recipientName = normalizedRecipientEmail.split('@')[0];
+      try {
+        const recipientResult = await sharedPool.query(
+          'SELECT first_name, last_name FROM users WHERE email = $1',
+          [normalizedRecipientEmail]
+        );
+        if (recipientResult.rows.length > 0) {
+          const recipientData = recipientResult.rows[0];
+          if (recipientData.first_name || recipientData.last_name) {
+            recipientName = [recipientData.first_name, recipientData.last_name].filter(Boolean).join(' ') || recipientName;
+          }
+        }
+      } catch (err) {
+        console.warn('Could not fetch recipient name:', err);
+      }
+
+      // Send notification email
+      try {
+        await sendDocShareNotificationEmail(
+          secretManagerClient,
+          serviceAccount.project_id,
+          normalizedRecipientEmail,
+          recipientName,
+          sharerName,
+          doc.title,
+          docId,
+          orgSlug || '',
+          message || undefined
+        );
+        console.log(`✅ Doc share notification email sent to ${normalizedRecipientEmail}`);
+      } catch (emailError: any) {
+        console.error(`⚠️ Failed to send doc share notification email to ${normalizedRecipientEmail}:`, emailError.message);
+        // Don't fail the request if email fails
+      }
+
+      res.json({
+        success: true,
+        isNewMember: false,
+        message: 'Document shared successfully',
+      });
+    } else {
+      // Not an org member - create/update invitation
+      const existingInvite = await sharedPool.query(
+        "SELECT id FROM org_invitations WHERE org_id = $1 AND invitee_email = $2 AND status = 'pending'",
+        [orgId, normalizedRecipientEmail]
+      );
+
+      let invitation;
+      if (existingInvite.rows.length > 0) {
+        // Update existing invitation
+        const existingInvitationId = existingInvite.rows[0].id;
+        const token = crypto.randomBytes(32).toString('hex');
+
+        const updateResult = await sharedPool.query(`
+          UPDATE org_invitations 
+          SET inviter_email = $1, 
+              message = $2, 
+              token = $3, 
+              created_at = NOW(), 
+              expires_at = NOW() + INTERVAL '7 days',
+              updated_at = NOW()
+          WHERE id = $4
+          RETURNING id, org_id, invitee_email, inviter_email, status, created_at, expires_at
+        `, [userEmail, message || null, token, existingInvitationId]);
+
+        invitation = updateResult.rows[0];
+      } else {
+        // Create new invitation
+        const token = crypto.randomBytes(32).toString('hex');
+
+        const result = await sharedPool.query(`
+          INSERT INTO org_invitations (org_id, invitee_email, inviter_email, message, token, created_at, expires_at)
+          VALUES ($1, $2, $3, $4, $5, NOW(), NOW() + INTERVAL '7 days')
+          RETURNING id, org_id, invitee_email, inviter_email, status, created_at, expires_at
+        `, [orgId, normalizedRecipientEmail, userEmail, message || null, token]);
+
+        invitation = result.rows[0];
+      }
+
+      // Get invitee's name (if they have an account)
+      let inviteeName = normalizedRecipientEmail.split('@')[0];
+      try {
+        const inviteeResult = await sharedPool.query(
+          'SELECT first_name, last_name FROM users WHERE email = $1',
+          [normalizedRecipientEmail]
+        );
+        if (inviteeResult.rows.length > 0) {
+          const inviteeData = inviteeResult.rows[0];
+          if (inviteeData.first_name || inviteeData.last_name) {
+            inviteeName = [inviteeData.first_name, inviteeData.last_name].filter(Boolean).join(' ') || inviteeName;
+          }
+        }
+      } catch (err) {
+        console.warn('Could not fetch invitee name:', err);
+      }
+
+      // Send invitation email with doc context
+      try {
+        await sendDocShareInvitationEmail(
+          secretManagerClient,
+          serviceAccount.project_id,
+          normalizedRecipientEmail,
+          inviteeName,
+          sharerName,
+          orgName,
+          doc.title,
+          invitation.id,
+          message || undefined
+        );
+        console.log(`✅ Doc share invitation email sent to ${normalizedRecipientEmail}`);
+      } catch (emailError: any) {
+        console.error(`⚠️ Failed to send doc share invitation email to ${normalizedRecipientEmail}:`, emailError.message);
+        // Don't fail the request if email fails
+      }
+
+      res.json({
+        success: true,
+        isNewMember: true,
+        message: 'Invitation sent successfully',
+      });
+    }
+  } catch (error) {
+    console.error('Share doc error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
@@ -6491,6 +6732,11 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
 // ============================================================================
 
 app.use((req, res, next) => {
+  // Ignore Socket.IO requests (likely from browser extensions or third-party scripts)
+  if (req.path.startsWith('/socket.io/')) {
+    return res.status(404).end();
+  }
+  
   console.log('🔍 [Backend] Unhandled request', {
     method: req.method,
     path: req.path,

@@ -4,10 +4,11 @@ import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useCreateDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Share2, Download, File, MoreVertical, Paperclip, Trash2 } from "lucide-react";
+import { ArrowLeft, Share2, Download, File, MoreVertical, Paperclip, Trash2, Mail } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { ShareDocDialog } from "@/components/ShareDocDialog";
 import { fileUploadService } from "@/services/api";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
 import type { DocFile } from "@/data/docsData";
@@ -57,6 +58,7 @@ export default function DocDetail() {
   const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
   const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareViaEmailDialogOpen, setShareViaEmailDialogOpen] = useState(false);
   const [filesDialogOpen, setFilesDialogOpen] = useState(false);
   const [files, setFiles] = useState<DocFile[]>([]);
   const [fileToDelete, setFileToDelete] = useState<DocFile | null>(null);
@@ -253,6 +255,11 @@ export default function DocDetail() {
       icon: <Share2 className="h-4 w-4" />,
       onClick: () => setShareDialogOpen(true),
     }] : []),
+    ...(user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() ? [{
+      label: "Share",
+      icon: <Mail className="h-4 w-4" />,
+      onClick: () => setShareViaEmailDialogOpen(true),
+    }] : []),
     {
       label: `Attached Files ${files.length > 0 ? `(${files.length})` : ''}`,
       icon: <Paperclip className="h-4 w-4" />,
@@ -338,6 +345,12 @@ export default function DocDetail() {
                         <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
                           <Share2 className="mr-2 h-4 w-4" />
                           Limit Visibility
+                        </DropdownMenuItem>
+                      )}
+                      {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                        <DropdownMenuItem onClick={() => setShareViaEmailDialogOpen(true)}>
+                          <Mail className="mr-2 h-4 w-4" />
+                          Share
                         </DropdownMenuItem>
                       )}
                       <DropdownMenuItem onClick={() => setFilesDialogOpen(true)}>
@@ -480,6 +493,16 @@ export default function DocDetail() {
               description: "Document visibility has been updated successfully.",
             });
           }}
+        />
+      )}
+
+      {/* Share Document Dialog */}
+      {!isNew && doc && (
+        <ShareDocDialog
+          open={shareViaEmailDialogOpen}
+          onOpenChange={setShareViaEmailDialogOpen}
+          docId={doc.id}
+          docTitle={doc.title}
         />
       )}
 

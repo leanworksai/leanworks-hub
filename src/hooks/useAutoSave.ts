@@ -143,20 +143,19 @@ export function useAutoSave({
         // Queue save for when online
         if (docId === 'new') {
           // For new docs, we need the full doc object
-          const newDoc: Doc = {
-            id: uuidv4(), // Generate ID for queue
-            title: title.trim(),
-            content,
-            ownerEmail: user?.email || '',
-            projectId: null,
-            teamId: null,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
-            isPinned: false,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
+            const newDoc: Doc = {
+              id: uuidv4(), // Generate ID for queue
+              title: title.trim(),
+              content,
+              ownerEmail: user?.email || '',
+              projectId: null,
+              teamId: null,
+              visibility,
+              visibleToMembers: Array.from(visibleToMembers),
+              metadata: { files },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
           queueSave('new', {}, 'create', newDoc);
         } else {
           queueSave(docId, {
@@ -205,20 +204,19 @@ export function useAutoSave({
           isCreatingRef.current = true;
           
           try {
-            const newDoc: Doc = {
-              id: uuidv4(), // Generate ID for new doc
-              title: title.trim(),
-              content,
-              ownerEmail: user?.email || '',
-              projectId: null,
-              teamId: null,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
-              isPinned: false,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            };
+              const newDoc: Doc = {
+                id: uuidv4(), // Generate ID for new doc
+                title: title.trim(),
+                content,
+                ownerEmail: user?.email || '',
+                projectId: null,
+                teamId: null,
+                visibility,
+                visibleToMembers: Array.from(visibleToMembers),
+                metadata: { files },
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
             
             const createdDoc = await createDoc.mutateAsync(newDoc);
             
@@ -292,20 +290,19 @@ export function useAutoSave({
             metadata: { files },
           });
         } else {
-          const newDoc: Doc = {
-            id: uuidv4(), // Generate ID for queue
-            title: title.trim(),
-            content,
-            ownerEmail: user?.email || '',
-            projectId: null,
-            teamId: null,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
-            isPinned: false,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
+            const newDoc: Doc = {
+              id: uuidv4(), // Generate ID for queue
+              title: title.trim(),
+              content,
+              ownerEmail: user?.email || '',
+              projectId: null,
+              teamId: null,
+              visibility,
+              visibleToMembers: Array.from(visibleToMembers),
+              metadata: { files },
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
           queueSave('new', {}, 'create', newDoc);
         }
       } else {
@@ -496,7 +493,6 @@ export function useAutoSave({
               visibility,
               visibleToMembers: Array.from(visibleToMembers),
               metadata: { files },
-              isPinned: false,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
@@ -545,7 +541,6 @@ export function useAutoSave({
                 visibility,
                 visibleToMembers: Array.from(visibleToMembers),
                 metadata: { files },
-                isPinned: false,
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };

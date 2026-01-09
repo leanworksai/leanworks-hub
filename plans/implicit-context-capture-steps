@@ -1,0 +1,243 @@
+# Implicit Context Capture - Step-by-Step Process
+
+## Overview
+
+When a user doesn't explicitly select contexts for AI chat, we automatically capture relevant context from their current session and activity. This document outlines the step-by-step process.
+
+---
+
+## Step-by-Step Workflow
+
+### Step 1: Route Context Capture
+**Trigger:** User navigates to any screen
+**Action:** Capture current route information
+
+```
+User visits URL
+    ↓
+useRouteContext hook fires
+    ↓
+Extract: pathname, route params, query strings
+    ↓
+Store in ContextStore.currentRoute
+```
+
+**Code Location:** `src/hooks/useRouteContext.ts`
+
+**Captured Data:**
+- `pathname` - e.g., `/projects/123/tasks`
+- `params` - e.g., `{ projectId: '123' }`
+- `search` - query parameters
+
+---
+
+### Step 2: Selection Context Capture
+**Trigger:** User selects/deselects items (docs, tasks, projects)
+**Action:** Capture current selections from existing contexts
+
+```
+User clicks checkbox on item
+    ↓
+SelectedDocsContext/SelectedTasksContext updates
+    ↓
+useSelectionContext hook triggers
+    ↓
+Read current selections from context stores
+    ↓
+Store in ContextStore.selections
+```
+
+**Code Location:** `src/contexts/SelectedDocsContext.tsx`, `SelectedTasksContext.tsx`, `SelectedProjectsContext.tsx`
+
+**Captured Data:**
+- `selectedDocs: string[]`
+- `selectedTasks: string[]`
+- `selectedProjects: string[]`
+
+---
+
+### Step 3: Viewport Context Capture
+**Trigger:** User scrolls or list renders
+**Action:** Identify items currently visible in viewport
+
+```
+User scrolls the page
+    ↓
+IntersectionObserver callback fires
+    ↓
+Check which elements have data-item-id attribute
+    ↓
+Mark elements as visible/invisible
+    ↓
+Store top 5-10 visible item IDs in ContextStore.visibleItems
+```
+
+**Code Location:** `src/hooks/useVisibleContext.ts`
+
+**Captured Data:**
+- `visibleItems: string[]` (up to 10 items)
+- `scrollPercent: number`
+
+---
+
+### Step 4: Recent Actions Capture
+**Trigger:** User performs any action
+**Action:** Track actions for the last 60 seconds
+
+```
+User clicks, types, navigates
+    ↓
+dispatchAction(type, target) called
+    ↓
+Add to action queue with timestamp
+    ↓
+Filter actions older than 60 seconds
+    ↓
+Store in ContextStore.recentActions
+```
+
+**Code Location:** `src/hooks/useRecentActions.ts`
+
+**Captured Data:**
+- `recentActions: Array<{ type, target, timestamp }>`
+- Maximum 10 actions kept
+
+---
+
+### Step 5: Focused Content Capture
+**Trigger:** User focuses on an element
+**Action:** Capture what the user is currently focused on
+
+```
+User clicks into input/opens modal
+    ↓
+Focus event listener fires
+    ↓
+Check for data-context-id attribute
+    ↓
+Store focused element info
+    ↓
+Update ContextStore.focusedElement
+```
+
+**Code Location:** `src/hooks/useFocusedContext.ts`
+
+**Captured Data:**
+- `focusedElement: { type: string, id: string } | null`
+
+---
+
+### Step 6: Context Aggregation
+**Trigger:** Any context changes OR user submits message
+**Action:** Combine all captured contexts
+
+```
+Any context source updates
+    ↓
+Debounce wait (300ms)
+    ↓
+AggregateContext function runs
+    ↓
+Combine:
+  - Route context
+  - Selection context
+  - Visible context
+  - Recent actions
+  - Focused element
+    ↓
+Store in ContextStore.aggregatedContext
+```
+
+**Code Location:** `src/services/ContextAggregator.ts`
+
+**Output:**
+```typescript
+interface AggregatedContext {
+  route: RouteContext;
+  selections: SelectionContext;
+  visible: string[];
+  recentActions: Action[];
+  focused: FocusedElement | null;
+  capturedAt: number;
+}
+```
+
+---
+
+### Step 7: Context Transmission to API
+**Trigger:** User submits chat message
+**Action:** Send aggregated context to AI Ask API
+
+```
+User submits message
+    ↓
+Get aggregated context from ContextStore
+    ↓
+Merge with user's message
+    ↓
+POST to /api/ai/ask
+    ↓
+AI uses context for response generation
+```
+
+**Code Location:** `src/hooks/useImplicitContextSender.ts`
+
+**API Payload:**
+```typescript
+{
+  message: string;
+  context: AggregatedContext;
+}
+```
+
+---
+
+## Context Priority for AI
+
+| Priority | Context Type | When to Include |
+|----------|--------------|-----------------|
+| 1 | Route + Selections | Always |
+| 2 | Visible Items | When user asks about list content |
+| 3 | Recent Actions | When relevant to query |
+| 4 | Focused Element | When user is actively editing |
+
+---
+
+## File Structure
+
+```
+src/
+├── contexts/
+│   └── ImplicitContextStore.tsx    # Central context store
+├── hooks/
+│   ├── useRouteContext.ts          # Step 1
+│   ├── useSelectionContext.ts      # Step 2
+│   ├── useVisibleContext.ts        # Step 3
+│   ├── useRecentActions.ts         # Step 4
+│   ├── useFocusedContext.ts        # Step 5
+│   └── useImplicitContextSender.ts # Step 7
+└── services/
+    └── ContextAggregator.ts        # Step 6
+```
+
+---
+
+## Debounce & Throttling Rules
+
+| Context Type | Debounce | Throttle |
+|--------------|----------|----------|
+| Route | - | - |
+| Selections | 300ms | - |
+| Visible | - | 500ms |
+| Recent Actions | - | - |
+| Focused | - | - |
+| Final Send | - | 3s minimum between sends |
+
+---
+
+## Privacy Considerations
+
+1. **User Consent**: Add toggle to enable/disable implicit context
+2. **Data Retention**: Don't store context beyond session
+3. **Opt-out**: Allow users to clear context manually
+4. **Transparency**: Show what context was sent with each AI response

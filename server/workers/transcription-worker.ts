@@ -1924,8 +1924,8 @@ async function handleCallEnded(message: any): Promise<void> {
           }
 
           await pool.query(`
-            INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, is_pinned, visibility, visible_to_members, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+            INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, visibility, visible_to_members, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
           `, [
             docId,
             docTitle,
@@ -1934,7 +1934,6 @@ async function handleCallEnded(message: any): Promise<void> {
             projectId,
             teamId,
             JSON.stringify(['meeting', 'transcript']),
-            false,
             'specific_members', // Visibility: only host and participants
             JSON.stringify(visibleToMembers)
           ]);

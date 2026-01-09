@@ -484,7 +484,7 @@ export default function Home() {
             <span>Powered by AI</span>
           </div>
           <p className="text-xl text-muted-foreground">
-            Our AI answers any question about your projects, helps your team draft tickets, automatically tracks project progress, and proactively follows up with key stakeholders when action is needed.
+            Our AI seamlessly integrates into every step of human collaboration, unlocking peak productivity across your team.
           </p>
         </div>
       </section>

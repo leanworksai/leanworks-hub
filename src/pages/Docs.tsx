@@ -11,7 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Plus, Pin, Trash2, Edit, User, Share2, Lock, X } from "lucide-react";
+import { Plus, Trash2, Edit, User, Share2, Lock, X, Mail } from "lucide-react";
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
 import { useNavigate } from "react-router-dom";
 import { useDocs, useDeleteDoc, useUpdateDoc } from "@/hooks/useDocs";
@@ -23,6 +23,7 @@ import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
+import { ShareDocDialog } from "@/components/ShareDocDialog";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useUserMap } from "@/hooks/useUserMap";
 
@@ -46,6 +47,7 @@ export default function Docs() {
   const { toggleDoc, isDocSelected } = useSelectedDocs();
   const [docToDelete, setDocToDelete] = useState<string | null>(null);
   const [docToShare, setDocToShare] = useState<{ id: string; doc: any } | null>(null);
+  const [docToShareViaEmail, setDocToShareViaEmail] = useState<{ id: string; doc: any } | null>(null);
 
   // Check if user is the owner of a doc
   const isOwner = (doc: any) => {
@@ -72,6 +74,12 @@ export default function Docs() {
     e.stopPropagation();
     trackClick('limit_visibility_doc', '/docs');
     setDocToShare({ id: doc.id, doc });
+  };
+
+  const handleShareViaEmail = (e: React.MouseEvent, doc: any) => {
+    e.stopPropagation();
+    trackClick('share_doc_email', '/docs');
+    setDocToShareViaEmail({ id: doc.id, doc });
   };
 
   const handleDeleteConfirm = async () => {
@@ -105,10 +113,6 @@ export default function Docs() {
     );
   }
 
-  // Separate pinned and unpinned docs
-  const pinnedDocs = docs.filter(doc => doc.isPinned);
-  const unpinnedDocs = docs.filter(doc => !doc.isPinned);
-
   return (
     <div className="space-y-4 sm:space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -141,170 +145,87 @@ export default function Docs() {
           </CardContent>
         </Card>
       ) : (
-        <>
-          {pinnedDocs.length > 0 && (
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Pin className="h-4 w-4" />
-                Pinned
-              </h2>
-              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-                {pinnedDocs.map((doc) => (
-                  <Card
-                    key={doc.id}
-                    className="cursor-pointer hover:shadow-md transition-shadow relative overflow-hidden"
-                    onClick={() => {
-                      trackView('doc', doc.id);
-                      navigate(`/docs/${doc.id}`);
-                    }}
-                  >
-                    {doc.visibility === 'private' && (
-                      <div className="absolute top-2 left-2 z-10">
-                        <Lock className="h-4 w-4 text-muted-foreground" />
+        <div className="space-y-4">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+            {docs.map((doc) => (
+              <Card
+                key={doc.id}
+                className="cursor-pointer hover:shadow-md transition-shadow relative overflow-hidden"
+                onClick={() => {
+                  trackView('doc', doc.id);
+                  navigate(`/docs/${doc.id}`);
+                }}
+              >
+                {doc.visibility === 'private' && (
+                  <div className="absolute top-2 left-2 z-10">
+                    <Lock className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                )}
+                <CardHeader className="pb-3">
+                  <div className="flex items-start justify-between gap-2 min-w-0">
+                    <div className="flex-1 min-w-0">
+                      <CardTitle className="line-clamp-2 break-words">{doc.title}</CardTitle>
+                    </div>
+                    <MoreOptionsMenu
+                      size="sm"
+                      items={[
+                        {
+                          icon: isDocSelected(doc.id) ? X : Plus,
+                          label: isDocSelected(doc.id) ? "Remove from Context" : "Add to Context",
+                          onClick: (e) => {
+                            toggleDoc(doc);
+                          },
+                        },
+                        {
+                          icon: Edit,
+                          label: "Edit",
+                          onClick: () => navigate(`/docs/${doc.id}?edit=true`),
+                        },
+                        {
+                          icon: Share2,
+                          label: "Limit Visibility",
+                          onClick: (e) => handleShareClick(e, doc),
+                          show: isOwner(doc),
+                        },
+                        {
+                          icon: Mail,
+                          label: "Share",
+                          onClick: (e) => handleShareViaEmail(e, doc),
+                          show: isOwner(doc),
+                        },
+                        {
+                          icon: Trash2,
+                          label: "Delete",
+                          onClick: (e) => handleDeleteClick(e, doc.id),
+                          isDestructive: true,
+                        },
+                      ]}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 gap-2">
+                    <span className="truncate">{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                    {doc.ownerEmail && (
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <Avatar className="h-4 w-4">
+                          <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
+                            {getUserInitials(doc.ownerEmail)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium hidden sm:inline">{getUserDisplayName(doc.ownerEmail)}</span>
                       </div>
                     )}
-                    <CardHeader className="pb-3">
-                      <div className="flex items-start justify-between gap-2 min-w-0">
-                        <div className="flex-1 min-w-0">
-                          <CardTitle className="line-clamp-2 break-words">{doc.title}</CardTitle>
-                        </div>
-                        <MoreOptionsMenu
-                          size="sm"
-                          items={[
-                            {
-                              icon: isDocSelected(doc.id) ? X : Plus,
-                              label: isDocSelected(doc.id) ? "Remove from Context" : "Add to Context",
-                              onClick: (e) => {
-                                toggleDoc(doc);
-                              },
-                            },
-                            {
-                              icon: Edit,
-                              label: "Edit",
-                              onClick: () => navigate(`/docs/${doc.id}?edit=true`),
-                            },
-                            {
-                              icon: Share2,
-                              label: "Limit Visibility",
-                              onClick: (e) => handleShareClick(e, doc),
-                              show: isOwner(doc),
-                            },
-                            {
-                              icon: Trash2,
-                              label: "Delete",
-                              onClick: (e) => handleDeleteClick(e, doc.id),
-                              isDestructive: true,
-                            },
-                          ]}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 gap-2">
-                        <span className="truncate">{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
-                        {doc.ownerEmail && (
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
-                            <Avatar className="h-4 w-4">
-                              <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
-                                {getUserInitials(doc.ownerEmail)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span className="font-medium hidden sm:inline">{getUserDisplayName(doc.ownerEmail)}</span>
-                          </div>
-                        )}
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div
-                        className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
-                        dangerouslySetInnerHTML={{ __html: truncateText(doc.content, 150) }}
-                      />
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {unpinnedDocs.length > 0 && (
-            <div className="space-y-4">
-              {pinnedDocs.length > 0 && (
-                <h2 className="text-lg font-semibold">All Docs</h2>
-              )}
-              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-                {unpinnedDocs.map((doc) => (
-                  <Card
-                    key={doc.id}
-                    className="cursor-pointer hover:shadow-md transition-shadow relative overflow-hidden"
-                    onClick={() => {
-                      trackView('doc', doc.id);
-                      navigate(`/docs/${doc.id}`);
-                    }}
-                  >
-                    {doc.visibility === 'private' && (
-                      <div className="absolute top-2 left-2 z-10">
-                        <Lock className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                    )}
-                    <CardHeader className="pb-3">
-                      <div className="flex items-start justify-between gap-2 min-w-0">
-                        <div className="flex-1 min-w-0">
-                          <CardTitle className="line-clamp-2 break-words">{doc.title}</CardTitle>
-                        </div>
-                        <MoreOptionsMenu
-                          size="sm"
-                          items={[
-                            {
-                              icon: isDocSelected(doc.id) ? X : Plus,
-                              label: isDocSelected(doc.id) ? "Remove from Context" : "Add to Context",
-                              onClick: (e) => {
-                                toggleDoc(doc);
-                              },
-                            },
-                            {
-                              icon: Edit,
-                              label: "Edit",
-                              onClick: () => navigate(`/docs/${doc.id}?edit=true`),
-                            },
-                            {
-                              icon: Share2,
-                              label: "Limit Visibility",
-                              onClick: (e) => handleShareClick(e, doc),
-                              show: isOwner(doc),
-                            },
-                            {
-                              icon: Trash2,
-                              label: "Delete",
-                              onClick: (e) => handleDeleteClick(e, doc.id),
-                              isDestructive: true,
-                            },
-                          ]}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground mt-1 gap-2">
-                        <span className="truncate">{formatDateInTimezone(doc.updatedAt, userTimezone, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
-                        {doc.ownerEmail && (
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
-                            <Avatar className="h-4 w-4">
-                              <AvatarFallback className="bg-primary/10 text-primary text-[10px]">
-                                {getUserInitials(doc.ownerEmail)}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span className="font-medium hidden sm:inline">{getUserDisplayName(doc.ownerEmail)}</span>
-                          </div>
-                        )}
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <div
-                        className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
-                        dangerouslySetInnerHTML={{ __html: truncateText(doc.content, 150) }}
-                      />
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div
+                    className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{ __html: truncateText(doc.content, 150) }}
+                  />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
       )}
 
       <AlertDialog open={!!docToDelete} onOpenChange={(open) => !open && setDocToDelete(null)}>
@@ -347,6 +268,16 @@ export default function Docs() {
             });
             setDocToShare(null);
           }}
+        />
+      )}
+
+      {/* Share Document Dialog */}
+      {docToShareViaEmail && (
+        <ShareDocDialog
+          open={!!docToShareViaEmail}
+          onOpenChange={(open) => !open && setDocToShareViaEmail(null)}
+          docId={docToShareViaEmail.id}
+          docTitle={docToShareViaEmail.doc.title}
         />
       )}
     </div>

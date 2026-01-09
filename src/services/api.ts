@@ -351,6 +351,23 @@ export const docsService = {
     });
     if (!response.ok) throw new Error('Failed to delete doc');
   },
+
+  async shareDoc(docId: string, email: string, message?: string): Promise<{
+    success: boolean;
+    isNewMember: boolean;
+    message: string;
+  }> {
+    const url = import.meta.env.DEV ? `${API_BASE}/api/docs/${encodeURIComponent(docId)}/share` : `${API_BASE}/docs/${encodeURIComponent(docId)}/share`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ email, message }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to share doc' }));
+      throw new Error(error.error || 'Failed to share doc');
+    }
+    return response.json();
+  },
 };
 
 // Users Service

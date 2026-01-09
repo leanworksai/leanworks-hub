@@ -318,7 +318,6 @@ CREATE TABLE IF NOT EXISTS docs (
   team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
   tags JSONB DEFAULT '[]'::jsonb,
   metadata JSONB DEFAULT '{}'::jsonb,
-  is_pinned BOOLEAN DEFAULT FALSE,
   visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
   visible_to_members JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -329,7 +328,6 @@ CREATE INDEX IF NOT EXISTS idx_docs_owner ON docs(owner_email);
 CREATE INDEX IF NOT EXISTS idx_docs_project ON docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_docs_team ON docs(team_id);
 CREATE INDEX IF NOT EXISTS idx_docs_created_at ON docs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_docs_pinned ON docs(is_pinned DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_docs_visibility ON docs(visibility);
 CREATE INDEX IF NOT EXISTS idx_docs_visible_to_members ON docs USING GIN (visible_to_members);
 

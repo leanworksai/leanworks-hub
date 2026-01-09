@@ -411,6 +411,334 @@ export async function sendInvitationEmail(
   }
 }
 
+// Email template for doc share invitation (non-org members)
+function getDocShareInvitationEmailHtml(
+  inviteeName: string,
+  sharerName: string,
+  orgName: string,
+  docTitle: string,
+  invitationLink: string,
+  message?: string
+): string {
+  const personalMessage = message ? `
+              <div style="margin: 24px 0; padding: 16px; background-color: #f4f4f5; border-left: 4px solid #18181b; border-radius: 4px;">
+                <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #52525b; font-style: italic;">
+                  "${message}"
+                </p>
+              </div>
+  ` : '';
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document Shared - Leanworks</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f5;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 40px 40px 20px 40px; text-align: center;">
+              <h1 style="margin: 0; font-size: 28px; font-weight: 700; color: #18181b;">
+                🚀 Leanworks
+              </h1>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 20px 40px;">
+              <h2 style="margin: 0 0 16px 0; font-size: 24px; font-weight: 600; color: #18181b;">
+                A document has been shared with you
+              </h2>
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                Hi ${inviteeName || 'there'},
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                <strong>${sharerName}</strong> has shared the document "<strong>${docTitle}</strong>" with you on Leanworks.
+              </p>
+              ${personalMessage}
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                To view this document, you'll need to join <strong>${orgName}</strong>. Click the button below to accept the invitation and view the document.
+              </p>
+              
+              <!-- CTA Button -->
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 16px 0; text-align: center;">
+                    <a href="${invitationLink}" 
+                       style="display: inline-block; padding: 14px 32px; background-color: #18181b; color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
+                      View Document & Join ${orgName}
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              
+              <p style="margin: 24px 0 16px 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                Or copy and paste this link into your browser:
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6; color: #3b82f6; word-break: break-all;">
+                ${invitationLink}
+              </p>
+              
+              <p style="margin: 0 0 8px 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                This invitation will expire in <strong>7 days</strong>.
+              </p>
+              <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                If you don't want to join this organization, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 30px 40px; border-top: 1px solid #e4e4e7;">
+              <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #a1a1aa; text-align: center;">
+                © ${new Date().getFullYear()} Leanworks. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`;
+}
+
+// Plain text version of doc share invitation email
+function getDocShareInvitationEmailText(
+  inviteeName: string,
+  sharerName: string,
+  orgName: string,
+  docTitle: string,
+  invitationLink: string,
+  message?: string
+): string {
+  const personalMessage = message ? `\n\nPersonal message from ${sharerName}:\n"${message}"\n` : '';
+  
+  return `
+A document has been shared with you
+
+Hi ${inviteeName || 'there'},
+
+${sharerName} has shared the document "${docTitle}" with you on Leanworks.${personalMessage}
+
+To view this document, you'll need to join ${orgName}. Click the link below to accept the invitation:
+
+${invitationLink}
+
+This invitation will expire in 7 days.
+
+If you don't want to join this organization, you can safely ignore this email.
+
+© ${new Date().getFullYear()} Leanworks. All rights reserved.
+`.trim();
+}
+
+// Email template for doc share notification (existing org members)
+function getDocShareNotificationEmailHtml(
+  recipientName: string,
+  sharerName: string,
+  docTitle: string,
+  docLink: string,
+  message?: string
+): string {
+  const personalMessage = message ? `
+              <div style="margin: 24px 0; padding: 16px; background-color: #f4f4f5; border-left: 4px solid #18181b; border-radius: 4px;">
+                <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #52525b; font-style: italic;">
+                  "${message}"
+                </p>
+              </div>
+  ` : '';
+
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document Shared - Leanworks</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f5;">
+  <table role="presentation" style="width: 100%; border-collapse: collapse;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 40px 40px 20px 40px; text-align: center;">
+              <h1 style="margin: 0; font-size: 28px; font-weight: 700; color: #18181b;">
+                🚀 Leanworks
+              </h1>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 20px 40px;">
+              <h2 style="margin: 0 0 16px 0; font-size: 24px; font-weight: 600; color: #18181b;">
+                A document has been shared with you
+              </h2>
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                Hi ${recipientName || 'there'},
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 16px; line-height: 1.6; color: #52525b;">
+                <strong>${sharerName}</strong> has shared the document "<strong>${docTitle}</strong>" with you. You now have access to view it.
+              </p>
+              ${personalMessage}
+              
+              <!-- CTA Button -->
+              <table role="presentation" style="width: 100%; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 16px 0; text-align: center;">
+                    <a href="${docLink}" 
+                       style="display: inline-block; padding: 14px 32px; background-color: #18181b; color: #ffffff; text-decoration: none; font-size: 16px; font-weight: 600; border-radius: 8px;">
+                      View Document
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              
+              <p style="margin: 24px 0 16px 0; font-size: 14px; line-height: 1.6; color: #71717a;">
+                Or copy and paste this link into your browser:
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 1.6; color: #3b82f6; word-break: break-all;">
+                ${docLink}
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 30px 40px; border-top: 1px solid #e4e4e7;">
+              <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #a1a1aa; text-align: center;">
+                © ${new Date().getFullYear()} Leanworks. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`;
+}
+
+// Plain text version of doc share notification email
+function getDocShareNotificationEmailText(
+  recipientName: string,
+  sharerName: string,
+  docTitle: string,
+  docLink: string,
+  message?: string
+): string {
+  const personalMessage = message ? `\n\nPersonal message from ${sharerName}:\n"${message}"\n` : '';
+  
+  return `
+A document has been shared with you
+
+Hi ${recipientName || 'there'},
+
+${sharerName} has shared the document "${docTitle}" with you. You now have access to view it.${personalMessage}
+
+Click the link below to view the document:
+
+${docLink}
+
+© ${new Date().getFullYear()} Leanworks. All rights reserved.
+`.trim();
+}
+
+// Send doc share invitation email (for non-org members)
+export async function sendDocShareInvitationEmail(
+  secretManagerClient: SecretManagerServiceClient,
+  projectId: string,
+  toEmail: string,
+  inviteeName: string,
+  sharerName: string,
+  orgName: string,
+  docTitle: string,
+  invitationId: string,
+  message?: string
+): Promise<void> {
+  const transporter = await getTransporter(secretManagerClient, projectId);
+  const credentials = await getEmailCredentials(secretManagerClient, projectId);
+
+  // Construct invitation link - point to signup page
+  const invitationLink = `https://leanworks.ai/signup?invitation=${invitationId}`;
+  
+  console.log(`📧 Sending doc share invitation email to ${toEmail} for doc "${docTitle}"`);
+
+  const mailOptions = {
+    from: {
+      name: 'Leanworks',
+      address: 'no-reply@leanworks.ai',
+    },
+    replyTo: 'no-reply@leanworks.ai',
+    to: toEmail,
+    subject: `${sharerName} shared a document with you on Leanworks`,
+    text: getDocShareInvitationEmailText(inviteeName, sharerName, orgName, docTitle, invitationLink, message),
+    html: getDocShareInvitationEmailHtml(inviteeName, sharerName, orgName, docTitle, invitationLink, message),
+  };
+
+  try {
+    const result = await transporter.sendMail(mailOptions);
+    console.log(`✅ Doc share invitation email sent to ${toEmail}:`, result.messageId);
+  } catch (error: any) {
+    console.error(`❌ Failed to send doc share invitation email to ${toEmail}:`, error);
+    throw new Error(`Failed to send doc share invitation email: ${error.message}`);
+  }
+}
+
+// Send doc share notification email (for existing org members)
+export async function sendDocShareNotificationEmail(
+  secretManagerClient: SecretManagerServiceClient,
+  projectId: string,
+  toEmail: string,
+  recipientName: string,
+  sharerName: string,
+  docTitle: string,
+  docId: string,
+  orgSlug: string,
+  message?: string
+): Promise<void> {
+  const transporter = await getTransporter(secretManagerClient, projectId);
+  const credentials = await getEmailCredentials(secretManagerClient, projectId);
+
+  // Construct doc link
+  const docLink = `https://leanworks.ai/docs/${docId}`;
+  
+  console.log(`📧 Sending doc share notification email to ${toEmail} for doc "${docTitle}"`);
+
+  const mailOptions = {
+    from: {
+      name: 'Leanworks',
+      address: 'no-reply@leanworks.ai',
+    },
+    replyTo: 'no-reply@leanworks.ai',
+    to: toEmail,
+    subject: `${sharerName} shared a document with you`,
+    text: getDocShareNotificationEmailText(recipientName, sharerName, docTitle, docLink, message),
+    html: getDocShareNotificationEmailHtml(recipientName, sharerName, docTitle, docLink, message),
+  };
+
+  try {
+    const result = await transporter.sendMail(mailOptions);
+    console.log(`✅ Doc share notification email sent to ${toEmail}:`, result.messageId);
+  } catch (error: any) {
+    console.error(`❌ Failed to send doc share notification email to ${toEmail}:`, error);
+    throw new Error(`Failed to send doc share notification email: ${error.message}`);
+  }
+}
+
 // Clear cached transporter (useful for testing or credential rotation)
 export function clearEmailCache(): void {
   cachedTransporter = null;

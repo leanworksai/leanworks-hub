@@ -86,8 +86,11 @@ export default function Signup() {
     if (invitationId && !authLoading && !user) {
       setLoadingInvitation(true);
       const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
+      const url = import.meta.env.DEV 
+        ? `${API_BASE}/api/orgs/invitations/${invitationId}/preview`
+        : `${API_BASE}/orgs/invitations/${invitationId}/preview`;
       
-      fetch(`${API_BASE}/api/orgs/invitations/${invitationId}/preview`)
+      fetch(url)
         .then(async (res) => {
           if (!res.ok) {
             const error = await res.json().catch(() => ({ error: 'Failed to load invitation' }));
