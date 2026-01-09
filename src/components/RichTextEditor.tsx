@@ -18,6 +18,12 @@ import mermaid from 'mermaid';
 import { useTextSelection } from '@/hooks/useTextSelection';
 import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
 import { FloatingAskAI } from '@/components/FloatingAskAI';
+import { 
+  detectMarkdownConversionNeeded, 
+  convertMarkdownToHtml,
+  shouldConvertMarkdownPaste,
+  shouldPreserveHtmlPaste 
+} from '@/utils/markdownConverter';
 
 // Create lowlight instance with common languages
 const lowlight = createLowlight(common);
@@ -242,29 +248,13 @@ function restoreMarkdownLineBreaks(text: string): string {
   return result;
 }
 
-// Helper function to convert markdown to HTML
+
+// Simplified markdown to HTML conversion (line break restoration removed)
+// The problematic restoreMarkdownLineBreaks function was causing conversion issues
 function convertMarkdownToHTML(markdown: string): string {
   try {
-    // Extract text content if it's wrapped in HTML, preserving line breaks
-    let textContent = markdown;
-    if (markdown.includes('<')) {
-      textContent = extractTextPreservingLineBreaks(markdown);
-    }
-    
-    // Check if the content appears to be flattened markdown (very few newlines but has markdown patterns)
-    // Use patterns that work even without line breaks
-    const hasMarkdownPatterns = /```[\s\S]*?```|#{1,6}\s+\S|[-*+]\s+\S|\d+\.\s+\S/.test(textContent);
-    const newlineCount = (textContent.match(/\n/g) || []).length;
-    const hasVeryFewNewlines = newlineCount < Math.max(5, textContent.length / 500);
-    const isLongContent = textContent.length > 200;
-    
-    if (hasMarkdownPatterns && hasVeryFewNewlines && isLongContent) {
-      console.log('[RichTextEditor] Restoring line breaks in flattened markdown');
-      textContent = restoreMarkdownLineBreaks(textContent);
-    }
-    
     // Convert markdown to HTML with line break support
-    return marked.parse(textContent, {
+    return marked.parse(markdown, {
       breaks: true,  // Convert single newlines to <br>
       gfm: true,     // GitHub Flavored Markdown
     }) as string;
@@ -278,26 +268,18 @@ interface RichTextEditorProps {
   content: string;
   onChange: (content: string) => void;
   placeholder?: string;
-  title?: string;
-  onTitleChange?: (title: string) => void;
-  titlePlaceholder?: string;
   readOnly?: boolean;
   onFileUpload?: (file: File) => Promise<void>;
   docId?: string;
-  titleRightActions?: React.ReactNode;
 }
 
 export function RichTextEditor({ 
   content, 
   onChange, 
   placeholder = 'Start writing...',
-  title,
-  onTitleChange,
-  titlePlaceholder = 'Untitled',
   readOnly = false,
   onFileUpload,
   docId,
-  titleRightActions
 }: RichTextEditorProps) {
   const initialContent = content || '<p></p>';
   const contentRef = useRef<string>(initialContent);
@@ -323,6 +305,8 @@ export function RichTextEditor({
   const mermaidInitialized = useRef(false);
   const renderedMermaidIds = useRef<Set<string>>(new Set());
   const mermaidRenderScheduled = useRef(false);
+  // Track whether content has been converted from markdown to prevent re-conversion
+  const contentAlreadyConvertedRef = useRef<boolean>(false);
 
   const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-75';
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
@@ -686,52 +670,21 @@ export function RichTextEditor({
 
     let normalizedContent = content || '<p></p>';
     
-    // Check if content is markdown and convert it (only when loading a new doc, not during editing)
-    // This handles existing docs that contain raw markdown
+    // Check if content needs markdown conversion using the new reliable detection
+    // Only convert once - once content is HTML, it's canonical and should not be re-converted
     if (normalizedContent && normalizedContent !== '<p></p>') {
-      // Extract text content to check for markdown, preserving line breaks
-      let textToCheck = normalizedContent;
-      if (normalizedContent.includes('<')) {
-        textToCheck = extractTextPreservingLineBreaks(normalizedContent);
-      }
+      const conversionCheck = detectMarkdownConversionNeeded(normalizedContent);
       
-      // Check if the TEXT content has markdown patterns
-      const hasMarkdown = isMarkdownContent(textToCheck);
-      
-      
-      if (hasMarkdown) {
-        // Check if content is ALREADY properly converted rich HTML
-        // Look for actual semantic formatting tags (not just wrapper <p> tags)
-        const richTagMatches = normalizedContent.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a)[^>]*>/gi) || [];
-        const hasProperFormatting = richTagMatches.length >= 5;
-        
-        // Check if the HTML structure matches markdown patterns (lists, code blocks, headers, etc.)
-        // Only consider it "converted" if the HTML actually contains the rendered versions
-        const hasCodeBlock = /<pre[^>]*>[\s\S]*?<code[^>]*>/i.test(normalizedContent);
-        const hasHtmlHeader = /<h[1-6][^>]*>[^<]+<\/h[1-6]>/i.test(normalizedContent);
-        const hasHtmlList = /<[uo]l[^>]*>[\s\S]*?<li[^>]*>/i.test(normalizedContent);
-        
-        // Check if markdown patterns exist but HTML equivalents don't
-        const markdownHasCodeBlock = /```[\s\S]*?```/.test(textToCheck);
-        const markdownHasHeader = /^#{1,6}\s+\S/m.test(textToCheck);
-        const markdownHasList = /^\s*[-*+]\s+\S|^\s*\d+\.\s+\S/m.test(textToCheck);
-        
-        // Content needs conversion if markdown patterns exist but HTML equivalents don't
-        const needsConversion = 
-          (markdownHasCodeBlock && !hasCodeBlock) ||
-          (markdownHasHeader && !hasHtmlHeader) ||
-          (markdownHasList && !hasHtmlList) ||
-          (!hasProperFormatting && hasMarkdown);
-        
-        
-        if (needsConversion) {
-          console.log('[RichTextEditor] Converting markdown content to HTML');
-          const convertedContent = convertMarkdownToHTML(normalizedContent);
-          normalizedContent = convertedContent;
-        }
+      if (conversionCheck.needsConversion) {
+        console.log('[RichTextEditor] Converting markdown to HTML:', conversionCheck.reason);
+        normalizedContent = convertMarkdownToHtml(normalizedContent);
+        contentAlreadyConvertedRef.current = true;
+      } else if (conversionCheck.reason === 'already_converted') {
+        // Mark as already converted to prevent re-conversion on subsequent renders
+        contentAlreadyConvertedRef.current = true;
+        console.log('[RichTextEditor] Content already converted, skipping');
       }
     }
-    
     // Skip if content prop hasn't changed from what we last processed
     if (normalizedContent === lastContentPropRef.current) {
       return;
@@ -880,30 +833,7 @@ export function RichTextEditor({
   }, [setSelectedTextPosition]);
 
   return (
-    <div className="border border-border/30 rounded-lg w-full max-w-full bg-background shadow-sm">
-      {/* Title Input */}
-      {onTitleChange && (
-        <div className="px-4 sm:px-6 pt-0 pb-3 overflow-x-hidden w-full max-w-full border-b border-border/20">
-          <div className="flex items-center gap-2 w-full">
-            <input
-              type="text"
-              placeholder={titlePlaceholder}
-              value={title || ''}
-              onChange={(e) => onTitleChange(e.target.value)}
-              readOnly={readOnly}
-              className={cn(
-                "flex-1 min-w-0 text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words focus:placeholder:text-muted-foreground/30 transition-colors",
-                readOnly && "cursor-default"
-              )}
-            />
-            {titleRightActions && (
-              <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
-                {titleRightActions}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+    <div className="w-full max-w-full">
       {/* Toolbar Container - used to detect scroll position */}
       {!readOnly && (
         <div ref={toolbarContainerRef}>
