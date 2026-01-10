@@ -115,6 +115,75 @@ export function detectMarkdownConversionNeeded(content: string): ConversionDetec
 }
 
 /**
+ * Normalizes code blocks from marked for TipTap compatibility.
+ * Ensures code blocks have the correct structure for TipTap's CodeBlockLowlight extension.
+ * 
+ * TipTap's CodeBlockLowlight expects:
+ * - <pre><code class="language-{lang}">content</code></pre>
+ * - The code element must be a direct child of pre
+ * - The language class must use the "language-" prefix
+ * 
+ * Uses DOMParser for reliable HTML parsing instead of regex.
+ */
+function normalizeCodeBlocksForTipTap(html: string): string {
+  if (typeof document === 'undefined') {
+    // Server-side: return as-is (shouldn't happen in browser environment)
+    // If this is needed for SSR, consider using a library like cheerio
+    return html;
+  }
+  
+  // Use DOMParser for reliable HTML parsing
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  
+  // Find all code blocks - use querySelectorAll to get all pre elements that contain code
+  const preElements = doc.querySelectorAll('pre');
+  
+  preElements.forEach((preElement) => {
+    // Find the code element inside this pre
+    const codeElement = preElement.querySelector('code');
+    if (!codeElement) return;
+    
+    // Extract language from class (marked uses "language-{lang}")
+    const classList = Array.from(codeElement.classList);
+    const languageClass = classList.find(cls => cls.startsWith('language-'));
+    
+    let language = 'plaintext';
+    if (languageClass) {
+      // Extract language name (remove "language-" prefix)
+      language = languageClass.replace(/^language-/, '');
+    }
+    
+    // CRITICAL: Use textContent to get the unescaped text content
+    // TipTap's CodeBlockLowlight expects plain text, not HTML-escaped content
+    // This preserves the actual characters (not HTML entities like &quot;)
+    const codeContent = codeElement.textContent || '';
+    
+    // Always reconstruct the code block with clean structure
+    // This ensures TipTap will parse it as a single code block
+    // Clear any existing content and rebuild
+    preElement.innerHTML = '';
+    const newCodeElement = doc.createElement('code');
+    newCodeElement.className = `language-${language}`;
+    newCodeElement.textContent = codeContent; // Use textContent, not innerHTML
+    preElement.appendChild(newCodeElement);
+    
+    // Ensure the pre element has no extra whitespace or text nodes
+    // Remove any text nodes that might be siblings to the code element
+    const childNodes = Array.from(preElement.childNodes);
+    childNodes.forEach(node => {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent?.trim() === '') {
+        preElement.removeChild(node);
+      }
+    });
+  });
+  
+  // Return the normalized HTML from the body
+  // This preserves the structure with headings, paragraphs, etc.
+  return doc.body.innerHTML;
+}
+
+/**
  * Converts markdown string to HTML.
  * 
  * @param markdown - The markdown content to convert
@@ -124,10 +193,13 @@ export function convertMarkdownToHtml(markdown: string): string {
   if (!markdown) return '';
 
   try {
-    return marked.parse(markdown, {
+    const html = marked.parse(markdown, {
       breaks: false,
       gfm: true,
     }) as string;
+    
+    // Normalize code blocks for TipTap compatibility
+    return normalizeCodeBlocksForTipTap(html);
   } catch (error) {
     console.warn('[MarkdownConverter] Failed to convert markdown:', error);
     return markdown; // Return original if conversion fails

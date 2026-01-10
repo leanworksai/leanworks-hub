@@ -267,7 +267,11 @@ export default memo(function DocDetail() {
             <RichTextEditor
               key={docId || "new"}
               content={formState.content || ""}
-              onChange={(content) => updateField('content', content)}
+              onChange={(content) => {
+                // Content is now a TipTap JSON object, stringify it for storage
+                const contentString = typeof content === 'string' ? content : JSON.stringify(content);
+                updateField('content', contentString);
+              }}
               placeholder="Start writing..."
               readOnly={false}
               onFileUpload={handleFileUpload}

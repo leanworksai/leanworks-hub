@@ -7,6 +7,7 @@ import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { Markdown } from 'tiptap-markdown';
 import { common, createLowlight } from 'lowlight';
 import { tableExtensions, handleTableDblClick } from '@/extensions/table';
 import '@/extensions/table/styles.css';
@@ -27,6 +28,85 @@ import {
   shouldConvertMarkdownPaste,
   shouldPreserveHtmlPaste 
 } from '@/utils/markdownConverter';
+
+// Re-export normalizeCodeBlocksForTipTap for use in this file
+// We'll define it locally to avoid circular dependencies
+// Uses DOMParser for reliable HTML parsing instead of regex
+function normalizeCodeBlocksForTipTap(html: string): string {
+  if (typeof document === 'undefined' || typeof DOMParser === 'undefined') {
+    // Fallback: return as-is if DOMParser is not available
+    return html;
+  }
+  
+  // Use DOMParser for reliable HTML parsing
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  
+  // Find all code blocks - use querySelectorAll to get all pre elements that contain code
+  const preElements = doc.querySelectorAll('pre');
+  
+  preElements.forEach((preElement) => {
+    // Find the code element inside this pre
+    const codeElement = preElement.querySelector('code');
+    if (!codeElement) return;
+    
+    // Extract language from class (marked uses "language-{lang}")
+    const classList = Array.from(codeElement.classList);
+    const languageClass = classList.find(cls => cls.startsWith('language-'));
+    
+    let language = 'plaintext';
+    if (languageClass) {
+      // Extract language name (remove "language-" prefix)
+      language = languageClass.replace(/^language-/, '');
+    }
+    
+    // CRITICAL: Use textContent to get the unescaped text content
+    // TipTap's CodeBlockLowlight expects plain text, not HTML-escaped content
+    // This preserves the actual characters (not HTML entities like &quot;)
+    const codeContent = codeElement.textContent || '';
+    
+    // Reconstruct the code block with clean structure
+    // This ensures TipTap will parse it as a single code block
+    preElement.innerHTML = '';
+    const newCodeElement = doc.createElement('code');
+    newCodeElement.className = `language-${language}`;
+    newCodeElement.textContent = codeContent; // Use textContent, not innerHTML
+    preElement.appendChild(newCodeElement);
+  });
+  
+  // Return the normalized HTML from the body
+  // Ensure code blocks are properly formatted as atomic units
+  const normalizedHtml = doc.body.innerHTML;
+  
+  // Double-check: verify all code blocks are properly structured
+  // This helps catch any issues before TipTap parses them
+  const verifyParser = new DOMParser();
+  const verifyDoc = verifyParser.parseFromString(normalizedHtml, 'text/html');
+  const verifyPreElements = verifyDoc.querySelectorAll('pre');
+  
+  verifyPreElements.forEach((preElement) => {
+    const codeElement = preElement.querySelector('code');
+    if (!codeElement) return;
+    
+    // Ensure code element is the only direct child
+    const directChildren = Array.from(preElement.childNodes).filter(
+      node => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim()
+    );
+    
+    if (directChildren.length !== 1 || directChildren[0] !== codeElement) {
+      // Fix: ensure code is the only child
+      const codeContent = codeElement.textContent || '';
+      const language = codeElement.className.replace(/^language-/, '') || 'plaintext';
+      preElement.innerHTML = '';
+      const newCode = verifyDoc.createElement('code');
+      newCode.className = `language-${language}`;
+      newCode.textContent = codeContent;
+      preElement.appendChild(newCode);
+    }
+  });
+  
+  return verifyDoc.body.innerHTML;
+}
 
 // Create lowlight instance with common languages
 const lowlight = createLowlight(common);
@@ -256,19 +336,65 @@ function restoreMarkdownLineBreaks(text: string): string {
 // The problematic restoreMarkdownLineBreaks function was causing conversion issues
 function convertMarkdownToHTML(markdown: string): string {
   try {
-    // Convert markdown to HTML with line break support
-    return marked.parse(markdown, {
-      breaks: true,  // Convert single newlines to <br>
-      gfm: true,     // GitHub Flavored Markdown
-    }) as string;
+    // Use the utility function which already handles code block normalization
+    return convertMarkdownToHtml(markdown);
   } catch (error) {
     return markdown; // Return original if conversion fails
   }
 }
 
+/**
+ * Detects if content is TipTap JSON format (object or JSON string) vs HTML string
+ */
+function isJsonContent(content: string | object): boolean {
+  if (typeof content === 'object' && content !== null) {
+    // Already a JSON object
+    return content.hasOwnProperty('type') && (content as any).type === 'doc';
+  }
+  if (typeof content !== 'string') return false;
+  
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' && parsed.type === 'doc';
+  } catch {
+    return false; // Not valid JSON, treat as HTML
+  }
+}
+
+/**
+ * Normalizes content to the format TipTap expects
+ * - JSON objects: return as-is
+ * - JSON strings: parse to object
+ * - HTML strings: return as-is (TipTap will parse it)
+ */
+function normalizeContentForTipTap(content: string | object): string | object {
+  if (!content) {
+    return { type: 'doc', content: [{ type: 'paragraph' }] };
+  }
+  
+  if (typeof content === 'object' && content !== null) {
+    return content;
+  }
+  
+  if (typeof content === 'string') {
+    // Check if it's JSON string
+    if (isJsonContent(content)) {
+      try {
+        return JSON.parse(content);
+      } catch {
+        return content; // Fallback to string if parsing fails
+      }
+    }
+    // It's HTML, return as-is
+    return content;
+  }
+  
+  return content;
+}
+
 interface RichTextEditorProps {
-  content: string;
-  onChange: (content: string) => void;
+  content: string | object; // Can be HTML string (legacy) or TipTap JSON object/string
+  onChange: (content: object) => void; // Returns TipTap JSON object
   placeholder?: string;
   readOnly?: boolean;
   onFileUpload?: (file: File) => Promise<void>;
@@ -283,11 +409,16 @@ export function RichTextEditor({
   onFileUpload,
   docId,
 }: RichTextEditorProps) {
-  const initialContent = content || '<p></p>';
-  const contentRef = useRef<string>(initialContent);
+  // Normalize initial content - handle both JSON and HTML
+  const normalizedInitialContent = normalizeContentForTipTap(content || '<p></p>');
+  const initialContentString = typeof normalizedInitialContent === 'string' 
+    ? normalizedInitialContent 
+    : JSON.stringify(normalizedInitialContent);
+  
+  const contentRef = useRef<string>(initialContentString);
   const isUpdatingRef = useRef<boolean>(false);
   const editorInitializedRef = useRef<boolean>(false);
-  const lastContentPropRef = useRef<string>(initialContent);
+  const lastContentPropRef = useRef<string>(initialContentString);
   const isUndoRedoRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -367,46 +498,64 @@ export function RichTextEditor({
       ...tableExtensions,
       Color,
       TextStyle,
+      // Markdown extension for markdown copy/export support
+      Markdown.configure({
+        html: true,
+        transformPastedText: false,
+        transformCopiedText: false,
+      }),
     ],
-    content: initialContent,
+    content: normalizedInitialContent,
     editable: !readOnly,
     onUpdate: ({ editor }) => {
       // Only call onChange if we're not in the middle of a programmatic update
       if (!isUpdatingRef.current) {
-        const html = editor.getHTML();
-        contentRef.current = html;
+        // Use JSON format instead of HTML - this is TipTap's native format
+        // and avoids all HTML parsing issues
+        const json = editor.getJSON();
+        const jsonString = JSON.stringify(json);
+        contentRef.current = jsonString;
         
         if (isUndoRedoRef.current) {
           // During undo/redo, update lastContentPropRef to prevent useEffect from interfering
           // but still call onChange to keep parent state in sync
-          lastContentPropRef.current = html;
-          onChange(html);
+          lastContentPropRef.current = jsonString;
+          onChange(json);
           // Reset the flag after a short delay to allow undo/redo to complete
           setTimeout(() => {
             isUndoRedoRef.current = false;
           }, 0);
         } else {
           // Normal update - update refs and call onChange
-          lastContentPropRef.current = html;
-          onChange(html);
+          lastContentPropRef.current = jsonString;
+          onChange(json);
         }
       }
     },
     onCreate: ({ editor }) => {
       editorRef.current = editor; // Store editor in ref for useTextSelection hook
       editorInitializedRef.current = true;
-      const initialHtml = editor.getHTML();
-      contentRef.current = initialHtml;
-      // Initialize with the actual content prop, not the editor's initial HTML
-      const normalizedContent = content || '<p></p>';
-      lastContentPropRef.current = normalizedContent;
+      const initialJson = editor.getJSON();
+      const initialJsonString = JSON.stringify(initialJson);
+      contentRef.current = initialJsonString;
+      
+      // Initialize with the actual content prop
+      // Handle both JSON (new format) and HTML (legacy format) for backward compatibility
+      const contentToSet = normalizeContentForTipTap(content || '<p></p>');
+      const contentString = typeof contentToSet === 'string' 
+        ? contentToSet 
+        : JSON.stringify(contentToSet);
+      
+      lastContentPropRef.current = contentString;
+      
       // Always set content from prop if it's different (handles case where content loads after mount)
-      if (normalizedContent !== initialHtml) {
+      if (contentString !== initialJsonString) {
         // Use setTimeout to ensure editor is fully ready
         setTimeout(() => {
           if (!editor.isDestroyed) {
-            editor.commands.setContent(normalizedContent, false);
-            contentRef.current = normalizedContent;
+            // setContent can accept both HTML string and JSON object
+            editor.commands.setContent(contentToSet, false);
+            contentRef.current = contentString;
           }
         }, 0);
       }
@@ -458,8 +607,12 @@ export function RichTextEditor({
                 gfm: true, // GitHub Flavored Markdown
               }) as string;
               
+              // Normalize code blocks for TipTap compatibility
+              const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
+              
               // Return converted HTML for TipTap to parse
-              return htmlFromMarkdown;
+              // TipTap will parse this with its default parseOptions
+              return normalizedHtml;
             } catch (error) {
               // Fall back to original HTML if parsing fails
               return html;
@@ -474,6 +627,76 @@ export function RichTextEditor({
       handleDOMEvents: {
         dblclick: (view, event) => {
           return handleTableDblClick(view, event);
+        },
+        copy: (view, event) => {
+          // Custom copy handler to copy as markdown (with HTML and plain text fallbacks)
+          const editor = editorRef.current;
+          if (!editor) return false;
+
+          try {
+            const { from, to } = editor.state.selection;
+            const hasSelection = from !== to;
+
+            let markdown: string;
+            let html: string;
+            let text: string;
+
+            if (hasSelection) {
+              // Copy selected content
+              // For selections, get the HTML and text first
+              html = editor.getHTML({ from, to });
+              text = editor.state.doc.textBetween(from, to);
+              
+              // Try to get markdown for the selection
+              // Note: tiptap-markdown may not support selection directly,
+              // so we'll use HTML-to-markdown conversion for selections if needed
+              if (editor.storage.markdown?.getMarkdown) {
+                try {
+                  // Create a temporary document with just the selection
+                  const selectedFragment = editor.state.doc.slice(from, to);
+                  // For now, use HTML and let the markdown extension handle it
+                  // or convert HTML to markdown using a simple approach
+                  markdown = text; // Fallback to plain text for selections
+                  // TODO: Could enhance this with HTML-to-markdown conversion
+                } catch (e) {
+                  markdown = text;
+                }
+              } else {
+                markdown = text;
+              }
+            } else {
+              // Copy entire document
+              html = editor.getHTML();
+              text = editor.getText();
+              
+              if (editor.storage.markdown?.getMarkdown) {
+                markdown = editor.storage.markdown.getMarkdown();
+              } else {
+                markdown = text;
+              }
+            }
+
+            // Set clipboard data with multiple formats
+            const clipboardData = (event as ClipboardEvent).clipboardData;
+            if (clipboardData) {
+              // Primary format: Markdown (for tools like GitHub, Notion, Slack, etc.)
+              clipboardData.setData('text/markdown', markdown);
+              
+              // Fallback: HTML (for rich text editors)
+              clipboardData.setData('text/html', html);
+              
+              // Fallback: Plain text (for plain text editors)
+              clipboardData.setData('text/plain', text);
+            }
+
+            // Return false to allow default copy behavior to also run
+            // This ensures the selection is still copied visually
+            return false;
+          } catch (error) {
+            console.error('Failed to copy as markdown:', error);
+            // Fall back to default copy behavior
+            return false;
+          }
         },
         paste: (view, event) => {
           // Handle plain text paste that might be markdown
@@ -508,12 +731,18 @@ export function RichTextEditor({
                   gfm: true,
                 }) as string;
 
+                // Normalize code blocks for TipTap compatibility
+                const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
+
                 // Insert the HTML content using editor instance
+                // Use insertContent with parseOptions to preserve code block structure
                 event.preventDefault();
                 event.stopPropagation();
                 
                 if (editorRef.current) {
-                  editorRef.current.chain().focus().insertContent(htmlFromMarkdown).run();
+                  // Insert content - TipTap will parse it with default options
+                  // The normalized HTML should have properly structured code blocks
+                  editorRef.current.chain().focus().insertContent(normalizedHtml).run();
                   return true; // Handled
                 }
               } catch (error) {
@@ -886,44 +1115,50 @@ export function RichTextEditor({
       return;
     }
 
-    let normalizedContent = content || '<p></p>';
+    // Normalize content - handle both JSON and HTML formats
+    let contentToSet: string | object = normalizeContentForTipTap(content || '<p></p>');
     
-    // Check if content needs markdown conversion using the new reliable detection
-    // Only convert once - once content is HTML, it's canonical and should not be re-converted
-    if (normalizedContent && normalizedContent !== '<p></p>') {
-      const conversionCheck = detectMarkdownConversionNeeded(normalizedContent);
+    // For HTML strings, check if markdown conversion is needed (backward compatibility)
+    if (typeof contentToSet === 'string' && contentToSet !== '<p></p>') {
+      const conversionCheck = detectMarkdownConversionNeeded(contentToSet);
       
       if (conversionCheck.needsConversion) {
-        normalizedContent = convertMarkdownToHtml(normalizedContent);
+        contentToSet = convertMarkdownToHtml(contentToSet);
         contentAlreadyConvertedRef.current = true;
       } else if (conversionCheck.reason === 'already_converted') {
         // Mark as already converted to prevent re-conversion on subsequent renders
         contentAlreadyConvertedRef.current = true;
       }
     }
+    
+    // Convert to string for comparison
+    const contentString = typeof contentToSet === 'string' 
+      ? contentToSet 
+      : JSON.stringify(contentToSet);
+    
     // Skip if content prop hasn't changed from what we last processed
-    if (normalizedContent === lastContentPropRef.current) {
+    if (contentString === lastContentPropRef.current) {
       return;
     }
 
-    // Get current editor content to compare
-    const currentEditorContent = editor.getHTML();
+    // Get current editor content to compare (as JSON string)
+    const currentEditorJson = editor.getJSON();
+    const currentEditorContentString = JSON.stringify(currentEditorJson);
 
     // If the editor content already matches the new content prop, 
     // this change came from user typing (onChange was called), so don't update
     // Updating would reset cursor position and cause it to jump
-    if (currentEditorContent === normalizedContent || 
-        currentEditorContent.trim() === normalizedContent.trim()) {
+    if (currentEditorContentString === contentString) {
       // Just update the ref to prevent unnecessary updates
-      lastContentPropRef.current = normalizedContent;
-      contentRef.current = normalizedContent;
+      lastContentPropRef.current = contentString;
+      contentRef.current = contentString;
       return;
     }
 
     // Only update if content is significantly different (e.g., loading a new note from database)
     // This prevents cursor jumps during typing
     isUpdatingRef.current = true;
-    lastContentPropRef.current = normalizedContent;
+    lastContentPropRef.current = contentString;
 
     try {
       // Save selection state before updating content
@@ -933,8 +1168,9 @@ export function RichTextEditor({
       // Use a timeout to ensure editor is ready and to batch updates
       const timeoutId = setTimeout(() => {
         if (editor && !editor.isDestroyed) {
-          editor.commands.setContent(normalizedContent, false);
-          contentRef.current = normalizedContent;
+          // setContent accepts both HTML string and JSON object
+          editor.commands.setContent(contentToSet, false);
+          contentRef.current = contentString;
           
           // Try to restore selection if still valid
           // This helps preserve cursor position when content updates
