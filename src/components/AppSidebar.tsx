@@ -26,6 +26,7 @@ import { useOrg } from "@/contexts/OrgContext";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
+import { usePageContext } from "@/contexts/PageContext";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ContextBadges } from "@/components/ContextBadges";
@@ -48,6 +49,7 @@ export function AppSidebar() {
   const { selectedProjects, toggleProject } = useSelectedProjects();
   const { selectedTasks, toggleTask } = useSelectedTasks();
   const { selectedDocs, toggleDoc } = useSelectedDocs();
+  const { contextType, contextRef } = usePageContext();
   const { totalUnreadCount } = useTeamChats();
   
   // Close mobile sidebar when a navigation item is clicked
@@ -61,6 +63,11 @@ export function AppSidebar() {
   };
 
   const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
+  const hasImplicitContext = contextRef && contextType;
+  const implicitContextString = hasImplicitContext 
+    ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` 
+    : undefined;
+  const hasAnyContext = hasSelectedContexts || hasImplicitContext;
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -187,7 +194,7 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      {hasSelectedContexts && (
+      {hasAnyContext && (
         <div className="border-t border-sidebar-border">
           <div className="px-3 py-2 border-b border-sidebar-border flex items-center justify-between">
             <span className="text-xs font-semibold text-sidebar-foreground/70 uppercase tracking-wide">
@@ -212,7 +219,7 @@ export function AppSidebar() {
             </Button>
           </div>
           <ScrollArea className="h-[200px]">
-            <div className="p-2">
+            <div className="p-2 space-y-2">
               <ContextBadges
                 projects={selectedProjects}
                 tasks={selectedTasks}
@@ -221,6 +228,7 @@ export function AppSidebar() {
                 onRemoveTask={toggleTask}
                 onRemoveDoc={toggleDoc}
                 variant="sidebar"
+                implicitContext={implicitContextString}
               />
             </div>
           </ScrollArea>

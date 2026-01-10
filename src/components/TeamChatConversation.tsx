@@ -42,7 +42,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
   const { callStatus, currentCallId } = useWebRTCContext();
-  const { setContext, clearContext } = usePageContext();
+  const { contextType, contextRef, setContext, clearContext } = usePageContext();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [channelMessages, setChannelMessages] = useState<Map<string, ChannelMessage[]>>(new Map());
@@ -169,6 +169,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
+              implicitContext: msg.implicitContext,
             }));
           
           setChannelMessages((prev) => {
@@ -194,6 +195,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
+              implicitContext: msg.implicitContext,
             }));
           
           setChannelMessages((prev) => {
@@ -214,6 +216,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
+              implicitContext: msg.implicitContext,
             }));
           
           setMessages(regularMsgs);
@@ -303,29 +306,16 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     };
   }, [chatId, user?.email, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId]);
 
-  // Set page context when team chat is active
+  // Clear context when team chat is active (don't set team chat as context)
   useEffect(() => {
-    if (chatId && currentMember && (isProjectChannel || isTeamChannel || isDM)) {
-      // Only set context for project channels, team channels, or DMs (not AI assistant chats)
-      if (!chatId.startsWith('ai-assistant-')) {
-        const chatTitle = isProjectChannel 
-          ? `${selectedProject?.name} Channel`
-          : isTeamChannel
-          ? `${selectedTeam?.name} Channel`
-          : currentMember.name;
-        setContext('team-chat', { id: chatId, title: chatTitle });
-      } else {
-        clearContext();
-      }
-    } else {
-      clearContext();
-    }
+    // Clear any existing context when in team chat
+    clearContext();
 
     // Clear context on unmount
     return () => {
       clearContext();
     };
-  }, [chatId, currentMember, isProjectChannel, isTeamChannel, isDM, selectedProject, selectedTeam, setContext, clearContext]);
+  }, [chatId, clearContext]);
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {
@@ -857,6 +847,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           selectedProjects={selectedProjects}
           selectedTasks={selectedTasks}
           selectedDocs={selectedDocs}
+          implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
           onRemoveProject={toggleProject}
           onRemoveTask={toggleTask}
           onRemoveDoc={toggleDoc}

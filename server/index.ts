@@ -5539,6 +5539,7 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
         memberName: data.memberName || null,
         memberAvatar: data.memberAvatar || null,
         citedContext: data.citedContext || null,
+        implicitContext: data.implicitContext || null,
         imageUrls: data.imageUrls || null, // Explicitly include imageUrls
         likes: Array.isArray(data.likes) ? data.likes : [], // Normalize likes to always be an array
       };

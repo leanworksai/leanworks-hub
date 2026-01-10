@@ -25,52 +25,55 @@ export function CitedContextBadges({ citedContext, className, theme = "default" 
     icon: React.ReactNode,
     label: string,
     items: Array<{ id: string; name?: string; title?: string }>,
-    iconColor: string,
-    iconBgColor: string
+    iconColor: string
   ) => {
     if (items.length === 0) return null;
 
     return (
-      <div className={cn(
-        "flex items-start gap-3 mb-2.5 last:mb-0",
-        isAIChatTheme && "mb-3"
-      )}>
+      <div className={cn("space-y-1 mb-2 last:mb-0")}>
         <div className={cn(
-          "flex-shrink-0 mt-0.5 p-2 rounded-lg shadow-sm",
-          iconBgColor
+          "flex items-center gap-1.5 px-2 py-1",
+          isAIChatTheme 
+            ? "text-purple-700 dark:text-purple-300" 
+            : "text-foreground/70"
         )}>
-          <div className={iconColor}>
+          <div className={cn(
+            "flex-shrink-0",
+            iconColor
+          )}>
             {icon}
           </div>
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className={cn(
-            "text-xs font-semibold mb-2 tracking-wide",
+          <span className={cn(
+            "text-xs font-medium",
             isAIChatTheme 
               ? "text-purple-700 dark:text-purple-300" 
-              : "text-foreground/80"
+              : "text-foreground/70"
           )}>
             {label}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {items.map((item) => {
-              const name = item.name || item.title || "Unknown";
-              return (
+          </span>
+        </div>
+        <div className="space-y-1">
+          {items.map((item) => {
+            const name = item.name || item.title || "Unknown";
+            return (
+              <div
+                key={item.id}
+                className="flex items-center gap-1 px-2 py-1 rounded-md"
+              >
                 <Badge
-                  key={item.id}
                   variant="secondary"
                   className={cn(
-                    "text-xs font-medium px-3 py-1.5 rounded-lg transition-all cursor-default shadow-sm",
+                    "text-xs flex-1 justify-start",
                     isAIChatTheme
-                      ? "bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/60 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800/60 dark:hover:bg-purple-900/60"
-                      : "bg-background hover:bg-accent text-foreground border border-border/60 hover:border-border shadow-sm hover:shadow"
+                      ? "bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/60 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800/60"
+                      : "bg-background hover:bg-accent text-foreground border border-border/60"
                   )}
                 >
                   {name}
                 </Badge>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -78,39 +81,35 @@ export function CitedContextBadges({ citedContext, className, theme = "default" 
 
   return (
     <div className={cn(
-      "w-full min-w-0",
+      "w-full min-w-0 space-y-2",
       isAIChatTheme
         ? "bg-gradient-to-br from-purple-50/80 to-indigo-50/50 dark:from-purple-950/30 dark:to-indigo-950/20 rounded-lg p-3 border border-purple-200/60 dark:border-purple-800/40 shadow-sm"
         : "bg-gradient-to-br from-blue-50/60 via-slate-50/40 to-blue-50/60 dark:from-blue-950/20 dark:via-slate-950/30 dark:to-blue-950/20 rounded-lg p-3.5 border border-blue-200/40 dark:border-blue-900/30 shadow-sm backdrop-blur-sm",
       className
     )}>
       {hasProjects && renderSection(
-        <FolderOpen className="h-4 w-4" />,
-        "Cited Projects",
+        <FolderOpen className="h-3 w-3" />,
+        "Projects",
         citedContext.projects!,
-        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-blue-600 dark:text-blue-400",
-        isAIChatTheme ? "bg-purple-100/80 dark:bg-purple-900/30" : "bg-blue-100/70 dark:bg-blue-900/30"
+        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-blue-600 dark:text-blue-400"
       )}
       {hasTasks && renderSection(
-        <CheckSquare className="h-4 w-4" />,
-        "Cited Tasks",
+        <CheckSquare className="h-3 w-3" />,
+        "Tasks",
         citedContext.tasks!,
-        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-emerald-600 dark:text-emerald-400",
-        isAIChatTheme ? "bg-purple-100/80 dark:bg-purple-900/30" : "bg-emerald-100/70 dark:bg-emerald-900/30"
+        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-emerald-600 dark:text-emerald-400"
       )}
       {hasTeams && renderSection(
-        <Users className="h-4 w-4" />,
-        "Cited Teams",
+        <Users className="h-3 w-3" />,
+        "Teams",
         citedContext.teams!,
-        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-indigo-600 dark:text-indigo-400",
-        isAIChatTheme ? "bg-purple-100/80 dark:bg-purple-900/30" : "bg-indigo-100/70 dark:bg-indigo-900/30"
+        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-indigo-600 dark:text-indigo-400"
       )}
       {hasDocs && renderSection(
-        <StickyNote className="h-4 w-4" />,
-        "Cited Docs",
+        <StickyNote className="h-3 w-3" />,
+        "Docs",
         citedContext.docs!,
-        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-amber-600 dark:text-amber-400",
-        isAIChatTheme ? "bg-purple-100/80 dark:bg-purple-900/30" : "bg-amber-100/70 dark:bg-amber-900/30"
+        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-amber-600 dark:text-amber-400"
       )}
     </div>
   );

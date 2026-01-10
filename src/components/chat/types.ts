@@ -17,6 +17,7 @@ export interface Message {
   imageUrls?: string[];
   likes?: string[];
   citedContext?: CitedContext;
+  implicitContext?: string;
   memberName?: string;
   memberAvatar?: string;
 }
@@ -33,6 +34,7 @@ export interface ChannelMessage {
   imageUrls?: string[];
   likes?: string[];
   citedContext?: CitedContext;
+  implicitContext?: string;
 }
 
 export interface TeamMember {

@@ -533,6 +533,7 @@ export interface ChatMessage {
     projects?: any[];
     tasks?: any[];
   };
+  implicitContext?: string;
 }
 
 export type MessageListener = (messages: ChatMessage[]) => void;
@@ -569,6 +570,7 @@ export const messagesService = {
       tasks?: any[];
       teams?: any[];
     };
+    implicitContext?: string;
   }): Promise<ChatMessage> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/messages` : `${API_BASE}/messages`;
     const response = await authenticatedFetch(url, {
@@ -899,6 +901,7 @@ export const messagesService = {
                 imageUrls: data.imageUrls || null,
                 likes: Array.isArray(data.likes) ? data.likes : [],
                 citedContext: data.citedContext || null,
+                implicitContext: data.implicitContext || null,
               } as ChatMessage;
             });
 

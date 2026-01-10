@@ -173,6 +173,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
+              implicitContext: msg.implicitContext,
             }));
           
           setChannelMessages((prev) => {
@@ -198,6 +199,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
+              implicitContext: msg.implicitContext,
             }));
           
           setChannelMessages((prev) => {
@@ -218,6 +220,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
+              implicitContext: msg.implicitContext,
             }));
           
           setMessages(regularMsgs);

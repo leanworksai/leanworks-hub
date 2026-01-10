@@ -106,15 +106,16 @@ export function AIChat() {
       if (cached) {
         const parsed = JSON.parse(cached);
         if (parsed.messages && Array.isArray(parsed.messages) && parsed.messages.length > 0) {
-          return {
-            messages: parsed.messages.map((msg: any) => ({
-              ...msg,
-              timestamp: new Date(msg.timestamp),
-              citedContext: msg.citedContext || null,
-              likes: Array.isArray(msg.likes) ? msg.likes : [],
-            })),
-            lastSync: parsed.lastSync || 0,
-          };
+            return {
+              messages: parsed.messages.map((msg: any) => ({
+                ...msg,
+                timestamp: new Date(msg.timestamp),
+                citedContext: msg.citedContext || null,
+                implicitContext: msg.implicitContext || null,
+                likes: Array.isArray(msg.likes) ? msg.likes : [],
+              })),
+              lastSync: parsed.lastSync || 0,
+            };
         }
       }
     } catch (error) {
@@ -134,6 +135,7 @@ export function AIChat() {
           ...msg,
           timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
           citedContext: msg.citedContext || null,
+          implicitContext: msg.implicitContext || null,
         })),
         lastSync,
       };
@@ -213,6 +215,7 @@ export function AIChat() {
           imageUrls: msg.imageUrls,
           likes: Array.isArray(msg.likes) ? msg.likes : [],
           citedContext: msg.citedContext,
+          implicitContext: msg.implicitContext,
         }));
         
         if (regularMsgs.length === 0) {
@@ -254,6 +257,7 @@ export function AIChat() {
         imageUrls: msg.imageUrls,
         likes: Array.isArray(msg.likes) ? msg.likes : [],
         citedContext: msg.citedContext,
+        implicitContext: msg.implicitContext,
       }));
       
       setMessages(regularMsgs);
@@ -345,6 +349,17 @@ export function AIChat() {
       selectedTextPosition: selectedTextPosition || undefined,
     } : undefined;
 
+    // Build implicit context from current page
+    let implicitContext: string | undefined = undefined;
+    if (contextRef && contextType) {
+      implicitContext = `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})`;
+      if (process.env.NODE_ENV === 'development') {
+        console.log('📌 [AIChat] Capturing implicit context:', { contextType, contextRef, implicitContext });
+      }
+    } else if (process.env.NODE_ENV === 'development') {
+      console.log('⚠️ [AIChat] No implicit context available:', { contextRef, contextType });
+    }
+
     // Create user message
     const userMessage: Message = {
       id: `temp-${Date.now()}`,
@@ -354,6 +369,7 @@ export function AIChat() {
       userId: user.email?.toLowerCase(),
       imageUrls: finalImageUrls.length > 0 ? finalImageUrls : undefined,
       citedContext,
+      implicitContext,
     };
 
     setMessages((prev) => [...prev, userMessage]);
@@ -364,6 +380,7 @@ export function AIChat() {
         role: 'user',
         content: messageContent,
         citedContext: citedContext,
+        implicitContext: implicitContext,
         imageUrls: finalImageUrls.length > 0 ? finalImageUrls : undefined,
       });
       
@@ -378,6 +395,7 @@ export function AIChat() {
                 userId: savedUserMessage.userId || user.email?.toLowerCase(),
                 imageUrls: savedUserMessage.imageUrls || finalImageUrls.length > 0 ? finalImageUrls : undefined,
                 citedContext: savedUserMessage.citedContext || citedContext,
+                implicitContext: savedUserMessage.implicitContext || implicitContext,
               }
             : msg
         );
@@ -392,6 +410,7 @@ export function AIChat() {
           userId: msg.userId,
           imageUrls: msg.imageUrls,
           citedContext: msg.citedContext,
+          implicitContext: msg.implicitContext,
         })));
         return updatedMessages;
       });
@@ -961,6 +980,7 @@ export function AIChat() {
           selectedProjects={selectedProjects}
           selectedTasks={selectedTasks}
           selectedDocs={selectedDocs}
+          implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
           onRemoveProject={(project) => {
             trackContextRemove('project', project.id);
             toggleProject(project);

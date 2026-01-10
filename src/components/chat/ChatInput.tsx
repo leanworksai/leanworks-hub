@@ -50,6 +50,9 @@ export interface ChatInputProps {
   // Hide context badges
   hideContext?: boolean;
   
+  // Implicit context (current page context)
+  implicitContext?: string;
+  
   // Theme variant
   theme?: "default" | "purple";
 }
@@ -80,6 +83,7 @@ export function ChatInput({
   placeholder = "Type your message...",
   helpText,
   hideContext = false,
+  implicitContext,
   theme = "default",
 }: ChatInputProps) {
   const [input, setInput] = useState("");
@@ -88,6 +92,7 @@ export function ChatInput({
   const [isDragging, setIsDragging] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isPurpleTheme = theme === "purple";
   
   // Track key hold state to detect accent menu trigger
   const keyHoldTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -475,8 +480,6 @@ export function ChatInput({
       }
     }
   }, [showMentions, onMentionDetect, input]);
-
-  const isPurpleTheme = theme === "purple";
   
   return (
     <div className={cn(
@@ -485,18 +488,17 @@ export function ChatInput({
         ? "bg-white/70 backdrop-blur-md border-purple-200/60 shadow-lg shadow-purple-100/50 dark:shadow-purple-900/20" 
         : "bg-background"
     )}>
-      {!hideContext && (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) && (
-        <div className="px-4 pt-3 pb-2">
-          <ContextBadges
-            projects={selectedProjects}
-            tasks={selectedTasks}
-            docs={selectedDocs}
-            onRemoveProject={onRemoveProject}
-            onRemoveTask={onRemoveTask}
-            onRemoveDoc={onRemoveDoc}
-            variant="inline"
-          />
-        </div>
+      {!hideContext && (
+        <ContextBadges
+          projects={selectedProjects}
+          tasks={selectedTasks}
+          docs={selectedDocs}
+          onRemoveProject={onRemoveProject}
+          onRemoveTask={onRemoveTask}
+          onRemoveDoc={onRemoveDoc}
+          variant="inline"
+          implicitContext={implicitContext}
+        />
       )}
       
       <div className="px-4 py-3 relative">

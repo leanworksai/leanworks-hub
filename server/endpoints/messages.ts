@@ -182,7 +182,7 @@ export function setupMessageEndpoints(
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
-      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls } = req.body;
+      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls, implicitContext } = req.body;
 
       if (!chatId || !content) {
         return res.status(400).json({ error: 'chatId and content are required' });
@@ -251,6 +251,11 @@ export function setupMessageEndpoints(
       // Add citedContext if provided
       if (citedContext) {
         messageData.citedContext = citedContext;
+      }
+
+      // Add implicitContext if provided
+      if (implicitContext) {
+        messageData.implicitContext = implicitContext;
       }
 
       // Add imageUrls if provided

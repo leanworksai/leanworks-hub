@@ -6,6 +6,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn, getAvatarColor } from "@/lib/utils";
 import { LikeButton } from "./LikeButton";
 import { CitedContextBadges } from "./CitedContextBadges";
+import { ImplicitContextBadge } from "./ImplicitContextBadge";
 import { Message, ChannelMessage, LikedByUser, CitedContext } from "./types";
 import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -634,6 +635,15 @@ export function ChatMessage({
                 {!hideContext && hasCitedContext && displayCitedContext && (
                   <CitedContextBadges 
                     citedContext={displayCitedContext}
+                    className="mb-3 w-full min-w-0"
+                    theme={theme}
+                  />
+                )}
+                
+                {/* Implicit context */}
+                {!hideContext && message.implicitContext && (
+                  <ImplicitContextBadge 
+                    implicitContext={message.implicitContext}
                     className="mb-3 w-full min-w-0"
                     theme={theme}
                   />
