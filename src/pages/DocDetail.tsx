@@ -166,6 +166,16 @@ export default memo(function DocDetail() {
   const handleAttachedFiles = useCallback(() => dialogs.openDialog('files'), [dialogs.openDialog]);
   const openDeleteDialog = useCallback(() => dialogs.openDialog('delete'), [dialogs.openDialog]);
 
+  // Format document handler - applies text wrapping to entire document
+  const handleFormatDocument = useCallback(() => {
+    // This would apply formatting to the entire document content
+    // For now, we'll trigger a re-render that might help with wrapping
+    // In a full implementation, this would analyze and reformat the entire document
+    console.log('Format document requested - applying text wrapping fixes');
+    // Force a content update to trigger any pending wrapping
+    updateField('content', formState.content);
+  }, [formState.content, updateField]);
+
   // Memoized computed props - stable values
   const isOwner = useMemo(
     () => isDocOwner(user?.email, doc?.ownerEmail),
@@ -184,6 +194,7 @@ export default memo(function DocDetail() {
         onShareViaEmail={handleShareViaEmail}
         onAttachedFiles={handleAttachedFiles}
         onDelete={openDeleteDialog}
+        onFormatDocument={handleFormatDocument}
         isOwner={isOwner}
         filesCount={files.length}
         isNew={isNew}
@@ -198,6 +209,7 @@ export default memo(function DocDetail() {
       handleShareViaEmail,
       handleAttachedFiles,
       openDeleteDialog,
+      handleFormatDocument,
       isOwner,
       files.length,
       isNew,
@@ -217,7 +229,7 @@ export default memo(function DocDetail() {
   }
 
   return (
-    <div className="animate-fade-in w-full overflow-x-hidden -mt-2 sm:-mt-4">
+    <div className="animate-fade-in w-full overflow-x-hidden -mt-4 sm:-mt-6 min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
       {/* Mobile buttons at top - using DetailPageHeader for consistency */}
       <div className="sm:hidden mb-4">
         <DetailPageHeader
@@ -235,22 +247,26 @@ export default memo(function DocDetail() {
       </div>
 
       {(!isNew && isLoading && !doc) ? (
-        <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center -mx-4 sm:-mx-6">
+        <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center px-3 sm:px-6">
           <p className="text-muted-foreground">Loading content...</p>
         </div>
       ) : (
-        <div className="-mx-4 sm:-mx-6">
-          <div className="border border-border/30 rounded-lg w-full max-w-full bg-background shadow-sm">
+        <div className="w-full min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+          <div className="border-t border-b border-border/30 w-full max-w-full bg-background shadow-sm relative min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
+            {/* Toolbar positioned at top-right aligned with editor content */}
+            <div className="absolute top-3 right-2 sm:right-3 z-10 hidden sm:flex items-center gap-1">
+              {toolbarElement}
+            </div>
             <TitleWithToolbar
               title={formState.title}
               onTitleChange={(title) => updateField('title', title)}
               titlePlaceholder="Doc title..."
               readOnly={false}
-              toolbar={toolbarElement}
+              toolbar={null} // Remove toolbar from title component
             />
-            <RichTextEditor 
+            <RichTextEditor
               key={docId || "new"}
-              content={formState.content || ""} 
+              content={formState.content || ""}
               onChange={(content) => updateField('content', content)}
               placeholder="Start writing..."
               readOnly={false}

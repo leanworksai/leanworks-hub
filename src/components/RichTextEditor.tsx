@@ -11,6 +11,7 @@ import { common, createLowlight } from 'lowlight';
 import { tableExtensions, handleTableDblClick } from '@/extensions/table';
 import '@/extensions/table/styles.css';
 import '@/components/code-highlight.css';
+import '@/components/editor.css';
 import { TableToolbar } from '@/components/editor/TableToolbar';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { marked } from 'marked';
@@ -18,6 +19,8 @@ import mermaid from 'mermaid';
 import { useTextSelection } from '@/hooks/useTextSelection';
 import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
 import { FloatingAskAI } from '@/components/FloatingAskAI';
+// Auto word wrap hook disabled - CSS handles wrapping naturally
+// import { useAutoWordWrap } from '@/hooks/useAutoWordWrap';
 import { 
   detectMarkdownConversionNeeded, 
   convertMarkdownToHtml,
@@ -259,7 +262,6 @@ function convertMarkdownToHTML(markdown: string): string {
       gfm: true,     // GitHub Flavored Markdown
     }) as string;
   } catch (error) {
-    console.warn('Failed to convert markdown:', error);
     return markdown; // Return original if conversion fails
   }
 }
@@ -299,8 +301,7 @@ export function RichTextEditor({
   );
   const { setSelectedTextPosition } = useSelectedTextContext();
   const [isUploading, setIsUploading] = useState(false);
-  const [isToolbarSticky, setIsToolbarSticky] = useState(false);
-  const [toolbarHeight, setToolbarHeight] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
   const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
   const mermaidInitialized = useRef(false);
   const renderedMermaidIds = useRef<Set<string>>(new Set());
@@ -312,6 +313,14 @@ export function RichTextEditor({
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
   const getButtonClasses = (isActive: boolean) =>
     cn('rounded-md', isActive ? activeToolbarClasses : baseToolbarClasses);
+
+  // Create refs for auto-wrap handlers (will be set after editor is created)
+  const autoWrapHandlersRef = useRef<{
+    handleInput: ((view: any, event: Event) => boolean) | null;
+    handleCompositionEnd: ((view: any, event: Event) => boolean) | null;
+    handleTouchEnd: ((view: any, event: Event) => boolean) | null;
+    handleBlur: ((view: any, event: Event) => boolean) | null;
+  }>({ handleInput: null, handleCompositionEnd: null, handleTouchEnd: null, handleBlur: null });
 
   const editor = useEditor({
     extensions: [
@@ -340,14 +349,15 @@ export function RichTextEditor({
           return [{ tag: 'p' }];
         },
         renderHTML({ HTMLAttributes }) {
-          return ['p', { ...HTMLAttributes, style: 'white-space: pre-wrap;' }, 0];
+          return ['p', { ...HTMLAttributes, style: 'white-space: normal; word-break: break-word; overflow-wrap: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box;' }, 0];
         },
       }),
       Underline,
       Link.configure({
         openOnClick: false,
         HTMLAttributes: {
-          class: 'text-primary underline',
+          class: 'text-primary underline break-all',
+          style: 'word-break: break-all; overflow-wrap: anywhere;',
         },
       }),
       TextAlign.configure({
@@ -404,7 +414,7 @@ export function RichTextEditor({
     editorProps: {
       attributes: {
         class: 'w-full focus:outline-none min-h-[300px] max-w-full overflow-x-hidden',
-        style: 'white-space: pre-wrap !important; margin: 0; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; max-width: 100%; width: 100%; box-sizing: border-box;',
+        style: 'white-space: normal !important; margin: 0; overflow-wrap: break-word; word-break: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box; overflow-x: hidden;',
       },
       transformPastedHTML(html) {
         // Extract text content from HTML to check for markdown
@@ -451,7 +461,6 @@ export function RichTextEditor({
               // Return converted HTML for TipTap to parse
               return htmlFromMarkdown;
             } catch (error) {
-              console.warn('Failed to parse markdown:', error);
               // Fall back to original HTML if parsing fails
               return html;
             }
@@ -508,7 +517,6 @@ export function RichTextEditor({
                   return true; // Handled
                 }
               } catch (error) {
-                console.warn('Failed to parse markdown paste:', error);
                 // Fall through to default handler
               }
             }
@@ -516,6 +524,18 @@ export function RichTextEditor({
 
           // Let transformPastedHTML handle HTML-based markdown as fallback
           return false; // Use default paste handler
+        },
+        input: (view, event) => {
+          return autoWrapHandlersRef.current.handleInput?.(view, event) ?? false;
+        },
+        compositionend: (view, event) => {
+          return autoWrapHandlersRef.current.handleCompositionEnd?.(view, event) ?? false;
+        },
+        touchend: (view, event) => {
+          return autoWrapHandlersRef.current.handleTouchEnd?.(view, event) ?? false;
+        },
+        blur: (view, event) => {
+          return autoWrapHandlersRef.current.handleBlur?.(view, event) ?? false;
         },
         keydown: (view, event) => {
           // Handle undo/redo keyboard shortcuts
@@ -554,6 +574,21 @@ export function RichTextEditor({
       },
     },
   });
+
+  // Auto word wrap hook disabled - CSS handles wrapping naturally
+  // The auto-wrap was inserting hard breaks which caused issues on mobile
+  // With proper CSS (overflow-wrap: break-word, hyphens: none), browser handles wrapping
+  // const { handleInput, handleCompositionEnd, handleTouchEnd, handleBlur } = useAutoWordWrap(editor);
+  
+  // Disable auto-wrap handlers - return false to use default behavior
+  useEffect(() => {
+    autoWrapHandlersRef.current = { 
+      handleInput: () => false, 
+      handleCompositionEnd: () => false, 
+      handleTouchEnd: () => false, 
+      handleBlur: () => false 
+    };
+  }, []);
 
   // Initialize mermaid once
   useEffect(() => {
@@ -632,11 +667,9 @@ export function RichTextEditor({
             
             (pre as HTMLElement).style.display = 'none';
             pre.parentNode.insertBefore(wrapper, pre.nextSibling);
-            
-            console.log('[RichTextEditor] Rendered mermaid diagram');
           }
         } catch (error) {
-          console.warn('[RichTextEditor] Failed to render mermaid diagram:', error);
+          // Failed to render mermaid diagram
         }
       }
     }
@@ -649,6 +682,191 @@ export function RichTextEditor({
     if (!editor) return;
     editor.setEditable(!readOnly);
   }, [editor, readOnly]);
+
+  // Debug: Check word breaking styles on paragraphs and detect broken words
+  useEffect(() => {
+    if (!editorContainerRef.current || readOnly) return;
+    
+    const checkWordBreaking = () => {
+      const proseMirror = editorContainerRef.current?.querySelector('.ProseMirror');
+      if (!proseMirror) return;
+      
+      const paragraphs = proseMirror.querySelectorAll('p');
+      if (paragraphs.length === 0) return;
+      
+      // Check the first few paragraphs for word breaking styles
+      paragraphs.forEach((p, idx) => {
+        if (idx < 5) { // Check first 5 paragraphs
+          const htmlP = p as HTMLElement;
+          const computedStyle = window.getComputedStyle(htmlP);
+          const textContent = htmlP.textContent || '';
+          
+          // Detect broken words by checking if words appear split across lines
+          const words = textContent.split(/\s+/).filter(w => w.length > 0);
+          const potentiallyBrokenWords: string[] = [];
+          
+          words.forEach(word => {
+            if (word.length > 6) { // Check words longer than 6 characters
+              // Try to find the word in the DOM and check if it's broken
+              const textNodes: Text[] = [];
+              const walker = document.createTreeWalker(
+                htmlP,
+                NodeFilter.SHOW_TEXT,
+                null
+              );
+              
+              let node;
+              while (node = walker.nextNode()) {
+                if (node.textContent?.includes(word)) {
+                  textNodes.push(node as Text);
+                }
+              }
+              
+              // Check if word appears in multiple text nodes (might be broken)
+              if (textNodes.length > 1) {
+                potentiallyBrokenWords.push(word);
+              } else if (textNodes.length === 1) {
+                // Check if the word's bounding box suggests it's broken
+                const range = document.createRange();
+                try {
+                  const textNode = textNodes[0];
+                  const wordIndex = textNode.textContent?.indexOf(word);
+                  if (wordIndex !== undefined && wordIndex >= 0) {
+                    range.setStart(textNode, wordIndex);
+                    range.setEnd(textNode, wordIndex + word.length);
+                    const rects = range.getClientRects();
+                    // If word has multiple rects, it's likely broken across lines
+                    if (rects.length > 1) {
+                      potentiallyBrokenWords.push(word);
+                    }
+                  }
+                } catch (e) {
+                  // Ignore errors
+                }
+              }
+            }
+          });
+        }
+      });
+    };
+    
+    const timeoutId = setTimeout(checkWordBreaking, 500);
+    return () => clearTimeout(timeoutId);
+  }, [content, editor, readOnly]);
+
+  // Debug: Check for overflow issues at multiple levels
+  useEffect(() => {
+    if (!editorContainerRef.current || readOnly) return;
+    
+    const checkOverflow = () => {
+      // Check body and html for overflow
+      const body = document.body;
+      const html = document.documentElement;
+      const viewportWidth = window.innerWidth;
+      
+      if (body.scrollWidth > viewportWidth) {
+        // Find the widest element
+        const allElements = body.querySelectorAll('*');
+        let widestElement: { element: HTMLElement; width: number; tag: string; className: string } | null = null;
+        
+        allElements.forEach((el) => {
+          const htmlEl = el as HTMLElement;
+          const computedStyle = window.getComputedStyle(htmlEl);
+          // Skip elements that are meant to scroll or are hidden
+          if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden') return;
+          
+          const width = htmlEl.offsetWidth || htmlEl.scrollWidth;
+          if (width > viewportWidth && (!widestElement || width > widestElement.width)) {
+            widestElement = {
+              element: htmlEl,
+              width,
+              tag: el.tagName,
+              className: el.className || '',
+            };
+          }
+        });
+        
+        // Widest element found for debugging if needed
+      }
+      
+      // Check HTML overflow
+      
+      // Check the root container
+      const rootContainer = document.querySelector('.animate-fade-in.w-full');
+      if (rootContainer) {
+        const rootEl = rootContainer as HTMLElement;
+        // Check root container overflow
+      }
+      
+      // Check the editor wrapper in DocDetail
+      const docContainer = rootContainer?.querySelector('.border.border-border\\/30');
+      if (docContainer) {
+        const docEl = docContainer as HTMLElement;
+        // Check doc container overflow
+      }
+      
+      // Check our editor container
+      const container = editorContainerRef.current;
+      if (!container) return;
+      
+      // Check editor container overflow
+      
+      // Check EditorContent wrapper
+      const editorContent = container.querySelector('[data-testid="editor-content"], .ProseMirror');
+      if (editorContent) {
+        const contentEl = editorContent as HTMLElement;
+        // Check editor content overflow
+      }
+      
+      // Check ProseMirror element
+      const proseMirror = container.querySelector('.ProseMirror');
+      if (!proseMirror) return;
+      
+      const pmEl = proseMirror as HTMLElement;
+      // Check ProseMirror overflow
+      
+      // Find all potentially overflowing elements inside ProseMirror
+      const allElements = proseMirror.querySelectorAll('*');
+      const overflowingElements: Array<{element: Element; scrollWidth: number; offsetWidth: number; tag: string; className: string; text: string}> = [];
+      
+      allElements.forEach((el: Element) => {
+        const htmlEl = el as HTMLElement;
+        const computedStyle = window.getComputedStyle(htmlEl);
+        // Skip elements that are meant to scroll (code blocks, tables)
+        if (computedStyle.overflowX === 'auto' || computedStyle.overflowX === 'scroll') {
+          return;
+        }
+        
+        if (htmlEl.scrollWidth > htmlEl.offsetWidth && htmlEl.scrollWidth > container.offsetWidth) {
+          overflowingElements.push({
+            element: el,
+            scrollWidth: htmlEl.scrollWidth,
+            offsetWidth: htmlEl.offsetWidth,
+            tag: el.tagName,
+            className: el.className,
+            text: el.textContent?.substring(0, 100) || '',
+          });
+        }
+      });
+      
+      // Check for overflowing elements
+    };
+    
+    // Check multiple times to catch dynamic content
+    const timeoutId1 = setTimeout(checkOverflow, 100);
+    const timeoutId2 = setTimeout(checkOverflow, 500);
+    const timeoutId3 = setTimeout(checkOverflow, 1000);
+    
+    // Also check on window resize
+    window.addEventListener('resize', checkOverflow);
+    
+    return () => {
+      clearTimeout(timeoutId1);
+      clearTimeout(timeoutId2);
+      clearTimeout(timeoutId3);
+      window.removeEventListener('resize', checkOverflow);
+    };
+  }, [content, editor, readOnly]);
 
   // Prevent mobile browser toolbar from appearing above keyboard
   // Note: Unfortunately, mobile browsers show the toolbar for contentEditable elements
@@ -676,13 +894,11 @@ export function RichTextEditor({
       const conversionCheck = detectMarkdownConversionNeeded(normalizedContent);
       
       if (conversionCheck.needsConversion) {
-        console.log('[RichTextEditor] Converting markdown to HTML:', conversionCheck.reason);
         normalizedContent = convertMarkdownToHtml(normalizedContent);
         contentAlreadyConvertedRef.current = true;
       } else if (conversionCheck.reason === 'already_converted') {
         // Mark as already converted to prevent re-conversion on subsequent renders
         contentAlreadyConvertedRef.current = true;
-        console.log('[RichTextEditor] Content already converted, skipping');
       }
     }
     // Skip if content prop hasn't changed from what we last processed
@@ -745,42 +961,39 @@ export function RichTextEditor({
     }
   }, [content, editor, renderMermaidDiagrams]);
 
-  // Handle toolbar sticky positioning on scroll
+  // Handle toolbar sticky positioning on scroll - show when scrolling down
   useEffect(() => {
     if (!toolbarRef.current || !toolbarContainerRef.current || readOnly) return;
 
     const updateStickyState = () => {
       const container = toolbarContainerRef.current;
       const toolbar = toolbarRef.current;
-      if (!container) return;
+      if (!container || !toolbar) return;
 
-      // Update toolbar height for spacer
-      if (toolbar) {
-        setToolbarHeight(toolbar.offsetHeight);
-      }
-
-      const rect = container.getBoundingClientRect();
       const headerHeight = 64; // Header is h-16 (64px)
-      const toolbarTop = rect.top;
+      const containerRect = container.getBoundingClientRect();
+      const toolbarTop = containerRect.top;
+      
+      // Make toolbar sticky when it reaches or passes the header
       const shouldBeSticky = toolbarTop <= headerHeight;
       
-      // If toolbar would scroll past the header, make it sticky
-      setIsToolbarSticky(shouldBeSticky);
+      setIsScrolled(shouldBeSticky);
 
-      // Update toolbar style
       if (shouldBeSticky) {
+        // Toolbar should be fixed at the very top of the screen
         setToolbarStyle({
           position: 'fixed',
-          top: '64px',
-          left: `${rect.left}px`,
-          width: `${rect.width}px`,
+          top: '0px',
+          left: `${containerRect.left}px`,
+          width: `${containerRect.width}px`,
+          zIndex: 50,
         });
       } else {
+        // Toolbar in normal flow
         setToolbarStyle({});
       }
     };
 
-    // Use requestAnimationFrame for smoother performance
     let ticking = false;
     const onScroll = () => {
       if (!ticking) {
@@ -833,19 +1046,18 @@ export function RichTextEditor({
   }, [setSelectedTextPosition]);
 
   return (
-    <div className="w-full max-w-full">
-      {/* Toolbar Container - used to detect scroll position */}
+    <div className="w-full max-w-full overflow-x-hidden">
+      {/* Toolbar Container */}
       {!readOnly && (
         <div ref={toolbarContainerRef}>
           {/* Spacer to prevent layout shift when toolbar becomes fixed */}
-          {isToolbarSticky && toolbarHeight > 0 && <div style={{ height: `${toolbarHeight}px` }} />}
-          {/* Toolbar - Fixed position when scrolling past header */}
+          {isScrolled && toolbarRef.current && (
+            <div style={{ height: `${toolbarRef.current.offsetHeight}px` }} />
+          )}
+          {/* Toolbar - Always visible, fixed position when scrolling down */}
           <div 
             ref={toolbarRef}
-            className={cn(
-              "z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm pl-3.5 pr-2.5 py-2.5 flex flex-wrap items-center gap-1 overflow-x-auto overflow-y-visible shadow-md transition-all",
-              isToolbarSticky && "fixed"
-            )}
+            className="z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm pl-3.5 pr-2.5 py-2.5 flex flex-wrap items-center gap-1 overflow-x-auto overflow-y-visible shadow-md transition-all"
             style={toolbarStyle}
           >
         {/* Text Formatting */}
@@ -1042,7 +1254,6 @@ export function RichTextEditor({
                 try {
                   await onFileUpload(file);
                 } catch (error) {
-                  console.error('File upload error:', error);
                   alert(error instanceof Error ? error.message : 'Failed to upload file');
                 } finally {
                   setIsUploading(false);
@@ -1071,11 +1282,11 @@ export function RichTextEditor({
       )}
 
       {/* Editor Content */}
-      <div ref={editorContainerRef} className="relative">
-        <EditorContent 
-          editor={editor} 
-          className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:overflow-wrap-anywhere [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60" 
-          style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+      <div ref={editorContainerRef} className="relative overflow-x-hidden min-w-0" style={{ maxWidth: '100%', width: '100%', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+        <EditorContent
+          editor={editor}
+          className="min-h-[500px] overflow-x-hidden px-2 sm:px-3 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-normal [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror]:overflow-x-hidden [&_.ProseMirror]:max-w-full [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:max-w-full [&_.ProseMirror_p]:box-border [&_.ProseMirror_p]:whitespace-normal [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:break-words [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:whitespace-normal [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60"
+          style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'none', overflowX: 'hidden', maxWidth: '100%', width: '100%' }}
         />
         <FloatingAskAI
           visible={hasSelection && selectedText.length > 0 && !readOnly && !!selectionPosition}
@@ -1088,4 +1299,7 @@ export function RichTextEditor({
     </div>
   );
 }
+
+// Default export for compatibility
+export default RichTextEditor;
 

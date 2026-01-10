@@ -63,6 +63,17 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
     background: var(--gradient-hero);
     background-attachment: fixed;
+    overflow-x: hidden;
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  
+  html {
+    overflow-x: hidden;
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
   }
 }
 

@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, MoreVertical, Share2, Mail, Paperclip, Trash2 } from 'lucide-react';
+import { ArrowLeft, MoreVertical, Share2, Mail, Paperclip, Trash2, FileText } from 'lucide-react';
 import type { SaveStatus } from '@/hooks/useAutoSave';
 
 interface DocToolbarProps {
@@ -12,6 +12,7 @@ interface DocToolbarProps {
   onShareViaEmail: () => void;
   onAttachedFiles: () => void;
   onDelete: () => void;
+  onFormatDocument?: () => void;
   isOwner: boolean;
   filesCount: number;
   isNew: boolean;
@@ -57,18 +58,20 @@ const BackButton = memo(function BackButton({ onClick }: { onClick: () => void }
 });
 
 // Memoized MoreActionsMenu - only re-renders when props change
-const MoreActionsMenu = memo(function MoreActionsMenu({ 
-  onShare, 
-  onShareViaEmail, 
-  onAttachedFiles, 
+const MoreActionsMenu = memo(function MoreActionsMenu({
+  onShare,
+  onShareViaEmail,
+  onAttachedFiles,
   onDelete,
+  onFormatDocument,
   isOwner,
   filesCount
-}: { 
+}: {
   onShare: () => void;
   onShareViaEmail: () => void;
   onAttachedFiles: () => void;
   onDelete: () => void;
+  onFormatDocument?: () => void;
   isOwner: boolean;
   filesCount: number;
 }) {
@@ -80,6 +83,12 @@ const MoreActionsMenu = memo(function MoreActionsMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        {onFormatDocument && (
+          <DropdownMenuItem onClick={onFormatDocument}>
+            <FileText className="mr-2 h-4 w-4" />
+            Format Document
+          </DropdownMenuItem>
+        )}
         {isOwner && (
           <DropdownMenuItem onClick={onShare}>
             <Share2 className="mr-2 h-4 w-4" />
@@ -97,7 +106,7 @@ const MoreActionsMenu = memo(function MoreActionsMenu({
           Attached Files {filesCount > 0 && `(${filesCount})`}
         </DropdownMenuItem>
         {isOwner && (
-          <DropdownMenuItem 
+          <DropdownMenuItem
             onClick={onDelete}
             className="text-destructive focus:text-destructive"
           >
@@ -119,6 +128,7 @@ export const DocToolbar = memo(function DocToolbar({
   onShareViaEmail,
   onAttachedFiles,
   onDelete,
+  onFormatDocument,
   isOwner,
   filesCount,
   isNew,
@@ -136,6 +146,7 @@ export const DocToolbar = memo(function DocToolbar({
           onShareViaEmail={onShareViaEmail}
           onAttachedFiles={onAttachedFiles}
           onDelete={onDelete}
+          onFormatDocument={onFormatDocument}
           isOwner={isOwner}
           filesCount={filesCount}
         />

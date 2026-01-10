@@ -6,7 +6,7 @@ interface TitleWithToolbarProps {
   onTitleChange: (title: string) => void;
   titlePlaceholder?: string;
   readOnly?: boolean;
-  toolbar: React.ReactNode; // The DocToolbar JSX
+  toolbar: React.ReactNode | null; // The DocToolbar JSX (nullable)
 }
 
 export const TitleWithToolbar = memo(function TitleWithToolbar({
@@ -17,7 +17,7 @@ export const TitleWithToolbar = memo(function TitleWithToolbar({
   toolbar,
 }: TitleWithToolbarProps) {
   return (
-    <div className="px-4 sm:px-6 pt-0 pb-3 overflow-x-hidden w-full max-w-full border-b border-border/20">
+    <div className="px-2 sm:px-3 pt-0 pb-2 overflow-x-hidden w-full max-w-full border-b border-border/20">
       <div className="flex items-center gap-2 w-full">
         <input
           type="text"
@@ -30,9 +30,11 @@ export const TitleWithToolbar = memo(function TitleWithToolbar({
             readOnly && "cursor-default"
           )}
         />
-        <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
-          {toolbar}
-        </div>
+        {toolbar && (
+          <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
+            {toolbar}
+          </div>
+        )}
       </div>
     </div>
   );
