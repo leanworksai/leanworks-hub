@@ -48,7 +48,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   };
   
   // Parse Selected Docs
-  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Teams):|$)/i);
+  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Teams|Text):|$)/i);
   if (docsMatch) {
     const docs = parseItems(docsMatch[1]).map(item => ({ id: item.id, title: item.name }));
     if (docs.length > 0) {
@@ -57,7 +57,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Projects
-  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Teams):|$)/i);
+  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Teams|Text):|$)/i);
   if (projectsMatch) {
     const projects = parseItems(projectsMatch[1]).map(item => ({ id: item.id, name: item.name }));
     if (projects.length > 0) {
@@ -66,7 +66,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Tasks
-  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Teams):|$)/i);
+  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Teams|Text):|$)/i);
   if (tasksMatch) {
     const tasks = parseItems(tasksMatch[1]).map(item => ({ id: item.id, title: item.name }));
     if (tasks.length > 0) {
@@ -75,7 +75,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Teams
-  const teamsMatch = citedContextText.match(/Selected Teams:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks):|$)/i);
+  const teamsMatch = citedContextText.match(/Selected Teams:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks|Text):|$)/i);
   if (teamsMatch) {
     const teams = parseItems(teamsMatch[1]).map(item => ({ id: item.id, name: item.name }));
     if (teams.length > 0) {
@@ -83,7 +83,38 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
     }
   }
   
-  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.teams;
+  // Parse Selected Text
+  const selectedTextMatch = citedContextText.match(/Selected Text:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks|Teams):|$)/i);
+  if (selectedTextMatch) {
+    const selectedTexts: Array<{ id: string; text: string; docId?: string }> = [];
+    const textContent = selectedTextMatch[1].trim();
+    
+    // Try to parse as items with IDs first (format: - Text (ID: doc-id))
+    const items = parseItems(textContent);
+    if (items.length > 0) {
+      // Extract docId from the ID if it's a doc ID
+      selectedTexts.push(...items.map(item => ({
+        id: item.id,
+        // Truncate text for display (preview only)
+        text: item.name.length > 100 ? item.name.substring(0, 100) + '...' : item.name,
+        docId: item.id, // Assume the ID is the docId for selected text
+      })));
+    } else if (textContent) {
+      // If no items found, treat the whole text as a single selected text
+      // Truncate if too long for display (preview only)
+      const displayText = textContent.length > 100 ? textContent.substring(0, 100) + '...' : textContent;
+      selectedTexts.push({
+        id: `selected-text-${Date.now()}`,
+        text: displayText,
+      });
+    }
+    
+    if (selectedTexts.length > 0) {
+      citedContext.selectedTexts = selectedTexts;
+    }
+  }
+  
+  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.teams || citedContext.selectedTexts;
   
   return {
     citedContext: hasAnyContext ? citedContext : null,
@@ -172,18 +203,18 @@ function renderMessageContent(
     
     // Determine the wrapper classes based on theme
     const wrapperClasses = cn(
-      "prose prose-sm max-w-none break-words",
+      "prose prose-sm max-w-none break-words min-w-0",
       // Dark mode support
       "dark:prose-invert",
       // Customize prose for chat context
-      "prose-p:my-1 prose-p:leading-relaxed",
-      "prose-headings:my-2 prose-headings:font-semibold",
+      "prose-p:my-1 prose-p:leading-relaxed prose-p:break-words",
+      "prose-headings:my-2 prose-headings:font-semibold prose-headings:break-words",
       "prose-ul:my-1 prose-ol:my-1",
-      "prose-li:my-0.5",
-      "prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:bg-muted prose-code:text-foreground prose-code:before:content-none prose-code:after:content-none",
-      "prose-pre:my-2 prose-pre:p-3 prose-pre:rounded-lg prose-pre:bg-muted",
-      "prose-blockquote:my-2 prose-blockquote:border-l-primary prose-blockquote:pl-4",
-      "prose-a:text-primary prose-a:underline prose-a:decoration-primary/50 hover:prose-a:decoration-primary",
+      "prose-li:my-0.5 prose-li:break-words",
+      "prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:bg-muted prose-code:text-foreground prose-code:before:content-none prose-code:after:content-none prose-code:break-words",
+      "prose-pre:my-2 prose-pre:p-3 prose-pre:rounded-lg prose-pre:bg-muted prose-pre:overflow-x-auto prose-pre:max-w-full prose-pre:min-w-0",
+      "prose-blockquote:my-2 prose-blockquote:border-l-primary prose-blockquote:pl-4 prose-blockquote:break-words",
+      "prose-a:text-primary prose-a:underline prose-a:decoration-primary/50 hover:prose-a:decoration-primary prose-a:break-words",
       // Theme-specific overrides
       isAIChatTheme && isSent && "prose-invert prose-p:text-white prose-headings:text-white prose-strong:text-white prose-code:bg-white/20 prose-code:text-white prose-pre:bg-white/10 prose-a:text-white/90 hover:prose-a:text-white prose-blockquote:border-white/50 prose-blockquote:text-white/90 prose-li:text-white",
     );
@@ -191,6 +222,7 @@ function renderMessageContent(
     return (
       <div 
         className={wrapperClasses}
+        style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
         dangerouslySetInnerHTML={{ __html: htmlContent }}
       />
     );
@@ -612,8 +644,9 @@ export function ChatMessage({
           {(() => {
             // Parse cited context from message content
             const { citedContext: parsedCitedContext, cleanContent } = parseCitedContext(message.content);
-            // Use parsed cited context if available, otherwise fall back to message.citedContext
-            const displayCitedContext = parsedCitedContext || message.citedContext;
+            // Prioritize message.citedContext (from database) over parsed content (which might contain errors)
+            // Only use parsed context if message.citedContext doesn't exist
+            const displayCitedContext = message.citedContext || parsedCitedContext;
             
             // Check if this is a call notification message
             const callMatch = cleanContent.match(/\[CALL:([^:]+):([^\]]+)\]/);
@@ -626,7 +659,8 @@ export function ChatMessage({
               (displayCitedContext.projects && displayCitedContext.projects.length > 0) ||
               (displayCitedContext.tasks && displayCitedContext.tasks.length > 0) ||
               (displayCitedContext.teams && displayCitedContext.teams.length > 0) ||
-              (displayCitedContext.docs && displayCitedContext.docs.length > 0)
+              (displayCitedContext.docs && displayCitedContext.docs.length > 0) ||
+              (displayCitedContext.selectedTexts && displayCitedContext.selectedTexts.length > 0)
             );
             
             return (

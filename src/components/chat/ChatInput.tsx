@@ -37,6 +37,8 @@ export interface ChatInputProps {
   onRemoveProject?: (project: Project) => void;
   onRemoveTask?: (task: Task) => void;
   onRemoveDoc?: (doc: Doc) => void;
+  selectedText?: { id: string; text: string; docId?: string } | null;
+  onRemoveSelectedText?: () => void;
   
   // Image handling
   imagePreviewUrls?: string[];
@@ -77,6 +79,8 @@ export function ChatInput({
   onRemoveProject,
   onRemoveTask,
   onRemoveDoc,
+  selectedText,
+  onRemoveSelectedText,
   imagePreviewUrls = [],
   onImageSelect,
   onImageRemove,
@@ -498,6 +502,8 @@ export function ChatInput({
           onRemoveDoc={onRemoveDoc}
           variant="inline"
           implicitContext={implicitContext}
+          selectedText={selectedText}
+          onRemoveSelectedText={onRemoveSelectedText}
         />
       )}
       

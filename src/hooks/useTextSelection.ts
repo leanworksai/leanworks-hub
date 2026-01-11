@@ -4,6 +4,7 @@ export interface TextSelectionPosition {
   docId: string;
   startOffset: number;
   endOffset: number;
+  text?: string; // The actual selected text content
 }
 
 export interface UseTextSelectionResult {
@@ -117,6 +118,7 @@ export function useTextSelection(
                 docId,
                 startOffset: startPos,
                 endOffset: endPos,
+                text: text, // Include the actual selected text
               };
             }
           } catch (error) {

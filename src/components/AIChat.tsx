@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useLocation } from "react-router-dom";
-import { X, Trash2, FileText } from "lucide-react";
+import { X, Trash2 } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
@@ -278,9 +277,18 @@ export function AIChat() {
   const generateResponse = useCallback(async (
     message: string,  // Just the current message
     chatId: string,
-    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[] },  // Add citedContext parameter
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } },  // Add citedContext parameter
     implicitContext?: string  // Add implicitContext parameter
   ): Promise<string> => {
+    // Debug: Log what we received (always log)
+    console.log('🔍 [AIChat] generateResponse called with:', {
+      hasCitedContext: !!citedContext,
+      citedContext,
+      hasSelectedTextPosition: !!(citedContext && (citedContext as any).selectedTextPosition),
+      selectedTextPreview: citedContext && (citedContext as any).selectedTextPosition?.text?.substring(0, 50),
+      implicitContext,
+    });
+    
     // Use chatId as sessionId for conversation continuity
     // This ensures the AI service maintains context within the conversation
     const response = await messagesService.generateResponse({
@@ -296,7 +304,20 @@ export function AIChat() {
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {
-    if ((!messageContent.trim() && imageUrls.length === 0) || !user || !chatId || isSendingMessage) return;
+    // Debug: Log at the very start
+    console.log('🚀 [AIChat] handleSend called:', {
+      messageContent: messageContent.substring(0, 50),
+      hasSelectedTextPosition: !!selectedTextPosition,
+      selectedTextPosition,
+      selectedProjects: selectedProjects.length,
+      selectedTasks: selectedTasks.length,
+      selectedDocs: selectedDocs.length,
+    });
+    
+    if ((!messageContent.trim() && imageUrls.length === 0) || !user || !chatId || isSendingMessage) {
+      console.log('⚠️ [AIChat] handleSend early return');
+      return;
+    }
 
     if (isFreePlan) {
       toast({
@@ -342,12 +363,47 @@ export function AIChat() {
     setImagePreviewUrls([]);
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || selectedTextPosition) ? {
+    
+    // Debug: Log selectedTextPosition when message is being sent (always log in dev)
+    console.log('📝 [AIChat] selectedTextPosition at message send:', {
+      selectedTextPosition,
+      hasSelectedTextPosition: !!selectedTextPosition,
+      hasText: !!selectedTextPosition?.text,
+      textLength: selectedTextPosition?.text?.length,
+      textPreview: selectedTextPosition?.text?.substring(0, 100),
+    });
+    
+    // Convert selectedTextPosition to selectedTexts format for message display
+    // Show only preview in UI (truncate to 100 chars), but keep full text for API
+    const selectedTexts = selectedTextPosition && selectedTextPosition.text ? [{
+      id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
+      text: selectedTextPosition.text.length > 100 
+        ? selectedTextPosition.text.substring(0, 100) + '...' 
+        : selectedTextPosition.text,
+      docId: selectedTextPosition.docId,
+    }] : undefined;
+    
+    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || selectedTexts) ? {
       projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
       tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
       docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
+      selectedTexts: selectedTexts,
+      // Keep selectedTextPosition for API calls
       selectedTextPosition: selectedTextPosition || undefined,
     } : undefined;
+
+    // Debug logging for contexts
+    if (process.env.NODE_ENV === 'development') {
+      if (citedContext) {
+        console.log('📋 [AIChat] Building citedContext:', {
+          projects: citedContext.projects?.length || 0,
+          tasks: citedContext.tasks?.length || 0,
+          docs: citedContext.docs?.length || 0,
+          selectedTexts: citedContext.selectedTexts?.length || 0,
+          hasSelectedText: !!citedContext.selectedTextPosition?.text,
+        });
+      }
+    }
 
     // Build implicit context from current page
     let implicitContext: string | undefined = undefined;
@@ -417,16 +473,85 @@ export function AIChat() {
 
       // Generate AI response
       setIsLoading(true);
-      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!selectedTextPosition;
+      
+      // Capture selectedTextPosition early to avoid any timing issues
+      const currentSelectedTextPosition = selectedTextPosition;
+      
+      // Debug: Log selectedTextPosition before building context (always log)
+      console.log('🔍 [AIChat] Before building citedContextForAPI:', {
+        selectedTextPosition: currentSelectedTextPosition,
+        selectedTextPositionFromContext: selectedTextPosition,
+        selectedProjects: selectedProjects.length,
+        selectedTasks: selectedTasks.length,
+        selectedDocs: selectedDocs.length,
+        hasText: !!currentSelectedTextPosition?.text,
+        textPreview: currentSelectedTextPosition?.text?.substring(0, 50),
+      });
+      
+      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!currentSelectedTextPosition;
 
       try {
         // Build citedContext from selected items
-        const citedContextForAPI = hadSelections ? {
+        // Always create object if there are any selections (including just selected text)
+        // Make sure selectedTextPosition includes the text field
+        // Use captured value to avoid timing issues
+        const selectedTextPosForAPI = currentSelectedTextPosition ? {
+          ...currentSelectedTextPosition,
+          // Ensure text field is preserved
+          text: currentSelectedTextPosition.text,
+        } : undefined;
+        
+        // Always create citedContextForAPI if we have any selections OR if we have selectedTextPosition with text
+        // This ensures selected text is always included even if it's the only selection
+        const hasSelectedTextWithText = currentSelectedTextPosition && currentSelectedTextPosition.text;
+        const shouldCreateContext = hadSelections || hasSelectedTextWithText;
+        
+        const citedContextForAPI = shouldCreateContext ? {
           projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
           tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
           docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
-          selectedTextPosition: selectedTextPosition || undefined,
+          selectedTextPosition: selectedTextPosForAPI,
         } : undefined;
+        
+        // Debug: Log what we're about to pass (always log)
+        console.log('🔍 [AIChat] About to call generateResponse with:', {
+          hadSelections,
+          shouldCreateContext,
+          hasSelectedTextWithText,
+          citedContextForAPI,
+          willPassContext: !!citedContextForAPI,
+          selectedTextPosForAPI: selectedTextPosForAPI ? {
+            hasText: !!selectedTextPosForAPI.text,
+            docId: selectedTextPosForAPI.docId,
+            textPreview: selectedTextPosForAPI.text?.substring(0, 50),
+          } : null,
+        });
+
+        // Debug logging
+        if (import.meta.env.DEV || process.env.NODE_ENV === 'development') {
+          console.log('🔍 [AIChat] Building citedContextForAPI:', {
+            hadSelections,
+            hasProjects: selectedProjects.length > 0,
+            hasTasks: selectedTasks.length > 0,
+            hasDocs: selectedDocs.length > 0,
+            hasSelectedText: !!currentSelectedTextPosition,
+            selectedTextPosition: currentSelectedTextPosition ? {
+              docId: currentSelectedTextPosition.docId,
+              startOffset: currentSelectedTextPosition.startOffset,
+              endOffset: currentSelectedTextPosition.endOffset,
+              hasText: !!currentSelectedTextPosition.text,
+              textLength: currentSelectedTextPosition.text?.length,
+              textPreview: currentSelectedTextPosition.text?.substring(0, 50) + (currentSelectedTextPosition.text?.length > 50 ? '...' : ''),
+            } : null,
+            citedContextForAPI: citedContextForAPI ? {
+              ...citedContextForAPI,
+              selectedTextPosition: citedContextForAPI.selectedTextPosition ? {
+                docId: citedContextForAPI.selectedTextPosition.docId,
+                hasText: !!(citedContextForAPI.selectedTextPosition as any).text,
+              } : undefined,
+            } : null,
+          });
+        }
 
         // Build implicit context from current page
         let implicitContext: string | undefined = undefined;
@@ -434,8 +559,24 @@ export function AIChat() {
           implicitContext = `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})`;
         }
 
+        // Final safety check: if citedContextForAPI is undefined but we have selectedTextPosition with text, create it
+        const finalCitedContext = citedContextForAPI || (currentSelectedTextPosition && currentSelectedTextPosition.text ? {
+          selectedTextPosition: {
+            ...currentSelectedTextPosition,
+            text: currentSelectedTextPosition.text,
+          }
+        } : undefined);
+
+        // Debug: Log final context before calling generateResponse (always log)
+        console.log('🔍 [AIChat] Final context before generateResponse:', {
+          originalCitedContextForAPI: citedContextForAPI,
+          finalCitedContext,
+          hasSelectedText: !!(finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text),
+          selectedTextPreview: finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text?.substring(0, 50),
+        });
+
         // Pass only the current message - backend will load conversation from Firestore
-        const response = await generateResponse(messageContent, chatId, citedContextForAPI, implicitContext);
+        const response = await generateResponse(messageContent, chatId, finalCitedContext, implicitContext);
         
         // Increment AI usage credit (1 credit per response)
         try {
@@ -534,7 +675,7 @@ export function AIChat() {
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, generateResponse, saveCachedMessages]);
+  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, generateResponse, saveCachedMessages]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -963,27 +1104,6 @@ export function AIChat() {
           multiple
           className="hidden"
         />
-        {selectedTextPosition && (
-          <div className="px-4 pt-3 pb-2 border-t border-purple-200/60 bg-white/50 backdrop-blur-sm">
-            <div className="flex items-center gap-2 flex-wrap">
-              <FileText className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400 flex-shrink-0" />
-              <span className="text-xs font-medium text-purple-700 dark:text-purple-300">Selected Text:</span>
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Badge variant="secondary" className="text-xs bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/60 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800/60 dark:hover:bg-purple-900/60">
-                  Text selection from document
-                </Badge>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-4 w-4 opacity-70 hover:opacity-100"
-                  onClick={clearSelectedText}
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
         <ChatInput
           onSend={handleSend}
           disabled={isSendingMessage || isFreePlan}
@@ -996,6 +1116,20 @@ export function AIChat() {
           selectedTasks={selectedTasks}
           selectedDocs={selectedDocs}
           implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
+          selectedText={selectedTextPosition ? {
+            id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
+            // Show preview in UI (truncate to 100 chars), but full text is sent to API via selectedTextPosition
+            text: selectedTextPosition.text 
+              ? (selectedTextPosition.text.length > 100 
+                  ? selectedTextPosition.text.substring(0, 100) + '...' 
+                  : selectedTextPosition.text)
+              : "Text selection from document",
+            docId: selectedTextPosition.docId,
+          } : null}
+          onRemoveSelectedText={() => {
+            trackContextRemove('selected-text', selectedTextPosition?.docId || '');
+            clearSelectedText();
+          }}
           onRemoveProject={(project) => {
             trackContextRemove('project', project.id);
             toggleProject(project);

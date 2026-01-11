@@ -6,6 +6,7 @@ export interface CitedContext {
   projects?: Project[];
   tasks?: Task[];
   docs?: Doc[];
+  selectedTexts?: Array<{ id: string; text: string; docId?: string }>;
 }
 
 export interface Message {

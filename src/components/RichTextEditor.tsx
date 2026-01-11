@@ -1275,7 +1275,7 @@ export function RichTextEditor({
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
   };
 
-  const handleAskAI = useCallback((position: { docId: string; startOffset: number; endOffset: number }) => {
+  const handleAskAI = useCallback((position: { docId: string; startOffset: number; endOffset: number; text?: string }) => {
     setSelectedTextPosition(position);
     // Open AI chat
     window.dispatchEvent(new CustomEvent('openAIChat'));

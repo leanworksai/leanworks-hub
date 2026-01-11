@@ -1,4 +1,4 @@
-import { FolderOpen, CheckSquare, StickyNote, X } from "lucide-react";
+import { FolderOpen, CheckSquare, StickyNote, FileText, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Project } from "@/data/projectsData";
@@ -22,6 +22,8 @@ export interface ContextBadgesProps {
   variant?: "sidebar" | "inline";
   className?: string;
   implicitContext?: string; // Current page context string
+  selectedText?: { id: string; text: string; docId?: string } | null;
+  onRemoveSelectedText?: () => void;
 }
 
 /**
@@ -38,6 +40,8 @@ export function ContextBadges({
   variant = "inline",
   className,
   implicitContext,
+  selectedText,
+  onRemoveSelectedText,
 }: ContextBadgesProps) {
   // Parse implicit context if provided
   let implicitDoc: { id: string; title: string } | null = null;
@@ -72,7 +76,7 @@ export function ContextBadges({
     ? [...docs, implicitDoc as Doc]
     : docs;
   
-  const hasAny = allProjects.length > 0 || allTasks.length > 0 || allDocs.length > 0;
+  const hasAny = allProjects.length > 0 || allTasks.length > 0 || allDocs.length > 0 || selectedText !== null;
 
   if (!hasAny) {
     return null;
@@ -277,6 +281,35 @@ export function ContextBadges({
               </div>
               );
             })}
+          </div>
+        </div>
+      )}
+      {selectedText && (
+        <div className="px-4 pt-3 pb-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <FileText className="h-3.5 w-3.5 text-primary flex-shrink-0" />
+            <span className="text-xs font-medium text-primary">Selected Text:</span>
+            <div className="relative group inline-flex">
+              <Badge 
+                variant="secondary" 
+                className="text-xs whitespace-nowrap flex-shrink-0 pr-5 rounded-md"
+                title={selectedText.text.length > 100 ? selectedText.text : undefined}
+              >
+                {selectedText.text.length > 100 
+                  ? selectedText.text.substring(0, 100) + '...' 
+                  : selectedText.text}
+              </Badge>
+              {onRemoveSelectedText && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-4 w-4 absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity p-0"
+                  onClick={onRemoveSelectedText}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       )}
