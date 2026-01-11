@@ -24,7 +24,7 @@ import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
-import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
+import { messagesService, imageUploadService, subscriptionService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone } from "@/lib/dateTimeUtils";
@@ -3880,7 +3880,22 @@ export function Chatbot() {
                 name: selectedProject.name,
                 description: selectedProject.description,
               } : undefined
-            ).then((aiResponse) => {
+            ).then(async (aiResponse) => {
+              // Increment AI usage credit (1 credit per response)
+              try {
+                await subscriptionService.incrementAiUsage();
+              } catch (error: any) {
+                console.error('Failed to increment AI usage:', error);
+                // If limit reached, show error but don't block the response
+                if (error.message?.includes('limit reached')) {
+                  toast({
+                    title: "AI Usage Limit Reached",
+                    description: error.message || "You've reached your daily AI usage limit.",
+                    variant: "destructive",
+                  });
+                }
+              }
+              
               // Create AI assistant message for the channel
               const aiChannelMessage: ChannelMessage = {
                 id: `temp-ai-${Date.now()}`,
@@ -4072,7 +4087,22 @@ export function Chatbot() {
                 name: selectedTeam.name,
                 description: selectedTeam.description,
               } : undefined
-            ).then((aiResponse) => {
+            ).then(async (aiResponse) => {
+              // Increment AI usage credit (1 credit per response)
+              try {
+                await subscriptionService.incrementAiUsage();
+              } catch (error: any) {
+                console.error('Failed to increment AI usage:', error);
+                // If limit reached, show error but don't block the response
+                if (error.message?.includes('limit reached')) {
+                  toast({
+                    title: "AI Usage Limit Reached",
+                    description: error.message || "You've reached your daily AI usage limit.",
+                    variant: "destructive",
+                  });
+                }
+              }
+              
               // Create AI assistant message for the channel
               const aiChannelMessage: ChannelMessage = {
                 id: `temp-ai-${Date.now()}`,
@@ -4230,6 +4260,21 @@ export function Chatbot() {
 
       try {
         const response = await generateResponse(userMessage.content, chatId);
+        
+        // Increment AI usage credit (1 credit per response)
+        try {
+          await subscriptionService.incrementAiUsage();
+        } catch (error: any) {
+          console.error('Failed to increment AI usage:', error);
+          // If limit reached, show error but don't block the response
+          if (error.message?.includes('limit reached')) {
+            toast({
+              title: "AI Usage Limit Reached",
+              description: error.message || "You've reached your daily AI usage limit.",
+              variant: "destructive",
+            });
+          }
+        }
         
         // Clear cited context immediately after sending message with cited context
         if (hadSelections) {

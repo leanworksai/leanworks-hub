@@ -2463,7 +2463,7 @@ export const subscriptionService = {
     return response.json();
   },
 
-  async switchPlan(plan: 'standard' | 'pro'): Promise<{ success: boolean; plan: string }> {
+  async switchPlan(plan: 'free' | 'standard' | 'pro'): Promise<{ success: boolean; plan: string; checkoutUrl?: string; requiresCheckout?: boolean }> {
     const url = import.meta.env.DEV 
       ? `${API_BASE}/api/subscription/switch` 
       : `${API_BASE}/subscription/switch`;

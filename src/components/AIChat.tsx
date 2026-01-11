@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
-import { messagesService, imageUploadService, type ChatMessage } from "@/services/api";
+import { messagesService, imageUploadService, subscriptionService, type ChatMessage } from "@/services/api";
 import { getAIAssistantChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -436,6 +436,21 @@ export function AIChat() {
 
         // Pass only the current message - backend will load conversation from Firestore
         const response = await generateResponse(messageContent, chatId, citedContextForAPI, implicitContext);
+        
+        // Increment AI usage credit (1 credit per response)
+        try {
+          await subscriptionService.incrementAiUsage();
+        } catch (error: any) {
+          console.error('Failed to increment AI usage:', error);
+          // If limit reached, show error but don't block the response
+          if (error.message?.includes('limit reached')) {
+            toast({
+              title: "AI Usage Limit Reached",
+              description: error.message || "You've reached your daily AI usage limit.",
+              variant: "destructive",
+            });
+          }
+        }
         
         if (hadSelections) {
           clearSelectedProjects();

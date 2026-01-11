@@ -15,15 +15,7 @@ export function useSubscription() {
       setLoading(true);
       setError(null);
       const data = await subscriptionService.getStatus();
-      // HARD CODED: Override to always return standard tier
-      setStatus({
-        ...data,
-        plan: 'standard' as const,
-        aiUsageLimit: 20,
-        aiUsageRemaining: data.aiUsageLimit !== null 
-          ? Math.max(0, 20 - (data.aiDailyUsage || 0))
-          : 20 - (data.aiDailyUsage || 0),
-      });
+      setStatus(data);
     } catch (err: any) {
       console.error('Failed to load subscription status:', err);
       setError(err.message || 'Failed to load subscription');
@@ -32,9 +24,8 @@ export function useSubscription() {
     }
   };
 
-  // HARD CODED: Everyone is on standard tier
-  const isFreePlan = false;
-  const hasAIAccess = true; // Standard tier has AI access
+  const isFreePlan = status?.plan === 'free';
+  const hasAIAccess = status?.plan === 'standard' || status?.plan === 'pro';
 
   return {
     status,

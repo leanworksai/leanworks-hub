@@ -6000,6 +6000,54 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
     
     const aiData = await aiResponse.json();
     
+    // Increment AI usage credit (1 credit per task drafting)
+    try {
+      const sharedPool = await getSharedPool();
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Get current usage and plan
+      const userResult = await sharedPool.query(`
+        SELECT subscription_plan, ai_daily_usage, ai_usage_reset_date, trial_ends_at, stripe_subscription_id
+        FROM users WHERE email = $1
+      `, [userEmail]);
+      
+      if (userResult.rows.length > 0) {
+        const user = userResult.rows[0];
+        let plan = user.subscription_plan || 'free';
+        let currentUsage = user.ai_daily_usage || 0;
+        
+        // Reset if new day
+        if (user.ai_usage_reset_date !== today) {
+          currentUsage = 0;
+        }
+        
+        // Check limits
+        let limit: number | null = null;
+        if (plan === 'free') {
+          limit = 10; // 10 credits per day for free plan
+        } else if (plan === 'standard') {
+          limit = 30; // 30 credits per day for standard plan
+        }
+        // Pro is unlimited
+        
+        if (limit === null || currentUsage < limit) {
+          // Increment usage
+          await sharedPool.query(`
+            UPDATE users 
+            SET ai_daily_usage = CASE 
+              WHEN ai_usage_reset_date = $1 THEN ai_daily_usage + 1 
+              ELSE 1 
+            END,
+            ai_usage_reset_date = $1
+            WHERE email = $2
+          `, [today, userEmail]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to increment AI usage for task generation:', error);
+      // Don't fail the request if usage tracking fails
+    }
+    
     // Return the response from the AI service
     res.json(aiData);
   } catch (error) {
@@ -6226,11 +6274,18 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       ? Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
       : 0;
     
-    // HARD CODED: Everyone is on standard tier
-    const plan = 'standard';
+    // Get actual plan from database
+    const plan = user.subscription_plan || 'free';
     
-    // Calculate AI usage limits based on plan (standard = 20 per day)
-    const aiUsageLimit: number = 20; // 20 per day for standard plan
+    // Calculate AI usage limits based on plan
+    let aiUsageLimit: number | null = null;
+    if (plan === 'standard') {
+      aiUsageLimit = 30; // 30 credits per day for standard plan
+    } else if (plan === 'pro') {
+      aiUsageLimit = null; // Unlimited for pro plan
+    } else {
+      aiUsageLimit = 10; // 10 credits per day for free plan
+    }
     
     res.json({
       plan,
@@ -6238,7 +6293,7 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
       stripeSubscriptionId: user.stripe_subscription_id,
       aiDailyUsage,
       aiUsageLimit,
-      aiUsageRemaining: Math.max(0, aiUsageLimit - aiDailyUsage),
+      aiUsageRemaining: aiUsageLimit !== null ? Math.max(0, aiUsageLimit - aiDailyUsage) : null,
       trialEndsAt: user.trial_ends_at,
       isTrialActive,
       trialDaysRemaining,
@@ -6280,7 +6335,26 @@ app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
     );
     
     if (userResult.rows[0]?.stripe_customer_id) {
-      customerId = userResult.rows[0].stripe_customer_id;
+      // Verify customer exists in Stripe, create new one if it doesn't
+      try {
+        await stripeClient.customers.retrieve(userResult.rows[0].stripe_customer_id);
+        customerId = userResult.rows[0].stripe_customer_id;
+      } catch (error: any) {
+        // Customer doesn't exist in Stripe, create a new one
+        console.log(`⚠️ Customer ${userResult.rows[0].stripe_customer_id} not found in Stripe, creating new customer for ${userEmail}`);
+        const customer = await stripeClient.customers.create({
+          email: userEmail,
+          name: `${userResult.rows[0]?.first_name || ''} ${userResult.rows[0]?.last_name || ''}`.trim() || undefined,
+          metadata: { userEmail },
+        });
+        customerId = customer.id;
+        
+        // Save new customer ID
+        await sharedPool.query(
+          'UPDATE users SET stripe_customer_id = $1 WHERE email = $2',
+          [customerId, userEmail]
+        );
+      }
     } else {
       const customer = await stripeClient.customers.create({
         email: userEmail,
@@ -6346,24 +6420,14 @@ app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
   }
 });
 
-// Switch subscription plan (upgrade or downgrade between paid plans)
+// Switch subscription plan (upgrade or downgrade between plans)
 app.post('/api/subscription/switch', authenticateUser, async (req, res) => {
   try {
-    const stripeClient = await getStripe();
-    if (!stripeClient) {
-      return res.status(503).json({ error: 'Payment system not configured' });
-    }
-    
     const userEmail = (req as any).userEmail;
     const { plan } = req.body;
     
-    if (!plan || !['standard', 'pro'].includes(plan)) {
-      return res.status(400).json({ error: 'Invalid plan. Must be "standard" or "pro"' });
-    }
-    
-    const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
-    if (!priceId) {
-      return res.status(400).json({ error: `Price ID not configured for ${plan} plan` });
+    if (!plan || !['free', 'standard', 'pro'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid plan. Must be "free", "standard", or "pro"' });
     }
     
     const sharedPool = await getSharedPool();
@@ -6372,8 +6436,8 @@ app.post('/api/subscription/switch', authenticateUser, async (req, res) => {
       [userEmail]
     );
     
-    if (!userResult.rows[0]?.stripe_subscription_id) {
-      return res.status(400).json({ error: 'No active subscription found. Please subscribe first.' });
+    if (!userResult.rows[0]) {
+      return res.status(404).json({ error: 'User not found' });
     }
     
     const currentPlan = userResult.rows[0].subscription_plan;
@@ -6381,32 +6445,162 @@ app.post('/api/subscription/switch', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: `You are already on the ${plan} plan` });
     }
     
-    // Get the subscription to find the current subscription item
-    const subscription = await stripeClient.subscriptions.retrieve(
-      userResult.rows[0].stripe_subscription_id
-    );
+    const isSwitchingToFree = plan === 'free';
+    const isSwitchingFromFree = currentPlan === 'free';
+    const isSwitchingToPaid = plan === 'standard' || plan === 'pro';
+    const isSwitchingBetweenPaid = (currentPlan === 'standard' || currentPlan === 'pro') && 
+                                    (plan === 'standard' || plan === 'pro');
     
-    if (!subscription.items.data[0]) {
-      return res.status(400).json({ error: 'Invalid subscription state' });
+    // If switching to a paid plan without an active subscription, redirect to checkout
+    if (isSwitchingToPaid && !userResult.rows[0].stripe_subscription_id) {
+      const stripeClient = await getStripe();
+      if (!stripeClient) {
+        return res.status(503).json({ error: 'Payment system not configured' });
+      }
+      
+      const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
+      if (!priceId) {
+        return res.status(400).json({ error: `Price ID not configured for ${plan} plan` });
+      }
+      
+      // Get or create Stripe customer
+      let customerId: string;
+      if (userResult.rows[0].stripe_customer_id) {
+        // Verify customer exists in Stripe, create new one if it doesn't
+        try {
+          await stripeClient.customers.retrieve(userResult.rows[0].stripe_customer_id);
+          customerId = userResult.rows[0].stripe_customer_id;
+        } catch (error: any) {
+          // Customer doesn't exist in Stripe, create a new one
+          console.log(`⚠️ Customer ${userResult.rows[0].stripe_customer_id} not found in Stripe, creating new customer for ${userEmail}`);
+          const customerResult = await sharedPool.query(
+            'SELECT first_name, last_name FROM users WHERE email = $1',
+            [userEmail]
+          );
+          const customer = await stripeClient.customers.create({
+            email: userEmail,
+            name: `${customerResult.rows[0]?.first_name || ''} ${customerResult.rows[0]?.last_name || ''}`.trim() || undefined,
+            metadata: { userEmail },
+          });
+          customerId = customer.id;
+          
+          // Save new customer ID
+          await sharedPool.query(
+            'UPDATE users SET stripe_customer_id = $1 WHERE email = $2',
+            [customerId, userEmail]
+          );
+        }
+      } else {
+        const customerResult = await sharedPool.query(
+          'SELECT first_name, last_name FROM users WHERE email = $1',
+          [userEmail]
+        );
+        const customer = await stripeClient.customers.create({
+          email: userEmail,
+          name: `${customerResult.rows[0]?.first_name || ''} ${customerResult.rows[0]?.last_name || ''}`.trim() || undefined,
+          metadata: { userEmail },
+        });
+        customerId = customer.id;
+        
+        // Save customer ID
+        await sharedPool.query(
+          'UPDATE users SET stripe_customer_id = $1 WHERE email = $2',
+          [customerId, userEmail]
+        );
+      }
+      
+      // Create checkout session
+      const session = await stripeClient.checkout.sessions.create({
+        customer: customerId,
+        mode: 'subscription',
+        line_items: [{ price: priceId, quantity: 1 }],
+        success_url: `${req.headers.origin}/subscription?success=true`,
+        cancel_url: `${req.headers.origin}/subscription?canceled=true`,
+        metadata: { userEmail, plan },
+      });
+      
+      // Return checkout URL instead of switching directly
+      return res.json({ 
+        checkoutUrl: session.url,
+        requiresCheckout: true,
+        message: 'Please complete checkout to switch to this plan'
+      });
     }
     
-    // Update the subscription with the new price
-    const updatedSubscription = await stripeClient.subscriptions.update(
-      userResult.rows[0].stripe_subscription_id,
-      {
-        items: [{
-          id: subscription.items.data[0].id,
-          price: priceId,
-        }],
-        proration_behavior: 'create_prorations', // Prorate the change
+    // Switching between standard and pro requires an active Stripe subscription
+    if (isSwitchingBetweenPaid) {
+      if (!userResult.rows[0].stripe_subscription_id) {
+        return res.status(400).json({ 
+          error: 'An active Stripe subscription is required to switch between Standard and Pro plans. Please subscribe first.' 
+        });
       }
-    );
+      
+      const stripeClient = await getStripe();
+      if (!stripeClient) {
+        return res.status(503).json({ error: 'Payment system not configured' });
+      }
+      
+      const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
+      if (!priceId) {
+        return res.status(400).json({ error: `Price ID not configured for ${plan} plan` });
+      }
+      
+      try {
+        // Get the subscription to find the current subscription item
+        const subscription = await stripeClient.subscriptions.retrieve(
+          userResult.rows[0].stripe_subscription_id
+        );
+        
+        if (!subscription.items.data[0]) {
+          return res.status(400).json({ error: 'Invalid subscription state' });
+        }
+        
+        // Update the subscription with the new price
+        await stripeClient.subscriptions.update(
+          userResult.rows[0].stripe_subscription_id,
+          {
+            items: [{
+              id: subscription.items.data[0].id,
+              price: priceId,
+            }],
+            proration_behavior: 'create_prorations', // Prorate the change
+          }
+        );
+        console.log(`✅ Stripe subscription updated: ${userEmail} ${currentPlan} -> ${plan}`);
+      } catch (stripeError: any) {
+        console.error('Stripe subscription update error:', stripeError);
+        return res.status(500).json({ error: `Failed to update Stripe subscription: ${stripeError.message}` });
+      }
+    }
+    
+    // If switching to free, cancel Stripe subscription if it exists
+    if (isSwitchingToFree && userResult.rows[0].stripe_subscription_id) {
+      const stripeClient = await getStripe();
+      if (stripeClient) {
+        try {
+          await stripeClient.subscriptions.cancel(userResult.rows[0].stripe_subscription_id);
+          console.log(`✅ Stripe subscription canceled: ${userEmail}`);
+        } catch (stripeError: any) {
+          console.error('Stripe subscription cancellation error:', stripeError);
+          // Continue with database update even if Stripe cancel fails
+          console.log('⚠️ Continuing with database update despite Stripe cancellation error');
+        }
+      }
+    }
     
     // Update the database
-    await sharedPool.query(
-      'UPDATE users SET subscription_plan = $1 WHERE email = $2',
-      [plan, userEmail]
-    );
+    // If switching to free, also clear stripe_subscription_id
+    if (isSwitchingToFree) {
+      await sharedPool.query(
+        'UPDATE users SET subscription_plan = $1, stripe_subscription_id = NULL WHERE email = $2',
+        [plan, userEmail]
+      );
+    } else {
+      await sharedPool.query(
+        'UPDATE users SET subscription_plan = $1 WHERE email = $2',
+        [plan, userEmail]
+      );
+    }
     
     console.log(`✅ Plan switched: ${userEmail} ${currentPlan} -> ${plan}`);
     
@@ -6689,9 +6883,9 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
     
     let limit: number | null = null;
     if (plan === 'free') {
-      limit = 0; // No AI access on free plan
+      limit = 10; // 10 credits per day for free plan
     } else if (plan === 'standard') {
-      limit = 20;
+      limit = 30; // 30 credits per day for standard plan
     }
     // Pro is unlimited
     

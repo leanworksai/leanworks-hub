@@ -10,7 +10,7 @@ import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
-import { messagesService, imageUploadService, getAuthToken, type ChatMessage } from "@/services/api";
+import { messagesService, imageUploadService, subscriptionService, getAuthToken, type ChatMessage } from "@/services/api";
 import { useChatId, getDirectMessageChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -594,7 +594,22 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               name: selectedProject.name,
               description: selectedProject.description,
             } : undefined
-          ).then((aiResponse) => {
+          ).then(async (aiResponse) => {
+            // Increment AI usage credit (1 credit per response)
+            try {
+              await subscriptionService.incrementAiUsage();
+            } catch (error: any) {
+              console.error('Failed to increment AI usage:', error);
+              // If limit reached, show error but don't block the response
+              if (error.message?.includes('limit reached')) {
+                toast({
+                  title: "AI Usage Limit Reached",
+                  description: error.message || "You've reached your daily AI usage limit.",
+                  variant: "destructive",
+                });
+              }
+            }
+            
             // Create AI assistant message for the channel
             const aiChannelMessage: ChannelMessage = {
               id: `temp-ai-${Date.now()}`,

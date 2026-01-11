@@ -36,7 +36,7 @@ import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Check, ChevronsUpDown, Sparkles, Lock } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
-import { getAuthToken } from "@/services/api";
+import { getAuthToken, subscriptionService } from "@/services/api";
 import { cn } from "@/lib/utils";
 import { trackCreate, trackConversion, trackFirstFeatureUse, trackEvent, trackModal } from "@/lib/analytics";
 import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
@@ -349,6 +349,21 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
       const generatedTask = data.task;
       if (!generatedTask) {
         throw new Error('No task data returned from API');
+      }
+
+      // Increment AI usage credit (1 credit per task drafting)
+      try {
+        await subscriptionService.incrementAiUsage();
+      } catch (error: any) {
+        console.error('Failed to increment AI usage:', error);
+        // If limit reached, show error but don't block the task generation
+        if (error.message?.includes('limit reached')) {
+          toast({
+            title: "AI Usage Limit Reached",
+            description: error.message || "You've reached your daily AI usage limit.",
+            variant: "destructive",
+          });
+        }
       }
 
       // Fill form with generated data
