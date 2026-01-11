@@ -154,7 +154,7 @@ export function AIChat() {
       // Try to load from cache first
       const cached = loadCachedMessages(chatId);
       if (cached && cached.messages.length > 0) {
-        if (process.env.NODE_ENV === 'development') {
+        if (import.meta.env.DEV) {
           console.log('💾 [AIChat] Loading from cache', {
             chatId,
             messageCount: cached.messages.length,
@@ -190,7 +190,7 @@ export function AIChat() {
             timestamp: new Date(),
           }]);
         } else {
-          if (process.env.NODE_ENV === 'development') {
+          if (import.meta.env.DEV) {
             console.log('💾 [AIChat] Setting messages from cache', {
               count: cachedMsgs.length,
               isLoadingMessages,
@@ -280,14 +280,16 @@ export function AIChat() {
     citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } },  // Add citedContext parameter
     implicitContext?: string  // Add implicitContext parameter
   ): Promise<string> => {
-    // Debug: Log what we received (always log)
-    console.log('🔍 [AIChat] generateResponse called with:', {
-      hasCitedContext: !!citedContext,
-      citedContext,
-      hasSelectedTextPosition: !!(citedContext && (citedContext as any).selectedTextPosition),
-      selectedTextPreview: citedContext && (citedContext as any).selectedTextPosition?.text?.substring(0, 50),
-      implicitContext,
-    });
+    // Debug: Log what we received (dev only)
+    if (import.meta.env.DEV) {
+      console.log('🔍 [AIChat] generateResponse called with:', {
+        hasCitedContext: !!citedContext,
+        citedContext,
+        hasSelectedTextPosition: !!(citedContext && (citedContext as any).selectedTextPosition),
+        selectedTextPreview: citedContext && (citedContext as any).selectedTextPosition?.text?.substring(0, 50),
+        implicitContext,
+      });
+    }
     
     // Use chatId as sessionId for conversation continuity
     // This ensures the AI service maintains context within the conversation
@@ -304,18 +306,22 @@ export function AIChat() {
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {
-    // Debug: Log at the very start
-    console.log('🚀 [AIChat] handleSend called:', {
-      messageContent: messageContent.substring(0, 50),
-      hasSelectedTextPosition: !!selectedTextPosition,
-      selectedTextPosition,
-      selectedProjects: selectedProjects.length,
-      selectedTasks: selectedTasks.length,
-      selectedDocs: selectedDocs.length,
-    });
+    // Debug: Log at the very start (dev only)
+    if (import.meta.env.DEV) {
+      console.log('🚀 [AIChat] handleSend called:', {
+        messageContent: messageContent.substring(0, 50),
+        hasSelectedTextPosition: !!selectedTextPosition,
+        selectedTextPosition,
+        selectedProjects: selectedProjects.length,
+        selectedTasks: selectedTasks.length,
+        selectedDocs: selectedDocs.length,
+      });
+    }
     
     if ((!messageContent.trim() && imageUrls.length === 0) || !user || !chatId || isSendingMessage) {
-      console.log('⚠️ [AIChat] handleSend early return');
+      if (import.meta.env.DEV) {
+        console.log('⚠️ [AIChat] handleSend early return');
+      }
       return;
     }
 
@@ -364,14 +370,16 @@ export function AIChat() {
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
     
-    // Debug: Log selectedTextPosition when message is being sent (always log in dev)
-    console.log('📝 [AIChat] selectedTextPosition at message send:', {
-      selectedTextPosition,
-      hasSelectedTextPosition: !!selectedTextPosition,
-      hasText: !!selectedTextPosition?.text,
-      textLength: selectedTextPosition?.text?.length,
-      textPreview: selectedTextPosition?.text?.substring(0, 100),
-    });
+    // Debug: Log selectedTextPosition when message is being sent (dev only)
+    if (import.meta.env.DEV) {
+      console.log('📝 [AIChat] selectedTextPosition at message send:', {
+        selectedTextPosition,
+        hasSelectedTextPosition: !!selectedTextPosition,
+        hasText: !!selectedTextPosition?.text,
+        textLength: selectedTextPosition?.text?.length,
+        textPreview: selectedTextPosition?.text?.substring(0, 100),
+      });
+    }
     
     // Convert selectedTextPosition to selectedTexts format for message display
     // Show only preview in UI (truncate to 100 chars), but keep full text for API
@@ -392,27 +400,25 @@ export function AIChat() {
       selectedTextPosition: selectedTextPosition || undefined,
     } : undefined;
 
-    // Debug logging for contexts
-    if (process.env.NODE_ENV === 'development') {
-      if (citedContext) {
-        console.log('📋 [AIChat] Building citedContext:', {
-          projects: citedContext.projects?.length || 0,
-          tasks: citedContext.tasks?.length || 0,
-          docs: citedContext.docs?.length || 0,
-          selectedTexts: citedContext.selectedTexts?.length || 0,
-          hasSelectedText: !!citedContext.selectedTextPosition?.text,
-        });
-      }
+    // Debug logging for contexts (dev only)
+    if (import.meta.env.DEV && citedContext) {
+      console.log('📋 [AIChat] Building citedContext:', {
+        projects: citedContext.projects?.length || 0,
+        tasks: citedContext.tasks?.length || 0,
+        docs: citedContext.docs?.length || 0,
+        selectedTexts: citedContext.selectedTexts?.length || 0,
+        hasSelectedText: !!citedContext.selectedTextPosition?.text,
+      });
     }
 
     // Build implicit context from current page
     let implicitContext: string | undefined = undefined;
     if (contextRef && contextType) {
       implicitContext = `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})`;
-      if (process.env.NODE_ENV === 'development') {
+      if (import.meta.env.DEV) {
         console.log('📌 [AIChat] Capturing implicit context:', { contextType, contextRef, implicitContext });
       }
-    } else if (process.env.NODE_ENV === 'development') {
+    } else if (import.meta.env.DEV) {
       console.log('⚠️ [AIChat] No implicit context available:', { contextRef, contextType });
     }
 
@@ -477,16 +483,18 @@ export function AIChat() {
       // Capture selectedTextPosition early to avoid any timing issues
       const currentSelectedTextPosition = selectedTextPosition;
       
-      // Debug: Log selectedTextPosition before building context (always log)
-      console.log('🔍 [AIChat] Before building citedContextForAPI:', {
-        selectedTextPosition: currentSelectedTextPosition,
-        selectedTextPositionFromContext: selectedTextPosition,
-        selectedProjects: selectedProjects.length,
-        selectedTasks: selectedTasks.length,
-        selectedDocs: selectedDocs.length,
-        hasText: !!currentSelectedTextPosition?.text,
-        textPreview: currentSelectedTextPosition?.text?.substring(0, 50),
-      });
+      // Debug: Log selectedTextPosition before building context (dev only)
+      if (import.meta.env.DEV) {
+        console.log('🔍 [AIChat] Before building citedContextForAPI:', {
+          selectedTextPosition: currentSelectedTextPosition,
+          selectedTextPositionFromContext: selectedTextPosition,
+          selectedProjects: selectedProjects.length,
+          selectedTasks: selectedTasks.length,
+          selectedDocs: selectedDocs.length,
+          hasText: !!currentSelectedTextPosition?.text,
+          textPreview: currentSelectedTextPosition?.text?.substring(0, 50),
+        });
+      }
       
       const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!currentSelectedTextPosition;
 
@@ -513,22 +521,24 @@ export function AIChat() {
           selectedTextPosition: selectedTextPosForAPI,
         } : undefined;
         
-        // Debug: Log what we're about to pass (always log)
-        console.log('🔍 [AIChat] About to call generateResponse with:', {
-          hadSelections,
-          shouldCreateContext,
-          hasSelectedTextWithText,
-          citedContextForAPI,
-          willPassContext: !!citedContextForAPI,
-          selectedTextPosForAPI: selectedTextPosForAPI ? {
-            hasText: !!selectedTextPosForAPI.text,
-            docId: selectedTextPosForAPI.docId,
-            textPreview: selectedTextPosForAPI.text?.substring(0, 50),
-          } : null,
-        });
+        // Debug: Log what we're about to pass (dev only)
+        if (import.meta.env.DEV) {
+          console.log('🔍 [AIChat] About to call generateResponse with:', {
+            hadSelections,
+            shouldCreateContext,
+            hasSelectedTextWithText,
+            citedContextForAPI,
+            willPassContext: !!citedContextForAPI,
+            selectedTextPosForAPI: selectedTextPosForAPI ? {
+              hasText: !!selectedTextPosForAPI.text,
+              docId: selectedTextPosForAPI.docId,
+              textPreview: selectedTextPosForAPI.text?.substring(0, 50),
+            } : null,
+          });
+        }
 
-        // Debug logging
-        if (import.meta.env.DEV || process.env.NODE_ENV === 'development') {
+        // Debug logging (dev only)
+        if (import.meta.env.DEV) {
           console.log('🔍 [AIChat] Building citedContextForAPI:', {
             hadSelections,
             hasProjects: selectedProjects.length > 0,
@@ -567,13 +577,15 @@ export function AIChat() {
           }
         } : undefined);
 
-        // Debug: Log final context before calling generateResponse (always log)
-        console.log('🔍 [AIChat] Final context before generateResponse:', {
-          originalCitedContextForAPI: citedContextForAPI,
-          finalCitedContext,
-          hasSelectedText: !!(finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text),
-          selectedTextPreview: finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text?.substring(0, 50),
-        });
+        // Debug: Log final context before calling generateResponse (dev only)
+        if (import.meta.env.DEV) {
+          console.log('🔍 [AIChat] Final context before generateResponse:', {
+            originalCitedContextForAPI: citedContextForAPI,
+            finalCitedContext,
+            hasSelectedText: !!(finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text),
+            selectedTextPreview: finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text?.substring(0, 50),
+          });
+        }
 
         // Pass only the current message - backend will load conversation from Firestore
         const response = await generateResponse(messageContent, chatId, finalCitedContext, implicitContext);

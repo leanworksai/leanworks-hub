@@ -678,8 +678,8 @@ export const messagesService = {
     // Build cited_context string if citedContext object is provided
     let cited_context: string | undefined = undefined;
     
-    // Debug: Log what we received
-    if (process.env.NODE_ENV === 'development') {
+    // Debug: Log what we received (dev only)
+    if (import.meta.env.DEV) {
       console.log('🔍 [API] Building cited_context from:', params.citedContext);
       console.log('🔍 [API] Full params:', {
         hasCitedContext: !!params.citedContext,
@@ -722,7 +722,7 @@ export const messagesService = {
 
         // Add selected text to cited_context string for display in messages
         const selectedTextPos = params.citedContext.selectedTextPosition as any;
-        if (process.env.NODE_ENV === 'development') {
+        if (import.meta.env.DEV) {
           console.log('🔍 [API] Checking selectedTextPosition:', {
             exists: !!selectedTextPos,
             hasText: !!(selectedTextPos?.text),
@@ -742,20 +742,20 @@ export const messagesService = {
           } else {
             contextParts.push(`- ${displayText}`);
           }
-          if (process.env.NODE_ENV === 'development') {
+          if (import.meta.env.DEV) {
             console.log('✅ [API] Added selected text to cited_context');
           }
-        } else if (process.env.NODE_ENV === 'development') {
+        } else if (import.meta.env.DEV) {
           console.warn('⚠️ [API] selectedTextPosition missing or has no text field');
         }
 
         // Always create cited_context if we have any context parts
         if (contextParts.length > 0) {
           cited_context = contextParts.join("\n");
-          if (process.env.NODE_ENV === 'development') {
+          if (import.meta.env.DEV) {
             console.log('✅ [API] Built cited_context:', cited_context.substring(0, 200) + (cited_context.length > 200 ? '...' : ''));
           }
-        } else if (process.env.NODE_ENV === 'development') {
+        } else if (import.meta.env.DEV) {
           console.warn('⚠️ [API] No context parts found, cited_context will be undefined');
         }
       }
@@ -778,7 +778,7 @@ export const messagesService = {
         contextParts.push(`- ${displayText}`);
       }
       cited_context = contextParts.join("\n");
-      if (process.env.NODE_ENV === 'development') {
+      if (import.meta.env.DEV) {
         console.log('✅ [API] Created cited_context from selected text only (fallback)');
       }
     }
@@ -818,8 +818,8 @@ export const messagesService = {
       }
     }
 
-    // Log the payload being sent to the ask API (development only)
-    if (process.env.NODE_ENV === 'development') {
+    // Log the payload being sent to the ask API (dev only)
+    if (import.meta.env.DEV) {
       console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
       console.log('📤 Ask API URL:', aiServiceUrl);
       console.log('📋 Cited Context (string):', cited_context || '(none)');
