@@ -10,7 +10,7 @@ export interface DocFile {
 export interface Doc {
   id: string;
   title: string;
-  content: string; // Rich text content (HTML)
+  content: string; // TipTap JSON document format (stringified JSON)
   ownerEmail: string;
   projectId?: string | null;
   teamId?: string | null;

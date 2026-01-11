@@ -533,6 +533,7 @@ export interface ChatMessage {
     projects?: any[];
     tasks?: any[];
   };
+  implicitContext?: string;
 }
 
 export type MessageListener = (messages: ChatMessage[]) => void;
@@ -568,7 +569,11 @@ export const messagesService = {
       projects?: any[];
       tasks?: any[];
       teams?: any[];
+      docs?: any[];
+      selectedTexts?: Array<{ id: string; text: string; docId?: string }>;
+      selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string };
     };
+    implicitContext?: string;
   }): Promise<ChatMessage> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/messages` : `${API_BASE}/messages`;
     const response = await authenticatedFetch(url, {
@@ -609,7 +614,7 @@ export const messagesService = {
     chatId: string;
     message: string;  // Just the current message
     sessionId?: string;
-    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number } } | string;  // Add citedContext parameter
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } } | string;  // Add citedContext parameter
     implicitContext?: string;  // Add implicitContext parameter
   }): Promise<{ response: string; content: string }> {
     const userEmail = auth?.currentUser?.email;
@@ -672,6 +677,18 @@ export const messagesService = {
 
     // Build cited_context string if citedContext object is provided
     let cited_context: string | undefined = undefined;
+    
+    // Debug: Log what we received (dev only)
+    if (import.meta.env.DEV) {
+      console.log('🔍 [API] Building cited_context from:', params.citedContext);
+      console.log('🔍 [API] Full params:', {
+        hasCitedContext: !!params.citedContext,
+        citedContextType: typeof params.citedContext,
+        hasSelectedTextPosition: !!(params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).selectedTextPosition),
+        implicitContext: params.implicitContext,
+      });
+    }
+    
     if (params.citedContext) {
       if (typeof params.citedContext === 'string') {
         cited_context = params.citedContext;
@@ -703,12 +720,66 @@ export const messagesService = {
           });
         }
 
-        // Note: selectedTextPosition is sent separately in requestPayload.selected_text_position
-        // Backend/AI service will fetch the document and extract text at those positions
+        // Add selected text to cited_context string for display in messages
+        const selectedTextPos = params.citedContext.selectedTextPosition as any;
+        if (import.meta.env.DEV) {
+          console.log('🔍 [API] Checking selectedTextPosition:', {
+            exists: !!selectedTextPos,
+            hasText: !!(selectedTextPos?.text),
+            textLength: selectedTextPos?.text?.length,
+            docId: selectedTextPos?.docId,
+            fullObject: selectedTextPos,
+          });
+        }
+        
+        if (selectedTextPos && selectedTextPos.text) {
+          const selectedText = selectedTextPos.text;
+          contextParts.push("Selected Text:");
+          // Truncate if too long for display (keep full text in selected_text field)
+          const displayText = selectedText.length > 200 ? selectedText.substring(0, 200) + '...' : selectedText;
+          if (selectedTextPos.docId) {
+            contextParts.push(`- ${displayText} (ID: ${selectedTextPos.docId})`);
+          } else {
+            contextParts.push(`- ${displayText}`);
+          }
+          if (import.meta.env.DEV) {
+            console.log('✅ [API] Added selected text to cited_context');
+          }
+        } else if (import.meta.env.DEV) {
+          console.warn('⚠️ [API] selectedTextPosition missing or has no text field');
+        }
 
+        // Always create cited_context if we have any context parts
         if (contextParts.length > 0) {
           cited_context = contextParts.join("\n");
+          if (import.meta.env.DEV) {
+            console.log('✅ [API] Built cited_context:', cited_context.substring(0, 200) + (cited_context.length > 200 ? '...' : ''));
+          }
+        } else if (import.meta.env.DEV) {
+          console.warn('⚠️ [API] No context parts found, cited_context will be undefined');
         }
+      }
+    }
+
+    // If we have selectedTextPosition but no cited_context string yet, create one
+    // This handles the case where only selected text is present (no projects/tasks/docs)
+    // OR where citedContext was undefined but selectedTextPosition exists
+    const selectedTextPos = params.citedContext && typeof params.citedContext === 'object' 
+      ? (params.citedContext as any).selectedTextPosition 
+      : undefined;
+      
+    if (!cited_context && selectedTextPos && selectedTextPos.text) {
+      const contextParts: string[] = [];
+      contextParts.push("Selected Text:");
+      const displayText = selectedTextPos.text.length > 200 ? selectedTextPos.text.substring(0, 200) + '...' : selectedTextPos.text;
+      if (selectedTextPos.docId) {
+        contextParts.push(`- ${displayText} (ID: ${selectedTextPos.docId})`);
+      } else {
+        contextParts.push(`- ${displayText}`);
+      }
+      cited_context = contextParts.join("\n");
+      if (import.meta.env.DEV) {
+        console.log('✅ [API] Created cited_context from selected text only (fallback)');
       }
     }
 
@@ -727,18 +798,42 @@ export const messagesService = {
       message: params.message,
       chatId: params.chatId,
       session_id: params.sessionId,
-      cited_context: cited_context,  // Add cited_context to payload
     };
 
-    // Add selected text position if available (for backend to fetch doc content)
-    if (params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).selectedTextPosition) {
-      requestPayload.selected_text_position = (params.citedContext as any).selectedTextPosition;
+    // Always include cited_context in payload (even if undefined, the API should handle it)
+    if (cited_context) {
+      requestPayload.cited_context = cited_context;
     }
 
-    // Log the payload being sent to the ask API (development only)
-    if (process.env.NODE_ENV === 'development') {
+    // Add selected text if available (send actual text instead of positions)
+    if (params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).selectedTextPosition) {
+      const selectedTextPos = (params.citedContext as any).selectedTextPosition;
+      // Send the actual selected text if available
+      if (selectedTextPos.text) {
+        requestPayload.selected_text = selectedTextPos.text;
+        // Also include docId for reference if needed
+        if (selectedTextPos.docId) {
+          requestPayload.selected_text_doc_id = selectedTextPos.docId;
+        }
+      }
+    }
+
+    // Log the payload being sent to the ask API (dev only)
+    if (import.meta.env.DEV) {
       console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
       console.log('📤 Ask API URL:', aiServiceUrl);
+      console.log('📋 Cited Context (string):', cited_context || '(none)');
+      if (requestPayload.selected_text) {
+        console.log('📝 Selected Text:', requestPayload.selected_text.substring(0, 100) + (requestPayload.selected_text.length > 100 ? '...' : ''));
+      }
+      if (params.citedContext) {
+        console.log('🔍 Original citedContext param:', {
+          hasProjects: !!(params.citedContext as any).projects?.length,
+          hasTasks: !!(params.citedContext as any).tasks?.length,
+          hasDocs: !!(params.citedContext as any).docs?.length,
+          hasSelectedTextPosition: !!(params.citedContext as any).selectedTextPosition,
+        });
+      }
     }
 
     const response = await fetch(aiServiceUrl, {
@@ -899,6 +994,7 @@ export const messagesService = {
                 imageUrls: data.imageUrls || null,
                 likes: Array.isArray(data.likes) ? data.likes : [],
                 citedContext: data.citedContext || null,
+                implicitContext: data.implicitContext || null,
               } as ChatMessage;
             });
 
@@ -2460,7 +2556,7 @@ export const subscriptionService = {
     return response.json();
   },
 
-  async switchPlan(plan: 'standard' | 'pro'): Promise<{ success: boolean; plan: string }> {
+  async switchPlan(plan: 'free' | 'standard' | 'pro'): Promise<{ success: boolean; plan: string; checkoutUrl?: string; requiresCheckout?: boolean }> {
     const url = import.meta.env.DEV 
       ? `${API_BASE}/api/subscription/switch` 
       : `${API_BASE}/subscription/switch`;

@@ -61,10 +61,24 @@ async function isProjectMember(orgId: string, userEmail: string, projectId: stri
 
 /**
  * Check if user is on free plan
- * HARD CODED: Always returns false (everyone is on standard tier)
  */
 async function isFreePlanUser(userEmail: string): Promise<boolean> {
-  return false; // Everyone is on standard tier
+  try {
+    const sharedPool = await getSharedPool();
+    const result = await sharedPool.query(
+      'SELECT subscription_plan FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    
+    if (result.rows.length === 0) {
+      return true; // Default to free if user not found
+    }
+    
+    return result.rows[0].subscription_plan === 'free';
+  } catch (error) {
+    console.error('Error checking user plan:', error);
+    return true; // Default to free on error
+  }
 }
 
 /**
@@ -182,7 +196,7 @@ export function setupMessageEndpoints(
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
-      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls } = req.body;
+      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls, implicitContext } = req.body;
 
       if (!chatId || !content) {
         return res.status(400).json({ error: 'chatId and content are required' });
@@ -251,6 +265,11 @@ export function setupMessageEndpoints(
       // Add citedContext if provided
       if (citedContext) {
         messageData.citedContext = citedContext;
+      }
+
+      // Add implicitContext if provided
+      if (implicitContext) {
+        messageData.implicitContext = implicitContext;
       }
 
       // Add imageUrls if provided

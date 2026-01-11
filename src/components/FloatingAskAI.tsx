@@ -72,7 +72,13 @@ export function FloatingAskAI({ visible, position, onAskAI, selectionPosition, s
       }}
     >
       <Button
-        onClick={() => onAskAI(selectionPosition)}
+        onClick={() => {
+          // Pass position with text included
+          onAskAI({
+            ...selectionPosition,
+            text: selectedText,
+          });
+        }}
         size="sm"
         className={cn(
           "h-9 px-3 gap-2 shadow-lg",

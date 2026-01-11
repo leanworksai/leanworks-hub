@@ -6,6 +6,7 @@ export interface CitedContext {
   projects?: Project[];
   tasks?: Task[];
   docs?: Doc[];
+  selectedTexts?: Array<{ id: string; text: string; docId?: string }>;
 }
 
 export interface Message {
@@ -17,6 +18,7 @@ export interface Message {
   imageUrls?: string[];
   likes?: string[];
   citedContext?: CitedContext;
+  implicitContext?: string;
   memberName?: string;
   memberAvatar?: string;
 }
@@ -33,6 +35,7 @@ export interface ChannelMessage {
   imageUrls?: string[];
   likes?: string[];
   citedContext?: CitedContext;
+  implicitContext?: string;
 }
 
 export interface TeamMember {

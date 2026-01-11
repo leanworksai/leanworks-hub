@@ -1,0 +1,63 @@
+/* Editor-specific CSS for dynamic word wrapping */
+
+/* Disable hyphenation globally - rely on normal word wrapping */
+.ProseMirror {
+  hyphens: none;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  font-size: clamp(14px, 1.2vw + 12px, 16px);
+  line-height: 1.5;
+}
+
+/* Paragraphs should wrap normally without hard breaks */
+.ProseMirror p {
+  hyphens: none;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+  font-size: inherit;
+}
+
+/* List items should wrap normally */
+.ProseMirror li {
+  hyphens: none;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* Long string handling for editor content - links */
+.ProseMirror a {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  hyphens: none;
+}
+
+/* Long string handling for inline code */
+.ProseMirror code:not(pre code) {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  hyphens: none;
+}
+
+/* Inline code blocks in paragraphs and lists */
+.ProseMirror p code,
+.ProseMirror li code {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  hyphens: none;
+}
+
+/* Responsive images in editor */
+.ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Code blocks - allow horizontal scroll (don't break) */
+.ProseMirror pre {
+  overflow-x: auto;
+  white-space: pre;
+  hyphens: none;
+}

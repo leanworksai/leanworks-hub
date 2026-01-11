@@ -7,10 +7,12 @@ import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { Markdown } from 'tiptap-markdown';
 import { common, createLowlight } from 'lowlight';
 import { tableExtensions, handleTableDblClick } from '@/extensions/table';
 import '@/extensions/table/styles.css';
 import '@/components/code-highlight.css';
+import '@/components/editor.css';
 import { TableToolbar } from '@/components/editor/TableToolbar';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { marked } from 'marked';
@@ -18,6 +20,93 @@ import mermaid from 'mermaid';
 import { useTextSelection } from '@/hooks/useTextSelection';
 import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
 import { FloatingAskAI } from '@/components/FloatingAskAI';
+// Auto word wrap hook disabled - CSS handles wrapping naturally
+// import { useAutoWordWrap } from '@/hooks/useAutoWordWrap';
+import { 
+  detectMarkdownConversionNeeded, 
+  convertMarkdownToHtml,
+  shouldConvertMarkdownPaste,
+  shouldPreserveHtmlPaste 
+} from '@/utils/markdownConverter';
+
+// Re-export normalizeCodeBlocksForTipTap for use in this file
+// We'll define it locally to avoid circular dependencies
+// Uses DOMParser for reliable HTML parsing instead of regex
+function normalizeCodeBlocksForTipTap(html: string): string {
+  if (typeof document === 'undefined' || typeof DOMParser === 'undefined') {
+    // Fallback: return as-is if DOMParser is not available
+    return html;
+  }
+  
+  // Use DOMParser for reliable HTML parsing
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  
+  // Find all code blocks - use querySelectorAll to get all pre elements that contain code
+  const preElements = doc.querySelectorAll('pre');
+  
+  preElements.forEach((preElement) => {
+    // Find the code element inside this pre
+    const codeElement = preElement.querySelector('code');
+    if (!codeElement) return;
+    
+    // Extract language from class (marked uses "language-{lang}")
+    const classList = Array.from(codeElement.classList);
+    const languageClass = classList.find(cls => cls.startsWith('language-'));
+    
+    let language = 'plaintext';
+    if (languageClass) {
+      // Extract language name (remove "language-" prefix)
+      language = languageClass.replace(/^language-/, '');
+    }
+    
+    // CRITICAL: Use textContent to get the unescaped text content
+    // TipTap's CodeBlockLowlight expects plain text, not HTML-escaped content
+    // This preserves the actual characters (not HTML entities like &quot;)
+    const codeContent = codeElement.textContent || '';
+    
+    // Reconstruct the code block with clean structure
+    // This ensures TipTap will parse it as a single code block
+    preElement.innerHTML = '';
+    const newCodeElement = doc.createElement('code');
+    newCodeElement.className = `language-${language}`;
+    newCodeElement.textContent = codeContent; // Use textContent, not innerHTML
+    preElement.appendChild(newCodeElement);
+  });
+  
+  // Return the normalized HTML from the body
+  // Ensure code blocks are properly formatted as atomic units
+  const normalizedHtml = doc.body.innerHTML;
+  
+  // Double-check: verify all code blocks are properly structured
+  // This helps catch any issues before TipTap parses them
+  const verifyParser = new DOMParser();
+  const verifyDoc = verifyParser.parseFromString(normalizedHtml, 'text/html');
+  const verifyPreElements = verifyDoc.querySelectorAll('pre');
+  
+  verifyPreElements.forEach((preElement) => {
+    const codeElement = preElement.querySelector('code');
+    if (!codeElement) return;
+    
+    // Ensure code element is the only direct child
+    const directChildren = Array.from(preElement.childNodes).filter(
+      node => node.nodeType !== Node.TEXT_NODE || node.textContent?.trim()
+    );
+    
+    if (directChildren.length !== 1 || directChildren[0] !== codeElement) {
+      // Fix: ensure code is the only child
+      const codeContent = codeElement.textContent || '';
+      const language = codeElement.className.replace(/^language-/, '') || 'plaintext';
+      preElement.innerHTML = '';
+      const newCode = verifyDoc.createElement('code');
+      newCode.className = `language-${language}`;
+      newCode.textContent = codeContent;
+      preElement.appendChild(newCode);
+    }
+  });
+  
+  return verifyDoc.body.innerHTML;
+}
 
 // Create lowlight instance with common languages
 const lowlight = createLowlight(common);
@@ -242,68 +331,94 @@ function restoreMarkdownLineBreaks(text: string): string {
   return result;
 }
 
-// Helper function to convert markdown to HTML
+
+// Simplified markdown to HTML conversion (line break restoration removed)
+// The problematic restoreMarkdownLineBreaks function was causing conversion issues
 function convertMarkdownToHTML(markdown: string): string {
   try {
-    // Extract text content if it's wrapped in HTML, preserving line breaks
-    let textContent = markdown;
-    if (markdown.includes('<')) {
-      textContent = extractTextPreservingLineBreaks(markdown);
-    }
-    
-    // Check if the content appears to be flattened markdown (very few newlines but has markdown patterns)
-    // Use patterns that work even without line breaks
-    const hasMarkdownPatterns = /```[\s\S]*?```|#{1,6}\s+\S|[-*+]\s+\S|\d+\.\s+\S/.test(textContent);
-    const newlineCount = (textContent.match(/\n/g) || []).length;
-    const hasVeryFewNewlines = newlineCount < Math.max(5, textContent.length / 500);
-    const isLongContent = textContent.length > 200;
-    
-    if (hasMarkdownPatterns && hasVeryFewNewlines && isLongContent) {
-      console.log('[RichTextEditor] Restoring line breaks in flattened markdown');
-      textContent = restoreMarkdownLineBreaks(textContent);
-    }
-    
-    // Convert markdown to HTML with line break support
-    return marked.parse(textContent, {
-      breaks: true,  // Convert single newlines to <br>
-      gfm: true,     // GitHub Flavored Markdown
-    }) as string;
+    // Use the utility function which already handles code block normalization
+    return convertMarkdownToHtml(markdown);
   } catch (error) {
-    console.warn('Failed to convert markdown:', error);
     return markdown; // Return original if conversion fails
   }
 }
 
+/**
+ * Detects if content is TipTap JSON format (object or JSON string) vs HTML string
+ */
+function isJsonContent(content: string | object): boolean {
+  if (typeof content === 'object' && content !== null) {
+    // Already a JSON object
+    return content.hasOwnProperty('type') && (content as any).type === 'doc';
+  }
+  if (typeof content !== 'string') return false;
+  
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' && parsed.type === 'doc';
+  } catch {
+    return false; // Not valid JSON, treat as HTML
+  }
+}
+
+/**
+ * Normalizes content to the format TipTap expects
+ * - JSON objects: return as-is
+ * - JSON strings: parse to object
+ * - HTML strings: return as-is (TipTap will parse it)
+ */
+function normalizeContentForTipTap(content: string | object): string | object {
+  if (!content) {
+    return { type: 'doc', content: [{ type: 'paragraph' }] };
+  }
+  
+  if (typeof content === 'object' && content !== null) {
+    return content;
+  }
+  
+  if (typeof content === 'string') {
+    // Check if it's JSON string
+    if (isJsonContent(content)) {
+      try {
+        return JSON.parse(content);
+      } catch {
+        return content; // Fallback to string if parsing fails
+      }
+    }
+    // It's HTML, return as-is
+    return content;
+  }
+  
+  return content;
+}
+
 interface RichTextEditorProps {
-  content: string;
-  onChange: (content: string) => void;
+  content: string | object; // Can be HTML string (legacy) or TipTap JSON object/string
+  onChange: (content: object) => void; // Returns TipTap JSON object
   placeholder?: string;
-  title?: string;
-  onTitleChange?: (title: string) => void;
-  titlePlaceholder?: string;
   readOnly?: boolean;
   onFileUpload?: (file: File) => Promise<void>;
   docId?: string;
-  titleRightActions?: React.ReactNode;
 }
 
 export function RichTextEditor({ 
   content, 
   onChange, 
   placeholder = 'Start writing...',
-  title,
-  onTitleChange,
-  titlePlaceholder = 'Untitled',
   readOnly = false,
   onFileUpload,
   docId,
-  titleRightActions
 }: RichTextEditorProps) {
-  const initialContent = content || '<p></p>';
-  const contentRef = useRef<string>(initialContent);
+  // Normalize initial content - handle both JSON and HTML
+  const normalizedInitialContent = normalizeContentForTipTap(content || '<p></p>');
+  const initialContentString = typeof normalizedInitialContent === 'string' 
+    ? normalizedInitialContent 
+    : JSON.stringify(normalizedInitialContent);
+  
+  const contentRef = useRef<string>(initialContentString);
   const isUpdatingRef = useRef<boolean>(false);
   const editorInitializedRef = useRef<boolean>(false);
-  const lastContentPropRef = useRef<string>(initialContent);
+  const lastContentPropRef = useRef<string>(initialContentString);
   const isUndoRedoRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -317,17 +432,26 @@ export function RichTextEditor({
   );
   const { setSelectedTextPosition } = useSelectedTextContext();
   const [isUploading, setIsUploading] = useState(false);
-  const [isToolbarSticky, setIsToolbarSticky] = useState(false);
-  const [toolbarHeight, setToolbarHeight] = useState(0);
+  const [isScrolled, setIsScrolled] = useState(false);
   const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
   const mermaidInitialized = useRef(false);
   const renderedMermaidIds = useRef<Set<string>>(new Set());
   const mermaidRenderScheduled = useRef(false);
+  // Track whether content has been converted from markdown to prevent re-conversion
+  const contentAlreadyConvertedRef = useRef<boolean>(false);
 
   const baseToolbarClasses = 'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors duration-75';
   const activeToolbarClasses = '!bg-primary !text-primary-foreground hover:!bg-primary/90 shadow-sm !transition-none';
   const getButtonClasses = (isActive: boolean) =>
     cn('rounded-md', isActive ? activeToolbarClasses : baseToolbarClasses);
+
+  // Create refs for auto-wrap handlers (will be set after editor is created)
+  const autoWrapHandlersRef = useRef<{
+    handleInput: ((view: any, event: Event) => boolean) | null;
+    handleCompositionEnd: ((view: any, event: Event) => boolean) | null;
+    handleTouchEnd: ((view: any, event: Event) => boolean) | null;
+    handleBlur: ((view: any, event: Event) => boolean) | null;
+  }>({ handleInput: null, handleCompositionEnd: null, handleTouchEnd: null, handleBlur: null });
 
   const editor = useEditor({
     extensions: [
@@ -356,14 +480,15 @@ export function RichTextEditor({
           return [{ tag: 'p' }];
         },
         renderHTML({ HTMLAttributes }) {
-          return ['p', { ...HTMLAttributes, style: 'white-space: pre-wrap;' }, 0];
+          return ['p', { ...HTMLAttributes, style: 'white-space: normal; word-break: break-word; overflow-wrap: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box;' }, 0];
         },
       }),
       Underline,
       Link.configure({
         openOnClick: false,
         HTMLAttributes: {
-          class: 'text-primary underline',
+          class: 'text-primary underline break-all',
+          style: 'word-break: break-all; overflow-wrap: anywhere;',
         },
       }),
       TextAlign.configure({
@@ -373,46 +498,64 @@ export function RichTextEditor({
       ...tableExtensions,
       Color,
       TextStyle,
+      // Markdown extension for markdown copy/export support
+      Markdown.configure({
+        html: true,
+        transformPastedText: false,
+        transformCopiedText: false,
+      }),
     ],
-    content: initialContent,
+    content: normalizedInitialContent,
     editable: !readOnly,
     onUpdate: ({ editor }) => {
       // Only call onChange if we're not in the middle of a programmatic update
       if (!isUpdatingRef.current) {
-        const html = editor.getHTML();
-        contentRef.current = html;
+        // Use JSON format instead of HTML - this is TipTap's native format
+        // and avoids all HTML parsing issues
+        const json = editor.getJSON();
+        const jsonString = JSON.stringify(json);
+        contentRef.current = jsonString;
         
         if (isUndoRedoRef.current) {
           // During undo/redo, update lastContentPropRef to prevent useEffect from interfering
           // but still call onChange to keep parent state in sync
-          lastContentPropRef.current = html;
-          onChange(html);
+          lastContentPropRef.current = jsonString;
+          onChange(json);
           // Reset the flag after a short delay to allow undo/redo to complete
           setTimeout(() => {
             isUndoRedoRef.current = false;
           }, 0);
         } else {
           // Normal update - update refs and call onChange
-          lastContentPropRef.current = html;
-          onChange(html);
+          lastContentPropRef.current = jsonString;
+          onChange(json);
         }
       }
     },
     onCreate: ({ editor }) => {
       editorRef.current = editor; // Store editor in ref for useTextSelection hook
       editorInitializedRef.current = true;
-      const initialHtml = editor.getHTML();
-      contentRef.current = initialHtml;
-      // Initialize with the actual content prop, not the editor's initial HTML
-      const normalizedContent = content || '<p></p>';
-      lastContentPropRef.current = normalizedContent;
+      const initialJson = editor.getJSON();
+      const initialJsonString = JSON.stringify(initialJson);
+      contentRef.current = initialJsonString;
+      
+      // Initialize with the actual content prop
+      // Handle both JSON (new format) and HTML (legacy format) for backward compatibility
+      const contentToSet = normalizeContentForTipTap(content || '<p></p>');
+      const contentString = typeof contentToSet === 'string' 
+        ? contentToSet 
+        : JSON.stringify(contentToSet);
+      
+      lastContentPropRef.current = contentString;
+      
       // Always set content from prop if it's different (handles case where content loads after mount)
-      if (normalizedContent !== initialHtml) {
+      if (contentString !== initialJsonString) {
         // Use setTimeout to ensure editor is fully ready
         setTimeout(() => {
           if (!editor.isDestroyed) {
-            editor.commands.setContent(normalizedContent, false);
-            contentRef.current = normalizedContent;
+            // setContent can accept both HTML string and JSON object
+            editor.commands.setContent(contentToSet, false);
+            contentRef.current = contentString;
           }
         }, 0);
       }
@@ -420,7 +563,7 @@ export function RichTextEditor({
     editorProps: {
       attributes: {
         class: 'w-full focus:outline-none min-h-[300px] max-w-full overflow-x-hidden',
-        style: 'white-space: pre-wrap !important; margin: 0; word-wrap: break-word; overflow-wrap: break-word; word-break: break-word; max-width: 100%; width: 100%; box-sizing: border-box;',
+        style: 'white-space: normal !important; margin: 0; overflow-wrap: break-word; word-break: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box; overflow-x: hidden;',
       },
       transformPastedHTML(html) {
         // Extract text content from HTML to check for markdown
@@ -464,10 +607,13 @@ export function RichTextEditor({
                 gfm: true, // GitHub Flavored Markdown
               }) as string;
               
+              // Normalize code blocks for TipTap compatibility
+              const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
+              
               // Return converted HTML for TipTap to parse
-              return htmlFromMarkdown;
+              // TipTap will parse this with its default parseOptions
+              return normalizedHtml;
             } catch (error) {
-              console.warn('Failed to parse markdown:', error);
               // Fall back to original HTML if parsing fails
               return html;
             }
@@ -481,6 +627,76 @@ export function RichTextEditor({
       handleDOMEvents: {
         dblclick: (view, event) => {
           return handleTableDblClick(view, event);
+        },
+        copy: (view, event) => {
+          // Custom copy handler to copy as markdown (with HTML and plain text fallbacks)
+          const editor = editorRef.current;
+          if (!editor) return false;
+
+          try {
+            const { from, to } = editor.state.selection;
+            const hasSelection = from !== to;
+
+            let markdown: string;
+            let html: string;
+            let text: string;
+
+            if (hasSelection) {
+              // Copy selected content
+              // For selections, get the HTML and text first
+              html = editor.getHTML({ from, to });
+              text = editor.state.doc.textBetween(from, to);
+              
+              // Try to get markdown for the selection
+              // Note: tiptap-markdown may not support selection directly,
+              // so we'll use HTML-to-markdown conversion for selections if needed
+              if (editor.storage.markdown?.getMarkdown) {
+                try {
+                  // Create a temporary document with just the selection
+                  const selectedFragment = editor.state.doc.slice(from, to);
+                  // For now, use HTML and let the markdown extension handle it
+                  // or convert HTML to markdown using a simple approach
+                  markdown = text; // Fallback to plain text for selections
+                  // TODO: Could enhance this with HTML-to-markdown conversion
+                } catch (e) {
+                  markdown = text;
+                }
+              } else {
+                markdown = text;
+              }
+            } else {
+              // Copy entire document
+              html = editor.getHTML();
+              text = editor.getText();
+              
+              if (editor.storage.markdown?.getMarkdown) {
+                markdown = editor.storage.markdown.getMarkdown();
+              } else {
+                markdown = text;
+              }
+            }
+
+            // Set clipboard data with multiple formats
+            const clipboardData = (event as ClipboardEvent).clipboardData;
+            if (clipboardData) {
+              // Primary format: Markdown (for tools like GitHub, Notion, Slack, etc.)
+              clipboardData.setData('text/markdown', markdown);
+              
+              // Fallback: HTML (for rich text editors)
+              clipboardData.setData('text/html', html);
+              
+              // Fallback: Plain text (for plain text editors)
+              clipboardData.setData('text/plain', text);
+            }
+
+            // Return false to allow default copy behavior to also run
+            // This ensures the selection is still copied visually
+            return false;
+          } catch (error) {
+            console.error('Failed to copy as markdown:', error);
+            // Fall back to default copy behavior
+            return false;
+          }
         },
         paste: (view, event) => {
           // Handle plain text paste that might be markdown
@@ -515,16 +731,21 @@ export function RichTextEditor({
                   gfm: true,
                 }) as string;
 
+                // Normalize code blocks for TipTap compatibility
+                const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
+
                 // Insert the HTML content using editor instance
+                // Use insertContent with parseOptions to preserve code block structure
                 event.preventDefault();
                 event.stopPropagation();
                 
                 if (editorRef.current) {
-                  editorRef.current.chain().focus().insertContent(htmlFromMarkdown).run();
+                  // Insert content - TipTap will parse it with default options
+                  // The normalized HTML should have properly structured code blocks
+                  editorRef.current.chain().focus().insertContent(normalizedHtml).run();
                   return true; // Handled
                 }
               } catch (error) {
-                console.warn('Failed to parse markdown paste:', error);
                 // Fall through to default handler
               }
             }
@@ -532,6 +753,18 @@ export function RichTextEditor({
 
           // Let transformPastedHTML handle HTML-based markdown as fallback
           return false; // Use default paste handler
+        },
+        input: (view, event) => {
+          return autoWrapHandlersRef.current.handleInput?.(view, event) ?? false;
+        },
+        compositionend: (view, event) => {
+          return autoWrapHandlersRef.current.handleCompositionEnd?.(view, event) ?? false;
+        },
+        touchend: (view, event) => {
+          return autoWrapHandlersRef.current.handleTouchEnd?.(view, event) ?? false;
+        },
+        blur: (view, event) => {
+          return autoWrapHandlersRef.current.handleBlur?.(view, event) ?? false;
         },
         keydown: (view, event) => {
           // Handle undo/redo keyboard shortcuts
@@ -570,6 +803,21 @@ export function RichTextEditor({
       },
     },
   });
+
+  // Auto word wrap hook disabled - CSS handles wrapping naturally
+  // The auto-wrap was inserting hard breaks which caused issues on mobile
+  // With proper CSS (overflow-wrap: break-word, hyphens: none), browser handles wrapping
+  // const { handleInput, handleCompositionEnd, handleTouchEnd, handleBlur } = useAutoWordWrap(editor);
+  
+  // Disable auto-wrap handlers - return false to use default behavior
+  useEffect(() => {
+    autoWrapHandlersRef.current = { 
+      handleInput: () => false, 
+      handleCompositionEnd: () => false, 
+      handleTouchEnd: () => false, 
+      handleBlur: () => false 
+    };
+  }, []);
 
   // Initialize mermaid once
   useEffect(() => {
@@ -648,11 +896,9 @@ export function RichTextEditor({
             
             (pre as HTMLElement).style.display = 'none';
             pre.parentNode.insertBefore(wrapper, pre.nextSibling);
-            
-            console.log('[RichTextEditor] Rendered mermaid diagram');
           }
         } catch (error) {
-          console.warn('[RichTextEditor] Failed to render mermaid diagram:', error);
+          // Failed to render mermaid diagram
         }
       }
     }
@@ -665,6 +911,191 @@ export function RichTextEditor({
     if (!editor) return;
     editor.setEditable(!readOnly);
   }, [editor, readOnly]);
+
+  // Debug: Check word breaking styles on paragraphs and detect broken words
+  useEffect(() => {
+    if (!editorContainerRef.current || readOnly) return;
+    
+    const checkWordBreaking = () => {
+      const proseMirror = editorContainerRef.current?.querySelector('.ProseMirror');
+      if (!proseMirror) return;
+      
+      const paragraphs = proseMirror.querySelectorAll('p');
+      if (paragraphs.length === 0) return;
+      
+      // Check the first few paragraphs for word breaking styles
+      paragraphs.forEach((p, idx) => {
+        if (idx < 5) { // Check first 5 paragraphs
+          const htmlP = p as HTMLElement;
+          const computedStyle = window.getComputedStyle(htmlP);
+          const textContent = htmlP.textContent || '';
+          
+          // Detect broken words by checking if words appear split across lines
+          const words = textContent.split(/\s+/).filter(w => w.length > 0);
+          const potentiallyBrokenWords: string[] = [];
+          
+          words.forEach(word => {
+            if (word.length > 6) { // Check words longer than 6 characters
+              // Try to find the word in the DOM and check if it's broken
+              const textNodes: Text[] = [];
+              const walker = document.createTreeWalker(
+                htmlP,
+                NodeFilter.SHOW_TEXT,
+                null
+              );
+              
+              let node;
+              while (node = walker.nextNode()) {
+                if (node.textContent?.includes(word)) {
+                  textNodes.push(node as Text);
+                }
+              }
+              
+              // Check if word appears in multiple text nodes (might be broken)
+              if (textNodes.length > 1) {
+                potentiallyBrokenWords.push(word);
+              } else if (textNodes.length === 1) {
+                // Check if the word's bounding box suggests it's broken
+                const range = document.createRange();
+                try {
+                  const textNode = textNodes[0];
+                  const wordIndex = textNode.textContent?.indexOf(word);
+                  if (wordIndex !== undefined && wordIndex >= 0) {
+                    range.setStart(textNode, wordIndex);
+                    range.setEnd(textNode, wordIndex + word.length);
+                    const rects = range.getClientRects();
+                    // If word has multiple rects, it's likely broken across lines
+                    if (rects.length > 1) {
+                      potentiallyBrokenWords.push(word);
+                    }
+                  }
+                } catch (e) {
+                  // Ignore errors
+                }
+              }
+            }
+          });
+        }
+      });
+    };
+    
+    const timeoutId = setTimeout(checkWordBreaking, 500);
+    return () => clearTimeout(timeoutId);
+  }, [content, editor, readOnly]);
+
+  // Debug: Check for overflow issues at multiple levels
+  useEffect(() => {
+    if (!editorContainerRef.current || readOnly) return;
+    
+    const checkOverflow = () => {
+      // Check body and html for overflow
+      const body = document.body;
+      const html = document.documentElement;
+      const viewportWidth = window.innerWidth;
+      
+      if (body.scrollWidth > viewportWidth) {
+        // Find the widest element
+        const allElements = body.querySelectorAll('*');
+        let widestElement: { element: HTMLElement; width: number; tag: string; className: string } | null = null;
+        
+        allElements.forEach((el) => {
+          const htmlEl = el as HTMLElement;
+          const computedStyle = window.getComputedStyle(htmlEl);
+          // Skip elements that are meant to scroll or are hidden
+          if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden') return;
+          
+          const width = htmlEl.offsetWidth || htmlEl.scrollWidth;
+          if (width > viewportWidth && (!widestElement || width > widestElement.width)) {
+            widestElement = {
+              element: htmlEl,
+              width,
+              tag: el.tagName,
+              className: el.className || '',
+            };
+          }
+        });
+        
+        // Widest element found for debugging if needed
+      }
+      
+      // Check HTML overflow
+      
+      // Check the root container
+      const rootContainer = document.querySelector('.animate-fade-in.w-full');
+      if (rootContainer) {
+        const rootEl = rootContainer as HTMLElement;
+        // Check root container overflow
+      }
+      
+      // Check the editor wrapper in DocDetail
+      const docContainer = rootContainer?.querySelector('.border.border-border\\/30');
+      if (docContainer) {
+        const docEl = docContainer as HTMLElement;
+        // Check doc container overflow
+      }
+      
+      // Check our editor container
+      const container = editorContainerRef.current;
+      if (!container) return;
+      
+      // Check editor container overflow
+      
+      // Check EditorContent wrapper
+      const editorContent = container.querySelector('[data-testid="editor-content"], .ProseMirror');
+      if (editorContent) {
+        const contentEl = editorContent as HTMLElement;
+        // Check editor content overflow
+      }
+      
+      // Check ProseMirror element
+      const proseMirror = container.querySelector('.ProseMirror');
+      if (!proseMirror) return;
+      
+      const pmEl = proseMirror as HTMLElement;
+      // Check ProseMirror overflow
+      
+      // Find all potentially overflowing elements inside ProseMirror
+      const allElements = proseMirror.querySelectorAll('*');
+      const overflowingElements: Array<{element: Element; scrollWidth: number; offsetWidth: number; tag: string; className: string; text: string}> = [];
+      
+      allElements.forEach((el: Element) => {
+        const htmlEl = el as HTMLElement;
+        const computedStyle = window.getComputedStyle(htmlEl);
+        // Skip elements that are meant to scroll (code blocks, tables)
+        if (computedStyle.overflowX === 'auto' || computedStyle.overflowX === 'scroll') {
+          return;
+        }
+        
+        if (htmlEl.scrollWidth > htmlEl.offsetWidth && htmlEl.scrollWidth > container.offsetWidth) {
+          overflowingElements.push({
+            element: el,
+            scrollWidth: htmlEl.scrollWidth,
+            offsetWidth: htmlEl.offsetWidth,
+            tag: el.tagName,
+            className: el.className,
+            text: el.textContent?.substring(0, 100) || '',
+          });
+        }
+      });
+      
+      // Check for overflowing elements
+    };
+    
+    // Check multiple times to catch dynamic content
+    const timeoutId1 = setTimeout(checkOverflow, 100);
+    const timeoutId2 = setTimeout(checkOverflow, 500);
+    const timeoutId3 = setTimeout(checkOverflow, 1000);
+    
+    // Also check on window resize
+    window.addEventListener('resize', checkOverflow);
+    
+    return () => {
+      clearTimeout(timeoutId1);
+      clearTimeout(timeoutId2);
+      clearTimeout(timeoutId3);
+      window.removeEventListener('resize', checkOverflow);
+    };
+  }, [content, editor, readOnly]);
 
   // Prevent mobile browser toolbar from appearing above keyboard
   // Note: Unfortunately, mobile browsers show the toolbar for contentEditable elements
@@ -684,77 +1115,50 @@ export function RichTextEditor({
       return;
     }
 
-    let normalizedContent = content || '<p></p>';
+    // Normalize content - handle both JSON and HTML formats
+    let contentToSet: string | object = normalizeContentForTipTap(content || '<p></p>');
     
-    // Check if content is markdown and convert it (only when loading a new doc, not during editing)
-    // This handles existing docs that contain raw markdown
-    if (normalizedContent && normalizedContent !== '<p></p>') {
-      // Extract text content to check for markdown, preserving line breaks
-      let textToCheck = normalizedContent;
-      if (normalizedContent.includes('<')) {
-        textToCheck = extractTextPreservingLineBreaks(normalizedContent);
-      }
+    // For HTML strings, check if markdown conversion is needed (backward compatibility)
+    if (typeof contentToSet === 'string' && contentToSet !== '<p></p>') {
+      const conversionCheck = detectMarkdownConversionNeeded(contentToSet);
       
-      // Check if the TEXT content has markdown patterns
-      const hasMarkdown = isMarkdownContent(textToCheck);
-      
-      
-      if (hasMarkdown) {
-        // Check if content is ALREADY properly converted rich HTML
-        // Look for actual semantic formatting tags (not just wrapper <p> tags)
-        const richTagMatches = normalizedContent.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a)[^>]*>/gi) || [];
-        const hasProperFormatting = richTagMatches.length >= 5;
-        
-        // Check if the HTML structure matches markdown patterns (lists, code blocks, headers, etc.)
-        // Only consider it "converted" if the HTML actually contains the rendered versions
-        const hasCodeBlock = /<pre[^>]*>[\s\S]*?<code[^>]*>/i.test(normalizedContent);
-        const hasHtmlHeader = /<h[1-6][^>]*>[^<]+<\/h[1-6]>/i.test(normalizedContent);
-        const hasHtmlList = /<[uo]l[^>]*>[\s\S]*?<li[^>]*>/i.test(normalizedContent);
-        
-        // Check if markdown patterns exist but HTML equivalents don't
-        const markdownHasCodeBlock = /```[\s\S]*?```/.test(textToCheck);
-        const markdownHasHeader = /^#{1,6}\s+\S/m.test(textToCheck);
-        const markdownHasList = /^\s*[-*+]\s+\S|^\s*\d+\.\s+\S/m.test(textToCheck);
-        
-        // Content needs conversion if markdown patterns exist but HTML equivalents don't
-        const needsConversion = 
-          (markdownHasCodeBlock && !hasCodeBlock) ||
-          (markdownHasHeader && !hasHtmlHeader) ||
-          (markdownHasList && !hasHtmlList) ||
-          (!hasProperFormatting && hasMarkdown);
-        
-        
-        if (needsConversion) {
-          console.log('[RichTextEditor] Converting markdown content to HTML');
-          const convertedContent = convertMarkdownToHTML(normalizedContent);
-          normalizedContent = convertedContent;
-        }
+      if (conversionCheck.needsConversion) {
+        contentToSet = convertMarkdownToHtml(contentToSet);
+        contentAlreadyConvertedRef.current = true;
+      } else if (conversionCheck.reason === 'already_converted') {
+        // Mark as already converted to prevent re-conversion on subsequent renders
+        contentAlreadyConvertedRef.current = true;
       }
     }
     
+    // Convert to string for comparison
+    const contentString = typeof contentToSet === 'string' 
+      ? contentToSet 
+      : JSON.stringify(contentToSet);
+    
     // Skip if content prop hasn't changed from what we last processed
-    if (normalizedContent === lastContentPropRef.current) {
+    if (contentString === lastContentPropRef.current) {
       return;
     }
 
-    // Get current editor content to compare
-    const currentEditorContent = editor.getHTML();
+    // Get current editor content to compare (as JSON string)
+    const currentEditorJson = editor.getJSON();
+    const currentEditorContentString = JSON.stringify(currentEditorJson);
 
     // If the editor content already matches the new content prop, 
     // this change came from user typing (onChange was called), so don't update
     // Updating would reset cursor position and cause it to jump
-    if (currentEditorContent === normalizedContent || 
-        currentEditorContent.trim() === normalizedContent.trim()) {
+    if (currentEditorContentString === contentString) {
       // Just update the ref to prevent unnecessary updates
-      lastContentPropRef.current = normalizedContent;
-      contentRef.current = normalizedContent;
+      lastContentPropRef.current = contentString;
+      contentRef.current = contentString;
       return;
     }
 
     // Only update if content is significantly different (e.g., loading a new note from database)
     // This prevents cursor jumps during typing
     isUpdatingRef.current = true;
-    lastContentPropRef.current = normalizedContent;
+    lastContentPropRef.current = contentString;
 
     try {
       // Save selection state before updating content
@@ -764,8 +1168,9 @@ export function RichTextEditor({
       // Use a timeout to ensure editor is ready and to batch updates
       const timeoutId = setTimeout(() => {
         if (editor && !editor.isDestroyed) {
-          editor.commands.setContent(normalizedContent, false);
-          contentRef.current = normalizedContent;
+          // setContent accepts both HTML string and JSON object
+          editor.commands.setContent(contentToSet, false);
+          contentRef.current = contentString;
           
           // Try to restore selection if still valid
           // This helps preserve cursor position when content updates
@@ -792,42 +1197,39 @@ export function RichTextEditor({
     }
   }, [content, editor, renderMermaidDiagrams]);
 
-  // Handle toolbar sticky positioning on scroll
+  // Handle toolbar sticky positioning on scroll - show when scrolling down
   useEffect(() => {
     if (!toolbarRef.current || !toolbarContainerRef.current || readOnly) return;
 
     const updateStickyState = () => {
       const container = toolbarContainerRef.current;
       const toolbar = toolbarRef.current;
-      if (!container) return;
+      if (!container || !toolbar) return;
 
-      // Update toolbar height for spacer
-      if (toolbar) {
-        setToolbarHeight(toolbar.offsetHeight);
-      }
-
-      const rect = container.getBoundingClientRect();
       const headerHeight = 64; // Header is h-16 (64px)
-      const toolbarTop = rect.top;
+      const containerRect = container.getBoundingClientRect();
+      const toolbarTop = containerRect.top;
+      
+      // Make toolbar sticky when it reaches or passes the header
       const shouldBeSticky = toolbarTop <= headerHeight;
       
-      // If toolbar would scroll past the header, make it sticky
-      setIsToolbarSticky(shouldBeSticky);
+      setIsScrolled(shouldBeSticky);
 
-      // Update toolbar style
       if (shouldBeSticky) {
+        // Toolbar should be fixed at the very top of the screen
         setToolbarStyle({
           position: 'fixed',
-          top: '64px',
-          left: `${rect.left}px`,
-          width: `${rect.width}px`,
+          top: '0px',
+          left: `${containerRect.left}px`,
+          width: `${containerRect.width}px`,
+          zIndex: 50,
         });
       } else {
+        // Toolbar in normal flow
         setToolbarStyle({});
       }
     };
 
-    // Use requestAnimationFrame for smoother performance
     let ticking = false;
     const onScroll = () => {
       if (!ticking) {
@@ -873,49 +1275,25 @@ export function RichTextEditor({
     editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
   };
 
-  const handleAskAI = useCallback((position: { docId: string; startOffset: number; endOffset: number }) => {
+  const handleAskAI = useCallback((position: { docId: string; startOffset: number; endOffset: number; text?: string }) => {
     setSelectedTextPosition(position);
     // Open AI chat
     window.dispatchEvent(new CustomEvent('openAIChat'));
   }, [setSelectedTextPosition]);
 
   return (
-    <div className="border border-border/30 rounded-lg w-full max-w-full bg-background shadow-sm">
-      {/* Title Input */}
-      {onTitleChange && (
-        <div className="px-4 sm:px-6 pt-0 pb-3 overflow-x-hidden w-full max-w-full border-b border-border/20">
-          <div className="flex items-center gap-2 w-full">
-            <input
-              type="text"
-              placeholder={titlePlaceholder}
-              value={title || ''}
-              onChange={(e) => onTitleChange(e.target.value)}
-              readOnly={readOnly}
-              className={cn(
-                "flex-1 min-w-0 text-2xl sm:text-3xl md:text-4xl font-semibold leading-tight border-none bg-transparent outline-none placeholder:text-muted-foreground/50 break-words focus:placeholder:text-muted-foreground/30 transition-colors",
-                readOnly && "cursor-default"
-              )}
-            />
-            {titleRightActions && (
-              <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
-                {titleRightActions}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-      {/* Toolbar Container - used to detect scroll position */}
+    <div className="w-full max-w-full overflow-x-hidden">
+      {/* Toolbar Container */}
       {!readOnly && (
         <div ref={toolbarContainerRef}>
           {/* Spacer to prevent layout shift when toolbar becomes fixed */}
-          {isToolbarSticky && toolbarHeight > 0 && <div style={{ height: `${toolbarHeight}px` }} />}
-          {/* Toolbar - Fixed position when scrolling past header */}
+          {isScrolled && toolbarRef.current && (
+            <div style={{ height: `${toolbarRef.current.offsetHeight}px` }} />
+          )}
+          {/* Toolbar - Always visible, fixed position when scrolling down */}
           <div 
             ref={toolbarRef}
-            className={cn(
-              "z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm pl-3.5 pr-2.5 py-2.5 flex flex-wrap items-center gap-1 overflow-x-auto overflow-y-visible shadow-md transition-all",
-              isToolbarSticky && "fixed"
-            )}
+            className="z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm pl-3.5 pr-2.5 py-2.5 flex flex-wrap items-center gap-1 overflow-x-auto overflow-y-visible shadow-md transition-all"
             style={toolbarStyle}
           >
         {/* Text Formatting */}
@@ -1112,7 +1490,6 @@ export function RichTextEditor({
                 try {
                   await onFileUpload(file);
                 } catch (error) {
-                  console.error('File upload error:', error);
                   alert(error instanceof Error ? error.message : 'Failed to upload file');
                 } finally {
                   setIsUploading(false);
@@ -1141,11 +1518,11 @@ export function RichTextEditor({
       )}
 
       {/* Editor Content */}
-      <div ref={editorContainerRef} className="relative">
-        <EditorContent 
-          editor={editor} 
-          className="min-h-[500px] overflow-x-hidden px-4 sm:px-6 py-6 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:break-words [&_.ProseMirror_p]:overflow-wrap-anywhere [&_.ProseMirror]:break-words [&_.ProseMirror]:overflow-wrap-anywhere [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:overflow-wrap-anywhere [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_a]:overflow-wrap-anywhere [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:overflow-wrap-anywhere [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:overflow-wrap-anywhere [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60" 
-          style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+      <div ref={editorContainerRef} className="relative overflow-x-hidden min-w-0" style={{ maxWidth: '100%', width: '100%', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+        <EditorContent
+          editor={editor}
+          className="min-h-[500px] overflow-x-hidden px-2 sm:px-3 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-normal [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror]:overflow-x-hidden [&_.ProseMirror]:max-w-full [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:max-w-full [&_.ProseMirror_p]:box-border [&_.ProseMirror_p]:whitespace-normal [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:break-words [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:whitespace-normal [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60"
+          style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'none', overflowX: 'hidden', maxWidth: '100%', width: '100%' }}
         />
         <FloatingAskAI
           visible={hasSelection && selectedText.length > 0 && !readOnly && !!selectionPosition}
@@ -1158,4 +1535,7 @@ export function RichTextEditor({
     </div>
   );
 }
+
+// Default export for compatibility
+export default RichTextEditor;
 

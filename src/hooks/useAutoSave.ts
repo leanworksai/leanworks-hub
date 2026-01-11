@@ -1,9 +1,9 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useCreateDoc, useUpdateDoc } from './useDocs';
 import { saveDraft, removeDraft } from '@/services/draftService';
 import { queueSave, isOnline } from '@/services/offlineQueue';
 import { useAuth } from '@/contexts/AuthContext';
-import type { Doc } from '@/data/docsData';
+import type { Doc, DocFile } from '@/data/docsData';
 import { v4 as uuidv4 } from 'uuid';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'offline' | 'draft';
@@ -14,7 +14,7 @@ interface UseAutoSaveOptions {
   content: string;
   visibility: 'all_members' | 'specific_members';
   visibleToMembers: string[];
-  files: any[];
+  files: DocFile[];
   enabled?: boolean;
   debounceDelay?: number;
   onSaveSuccess?: (savedDocId: string, isManual: boolean) => void;
@@ -619,12 +619,15 @@ export function useAutoSave({
     };
   }, [isDirty, saveStatus, performSave]);
 
-  return {
+  // Return memoized object to prevent unnecessary re-renders
+  const autoSaveResult = useMemo(() => ({
     saveStatus,
     lastSavedAt,
     error,
     manualSave,
     isDirty,
-  };
+  }), [saveStatus, lastSavedAt, error, manualSave, isDirty]);
+
+  return autoSaveResult;
 }
 

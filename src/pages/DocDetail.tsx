@@ -1,28 +1,26 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useEffect } from "react";
+import { memo, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
-import { useDoc, useCreateDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
+import { useDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Share2, Download, File, MoreVertical, Paperclip, Trash2, Mail } from "lucide-react";
-import { v4 as uuidv4 } from "uuid";
+import { Download, File, Paperclip, Trash2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { ShareDocDialog } from "@/components/ShareDocDialog";
-import { fileUploadService } from "@/services/api";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
-import type { DocFile } from "@/data/docsData";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { trackEvent, trackView } from "@/lib/analytics";
 import { initOfflineQueue } from "@/services/offlineQueue";
 import { useScrollTracking } from "@/hooks/useScrollTracking";
 import { usePageContext } from "@/contexts/PageContext";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DocToolbar } from "@/components/DocToolbar";
+import { TitleWithToolbar } from "@/components/TitleWithToolbar";
+import { useDocDialogs } from "@/hooks/useDocDialogs";
+import { useDocFiles } from "@/hooks/useDocFiles";
+import { useDocForm } from "@/hooks/useDocForm";
+import { useManualSave } from "@/hooks/useManualSave";
+import { isDocOwner, formatFileSize, createDocActions } from "@/utils/docUtils";
 import {
   Dialog,
   DialogContent,
@@ -40,12 +38,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-export default function DocDetail() {
+export default memo(function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
   const navigate = useNavigate();
   const isNew = docId === "new";
   const { data: doc, isLoading } = useDoc(docId || "");
-  const createDoc = useCreateDoc();
   const updateDoc = useUpdateDoc();
   const deleteDoc = useDeleteDoc();
   const { toast } = useToast();
@@ -55,24 +52,21 @@ export default function DocDetail() {
   // Track scroll depth for engagement
   useScrollTracking(true);
 
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
-  const [visibility, setVisibility] = useState<'all_members' | 'specific_members'>('all_members');
-  const [visibleToMembers, setVisibleToMembers] = useState<Set<string>>(new Set());
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
-  const [shareViaEmailDialogOpen, setShareViaEmailDialogOpen] = useState(false);
-  const [filesDialogOpen, setFilesDialogOpen] = useState(false);
-  const [files, setFiles] = useState<DocFile[]>([]);
-  const [fileToDelete, setFileToDelete] = useState<DocFile | null>(null);
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  // Custom hooks for state management
+  const dialogs = useDocDialogs();
+  const { formState, updateField } = useDocForm({ initialDoc: doc, isNew });
+  const { files, handleFileUpload, handleRemoveFile, fileToDelete, setFileToDelete } = useDocFiles({
+    docId: docId || 'new',
+    initialFiles: doc?.metadata?.files || [],
+  });
   
   // Auto-save hook - always enabled since we're always in edit mode
   const autoSave = useAutoSave({
     docId: docId || 'new',
-    title,
-    content,
-    visibility,
-    visibleToMembers: Array.from(visibleToMembers),
+    title: formState.title,
+    content: formState.content,
+    visibility: formState.visibility,
+    visibleToMembers: formState.visibleToMembers,
     files,
     enabled: true,
     onSaveSuccess: (savedDocId: string, isManual: boolean) => {
@@ -103,6 +97,19 @@ export default function DocDetail() {
     },
   });
 
+  // Manual save hook - handles UI feedback for manual saves
+  // Must be defined after autoSave since it depends on it
+  const { saveStatus, isSaving, handleSave } = useManualSave({
+    onSave: () => autoSave.manualSave(),
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to save document",
+        variant: "destructive",
+      });
+    },
+  });
+
   // Initialize offline queue monitoring
   useEffect(() => {
     const cleanup = initOfflineQueue();
@@ -115,29 +122,6 @@ export default function DocDetail() {
       trackView('doc', docId);
     }
   }, [docId, doc]);
-
-  // Load doc data
-  useEffect(() => {
-    if (doc && !isNew) {
-      setTitle(doc.title || "");
-      // Preserve content even if it's empty string, only default to empty if it's null/undefined
-      setContent(doc.content !== null && doc.content !== undefined ? doc.content : "");
-      setVisibility(doc.visibility || 'all_members');
-      // Ensure visibleToMembers is always an array before creating Set
-      const membersArray = Array.isArray(doc.visibleToMembers) ? doc.visibleToMembers : [];
-      setVisibleToMembers(new Set(membersArray));
-      // Load files from metadata
-      const docFiles = doc.metadata?.files || [];
-      setFiles(Array.isArray(docFiles) ? docFiles : []);
-    } else if (isNew) {
-      // Reset form for new doc
-      setTitle("");
-      setContent("");
-      setVisibility('all_members');
-      setVisibleToMembers(new Set());
-      setFiles([]);
-    }
-  }, [doc, isNew]);
 
   // Set page context when doc loads
   useEffect(() => {
@@ -153,87 +137,8 @@ export default function DocDetail() {
     };
   }, [doc, docId, setContext, clearContext]);
 
-  const handleFileUpload = async (file: File) => {
-    if (!docId || docId === "new") {
-      toast({
-        title: "Error",
-        description: "Please save the document first before uploading files",
-        variant: "destructive",
-      });
-      return;
-    }
 
-    try {
-      const result = await fileUploadService.uploadFile(docId, file);
-      
-      // Add file to local state
-      const newFile: DocFile = {
-        fileId: result.fileId,
-        fileName: result.fileName,
-        fileUrl: result.fileUrl,
-        fileSize: result.fileSize,
-        mimeType: result.mimeType,
-        uploadedAt: new Date().toISOString(),
-      };
-      
-      const updatedFiles = [...files, newFile];
-      setFiles(updatedFiles);
-
-      // Update doc metadata with new file
-      await updateDoc.mutateAsync({
-        docId,
-        updates: {
-          metadata: {
-            files: updatedFiles,
-          },
-        },
-      });
-
-      toast({
-        title: "File uploaded",
-        description: `"${result.fileName}" has been uploaded successfully.`,
-      });
-    } catch (error) {
-      throw error; // Re-throw to let RichTextEditor handle the error
-    }
-  };
-
-  const handleRemoveFile = async () => {
-    if (!fileToDelete || !docId || docId === "new") {
-      return;
-    }
-
-    try {
-      // Remove file from local state
-      const updatedFiles = files.filter(f => f.fileId !== fileToDelete.fileId);
-      setFiles(updatedFiles);
-
-      // Update doc metadata
-      await updateDoc.mutateAsync({
-        docId,
-        updates: {
-          metadata: {
-            files: updatedFiles,
-          },
-        },
-      });
-
-      toast({
-        title: "File removed",
-        description: `"${fileToDelete.fileName}" has been removed from the document.`,
-      });
-
-      setFileToDelete(null);
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to remove file",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleDelete = async () => {
+  const handleDelete = useCallback(async () => {
     if (!docId || docId === "new") {
       return;
     }
@@ -242,7 +147,7 @@ export default function DocDetail() {
       await deleteDoc.mutateAsync(docId);
       toast({
         title: "Doc deleted",
-        description: `"${title || doc?.title || 'Doc'}" has been deleted successfully.`,
+        description: `"${formState.title || doc?.title || 'Doc'}" has been deleted successfully.`,
       });
       navigate('/docs');
     } catch (error) {
@@ -252,7 +157,65 @@ export default function DocDetail() {
         variant: "destructive",
       });
     }
-  };
+  }, [docId, deleteDoc, toast, navigate, formState.title, doc?.title]);
+
+  // Memoized handlers - stable references to prevent DocToolbar re-renders
+  const handleBack = useCallback(() => navigate("/docs"), [navigate]);
+  const handleShare = useCallback(() => dialogs.openDialog('share'), [dialogs.openDialog]);
+  const handleShareViaEmail = useCallback(() => dialogs.openDialog('shareViaEmail'), [dialogs.openDialog]);
+  const handleAttachedFiles = useCallback(() => dialogs.openDialog('files'), [dialogs.openDialog]);
+  const openDeleteDialog = useCallback(() => dialogs.openDialog('delete'), [dialogs.openDialog]);
+
+  // Format document handler - applies text wrapping to entire document
+  const handleFormatDocument = useCallback(() => {
+    // This would apply formatting to the entire document content
+    // For now, we'll trigger a re-render that might help with wrapping
+    // In a full implementation, this would analyze and reformat the entire document
+    console.log('Format document requested - applying text wrapping fixes');
+    // Force a content update to trigger any pending wrapping
+    updateField('content', formState.content);
+  }, [formState.content, updateField]);
+
+  // Memoized computed props - stable values
+  const isOwner = useMemo(
+    () => isDocOwner(user?.email, doc?.ownerEmail),
+    [user?.email, doc?.ownerEmail]
+  );
+
+  // Memoize toolbar element - only recreates when manual save status changes
+  // Auto-save status is ignored - it runs silently in the background
+  const toolbarElement = useMemo(
+    () => (
+      <DocToolbar
+        onBack={handleBack}
+        onSave={handleSave}
+        saveStatus={saveStatus} // Only show manual save status in UI
+        onShare={handleShare}
+        onShareViaEmail={handleShareViaEmail}
+        onAttachedFiles={handleAttachedFiles}
+        onDelete={openDeleteDialog}
+        onFormatDocument={handleFormatDocument}
+        isOwner={isOwner}
+        filesCount={files.length}
+        isNew={isNew}
+        isSaving={isSaving}
+      />
+    ),
+    [
+      handleBack,
+      handleSave,
+      saveStatus, // Only recreate when manual save status changes
+      handleShare,
+      handleShareViaEmail,
+      handleAttachedFiles,
+      openDeleteDialog,
+      handleFormatDocument,
+      isOwner,
+      files.length,
+      isNew,
+      isSaving, // Only recreate when manual saving state changes
+    ]
+  );
 
 
   if (isLoading && !isNew) {
@@ -265,134 +228,61 @@ export default function DocDetail() {
     );
   }
 
-  const docActions = !isNew && doc ? [
-    ...(user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() ? [{
-      label: "Limit Visibility",
-      icon: <Share2 className="h-4 w-4" />,
-      onClick: () => setShareDialogOpen(true),
-    }] : []),
-    ...(user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() ? [{
-      label: "Share",
-      icon: <Mail className="h-4 w-4" />,
-      onClick: () => setShareViaEmailDialogOpen(true),
-    }] : []),
-    {
-      label: `Attached Files ${files.length > 0 ? `(${files.length})` : ''}`,
-      icon: <Paperclip className="h-4 w-4" />,
-      onClick: () => setFilesDialogOpen(true),
-    },
-    ...(user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() ? [{
-      label: "Delete",
-      icon: <Trash2 className="h-4 w-4" />,
-      onClick: () => setShowDeleteDialog(true),
-      destructive: true,
-    }] : []),
-  ] : [];
-
   return (
-    <div className="animate-fade-in w-full overflow-x-hidden -mt-2 sm:-mt-4">
+    <div className="animate-fade-in w-full overflow-x-hidden -mt-4 sm:-mt-6 min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
       {/* Mobile buttons at top - using DetailPageHeader for consistency */}
       <div className="sm:hidden mb-4">
         <DetailPageHeader
-          title={title || "Untitled"}
+          title={formState.title || "Untitled"}
           backHref="/docs"
-          actions={docActions}
+          actions={createDocActions(isOwner, files.length, {
+            onShare: handleShare,
+            onShareViaEmail: handleShareViaEmail,
+            onAttachedFiles: handleAttachedFiles,
+            onDelete: openDeleteDialog,
+          })}
           showActions={!isNew && !!doc}
           hideTitle={true}
         />
       </div>
 
       {(!isNew && isLoading && !doc) ? (
-        <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center -mx-4 sm:-mx-6">
+        <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center px-3 sm:px-6">
           <p className="text-muted-foreground">Loading content...</p>
         </div>
       ) : (
-        <div className="-mx-4 sm:-mx-6">
-          <RichTextEditor 
-            key={docId || "new"}
-            content={content || ""} 
-            onChange={setContent}
-            title={title}
-            onTitleChange={setTitle}
-            titlePlaceholder="Doc title..."
-            readOnly={false}
-            onFileUpload={handleFileUpload}
-            docId={docId || undefined}
-            titleRightActions={
-              <>
-                <Button 
-                  variant="ghost" 
-                  size="sm" 
-                  onClick={() => navigate("/docs")}
-                  className="hover:bg-muted/50"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <div>
-                  <Button 
-                    variant="default" 
-                    size="sm" 
-                    onClick={async () => {
-                      try {
-                        await autoSave.manualSave();
-                      } catch (error) {
-                        toast({
-                          title: "Error",
-                          description: error instanceof Error ? error.message : "Failed to save document",
-                          variant: "destructive",
-                        });
-                      }
-                    }}
-                    disabled={autoSave.saveStatus === 'saving'}
-                    className="bg-black text-white hover:bg-black/90"
-                  >
-                    Save
-                  </Button>
-                </div>
-                {!isNew && doc && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="sm">
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
-                        <DropdownMenuItem onClick={() => setShareDialogOpen(true)}>
-                          <Share2 className="mr-2 h-4 w-4" />
-                          Limit Visibility
-                        </DropdownMenuItem>
-                      )}
-                      {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
-                        <DropdownMenuItem onClick={() => setShareViaEmailDialogOpen(true)}>
-                          <Mail className="mr-2 h-4 w-4" />
-                          Share
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem onClick={() => setFilesDialogOpen(true)}>
-                        <Paperclip className="mr-2 h-4 w-4" />
-                        Attached Files {files.length > 0 && `(${files.length})`}
-                      </DropdownMenuItem>
-                      {user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
-                        <DropdownMenuItem 
-                          onClick={() => setShowDeleteDialog(true)}
-                          className="text-destructive focus:text-destructive"
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-              </>
-            }
-          />
+        <div className="w-full min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
+          <div className="border-t border-b border-border/30 w-full max-w-full bg-background shadow-sm relative min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
+            {/* Toolbar positioned at top-right aligned with editor content */}
+            <div className="absolute top-3 right-2 sm:right-3 z-10 hidden sm:flex items-center gap-1">
+              {toolbarElement}
+            </div>
+            <TitleWithToolbar
+              title={formState.title}
+              onTitleChange={(title) => updateField('title', title)}
+              titlePlaceholder="Doc title..."
+              readOnly={false}
+              toolbar={null} // Remove toolbar from title component
+            />
+            <RichTextEditor
+              key={docId || "new"}
+              content={formState.content || ""}
+              onChange={(content) => {
+                // Content is now a TipTap JSON object, stringify it for storage
+                const contentString = typeof content === 'string' ? content : JSON.stringify(content);
+                updateField('content', contentString);
+              }}
+              placeholder="Start writing..."
+              readOnly={false}
+              onFileUpload={handleFileUpload}
+              docId={docId || undefined}
+            />
+          </div>
         </div>
       )}
 
       {/* Attached Files Dialog */}
-      <Dialog open={filesDialogOpen} onOpenChange={setFilesDialogOpen}>
+      <Dialog open={dialogs.filesDialogOpen} onOpenChange={(open) => open ? dialogs.openDialog('files') : dialogs.closeDialog()}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Attached Files</DialogTitle>
@@ -416,7 +306,7 @@ export default function DocDetail() {
                         {file.fileName}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {(file.fileSize / 1024).toFixed(1)} KB
+                        {formatFileSize(file.fileSize)}
                       </p>
                     </div>
                   </div>
@@ -429,7 +319,7 @@ export default function DocDetail() {
                       <Download className="h-4 w-4 mr-2" />
                       Download
                     </Button>
-                    {!isNew && doc && user?.email?.toLowerCase() === doc.ownerEmail?.toLowerCase() && (
+                    {!isNew && doc && isOwner && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -466,12 +356,12 @@ export default function DocDetail() {
       </AlertDialog>
 
       {/* Delete Doc Confirmation Dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+      <AlertDialog open={dialogs.deleteDialogOpen} onOpenChange={(open) => open ? dialogs.openDialog('delete') : dialogs.closeDialog()}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Document</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{doc?.title || title || 'this document'}"? This action cannot be undone.
+              Are you sure you want to delete "{doc?.title || formState.title || 'this document'}"? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -486,17 +376,17 @@ export default function DocDetail() {
       {/* Limit Visibility Dialog */}
       {!isNew && doc && (
         <LimitVisibilityDialog
-          open={shareDialogOpen}
-          onOpenChange={setShareDialogOpen}
+          open={dialogs.shareDialogOpen}
+          onOpenChange={(open) => open ? dialogs.openDialog('share') : dialogs.closeDialog()}
           title="Limit Document Visibility"
           itemName={doc.title}
-          currentVisibility={visibility}
-          currentVisibleToMembers={Array.from(visibleToMembers)}
+          currentVisibility={formState.visibility}
+          currentVisibleToMembers={formState.visibleToMembers}
           onSave={async (newVisibility, newVisibleToMembers) => {
-            setVisibility(newVisibility);
-            // Ensure newVisibleToMembers is always an array before creating Set
+            updateField('visibility', newVisibility);
+            // Ensure newVisibleToMembers is always an array
             const membersArray = Array.isArray(newVisibleToMembers) ? newVisibleToMembers : [];
-            setVisibleToMembers(new Set(membersArray));
+            updateField('visibleToMembers', membersArray);
             await updateDoc.mutateAsync({
               docId: doc.id,
               updates: {
@@ -515,8 +405,8 @@ export default function DocDetail() {
       {/* Share Document Dialog */}
       {!isNew && doc && (
         <ShareDocDialog
-          open={shareViaEmailDialogOpen}
-          onOpenChange={setShareViaEmailDialogOpen}
+          open={dialogs.shareViaEmailDialogOpen}
+          onOpenChange={(open) => open ? dialogs.openDialog('shareViaEmail') : dialogs.closeDialog()}
           docId={doc.id}
           docTitle={doc.title}
         />
@@ -524,5 +414,5 @@ export default function DocDetail() {
 
     </div>
   );
-}
+});
 

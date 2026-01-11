@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, CheckCircle2, AlertCircle, WifiOff, FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -10,7 +11,7 @@ interface DocSaveStatusProps {
   className?: string;
 }
 
-export function DocSaveStatus({ 
+export const DocSaveStatus = memo(function DocSaveStatus({ 
   status, 
   lastSavedAt, 
   onRetry,
@@ -133,5 +134,5 @@ export function DocSaveStatus({
       <span className="text-xs font-medium">{config.text}</span>
     </div>
   );
-}
+});
 

@@ -293,7 +293,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     <SidebarProvider>
       <div className="flex min-h-[100dvh] w-full">
         <AppSidebar />
-        <div className={cn("flex-1 flex flex-col transition-all duration-300", isAIChatOpen && "mr-96")}>
+        <div className={cn("flex-1 flex flex-col transition-all duration-300 max-w-full overflow-x-hidden min-w-0", isAIChatOpen && "mr-96")} style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
           <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-lg">
             <div className="flex h-16 items-center gap-2 sm:gap-4 px-3 sm:px-6">
               <SidebarTrigger className="-ml-2" />
@@ -851,7 +851,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
               </div>
             </div>
           </header>
-          <main className="flex-1 p-4 sm:p-6">
+          <main className="flex-1 p-4 sm:p-6 min-w-0">
             {children}
           </main>
         </div>

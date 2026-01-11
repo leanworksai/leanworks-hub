@@ -312,7 +312,7 @@ CREATE TABLE IF NOT EXISTS github_installations (
 CREATE TABLE IF NOT EXISTS docs (
   id VARCHAR(50) PRIMARY KEY,
   title VARCHAR(255) NOT NULL,
-  content TEXT NOT NULL,  -- Rich text content (HTML)
+  content TEXT NOT NULL,  -- TipTap JSON document format (stringified JSON, was: Rich text content HTML)
   owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
   team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,

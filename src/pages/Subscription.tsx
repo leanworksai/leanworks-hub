@@ -14,36 +14,31 @@ import { cn } from '@/lib/utils';
 const PLANS = [
   {
     id: 'free' as const,
-    name: 'Free Tier',
+    name: 'Free',
     price: '$0',
     priceSubtext: 'forever',
     description: 'Get started with essential features',
     features: [
-      'Max 10 members in org',
-      'Project management',
-      'Messaging',
-      'Docs',
+      'All basic features',
+      'Max 5 members in org',
       'Voice chat (30 mins limit)',
+      'LeanWorks AI (10 credits/day)',
     ],
-    aiFeatures: false,
+    aiFeatures: true,
     icon: Sparkles,
     highlight: false,
   },
   {
     id: 'standard' as const,
     name: 'Standard',
-    price: '$0',
-    originalPrice: '$9.89',
+    price: '$9.89',
     priceSubtext: 'per user/month',
-    promotionText: 'Beta Tester Offer',
     description: 'For growing teams',
     features: [
-      'Unlimited users',
-      'Project management',
-      'Messaging',
-      'Docs',
-      'Voice chat',
-      'LeanWorks AI (20 times/day)',
+      'All basic features',
+      'Unlimited members',
+      'Unlimited voice chat',
+      'LeanWorks AI (30 credits/day)',
     ],
     aiFeatures: true,
     icon: Zap,
@@ -56,11 +51,9 @@ const PLANS = [
     priceSubtext: 'per user/month',
     description: 'For power users & teams',
     features: [
-      'Unlimited users',
-      'Project management',
-      'Messaging',
-      'Docs',
-      'Voice chat',
+      'All basic features',
+      'Unlimited members',
+      'Unlimited voice chat',
       'LeanWorks AI (Unlimited)',
     ],
     aiFeatures: true,
@@ -187,13 +180,21 @@ export default function Subscription() {
     }
   };
 
-  const handleSwitchPlan = async (plan: 'standard' | 'pro') => {
+  const handleSwitchPlan = async (plan: 'free' | 'standard' | 'pro') => {
     try {
       setSwitchLoading(plan);
-      await subscriptionService.switchPlan(plan);
+      const result = await subscriptionService.switchPlan(plan);
+      
+      // If checkout is required, redirect to Stripe checkout
+      if (result.requiresCheckout && result.checkoutUrl) {
+        window.location.href = result.checkoutUrl;
+        return;
+      }
+      
+      const planName = plan === 'free' ? 'Free' : plan.charAt(0).toUpperCase() + plan.slice(1);
       toast({
         title: 'Plan switched!',
-        description: `You are now on the ${plan.charAt(0).toUpperCase() + plan.slice(1)} plan.`,
+        description: `You are now on the ${planName} plan.`,
       });
       // Reload status to show new plan
       loadStatus();
@@ -389,6 +390,7 @@ export default function Subscription() {
           const isOnPaidPlan = currentPlan === 'standard' || currentPlan === 'pro';
           const isUpgradeFromFree = isPaidPlan && currentPlan === 'free';
           const isSwitchBetweenPaid = isPaidPlan && isOnPaidPlan && currentPlan !== plan.id;
+          const isSwitchToFree = plan.id === 'free' && isOnPaidPlan;
           const isUpgrade = plan.id === 'pro' && currentPlan === 'standard';
           const isDowngrade = plan.id === 'standard' && currentPlan === 'pro';
 
@@ -430,20 +432,20 @@ export default function Subscription() {
                   <CardTitle className="text-2xl">{plan.name}</CardTitle>
                 </div>
                 <div className="mt-4">
-                  {plan.originalPrice ? (
+                  {'originalPrice' in plan && plan.originalPrice ? (
                     <div className="space-y-2">
                       <div className="flex items-baseline gap-2 flex-wrap">
                         <span className="text-4xl font-bold text-foreground">{plan.price}</span>
                         <span className="text-muted-foreground text-sm">{plan.priceSubtext}</span>
-                        {plan.promotionText && (
+                        {'promotionText' in plan && plan.promotionText && (
                           <Badge variant="secondary" className="ml-2 bg-gradient-to-r from-green-500/10 to-green-600/10 text-green-600 dark:text-green-400 border-green-500/20">
-                            {plan.promotionText}
+                            {String(plan.promotionText)}
                           </Badge>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className="text-lg text-muted-foreground line-through">
-                          {plan.originalPrice}
+                          {String(plan.originalPrice)}
                         </span>
                         <span className="text-sm text-muted-foreground">{plan.priceSubtext}</span>
                         <Badge variant="outline" className="text-xs border-green-500/30 text-green-600 dark:text-green-400">
@@ -474,23 +476,7 @@ export default function Subscription() {
                 
                 <div className="pt-2">
                   {plan.id === 'free' ? (
-                    <Button 
-                      variant="outline" 
-                      className="w-full h-11 text-base font-medium" 
-                      disabled
-                    >
-                      {isCurrentPlan ? 'Current Plan' : 'Free Forever'}
-                    </Button>
-                  ) : plan.id === 'pro' ? (
-                    <Button 
-                      variant="outline" 
-                      className="w-full h-11 text-base font-medium" 
-                      disabled
-                    >
-                      {isCurrentPlan ? 'Current Plan' : 'Coming Soon'}
-                    </Button>
-                  ) : plan.id === 'standard' ? (
-                    // Only Standard plan is clickable
+                    // Free plan button
                     isCurrentPlan ? (
                       <Button 
                         variant="outline" 
@@ -499,83 +485,107 @@ export default function Subscription() {
                       >
                         Current Plan
                       </Button>
-                    ) : isUpgradeFromFree ? (
-                      // Upgrading from free tier - create new subscription via checkout
+                    ) : isSwitchToFree ? (
+                      // Switching from paid plan to free
                       <Button 
-                        className={cn(
-                          "w-full h-11 text-base font-semibold transition-all",
-                          plan.highlight && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary"
-                        )}
-                        onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
-                        disabled={checkoutLoading === plan.id}
+                        variant="outline" 
+                        className="w-full h-11 text-base font-medium" 
+                        onClick={() => handleSwitchPlan('free')}
+                        disabled={switchLoading === 'free'}
                       >
-                        {checkoutLoading === plan.id ? (
+                        {switchLoading === 'free' ? (
                           <>
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Processing...
+                            Switching...
                           </>
                         ) : (
-                          `Upgrade to ${plan.name}`
-                        )}
-                      </Button>
-                    ) : isSwitchBetweenPaid ? (
-                      // Switching between paid plans (standard ↔ pro)
-                      // If they have an active subscription, use switch API, otherwise use checkout
-                      <Button 
-                        className={cn(
-                          "w-full h-11 text-base font-semibold transition-all",
-                          isUpgrade && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary",
-                          isDowngrade && "bg-muted hover:bg-muted/80"
-                        )}
-                        variant={isDowngrade ? "outline" : "default"}
-                        onClick={() => {
-                          if (hasActiveSubscription) {
-                            handleSwitchPlan(plan.id as 'standard' | 'pro');
-                          } else {
-                            handleUpgrade(plan.id as 'standard' | 'pro');
-                          }
-                        }}
-                        disabled={switchLoading === plan.id || checkoutLoading === plan.id}
-                      >
-                        {(switchLoading === plan.id || checkoutLoading === plan.id) ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            {hasActiveSubscription ? 'Switching...' : 'Processing...'}
-                          </>
-                        ) : isUpgrade ? (
-                          `Upgrade to ${plan.name}`
-                        ) : (
-                          `Switch to ${plan.name}`
+                          'Switch to Free'
                         )}
                       </Button>
                     ) : (
-                      // Fallback: should not reach here, but show upgrade option
                       <Button 
-                        className={cn(
-                          "w-full h-11 text-base font-semibold transition-all",
-                          plan.highlight && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary"
-                        )}
-                        onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
-                        disabled={checkoutLoading === plan.id}
+                        variant="outline" 
+                        className="w-full h-11 text-base font-medium" 
+                        disabled
                       >
-                        {checkoutLoading === plan.id ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Processing...
-                          </>
-                        ) : (
-                          `Upgrade to ${plan.name}`
-                        )}
+                        Free Forever
                       </Button>
                     )
-                  ) : (
-                    // Fallback for any other plans
+                  ) : isCurrentPlan ? (
                     <Button 
                       variant="outline" 
                       className="w-full h-11 text-base font-medium" 
                       disabled
                     >
-                      Unavailable
+                      Current Plan
+                    </Button>
+                  ) : isUpgradeFromFree ? (
+                    // Upgrading from free tier - create new subscription via checkout
+                    <Button 
+                      className={cn(
+                        "w-full h-11 text-base font-semibold transition-all",
+                        plan.highlight && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary"
+                      )}
+                      onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
+                      disabled={checkoutLoading === plan.id}
+                    >
+                      {checkoutLoading === plan.id ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        `Upgrade to ${plan.name}`
+                      )}
+                    </Button>
+                  ) : isSwitchBetweenPaid ? (
+                    // Switching between paid plans (standard ↔ pro)
+                    // If they have an active subscription, use switch API, otherwise use checkout
+                    <Button 
+                      className={cn(
+                        "w-full h-11 text-base font-semibold transition-all",
+                        isUpgrade && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary",
+                        isDowngrade && "bg-muted hover:bg-muted/80"
+                      )}
+                      variant={isDowngrade ? "outline" : "default"}
+                      onClick={() => {
+                        if (hasActiveSubscription) {
+                          handleSwitchPlan(plan.id as 'standard' | 'pro');
+                        } else {
+                          handleUpgrade(plan.id as 'standard' | 'pro');
+                        }
+                      }}
+                      disabled={switchLoading === plan.id || checkoutLoading === plan.id}
+                    >
+                      {(switchLoading === plan.id || checkoutLoading === plan.id) ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          {hasActiveSubscription ? 'Switching...' : 'Processing...'}
+                        </>
+                      ) : isUpgrade ? (
+                        `Upgrade to ${plan.name}`
+                      ) : (
+                        `Switch to ${plan.name}`
+                      )}
+                    </Button>
+                  ) : (
+                    // Fallback: should not reach here, but show upgrade option
+                    <Button 
+                      className={cn(
+                        "w-full h-11 text-base font-semibold transition-all",
+                        plan.highlight && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary"
+                      )}
+                      onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
+                      disabled={checkoutLoading === plan.id}
+                    >
+                      {checkoutLoading === plan.id ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Processing...
+                        </>
+                      ) : (
+                        `Upgrade to ${plan.name}`
+                      )}
                     </Button>
                   )}
                 </div>
