@@ -49,7 +49,7 @@ export function AppSidebar() {
   const { selectedProjects, toggleProject } = useSelectedProjects();
   const { selectedTasks, toggleTask } = useSelectedTasks();
   const { selectedDocs, toggleDoc } = useSelectedDocs();
-  const { contextType, contextRef } = usePageContext();
+  const { contextType, contextRef, clearContext } = usePageContext();
   const { totalUnreadCount } = useTeamChats();
   
   // Close mobile sidebar when a navigation item is clicked
@@ -229,6 +229,7 @@ export function AppSidebar() {
                 onRemoveDoc={toggleDoc}
                 variant="sidebar"
                 implicitContext={implicitContextString}
+                onRemoveImplicitContext={clearContext}
               />
             </div>
           </ScrollArea>

@@ -166,16 +166,6 @@ export default memo(function DocDetail() {
   const handleAttachedFiles = useCallback(() => dialogs.openDialog('files'), [dialogs.openDialog]);
   const openDeleteDialog = useCallback(() => dialogs.openDialog('delete'), [dialogs.openDialog]);
 
-  // Format document handler - applies text wrapping to entire document
-  const handleFormatDocument = useCallback(() => {
-    // This would apply formatting to the entire document content
-    // For now, we'll trigger a re-render that might help with wrapping
-    // In a full implementation, this would analyze and reformat the entire document
-    console.log('Format document requested - applying text wrapping fixes');
-    // Force a content update to trigger any pending wrapping
-    updateField('content', formState.content);
-  }, [formState.content, updateField]);
-
   // Memoized computed props - stable values
   const isOwner = useMemo(
     () => isDocOwner(user?.email, doc?.ownerEmail),
@@ -194,7 +184,6 @@ export default memo(function DocDetail() {
         onShareViaEmail={handleShareViaEmail}
         onAttachedFiles={handleAttachedFiles}
         onDelete={openDeleteDialog}
-        onFormatDocument={handleFormatDocument}
         isOwner={isOwner}
         filesCount={files.length}
         isNew={isNew}
@@ -209,7 +198,6 @@ export default memo(function DocDetail() {
       handleShareViaEmail,
       handleAttachedFiles,
       openDeleteDialog,
-      handleFormatDocument,
       isOwner,
       files.length,
       isNew,

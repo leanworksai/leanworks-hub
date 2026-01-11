@@ -278,19 +278,18 @@ export default function Subscription() {
 
   return (
     <div className="space-y-8 animate-fade-in max-w-7xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-6 mb-8">
         <div>
           <h1 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
             Subscription Plans
           </h1>
-          <p className="text-muted-foreground mt-2 text-lg">Choose the perfect plan for your team</p>
         </div>
         {status?.stripeSubscriptionId && (
           <Button 
             variant="outline" 
             onClick={handleManageSubscription}
             disabled={portalLoading}
-            className="shrink-0"
+            className="shrink-0 h-10 px-4 shadow-sm hover:bg-muted/80 transition-colors"
           >
             {portalLoading ? (
               <>
@@ -308,72 +307,84 @@ export default function Subscription() {
       </div>
 
       {/* Current Plan Status */}
-      <Card className="bg-gradient-to-br from-primary/5 via-background to-background border border-primary/20">
-        <CardHeader className="pb-4">
+      <Card className="bg-gradient-to-br from-background via-muted/20 to-background border-border/50 shadow-sm mb-10 overflow-hidden relative">
+        <div className="absolute inset-0 bg-grid-slate-100 [mask-image:linear-gradient(0deg,#fff,rgba(255,255,255,0.6))] dark:bg-grid-slate-700/25 dark:[mask-image:linear-gradient(0deg,rgba(255,255,255,0.1),rgba(255,255,255,0.5))]" />
+        <CardHeader className="pb-6 relative z-10">
           <div className="flex items-center justify-between">
-            <div className="space-y-2">
-              <CardTitle className="flex items-center gap-3 text-2xl">
-                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center border border-primary/20">
+            <div className="space-y-1">
+              <div className="flex items-center gap-3">
+                <h2 className="text-lg font-medium text-muted-foreground uppercase tracking-wider text-xs">Current Plan</h2>
+                {status?.stripeSubscriptionId && (
+                  <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200 px-2 py-0.5 h-5">
+                    Active
+                  </Badge>
+                )}
+                {status?.isTrialActive && (
+                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 px-2 py-0.5 h-5">
+                    Trial: {status.trialDaysRemaining} day{status.trialDaysRemaining !== 1 ? 's' : ''} left
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-3 mt-2">
+                <div className="flex items-center justify-center h-12 w-12 rounded-full bg-primary/10 text-primary">
                   {currentPlan === 'pro' ? (
-                    <Crown className="h-5 w-5 text-amber-500" />
+                    <Crown className="h-6 w-6" />
                   ) : currentPlan === 'standard' ? (
-                    <Zap className="h-5 w-5 text-primary" />
+                    <Zap className="h-6 w-6" />
                   ) : (
-                    <Sparkles className="h-5 w-5 text-muted-foreground" />
+                    <Sparkles className="h-6 w-6" />
                   )}
                 </div>
-                <span>Current Plan</span>
-                <Badge 
-                  variant={currentPlan === 'pro' ? 'default' : currentPlan === 'standard' ? 'secondary' : 'outline'}
-                  className="text-sm px-3 py-1"
-                >
-                  {currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)}
-                </Badge>
-              </CardTitle>
-              <CardDescription className="flex items-center gap-3 text-base">
-                {status?.isTrialActive && (
-                  <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400">
-                    Trial: {status.trialDaysRemaining} day{status.trialDaysRemaining !== 1 ? 's' : ''} remaining
-                  </Badge>
-                )}
-                {status?.stripeSubscriptionId && (
-                  <Badge variant="outline" className="border-green-500 text-green-600 dark:text-green-400">
-                    Active subscription
-                  </Badge>
-                )}
-              </CardDescription>
+                <span className="text-3xl font-bold text-foreground">
+                  {currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1)} Plan
+                </span>
+              </div>
             </div>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            <div className="p-4 rounded-lg bg-muted/50 border border-border">
-              <div className="flex items-center justify-between text-sm mb-3">
-                <span className="font-medium text-foreground">LeanWorks AI Usage Today</span>
-                <span className="font-semibold text-primary">
+        <CardContent className="relative z-10">
+          <div className="bg-card/50 backdrop-blur-sm rounded-xl border border-border p-6 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+              <div className="space-y-1">
+                <h3 className="font-semibold text-lg flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  LeanWorks AI Usage
+                </h3>
+                <p className="text-sm text-muted-foreground">Credits renew daily</p>
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-bold text-primary">
                   {status?.aiUsageLimit !== null 
-                    ? `${status?.aiDailyUsage || 0} / ${status?.aiUsageLimit} uses`
-                    : (
-                      <span className="flex items-center gap-1">
-                        <Infinity className="h-4 w-4" />
-                        Unlimited
-                      </span>
-                    )
+                    ? status?.aiDailyUsage || 0
+                    : <Infinity className="h-6 w-6 inline-block" />
                   }
                 </span>
+                <span className="text-muted-foreground ml-1">
+                  / {status?.aiUsageLimit !== null ? status?.aiUsageLimit : 'Unlimited'} credits
+                </span>
               </div>
-              {status?.aiUsageLimit !== null && (
+            </div>
+            
+            {status?.aiUsageLimit !== null ? (
+              <div className="space-y-2">
                 <Progress 
                   value={((status?.aiDailyUsage || 0) / (status?.aiUsageLimit || 1)) * 100} 
-                  className="h-3"
+                  className="h-3 bg-secondary"
+                  // Dynamic color based on usage would be handled via CSS or inline styles if supported by component, 
+                  // but standard Progress usually takes class for color. 
+                  // We'll use a custom indicator below.
                 />
-              )}
-              {status?.aiUsageLimit === null && (
-                <div className="h-3 bg-primary/20 rounded-full overflow-hidden">
-                  <div className="h-full bg-gradient-to-r from-primary to-primary/60 animate-pulse" style={{ width: '100%' }} />
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>0%</span>
+                  <span>50%</span>
+                  <span>100%</span>
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div className="h-3 bg-primary/10 rounded-full w-full relative overflow-hidden">
+                <div className="absolute inset-0 bg-gradient-to-r from-primary/40 to-primary/10 animate-pulse" />
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -398,98 +409,72 @@ export default function Subscription() {
             <Card 
               key={plan.id} 
               className={cn(
-                "bg-gradient-to-br from-card to-card/50 border relative overflow-hidden transition-all duration-300",
-                plan.highlight && "border-primary bg-gradient-to-br from-primary/5 via-card to-card",
-                isCurrentPlan && "ring-2 ring-primary ring-offset-1",
-                !plan.highlight && !isCurrentPlan && "hover:border-primary/50"
+                "flex flex-col relative overflow-hidden transition-all duration-300 border-border",
+                plan.highlight 
+                  ? "border-primary shadow-lg scale-105 z-10 bg-card" 
+                  : "bg-card/50 hover:bg-card hover:shadow-md border-border/60",
+                isCurrentPlan && !plan.highlight && "border-primary/50 bg-primary/5"
               )}
             >
               {plan.highlight && (
-                <div className="absolute top-0 right-0 bg-gradient-to-r from-primary to-primary/80 text-primary-foreground text-xs font-bold px-4 py-1.5 rounded-bl-lg">
-                  ⭐ Popular
-                </div>
+                <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-primary to-primary/60" />
               )}
               {isCurrentPlan && (
-                <div className="absolute top-0 left-0 bg-gradient-to-r from-green-500 to-green-600 text-white text-xs font-bold px-4 py-1.5 rounded-br-lg">
-                  ✓ Current
+                <div className="absolute top-3 right-3">
+                  <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-400">
+                    <Check className="w-3 h-3 mr-1" /> Current Plan
+                  </Badge>
                 </div>
               )}
-              <CardHeader className={cn("pt-10", plan.highlight && "pt-12")}>
-                <div className="flex items-center gap-3 mb-4">
-                  <div className={cn(
-                    "h-12 w-12 rounded-xl flex items-center justify-center border",
-                    plan.id === 'pro' && "bg-amber-500/10 border-amber-500/20",
-                    plan.id === 'standard' && "bg-primary/10 border-primary/20",
-                    plan.id === 'free' && "bg-muted border-border"
-                  )}>
-                    <Icon className={cn(
-                      "h-6 w-6",
-                      plan.id === 'pro' && "text-amber-500",
-                      plan.id === 'standard' && "text-primary",
-                      plan.id === 'free' && "text-muted-foreground"
-                    )} />
-                  </div>
-                  <CardTitle className="text-2xl">{plan.name}</CardTitle>
+              
+              <CardHeader className={cn("pb-8", plan.highlight ? "pt-8" : "pt-6")}>
+                <div className="mb-4">
+                  <h3 className="text-lg font-medium text-muted-foreground">{plan.name}</h3>
                 </div>
-                <div className="mt-4">
-                  {'originalPrice' in plan && plan.originalPrice ? (
-                    <div className="space-y-2">
-                      <div className="flex items-baseline gap-2 flex-wrap">
-                        <span className="text-4xl font-bold text-foreground">{plan.price}</span>
-                        <span className="text-muted-foreground text-sm">{plan.priceSubtext}</span>
-                        {'promotionText' in plan && plan.promotionText && (
-                          <Badge variant="secondary" className="ml-2 bg-gradient-to-r from-green-500/10 to-green-600/10 text-green-600 dark:text-green-400 border-green-500/20">
-                            {String(plan.promotionText)}
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg text-muted-foreground line-through">
-                          {String(plan.originalPrice)}
-                        </span>
-                        <span className="text-sm text-muted-foreground">{plan.priceSubtext}</span>
-                        <Badge variant="outline" className="text-xs border-green-500/30 text-green-600 dark:text-green-400">
-                          100% OFF
-                        </Badge>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-4xl font-bold">{plan.price}</span>
-                      <span className="text-muted-foreground">{plan.priceSubtext}</span>
-                    </div>
-                  )}
-                </div>
-                <CardDescription className="mt-3 text-base">{plan.description}</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <ul className="space-y-3">
-                  {plan.features.map((feature, i) => (
-                    <li key={i} className="flex items-start gap-3 text-sm">
-                      <div className="h-5 w-5 rounded-full bg-green-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <Check className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-                      </div>
-                      <span className="text-foreground">{feature}</span>
-                    </li>
-                  ))}
-                </ul>
                 
-                <div className="pt-2">
+                <div className="flex items-baseline gap-1 mb-2">
+                  {plan.id !== 'free' && <span className="text-3xl font-bold text-foreground">$</span>}
+                  <span className="text-5xl font-bold tracking-tight text-foreground">
+                    {plan.id === 'free' ? '0' : plan.price.replace('$', '')}
+                  </span>
+                  <span className="text-muted-foreground ml-2">
+                    {plan.id === 'free' ? '/ forever' : '/ month'}
+                  </span>
+                </div>
+                
+                <CardDescription className="text-base mt-2">{plan.description}</CardDescription>
+              </CardHeader>
+
+              <CardContent className="flex-1 flex flex-col gap-6">
+                <div className="space-y-4 flex-1">
+                  {plan.features.map((feature, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <div className={cn(
+                        "mt-0.5 rounded-full p-0.5", 
+                        plan.highlight ? "text-primary bg-primary/10" : "text-muted-foreground bg-muted"
+                      )}>
+                        <Check className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="text-sm text-foreground/80">{feature}</span>
+                    </div>
+                  ))}
+                </div>
+                
+                <div className="mt-auto pt-6">
                   {plan.id === 'free' ? (
                     // Free plan button
                     isCurrentPlan ? (
                       <Button 
                         variant="outline" 
-                        className="w-full h-11 text-base font-medium" 
+                        className="w-full h-12 text-base" 
                         disabled
                       >
                         Current Plan
                       </Button>
                     ) : isSwitchToFree ? (
-                      // Switching from paid plan to free
                       <Button 
                         variant="outline" 
-                        className="w-full h-11 text-base font-medium" 
+                        className="w-full h-12 text-base hover:bg-destructive/10 hover:text-destructive hover:border-destructive/20" 
                         onClick={() => handleSwitchPlan('free')}
                         disabled={switchLoading === 'free'}
                       >
@@ -499,13 +484,13 @@ export default function Subscription() {
                             Switching...
                           </>
                         ) : (
-                          'Switch to Free'
+                          'Downgrade to Free'
                         )}
                       </Button>
                     ) : (
                       <Button 
                         variant="outline" 
-                        className="w-full h-11 text-base font-medium" 
+                        className="w-full h-12 text-base" 
                         disabled
                       >
                         Free Forever
@@ -514,18 +499,18 @@ export default function Subscription() {
                   ) : isCurrentPlan ? (
                     <Button 
                       variant="outline" 
-                      className="w-full h-11 text-base font-medium" 
+                      className="w-full h-12 text-base border-primary/20 text-primary bg-primary/5" 
                       disabled
                     >
                       Current Plan
                     </Button>
                   ) : isUpgradeFromFree ? (
-                    // Upgrading from free tier - create new subscription via checkout
                     <Button 
                       className={cn(
-                        "w-full h-11 text-base font-semibold transition-all",
-                        plan.highlight && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary"
+                        "w-full h-12 text-base font-semibold shadow-md transition-all hover:scale-[1.02]",
+                        plan.highlight ? "bg-primary hover:bg-primary/90" : ""
                       )}
+                      variant={plan.highlight ? "default" : "outline"}
                       onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
                       disabled={checkoutLoading === plan.id}
                     >
@@ -539,15 +524,13 @@ export default function Subscription() {
                       )}
                     </Button>
                   ) : isSwitchBetweenPaid ? (
-                    // Switching between paid plans (standard ↔ pro)
-                    // If they have an active subscription, use switch API, otherwise use checkout
                     <Button 
                       className={cn(
-                        "w-full h-11 text-base font-semibold transition-all",
-                        isUpgrade && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary",
-                        isDowngrade && "bg-muted hover:bg-muted/80"
+                        "w-full h-12 text-base font-semibold transition-all",
+                        isUpgrade && "bg-primary hover:bg-primary/90 shadow-md",
+                        isDowngrade && "bg-muted hover:bg-muted/80 text-muted-foreground"
                       )}
-                      variant={isDowngrade ? "outline" : "default"}
+                      variant={isDowngrade ? "ghost" : "default"}
                       onClick={() => {
                         if (hasActiveSubscription) {
                           handleSwitchPlan(plan.id as 'standard' | 'pro');
@@ -569,11 +552,10 @@ export default function Subscription() {
                       )}
                     </Button>
                   ) : (
-                    // Fallback: should not reach here, but show upgrade option
                     <Button 
                       className={cn(
-                        "w-full h-11 text-base font-semibold transition-all",
-                        plan.highlight && "bg-gradient-to-r from-primary to-primary/90 hover:from-primary/90 hover:to-primary"
+                        "w-full h-12 text-base font-semibold",
+                        plan.highlight && "bg-primary hover:bg-primary/90"
                       )}
                       onClick={() => handleUpgrade(plan.id as 'standard' | 'pro')}
                       disabled={checkoutLoading === plan.id}

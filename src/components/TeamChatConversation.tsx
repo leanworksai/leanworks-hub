@@ -848,6 +848,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           selectedTasks={selectedTasks}
           selectedDocs={selectedDocs}
           implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
+          onRemoveImplicitContext={clearContext}
           onRemoveProject={toggleProject}
           onRemoveTask={toggleTask}
           onRemoveDoc={toggleDoc}

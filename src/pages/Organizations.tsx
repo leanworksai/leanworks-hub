@@ -253,7 +253,7 @@ export default function Organizations() {
     <div className="container mx-auto py-4 sm:py-8 space-y-6 sm:space-y-8 px-4 sm:px-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-border/50 pb-6 sm:pb-8">
         <div className="space-y-1">
-          <h1 className="text-2xl sm:text-4xl font-bold tracking-tight text-foreground">Organizations</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">Organizations</h1>
         </div>
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
           <DialogTrigger asChild>
@@ -312,45 +312,68 @@ export default function Organizations() {
       <div className="space-y-6">
         {allOrgs.length === 0 ? (
           <Card className="border-dashed border-2 bg-muted/20">
-            <CardContent className="py-12 sm:py-16 text-center">
-              <div className="bg-primary/10 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
-                <Building2 className="h-8 w-8 text-primary" />
+            <CardContent className="py-16 sm:py-24 text-center">
+              <div className="bg-primary/5 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ring-8 ring-primary/5">
+                <Building2 className="h-10 w-10 text-primary" />
               </div>
               <h3 className="text-xl font-semibold mb-2">No organizations yet</h3>
-              <p className="text-muted-foreground mb-6 max-w-sm mx-auto">
+              <p className="text-muted-foreground mb-8 max-w-sm mx-auto">
                 Organizations help you group projects and collaborate with specific team members.
               </p>
-              <Button onClick={() => setIsCreateDialogOpen(true)} variant="default">
-                <Plus className="mr-2 h-4 w-4" />
+              <Button onClick={() => setIsCreateDialogOpen(true)} variant="default" size="lg" className="shadow-md hover:shadow-lg transition-all">
+                <Plus className="mr-2 h-5 w-5" />
                 Create your first organization
               </Button>
             </CardContent>
           </Card>
         ) : (
-          <div className="grid gap-4 sm:gap-6 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-6 sm:gap-8 md:grid-cols-2 lg:grid-cols-3">
             {allOrgs.map(org => (
               <Card
                 key={org.id}
                 className={cn(
-                  "group relative overflow-hidden transition-all duration-300 hover:shadow-xl hover:border-primary/40 flex flex-col",
-                  currentOrg?.id === org.id ? "ring-2 ring-primary/20 border-primary/40 bg-primary/[0.01]" : ""
+                  "group relative overflow-hidden transition-all duration-300 hover:shadow-xl hover:border-primary/40 flex flex-col border-border/60 bg-card/50 hover:bg-card",
+                  currentOrg?.id === org.id 
+                    ? "ring-2 ring-primary/20 border-primary/40 bg-gradient-to-br from-primary/[0.03] to-transparent" 
+                    : "hover:-translate-y-1"
                 )}
                 onClick={() => openMembersDialog(org)}
               >
-                <CardHeader className="pb-4 space-y-4">
+                {/* Active Indicator Strip */}
+                {currentOrg?.id === org.id && (
+                  <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-primary to-primary/60" />
+                )}
+
+                <CardHeader className="pb-4 space-y-4 pt-6">
                   <div className="flex items-start justify-between gap-4">
-                    <div className="space-y-1.5 min-w-0 flex-1">
-                      <CardTitle className="text-xl font-bold truncate pr-4 leading-tight group-hover:text-primary transition-colors duration-300">
-                        {org.name}
-                      </CardTitle>
-                      <div className="flex items-center gap-2">
-                        <code className="text-[11px] px-2 py-0.5 bg-muted rounded-md text-muted-foreground font-mono truncate">
+                    <div className="space-y-2 min-w-0 flex-1">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "h-10 w-10 rounded-lg flex items-center justify-center border shadow-sm",
+                          currentOrg?.id === org.id 
+                            ? "bg-primary/10 border-primary/20 text-primary" 
+                            : "bg-muted border-border text-muted-foreground group-hover:text-foreground group-hover:border-foreground/20 transition-colors"
+                        )}>
+                          <Building2 className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <CardTitle className="text-lg font-bold truncate leading-tight group-hover:text-primary transition-colors duration-300">
+                            {org.name}
+                          </CardTitle>
+                          {org.type === 'personal' && (
+                            <p className="text-xs text-muted-foreground mt-0.5">Personal Workspace</p>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2 pl-1">
+                        <code className="text-[10px] px-1.5 py-0.5 bg-muted/50 border border-border/50 rounded text-muted-foreground font-mono truncate max-w-[150px]">
                           {org.slug}
                         </code>
                         <Button
                           variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0 hover:bg-primary/10 hover:text-primary transition-colors"
+                          size="icon"
+                          className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-primary/10 hover:text-primary"
                           onClick={(e) => handleCopySlug(org.slug, e)}
                           title="Copy slug"
                         >
@@ -362,99 +385,119 @@ export default function Organizations() {
                         </Button>
                       </div>
                     </div>
+                    
                     <div className="flex flex-col items-end gap-2 shrink-0">
                       <div className="flex flex-wrap justify-end gap-1.5">
                         {currentOrg?.id === org.id && (
                           <Badge 
-                            className="bg-emerald-500 hover:bg-emerald-600 text-white border-none px-2 py-0.5 h-5 text-[10px] font-bold uppercase tracking-wider shadow-sm flex items-center shrink-0"
+                            className="bg-emerald-500/10 text-emerald-600 hover:bg-emerald-500/20 border-emerald-500/20 px-2 py-0.5 h-5 text-[10px] font-bold uppercase tracking-wider shadow-none flex items-center shrink-0"
                           >
-                            <Check className="h-3 w-3 mr-1 stroke-[3px]" /> Current
+                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5 animate-pulse" />
+                            Active
                           </Badge>
                         )}
-                        <Badge 
-                          variant={org.isOwner ? "default" : "secondary"} 
-                          className={cn(
-                            "px-2 py-0.5 h-5 text-[10px] font-medium uppercase tracking-wider flex items-center shrink-0",
-                            org.isOwner 
-                              ? (currentOrg?.id === org.id ? "bg-primary shadow-sm" : "bg-primary/90") 
-                              : "bg-muted text-muted-foreground"
-                          )}
-                        >
-                          {org.isOwner ? (
-                            <><Crown className="h-3 w-3 mr-1" /> Owner</>
-                          ) : (
-                            <><User className="h-3 w-3 mr-1" /> Member</>
-                          )}
-                        </Badge>
                       </div>
-                      {org.memberCount !== undefined && (
-                        <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-medium">
-                          <Users className="h-3 w-3" />
-                          {org.memberCount} {org.memberCount === 1 ? 'member' : 'members'}
-                        </div>
-                      )}
+                      <Badge 
+                        variant={org.isOwner ? "default" : "secondary"} 
+                        className={cn(
+                          "px-2 py-0.5 h-5 text-[10px] font-medium uppercase tracking-wider flex items-center shrink-0 shadow-none border",
+                          org.isOwner 
+                            ? "bg-primary/10 text-primary hover:bg-primary/20 border-primary/20" 
+                            : "bg-muted text-muted-foreground border-transparent"
+                        )}
+                      >
+                        {org.isOwner ? (
+                          <><Crown className="h-3 w-3 mr-1" /> Owner</>
+                        ) : (
+                          <><User className="h-3 w-3 mr-1" /> Member</>
+                        )}
+                      </Badge>
                     </div>
                   </div>
                 </CardHeader>
 
                 <CardContent className="flex-1 pb-4">
                   {org.description ? (
-                    <p className="text-sm text-muted-foreground line-clamp-3 leading-relaxed">
+                    <p className="text-sm text-muted-foreground line-clamp-2 leading-relaxed">
                       {org.description}
                     </p>
                   ) : (
-                    <p className="text-sm text-muted-foreground/50 italic font-light">
+                    <p className="text-sm text-muted-foreground/40 italic font-light">
                       No description provided
                     </p>
                   )}
+                  
+                  <div className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1.5">
+                      <Users className="h-3.5 w-3.5" />
+                      <span className="font-medium">{org.memberCount || 1}</span> {org.memberCount === 1 ? 'member' : 'members'}
+                    </div>
+                    <div className="w-1 h-1 rounded-full bg-border" />
+                    <div className="flex items-center gap-1.5">
+                      <Building className="h-3.5 w-3.5" />
+                      <span className="capitalize">{org.type}</span>
+                    </div>
+                  </div>
                 </CardContent>
 
-                <CardFooter className="pt-2 border-t border-border/40 flex gap-2 flex-wrap bg-muted/5 group-hover:bg-muted/10 transition-colors" onClick={(e) => e.stopPropagation()}>
-                  {currentOrg?.id !== org.id && (
+                <CardFooter className="pt-3 pb-3 px-4 border-t border-border/40 flex gap-2 flex-wrap bg-muted/30 group-hover:bg-muted/50 transition-colors mt-auto" onClick={(e) => e.stopPropagation()}>
+                  {currentOrg?.id !== org.id ? (
                     <Button 
                       variant="outline" 
                       size="sm" 
                       onClick={() => switchOrg(org.id)} 
-                      className="flex-1 sm:flex-initial h-9 bg-background hover:bg-primary hover:text-primary-foreground transition-all duration-200"
+                      className="flex-1 h-8 text-xs bg-background hover:bg-primary hover:text-primary-foreground hover:border-primary transition-all duration-200 shadow-sm"
                     >
-                      Switch
+                      Switch Organization
                     </Button>
-                  )}
-                  {org.isOwner && (
-                    <>
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
-                        onClick={() => openInviteDialog(org)}
-                        className="flex-1 sm:flex-initial h-9 hover:bg-primary/10 hover:text-primary transition-colors"
-                      >
-                        <Send className="h-3.5 w-3.5 mr-2" />
-                        Invite
-                      </Button>
-                      {org.type !== 'personal' && (
-                        <Button 
-                          variant="ghost" 
-                          size="sm" 
-                          className="h-9 w-9 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors ml-auto" 
-                          onClick={() => handleDeleteOrg(org)}
-                          title="Delete Organization"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </>
-                  )}
-                  {!org.isOwner && (
+                  ) : (
                     <Button 
                       variant="ghost" 
                       size="sm" 
-                      className="flex-1 sm:flex-initial h-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors" 
-                      onClick={() => handleLeaveOrg(org)}
+                      disabled
+                      className="flex-1 h-8 text-xs bg-primary/5 text-primary cursor-default opacity-100 font-medium"
                     >
-                      <LogOut className="h-3.5 w-3.5 mr-2" />
-                      Leave
+                      Currently Active
                     </Button>
                   )}
+                  
+                  <div className="flex items-center gap-1 border-l border-border/50 pl-2 ml-1">
+                    {org.isOwner && (
+                      <>
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          onClick={() => openInviteDialog(org)}
+                          className="h-8 w-8 hover:bg-primary/10 hover:text-primary transition-colors"
+                          title="Invite Members"
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                        </Button>
+                        {org.type !== 'personal' && (
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors" 
+                            onClick={() => handleDeleteOrg(org)}
+                            title="Delete Organization"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </>
+                    )}
+                    {!org.isOwner && (
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors" 
+                        onClick={() => handleLeaveOrg(org)}
+                        title="Leave Organization"
+                      >
+                        <LogOut className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                  </div>
                 </CardFooter>
               </Card>
             ))}

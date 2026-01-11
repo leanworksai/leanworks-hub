@@ -54,6 +54,7 @@ export interface ChatInputProps {
   
   // Implicit context (current page context)
   implicitContext?: string;
+  onRemoveImplicitContext?: () => void;
   
   // Theme variant
   theme?: "default" | "purple";
@@ -88,6 +89,7 @@ export function ChatInput({
   helpText,
   hideContext = false,
   implicitContext,
+  onRemoveImplicitContext,
   theme = "default",
 }: ChatInputProps) {
   const [input, setInput] = useState("");
@@ -502,6 +504,7 @@ export function ChatInput({
           onRemoveDoc={onRemoveDoc}
           variant="inline"
           implicitContext={implicitContext}
+          onRemoveImplicitContext={onRemoveImplicitContext}
           selectedText={selectedText}
           onRemoveSelectedText={onRemoveSelectedText}
         />

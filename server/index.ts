@@ -5918,6 +5918,101 @@ app.get('/api/ga4-config', async (req, res) => {
 // AI TASK GENERATION ENDPOINT (Proxies to external AI service)
 // ============================================================================
 
+// Helper function to get AI usage limits based on plan
+function getAiUsageLimit(plan: string): number | null {
+  if (plan === 'free') {
+    return 10; // 10 credits per day for free plan
+  } else if (plan === 'standard') {
+    return 30; // 30 credits per day for standard plan
+  }
+  // Pro is unlimited
+  return null;
+}
+
+// Helper function to check and increment AI usage
+async function checkAndIncrementAiUsage(
+  userEmail: string,
+  sharedPool: any,
+  checkOnly: boolean = false
+): Promise<{ allowed: boolean; usage: number; limit: number | null; remaining: number | null; error?: string }> {
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Get current usage and plan
+  const result = await sharedPool.query(`
+    SELECT subscription_plan, ai_daily_usage, ai_usage_reset_date, trial_ends_at, stripe_subscription_id
+    FROM users WHERE email = $1
+  `, [userEmail]);
+  
+  if (result.rows.length === 0) {
+    return { allowed: false, usage: 0, limit: null, remaining: null, error: 'User not found' };
+  }
+  
+  const user = result.rows[0];
+  let plan = user.subscription_plan || 'free';
+  let currentUsage = user.ai_daily_usage || 0;
+  
+  // Reset if new day
+  if (user.ai_usage_reset_date !== today) {
+    currentUsage = 0;
+  }
+  
+  // Check trial status
+  const trialEndsAt = user.trial_ends_at ? new Date(user.trial_ends_at) : null;
+  const isTrialActive = trialEndsAt && trialEndsAt > new Date();
+  
+  // If trial has expired and user has no Stripe subscription, downgrade to free
+  if (!isTrialActive && trialEndsAt && !user.stripe_subscription_id && plan !== 'free') {
+    await sharedPool.query(`
+      UPDATE users 
+      SET subscription_plan = 'free', trial_ends_at = NULL
+      WHERE email = $1
+    `, [userEmail]);
+    plan = 'free';
+    console.log(`✅ Auto-downgraded ${userEmail} to free plan after trial expiration`);
+  }
+  
+  const limit = getAiUsageLimit(plan);
+  
+  // Check if limit is reached
+  if (limit !== null && currentUsage >= limit) {
+    return {
+      allowed: false,
+      usage: currentUsage,
+      limit,
+      remaining: 0,
+      error: 'AI usage limit reached'
+    };
+  }
+  
+  // If checkOnly, don't increment
+  if (checkOnly) {
+    return {
+      allowed: true,
+      usage: currentUsage,
+      limit,
+      remaining: limit !== null ? Math.max(0, limit - currentUsage) : null
+    };
+  }
+  
+  // Increment usage
+  await sharedPool.query(`
+    UPDATE users 
+    SET ai_daily_usage = CASE 
+      WHEN ai_usage_reset_date = $1 THEN ai_daily_usage + 1 
+      ELSE 1 
+    END,
+    ai_usage_reset_date = $1
+    WHERE email = $2
+  `, [today, userEmail]);
+  
+  return {
+    allowed: true,
+    usage: currentUsage + 1,
+    limit,
+    remaining: limit !== null ? Math.max(0, limit - currentUsage - 1) : null
+  };
+}
+
 app.post('/api/generate-task', authenticateUser, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
@@ -5965,6 +6060,19 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
       }
     }
     
+    // Check and increment AI usage BEFORE making the AI call
+    const sharedPool = await getSharedPool();
+    const usageCheck = await checkAndIncrementAiUsage(userEmail, sharedPool, false);
+    
+    if (!usageCheck.allowed) {
+      return res.status(429).json({
+        error: usageCheck.error || 'AI usage limit reached',
+        limit: usageCheck.limit,
+        usage: usageCheck.usage,
+        remaining: usageCheck.remaining,
+      });
+    }
+    
     // Ensure user_id is set
     if (!requestBody.user_id) {
       requestBody.user_id = userEmail.toLowerCase();
@@ -5978,6 +6086,19 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
       } catch (error) {
         console.error('Failed to get org slug for generate-task:', error);
       }
+    }
+    
+    // Check and increment AI usage BEFORE making the AI call
+    const sharedPool = await getSharedPool();
+    const usageCheck = await checkAndIncrementAiUsage(userEmail, sharedPool, false);
+    
+    if (!usageCheck.allowed) {
+      return res.status(429).json({
+        error: usageCheck.error || 'AI usage limit reached',
+        limit: usageCheck.limit,
+        usage: usageCheck.usage,
+        remaining: usageCheck.remaining,
+      });
     }
     
     // Proxy the request to the AI service
@@ -5999,54 +6120,6 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
     }
     
     const aiData = await aiResponse.json();
-    
-    // Increment AI usage credit (1 credit per task drafting)
-    try {
-      const sharedPool = await getSharedPool();
-      const today = new Date().toISOString().split('T')[0];
-      
-      // Get current usage and plan
-      const userResult = await sharedPool.query(`
-        SELECT subscription_plan, ai_daily_usage, ai_usage_reset_date, trial_ends_at, stripe_subscription_id
-        FROM users WHERE email = $1
-      `, [userEmail]);
-      
-      if (userResult.rows.length > 0) {
-        const user = userResult.rows[0];
-        let plan = user.subscription_plan || 'free';
-        let currentUsage = user.ai_daily_usage || 0;
-        
-        // Reset if new day
-        if (user.ai_usage_reset_date !== today) {
-          currentUsage = 0;
-        }
-        
-        // Check limits
-        let limit: number | null = null;
-        if (plan === 'free') {
-          limit = 10; // 10 credits per day for free plan
-        } else if (plan === 'standard') {
-          limit = 30; // 30 credits per day for standard plan
-        }
-        // Pro is unlimited
-        
-        if (limit === null || currentUsage < limit) {
-          // Increment usage
-          await sharedPool.query(`
-            UPDATE users 
-            SET ai_daily_usage = CASE 
-              WHEN ai_usage_reset_date = $1 THEN ai_daily_usage + 1 
-              ELSE 1 
-            END,
-            ai_usage_reset_date = $1
-            WHERE email = $2
-          `, [today, userEmail]);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to increment AI usage for task generation:', error);
-      // Don't fail the request if usage tracking fails
-    }
     
     // Return the response from the AI service
     res.json(aiData);
@@ -6277,15 +6350,8 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
     // Get actual plan from database
     const plan = user.subscription_plan || 'free';
     
-    // Calculate AI usage limits based on plan
-    let aiUsageLimit: number | null = null;
-    if (plan === 'standard') {
-      aiUsageLimit = 30; // 30 credits per day for standard plan
-    } else if (plan === 'pro') {
-      aiUsageLimit = null; // Unlimited for pro plan
-    } else {
-      aiUsageLimit = 10; // 10 credits per day for free plan
-    }
+    // Calculate AI usage limits based on plan using helper function
+    const aiUsageLimit = getAiUsageLimit(plan);
     
     res.json({
       plan,
@@ -6881,40 +6947,25 @@ app.post('/api/subscription/ai-usage', authenticateUser, async (req, res) => {
       console.log(`✅ Auto-downgraded ${userEmail} to free plan after trial expiration`);
     }
     
-    let limit: number | null = null;
-    if (plan === 'free') {
-      limit = 10; // 10 credits per day for free plan
-    } else if (plan === 'standard') {
-      limit = 30; // 30 credits per day for standard plan
-    }
-    // Pro is unlimited
+    // Use helper function to check and increment usage
+    const usageResult = await checkAndIncrementAiUsage(userEmail, sharedPool, false);
     
-    if (limit !== null && currentUsage >= limit) {
+    if (!usageResult.allowed) {
       return res.status(429).json({ 
-        error: 'AI usage limit reached',
-        limit,
-        usage: currentUsage,
+        error: usageResult.error || 'AI usage limit reached',
+        limit: usageResult.limit,
+        usage: usageResult.usage,
         plan,
         isTrialActive,
+        remaining: usageResult.remaining,
       });
     }
     
-    // Increment usage
-    await sharedPool.query(`
-      UPDATE users 
-      SET ai_daily_usage = CASE 
-        WHEN ai_usage_reset_date = $1 THEN ai_daily_usage + 1 
-        ELSE 1 
-      END,
-      ai_usage_reset_date = $1
-      WHERE email = $2
-    `, [today, userEmail]);
-    
     res.json({ 
       success: true, 
-      usage: currentUsage + 1,
-      limit,
-      remaining: limit !== null ? Math.max(0, limit - currentUsage - 1) : null,
+      usage: usageResult.usage,
+      limit: usageResult.limit,
+      remaining: usageResult.remaining,
     });
   } catch (error) {
     console.error('Increment AI usage error:', error);

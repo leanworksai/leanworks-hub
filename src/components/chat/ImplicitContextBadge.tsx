@@ -1,33 +1,60 @@
-import { MapPin, StickyNote, CheckSquare, FolderOpen } from "lucide-react";
+import { MapPin, StickyNote, CheckSquare, FolderOpen, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useNavigate } from "react-router-dom";
 
 interface ImplicitContextBadgeProps {
   implicitContext: string;
   className?: string;
   theme?: "default" | "ai-chat";
   variant?: "inline" | "message" | "sidebar"; // inline for chat input, message for chat messages, sidebar for sidebar
+  onRemove?: () => void; // Callback to remove implicit context
 }
+
+// Helper function to truncate text with ellipsis
+const truncateText = (text: string, maxLength: number = 50): string => {
+  if (text.length <= maxLength) return text;
+  return text.substring(0, maxLength) + '...';
+};
 
 export function ImplicitContextBadge({ 
   implicitContext, 
   className, 
   theme = "default",
-  variant = "message"
+  variant = "message",
+  onRemove
 }: ImplicitContextBadgeProps) {
+  const navigate = useNavigate();
+  
   if (!implicitContext) {
     return null;
   }
 
   const isAIChatTheme = theme === "ai-chat";
 
-  // Parse the implicit context string to extract type and title
+  // Parse the implicit context string to extract type, title, and ID
   // Format: "Current {type}: {title} (ID: {id})"
-  const match = implicitContext.match(/Current\s+(\w+):\s+(.+?)\s+\(ID:\s*[^)]+\)/);
+  const match = implicitContext.match(/Current\s+(\w+):\s+(.+?)\s+\(ID:\s*([^)]+)\)/);
   const contextType = match ? match[1] : null;
+  const contextId = match ? match[3].trim() : null;
   // Extract title more carefully - everything between ": " and " (ID:"
   const titleMatch = implicitContext.match(/Current\s+\w+:\s+(.+?)\s+\(ID:/);
   const contextTitle = titleMatch ? titleMatch[1].trim() : implicitContext;
+  const truncatedTitle = truncateText(contextTitle, variant === "inline" ? 40 : 50);
+  
+  // Navigation handler
+  const handleClick = (e: React.MouseEvent) => {
+    if (!contextType || !contextId) return;
+    e.stopPropagation();
+    if (contextType === 'doc') {
+      navigate(`/docs/${contextId}`);
+    } else if (contextType === 'task') {
+      navigate(`/tasks/${contextId}`);
+    } else if (contextType === 'project') {
+      navigate(`/projects/${contextId}`);
+    }
+  };
   
   // Format the context type for display
   const formatContextType = (type: string | null): string => {
@@ -75,9 +102,24 @@ export function ImplicitContextBadge({
         </div>
         <div className="space-y-1">
           <div className="flex items-center justify-between gap-1 px-2 py-1 rounded-md hover:bg-sidebar-accent group">
-            <Badge variant="secondary" className="text-xs flex-1 justify-start">
-              {contextTitle}
+            <Badge 
+              variant="secondary" 
+              className="text-xs flex-1 justify-start cursor-pointer hover:bg-sidebar-accent/80"
+              onClick={handleClick}
+              title={contextTitle}
+            >
+              {truncatedTitle}
             </Badge>
+            {onRemove && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                onClick={onRemove}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -111,14 +153,27 @@ export function ImplicitContextBadge({
             <Badge 
               variant="secondary" 
               className={cn(
-                "text-xs whitespace-nowrap flex-shrink-0 pr-5",
+                "text-xs whitespace-nowrap flex-shrink-0 cursor-pointer",
+                onRemove ? "pr-5" : "",
                 isAIChatTheme
                   ? "bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/60 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800/60"
                   : "bg-background hover:bg-accent text-foreground border border-border/60"
               )}
+              onClick={handleClick}
+              title={contextTitle}
             >
-              {contextTitle}
+              {truncatedTitle}
             </Badge>
+            {onRemove && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-4 w-4 absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity p-0"
+                onClick={onRemove}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -169,18 +224,30 @@ export function ImplicitContextBadge({
           </span>
         </div>
         <div className="space-y-1">
-          <div className="flex items-center gap-1 px-2 py-1 rounded-md">
+          <div className="flex items-center justify-between gap-1 px-2 py-1 rounded-md group">
             <Badge
               variant="secondary"
               className={cn(
-                "text-xs flex-1 justify-start",
+                "text-xs flex-1 justify-start cursor-pointer",
                 isAIChatTheme
                   ? "bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200/60 dark:bg-purple-900/40 dark:text-purple-200 dark:border-purple-800/60"
                   : "bg-background hover:bg-accent text-foreground border border-border/60"
               )}
+              onClick={handleClick}
+              title={contextTitle}
             >
-              {contextTitle}
+              {truncatedTitle}
             </Badge>
+            {onRemove && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                onClick={onRemove}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            )}
           </div>
         </div>
       </div>

@@ -40,7 +40,7 @@ export function AIChat() {
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
-  const { contextType, contextRef } = usePageContext();
+  const { contextType, contextRef, clearContext } = usePageContext();
   const { selectedTextPosition, clearSelectedText } = useSelectedTextContext();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -391,10 +391,25 @@ export function AIChat() {
       docId: selectedTextPosition.docId,
     }] : undefined;
     
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || selectedTexts) ? {
-      projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
-      tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-      docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
+    // Filter out items that are already in implicit context to avoid duplicates
+    let filteredProjects = selectedProjects;
+    let filteredTasks = selectedTasks;
+    let filteredDocs = selectedDocs;
+    
+    if (contextRef && contextType) {
+      if (contextType === 'project') {
+        filteredProjects = selectedProjects.filter(p => p.id !== contextRef.id);
+      } else if (contextType === 'task') {
+        filteredTasks = selectedTasks.filter(t => t.id !== contextRef.id);
+      } else if (contextType === 'doc') {
+        filteredDocs = selectedDocs.filter(d => d.id !== contextRef.id);
+      }
+    }
+    
+    const citedContext = (filteredProjects.length > 0 || filteredTasks.length > 0 || filteredDocs.length > 0 || selectedTexts) ? {
+      projects: filteredProjects.length > 0 ? [...filteredProjects] : undefined,
+      tasks: filteredTasks.length > 0 ? [...filteredTasks] : undefined,
+      docs: filteredDocs.length > 0 ? [...filteredDocs] : undefined,
       selectedTexts: selectedTexts,
       // Keep selectedTextPosition for API calls
       selectedTextPosition: selectedTextPosition || undefined,
@@ -509,15 +524,30 @@ export function AIChat() {
           text: currentSelectedTextPosition.text,
         } : undefined;
         
+        // Filter out items that are already in implicit context to avoid duplicates
+        let filteredProjectsForAPI = selectedProjects;
+        let filteredTasksForAPI = selectedTasks;
+        let filteredDocsForAPI = selectedDocs;
+        
+        if (contextRef && contextType) {
+          if (contextType === 'project') {
+            filteredProjectsForAPI = selectedProjects.filter(p => p.id !== contextRef.id);
+          } else if (contextType === 'task') {
+            filteredTasksForAPI = selectedTasks.filter(t => t.id !== contextRef.id);
+          } else if (contextType === 'doc') {
+            filteredDocsForAPI = selectedDocs.filter(d => d.id !== contextRef.id);
+          }
+        }
+        
         // Always create citedContextForAPI if we have any selections OR if we have selectedTextPosition with text
         // This ensures selected text is always included even if it's the only selection
         const hasSelectedTextWithText = currentSelectedTextPosition && currentSelectedTextPosition.text;
-        const shouldCreateContext = hadSelections || hasSelectedTextWithText;
+        const shouldCreateContext = (filteredProjectsForAPI.length > 0 || filteredTasksForAPI.length > 0 || filteredDocsForAPI.length > 0 || !!currentSelectedTextPosition) || hasSelectedTextWithText;
         
         const citedContextForAPI = shouldCreateContext ? {
-          projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
-          tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-          docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
+          projects: filteredProjectsForAPI.length > 0 ? [...filteredProjectsForAPI] : undefined,
+          tasks: filteredTasksForAPI.length > 0 ? [...filteredTasksForAPI] : undefined,
+          docs: filteredDocsForAPI.length > 0 ? [...filteredDocsForAPI] : undefined,
           selectedTextPosition: selectedTextPosForAPI,
         } : undefined;
         
@@ -1128,6 +1158,10 @@ export function AIChat() {
           selectedTasks={selectedTasks}
           selectedDocs={selectedDocs}
           implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
+          onRemoveImplicitContext={() => {
+            trackContextRemove('implicit-context', contextRef?.id || '');
+            clearContext();
+          }}
           selectedText={selectedTextPosition ? {
             id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
             // Show preview in UI (truncate to 100 chars), but full text is sent to API via selectedTextPosition
