@@ -1,7 +1,9 @@
 /* Editor-specific CSS for dynamic word wrapping */
 
 /* Disable hyphenation globally - rely on normal word wrapping */
+/* ProseMirror requires white-space to be set, preferably to 'pre-wrap' */
 .ProseMirror {
+  white-space: pre-wrap;
   hyphens: none;
   overflow-wrap: break-word;
   word-break: break-word;
@@ -49,10 +51,52 @@
 }
 
 /* Responsive images in editor */
-.ProseMirror img {
+.ProseMirror img,
+.ProseMirror .editor-image {
   max-width: 100%;
   height: auto;
   display: block;
+  margin: 1rem 0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  object-fit: contain;
+  cursor: default;
+}
+
+/* Image resize container and handles - for tiptap-extension-resize-image */
+.ProseMirror .image-resizer {
+  display: inline-block;
+  position: relative;
+  max-width: 100%;
+}
+
+.ProseMirror .image-resizer img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.ProseMirror .image-resizer .resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #3b82f6;
+  border: 2px solid white;
+  border-radius: 50%;
+  cursor: nwse-resize;
+  z-index: 10;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  bottom: -5px;
+  right: -5px;
+}
+
+.ProseMirror .image-resizer .resize-handle:hover {
+  background: #2563eb;
+  transform: scale(1.2);
+}
+
+.ProseMirror .image-resizer .resize-handle:active {
+  background: #1d4ed8;
 }
 
 /* Code blocks - allow horizontal scroll (don't break) */
