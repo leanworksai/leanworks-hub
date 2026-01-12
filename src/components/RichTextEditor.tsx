@@ -7,6 +7,8 @@ import { Color } from '@tiptap/extension-color';
 import TextStyle from '@tiptap/extension-text-style';
 import Paragraph from '@tiptap/extension-paragraph';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { Image } from '@tiptap/extension-image';
+import ImageResize from 'tiptap-extension-resize-image';
 import { Markdown } from 'tiptap-markdown';
 import { common, createLowlight } from 'lowlight';
 import { tableExtensions, handleTableDblClick } from '@/extensions/table';
@@ -126,6 +128,7 @@ import {
   Eraser,
   Paperclip,
   Heading,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import {
@@ -398,7 +401,9 @@ interface RichTextEditorProps {
   placeholder?: string;
   readOnly?: boolean;
   onFileUpload?: (file: File) => Promise<void>;
+  onImageAdded?: (fileInfo: { fileId: string; fileName: string; fileUrl: string; fileSize: number; mimeType: string }, docId: string) => Promise<void>; // Callback to add image to attachments, receives saved docId
   docId?: string;
+  onSaveFirst?: () => Promise<string | null>; // Callback to save document first if needed, returns new docId
 }
 
 export function RichTextEditor({ 
@@ -407,7 +412,9 @@ export function RichTextEditor({
   placeholder = 'Start writing...',
   readOnly = false,
   onFileUpload,
+  onImageAdded,
   docId,
+  onSaveFirst,
 }: RichTextEditorProps) {
   // Normalize initial content - handle both JSON and HTML
   const normalizedInitialContent = normalizeContentForTipTap(content || '<p></p>');
@@ -421,10 +428,12 @@ export function RichTextEditor({
   const lastContentPropRef = useRef<string>(initialContentString);
   const isUndoRedoRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const toolbarContainerRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const { selectedText, hasSelection, selectionBounds, selectionPosition } = useTextSelection(
     editorContainerRef,
     editorRef, // Pass ref instead of editor instance
@@ -498,6 +507,18 @@ export function RichTextEditor({
       ...tableExtensions,
       Color,
       TextStyle,
+      // Image extension with resize capability
+      Image.configure({
+        inline: true,
+        allowBase64: false,
+        HTMLAttributes: {
+          class: 'editor-image',
+        },
+      }),
+      // Image resize extension - enables drag handles for resizing
+      ImageResize.configure({
+        inline: true,
+      }),
       // Markdown extension for markdown copy/export support
       Markdown.configure({
         html: true,
@@ -1281,6 +1302,153 @@ export function RichTextEditor({
     window.dispatchEvent(new CustomEvent('openAIChat'));
   }, [setSelectedTextPosition]);
 
+  // Image upload handler
+  const handleImageUpload = useCallback(async (file: File) => {
+    if (!editor) return;
+
+    // Validate file type
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+    const validExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    const fileName = file.name.toLowerCase();
+    const isValidType = validTypes.includes(file.type) || 
+                        validExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!isValidType) {
+      alert('Only image files are allowed (JPG, PNG, WebP, GIF)');
+      return;
+    }
+
+    // Validate file size (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      alert('Image size exceeds 10MB limit');
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      // If docId is 'new', save the document first to get a real docId
+      let actualDocId = docId;
+      if (!docId || docId === 'new') {
+        if (onSaveFirst) {
+          const savedDocId = await onSaveFirst();
+          if (savedDocId) {
+            actualDocId = savedDocId;
+          } else {
+            throw new Error('Failed to save document. Please try again.');
+          }
+        } else {
+          throw new Error('Document must be saved before uploading images. Please save the document first.');
+        }
+      }
+
+      if (!actualDocId || actualDocId === 'new') {
+        throw new Error('Invalid document ID. Please save the document first.');
+      }
+
+      // Import fileUploadService dynamically
+      const { fileUploadService } = await import('@/services/api');
+      
+      // Upload image
+      const result = await fileUploadService.uploadFile(actualDocId, file);
+      
+      // Insert image at current cursor position
+      // chain().focus() ensures editor is focused and cursor position is maintained
+      // setImage() inserts the image at the current cursor position
+      editor.chain().focus().setImage({ 
+        src: result.fileUrl, 
+        alt: result.fileName 
+      }).run();
+      
+      // Add to attachments using onImageAdded callback (avoids re-upload and docId check)
+      if (onImageAdded) {
+        await onImageAdded({
+          fileId: result.fileId,
+          fileName: result.fileName,
+          fileUrl: result.fileUrl,
+          fileSize: result.fileSize,
+          mimeType: result.mimeType,
+        }, actualDocId);
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to upload image');
+    } finally {
+      setIsUploading(false);
+    }
+  }, [docId, editor, onImageAdded, onSaveFirst]);
+
+  // Drag and drop handlers
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Only set dragging to false if we're leaving the container itself
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+
+    // Filter and validate image files
+    const imageFiles = files.filter(file => {
+      const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+      const validExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+      const fileName = file.name.toLowerCase();
+      const isValidType = validTypes.includes(file.type) || 
+                          validExtensions.some(ext => fileName.endsWith(ext));
+      
+      if (!isValidType) {
+        return false;
+      }
+
+      // Validate file size (10MB max)
+      if (file.size > 10 * 1024 * 1024) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (imageFiles.length === 0) {
+      alert('No valid image files found. Please drop image files (JPG, PNG, WebP, GIF) that are under 10MB.');
+      return;
+    }
+
+    // Set cursor position at drop location before inserting images
+    if (editor && editorContainerRef.current) {
+      const proseMirror = editorContainerRef.current.querySelector('.ProseMirror');
+      if (proseMirror) {
+        const coords = { left: e.clientX, top: e.clientY };
+        const pos = editor.view.posAtCoords(coords);
+        if (pos) {
+          // Set cursor position at drop location
+          editor.commands.setTextSelection(pos.pos);
+        }
+      }
+    }
+
+    // Upload and insert each image at the cursor position (now set to drop location)
+    for (const file of imageFiles) {
+      await handleImageUpload(file);
+    }
+  }, [handleImageUpload, editor]);
+
   return (
     <div className="w-full max-w-full overflow-x-hidden">
       {/* Toolbar Container */}
@@ -1469,6 +1637,37 @@ export function RichTextEditor({
           </DropdownMenuContent>
         </DropdownMenu>
 
+        {/* Image Upload */}
+        {onFileUpload && (
+          <>
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                await handleImageUpload(file);
+                // Reset input
+                if (imageInputRef.current) {
+                  imageInputRef.current.value = '';
+                }
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => imageInputRef.current?.click()}
+              disabled={isUploading}
+              title="Insert image (max 10MB)"
+            >
+              <ImageIcon className="h-4 w-4" />
+            </Button>
+          </>
+        )}
+
         {/* File Upload */}
         {onFileUpload && docId && (
           <>
@@ -1518,7 +1717,17 @@ export function RichTextEditor({
       )}
 
       {/* Editor Content */}
-      <div ref={editorContainerRef} className="relative overflow-x-hidden min-w-0" style={{ maxWidth: '100%', width: '100%', wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+      <div 
+        ref={editorContainerRef} 
+        className={cn(
+          "relative overflow-x-hidden min-w-0",
+          isDragging && "border-2 border-primary border-dashed rounded-lg"
+        )}
+        style={{ maxWidth: '100%', width: '100%', wordBreak: 'break-word', overflowWrap: 'break-word' }}
+        onDragOver={!readOnly ? handleDragOver : undefined}
+        onDragLeave={!readOnly ? handleDragLeave : undefined}
+        onDrop={!readOnly ? handleDrop : undefined}
+      >
         <EditorContent
           editor={editor}
           className="min-h-[500px] overflow-x-hidden px-2 sm:px-3 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-normal [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror]:overflow-x-hidden [&_.ProseMirror]:max-w-full [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:max-w-full [&_.ProseMirror_p]:box-border [&_.ProseMirror_p]:whitespace-normal [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:break-words [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:whitespace-normal [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60"

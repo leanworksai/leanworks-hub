@@ -10,8 +10,26 @@ let analyticsInitialized = false;
 
 // Google Analytics 4
 let ga4Initialized = false;
+let ga4ConfigComplete = false; // Track if config command has completed
 let ga4MeasurementId: string | null = null;
 let ga4ConfigFetchPromise: Promise<string | null> | null = null;
+
+// Event queue for events fired before config completes
+interface QueuedEvent {
+  eventName: string;
+  eventParams?: Record<string, any>;
+  timestamp: number;
+  retryCount?: number;
+}
+
+const eventQueue: QueuedEvent[] = [];
+const MAX_QUEUE_SIZE = 100;
+const MAX_QUEUE_AGE = 60000; // 1 minute
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 5000; // 5 seconds
+
+// Track if GA4 is blocked by ad blocker
+let ga4Blocked = false;
 
 // Session management
 interface SessionData {
@@ -36,6 +54,24 @@ let journeyState: JourneyState = {
   previousPageStartTime: null,
   navigationMethod: 'unknown',
 };
+
+// UTM parameter tracking
+interface UTMParams {
+  utm_source?: string;
+  utm_medium?: string;
+  utm_campaign?: string;
+  utm_term?: string;
+  utm_content?: string;
+  gclid?: string; // Google Click Identifier
+  first_touch_source?: string;
+  first_touch_medium?: string;
+  first_touch_campaign?: string;
+  last_touch_source?: string;
+  last_touch_medium?: string;
+  last_touch_campaign?: string;
+}
+
+let currentUTMParams: UTMParams = {};
 
 /**
  * Fetch GA4 Measurement ID from backend (Secret Manager) or fallback to env var
@@ -226,6 +262,11 @@ async function loadGA4Script(measurementId: string, retries = 2): Promise<void> 
                 
                 // Check if script was blocked (common with ad blockers)
                 const isBlocked = !scriptElement || !scriptElement.src || scriptElement.src === '';
+                if (isBlocked) {
+                  ga4Blocked = true;
+                  console.warn('⚠️ GA4 script blocked by ad blocker or privacy extension');
+                  console.warn('   Analytics will continue to work with fallback methods');
+                }
                 const errorMsg = isBlocked 
                   ? 'GA4 script blocked (likely by ad blocker or privacy extension)'
                   : 'Failed to load GA4 script (network error or CORS issue)';
@@ -257,8 +298,208 @@ async function loadGA4Script(measurementId: string, retries = 2): Promise<void> 
 }
 
 /**
+ * Extract UTM parameters from URL
+ */
+function extractUTMParameters(): UTMParams {
+  const params: UTMParams = {};
+  const urlParams = new URLSearchParams(window.location.search);
+  
+  // Extract UTM parameters
+  const utmSource = urlParams.get('utm_source');
+  const utmMedium = urlParams.get('utm_medium');
+  const utmCampaign = urlParams.get('utm_campaign');
+  const utmTerm = urlParams.get('utm_term');
+  const utmContent = urlParams.get('utm_content');
+  const gclid = urlParams.get('gclid');
+  
+  if (utmSource) params.utm_source = utmSource;
+  if (utmMedium) params.utm_medium = utmMedium;
+  if (utmCampaign) params.utm_campaign = utmCampaign;
+  if (utmTerm) params.utm_term = utmTerm;
+  if (utmContent) params.utm_content = utmContent;
+  if (gclid) params.gclid = gclid;
+  
+  // Check session storage for first-touch attribution
+  try {
+    const storedFirstTouch = sessionStorage.getItem('analytics_first_touch');
+    if (storedFirstTouch) {
+      const firstTouch = JSON.parse(storedFirstTouch);
+      params.first_touch_source = firstTouch.source;
+      params.first_touch_medium = firstTouch.medium;
+      params.first_touch_campaign = firstTouch.campaign;
+    } else if (utmSource || utmMedium || utmCampaign) {
+      // Store first-touch attribution
+      const firstTouch = {
+        source: utmSource || 'direct',
+        medium: utmMedium || 'none',
+        campaign: utmCampaign || 'none',
+        timestamp: Date.now(),
+      };
+      sessionStorage.setItem('analytics_first_touch', JSON.stringify(firstTouch));
+      params.first_touch_source = firstTouch.source;
+      params.first_touch_medium = firstTouch.medium;
+      params.first_touch_campaign = firstTouch.campaign;
+    }
+    
+    // Update last-touch attribution
+    if (utmSource || utmMedium || utmCampaign) {
+      params.last_touch_source = utmSource || 'direct';
+      params.last_touch_medium = utmMedium || 'none';
+      params.last_touch_campaign = utmCampaign || 'none';
+    } else {
+      // Get from session storage if available
+      const storedLastTouch = sessionStorage.getItem('analytics_last_touch');
+      if (storedLastTouch) {
+        const lastTouch = JSON.parse(storedLastTouch);
+        params.last_touch_source = lastTouch.source;
+        params.last_touch_medium = lastTouch.medium;
+        params.last_touch_campaign = lastTouch.campaign;
+      }
+    }
+  } catch (error) {
+    // Ignore storage errors
+  }
+  
+  return params;
+}
+
+/**
+ * Initialize Consent Mode v2
+ */
+function initializeConsentMode(): void {
+  try {
+    // Set default consent states (denied by default for privacy)
+    // These can be updated when user accepts consent
+    const defaultConsent = {
+      analytics_storage: 'denied',
+      ad_storage: 'denied',
+      ad_user_data: 'denied',
+      ad_personalization: 'denied',
+      functionality_storage: 'granted', // Required for basic functionality
+      personalization_storage: 'denied',
+      security_storage: 'granted', // Required for security
+    };
+    
+    const gtag = (window as any).gtag;
+    if (gtag) {
+      gtag('consent', 'default', defaultConsent);
+      if (import.meta.env.DEV) {
+        console.log('✅ Consent Mode initialized with default states');
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to initialize Consent Mode:', error);
+  }
+}
+
+/**
+ * Process queued events after config completes
+ * Includes retry logic for failed events
+ */
+function processEventQueue(): void {
+  if (eventQueue.length === 0) return;
+  
+  const now = Date.now();
+  const validEvents: QueuedEvent[] = [];
+  const expiredEvents: QueuedEvent[] = [];
+  
+  // Filter events by age
+  for (const queuedEvent of eventQueue) {
+    if (now - queuedEvent.timestamp < MAX_QUEUE_AGE) {
+      validEvents.push(queuedEvent);
+    } else {
+      expiredEvents.push(queuedEvent);
+    }
+  }
+  
+  // Clear expired events
+  if (expiredEvents.length > 0 && import.meta.env.DEV) {
+    console.warn(`⚠️ Dropped ${expiredEvents.length} expired queued events`);
+  }
+  
+  // Process valid events
+  if (validEvents.length > 0) {
+    // Clear queue first
+    eventQueue.length = 0;
+    
+    // Send events
+    for (const queuedEvent of validEvents) {
+      try {
+        gtagEvent(queuedEvent.eventName, queuedEvent.eventParams);
+      } catch (error) {
+        // If event fails, add back to queue with retry count
+        const retryCount = (queuedEvent.retryCount || 0) + 1;
+        if (retryCount < MAX_RETRIES) {
+          eventQueue.push({
+            ...queuedEvent,
+            retryCount,
+            timestamp: now, // Update timestamp for retry
+          });
+        } else if (import.meta.env.DEV) {
+          console.warn(`⚠️ Event "${queuedEvent.eventName}" failed after ${MAX_RETRIES} retries`);
+        }
+      }
+    }
+    
+    if (validEvents.length > 0 && import.meta.env.DEV) {
+      console.log(`✅ Processed ${validEvents.length} queued events`);
+    }
+  } else {
+    // Clear queue if all events expired
+    eventQueue.length = 0;
+  }
+}
+
+/**
+ * Retry failed events periodically
+ */
+function retryFailedEvents(): void {
+  if (eventQueue.length === 0 || !ga4ConfigComplete) return;
+  
+  const now = Date.now();
+  const eventsToRetry: QueuedEvent[] = [];
+  
+  // Find events that should be retried
+  for (const queuedEvent of eventQueue) {
+    const age = now - queuedEvent.timestamp;
+    const retryCount = queuedEvent.retryCount || 0;
+    
+    // Retry if enough time has passed and we haven't exceeded max retries
+    if (age >= RETRY_DELAY && retryCount < MAX_RETRIES && age < MAX_QUEUE_AGE) {
+      eventsToRetry.push(queuedEvent);
+    }
+  }
+  
+  // Retry events
+  for (const queuedEvent of eventsToRetry) {
+    const index = eventQueue.indexOf(queuedEvent);
+    if (index > -1) {
+      eventQueue.splice(index, 1);
+      try {
+        gtagEvent(queuedEvent.eventName, queuedEvent.eventParams);
+      } catch (error) {
+        // Add back with incremented retry count
+        eventQueue.push({
+          ...queuedEvent,
+          retryCount: (queuedEvent.retryCount || 0) + 1,
+          timestamp: now,
+        });
+      }
+    }
+  }
+}
+
+// Set up periodic retry for failed events
+if (typeof window !== 'undefined') {
+  setInterval(() => {
+    retryFailedEvents();
+  }, RETRY_DELAY);
+}
+
+/**
  * Initialize Google Analytics 4
  * Ensures only one GA4 instance is loaded based on environment
+ * CRITICAL: Config command must fire before any events
  */
 async function initializeGA4(): Promise<void> {
   if (ga4Initialized) {
@@ -295,25 +536,73 @@ async function initializeGA4(): Promise<void> {
       (window as any).gtag = gtag;
     }
 
-    // Load script with retry mechanism
-    await loadGA4Script(measurementId);
+    // Initialize Consent Mode BEFORE config
+    initializeConsentMode();
 
-    // Initialize GA4
+    // CRITICAL: Set config command immediately in dataLayer (before script loads)
+    // This ensures config fires before any events
     const gtag = (window as any).gtag;
     gtag('js', new Date());
-    gtag('config', measurementId, {
+    
+    // Extract UTM parameters before config
+    currentUTMParams = extractUTMParameters();
+    
+    // Set config with enhanced measurement and debug mode
+    const configParams: Record<string, any> = {
       send_page_view: false, // We'll handle page views manually
-    });
+      // Enhanced measurement
+      allow_enhanced_conversions: true,
+      // Debug mode in development
+      ...(import.meta.env.DEV ? { debug_mode: true } : {}),
+    };
+    
+    // Add UTM parameters to config for proper attribution
+    if (currentUTMParams.utm_source) {
+      configParams.campaign_source = currentUTMParams.utm_source;
+    }
+    if (currentUTMParams.utm_medium) {
+      configParams.campaign_medium = currentUTMParams.utm_medium;
+    }
+    if (currentUTMParams.utm_campaign) {
+      configParams.campaign_name = currentUTMParams.utm_campaign;
+    }
+    
+    gtag('config', measurementId, configParams);
+    
+    // Mark config as complete
+    ga4ConfigComplete = true;
+
+    // Load script with retry mechanism (after config is set)
+    await loadGA4Script(measurementId);
 
     ga4Initialized = true;
     const env = import.meta.env.DEV ? 'DEV' : 'PROD';
     console.log(`✅ Google Analytics 4 initialized (${env}): ${measurementId}`);
+    
+    // Process any queued events
+    processEventQueue();
   } catch (error: any) {
     // Log as warning instead of error since GA4 is not critical for app functionality
     const errorMessage = error?.message || 'Unknown error';
-    console.warn(`⚠️ Google Analytics 4 initialization skipped: ${errorMessage}`);
-    console.warn('   Analytics will continue to work, but GA4 events will not be sent.');
+    
+    // Check if it's an ad blocker issue
+    if (errorMessage.includes('blocked') || ga4Blocked) {
+      console.warn('⚠️ Google Analytics 4 blocked by ad blocker or privacy extension');
+      console.warn('   Analytics will continue to work with fallback methods');
+      ga4Blocked = true;
+    } else {
+      console.warn(`⚠️ Google Analytics 4 initialization skipped: ${errorMessage}`);
+      console.warn('   Analytics will continue to work, but GA4 events will not be sent.');
+    }
+    
     ga4Initialized = false; // Reset on error to allow retry
+    ga4ConfigComplete = false;
+    
+    // Still process queued events even if initialization failed
+    // They'll be stored for retry when GA4 becomes available
+    if (eventQueue.length > 0 && import.meta.env.DEV) {
+      console.log(`📦 ${eventQueue.length} events queued for retry when GA4 becomes available`);
+    }
   }
 }
 
@@ -349,22 +638,29 @@ export async function initializeAnalytics(): Promise<void> {
   }
 
   // Also initialize GA4 (async, but don't wait for it)
-  initializeGA4().catch(error => {
+  // IMPORTANT: Session initialization happens after GA4 config to ensure proper attribution
+  initializeGA4().then(() => {
+    // Initialize session after GA4 is ready to ensure session_start has proper attribution
+    initializeSession();
+  }).catch(error => {
     console.error('Failed to initialize GA4:', error);
+    // Still initialize session even if GA4 fails
+    initializeSession();
   });
-  
-  // Initialize session
-  initializeSession();
   
   // Initialize is_logged_in property (defaults to false for anonymous users)
   // This will be updated when user logs in via setAnalyticsUserId
+  // Also set custom dimensions
+  const userType = determineUserType();
   setAnalyticsUserProperties({
     is_logged_in: false,
+    user_type: userType,
   });
 }
 
 /**
  * Initialize or restore session
+ * Enhanced with UTM parameters and attribution data
  */
 function initializeSession(): void {
   try {
@@ -394,10 +690,24 @@ function initializeSession(): void {
     };
     sessionStorage.setItem('analytics_session', JSON.stringify(currentSession));
 
-    // Track session start
-    trackEventDual('session_start', {
+    // Extract UTM parameters if not already extracted
+    if (Object.keys(currentUTMParams).length === 0) {
+      currentUTMParams = extractUTMParameters();
+    }
+
+    // Track session start with full attribution data
+    // This must fire after config completes, so it will be queued if needed
+    const sessionStartParams: Record<string, any> = {
       session_id: sessionId,
-    });
+      // Attribution parameters
+      ...currentUTMParams,
+      // Referrer information
+      page_referrer: document.referrer || 'direct',
+      // User agent info (anonymized)
+      user_agent: navigator.userAgent ? navigator.userAgent.substring(0, 100) : 'unknown',
+    };
+
+    trackEventDual('session_start', sessionStartParams);
   } catch (error) {
     console.error('Failed to initialize session:', error);
   }
@@ -419,17 +729,88 @@ function updateSessionActivity(): void {
 }
 
 /**
+ * Validate event parameters
+ */
+function validateEventParams(eventName: string, eventParams?: Record<string, any>): Record<string, any> {
+  const validated: Record<string, any> = { ...eventParams };
+  
+  // Remove null/undefined values
+  Object.keys(validated).forEach(key => {
+    if (validated[key] === null || validated[key] === undefined) {
+      delete validated[key];
+    }
+  });
+  
+  // Add default parameters for common events
+  if (eventName === 'page_view') {
+    if (!validated.page_title) validated.page_title = document.title;
+    if (!validated.page_location) validated.page_location = window.location.href;
+    if (!validated.page_path) validated.page_path = window.location.pathname;
+  }
+  
+  // Warn in development if critical parameters are missing
+  if (import.meta.env.DEV) {
+    const missingParams: string[] = [];
+    if (eventName === 'page_view' && !validated.page_path) {
+      missingParams.push('page_path');
+    }
+    if (missingParams.length > 0) {
+      console.warn(`⚠️ Event "${eventName}" missing parameters:`, missingParams);
+    }
+  }
+  
+  return validated;
+}
+
+/**
  * Send event to Google Analytics 4
  * Only sends to the initialized measurement ID
+ * Queues events if config hasn't completed yet
+ * Includes retry logic and graceful error handling
  */
 function gtagEvent(eventName: string, eventParams?: Record<string, any>): void {
-  if (!ga4Initialized || !ga4MeasurementId) {
+  // Validate parameters
+  const validatedParams = validateEventParams(eventName, eventParams);
+  
+  // If config hasn't completed, queue the event
+  if (!ga4ConfigComplete || !ga4Initialized || !ga4MeasurementId) {
+    // Only queue if we have space and it's not too old
+    if (eventQueue.length < MAX_QUEUE_SIZE) {
+      eventQueue.push({
+        eventName,
+        eventParams: validatedParams,
+        timestamp: Date.now(),
+        retryCount: 0,
+      });
+      if (import.meta.env.DEV) {
+        console.log(`📦 Queued event "${eventName}" (config not ready)`);
+      }
+    } else if (import.meta.env.DEV) {
+      console.warn(`⚠️ Event queue full, dropping event "${eventName}"`);
+    }
+    return;
+  }
+
+  // If GA4 is blocked, silently fail (don't spam console)
+  if (ga4Blocked) {
     return;
   }
 
   try {
     const gtag = (window as any).gtag;
     if (!gtag) {
+      // Queue if gtag not available
+      if (eventQueue.length < MAX_QUEUE_SIZE) {
+        eventQueue.push({
+          eventName,
+          eventParams: validatedParams,
+          timestamp: Date.now(),
+          retryCount: 0,
+        });
+        if (import.meta.env.DEV) {
+          console.log(`📦 Queued event "${eventName}" (gtag not available)`);
+        }
+      }
       return;
     }
 
@@ -437,22 +818,56 @@ function gtagEvent(eventName: string, eventParams?: Record<string, any>): void {
     const scriptId = `ga4-script-${ga4MeasurementId}`;
     const script = document.getElementById(scriptId);
     if (!script) {
-      console.warn('⚠️ GA4 script not found, skipping event');
+      // Script might have been removed (e.g., by ad blocker)
+      // Queue for retry
+      if (eventQueue.length < MAX_QUEUE_SIZE) {
+        eventQueue.push({
+          eventName,
+          eventParams: validatedParams,
+          timestamp: Date.now(),
+          retryCount: 0,
+        });
+      }
+      if (import.meta.env.DEV) {
+        console.warn(`⚠️ GA4 script not found, queued event "${eventName}" for retry`);
+      }
       return;
     }
 
-    // Send event - it will automatically go to the measurement ID set in gtag('config')
-    gtag('event', eventName, {
-      ...eventParams,
+    // Enrich with UTM parameters and session data
+    const enrichedParams = {
+      ...validatedParams,
       session_id: currentSession?.sessionId,
-    });
+      ...currentUTMParams,
+    };
+
+    // Send event - it will automatically go to the measurement ID set in gtag('config')
+    gtag('event', eventName, enrichedParams);
+    
+    if (import.meta.env.DEV) {
+      console.log(`📊 GA4 Event: ${eventName}`, enrichedParams);
+    }
   } catch (error: any) {
-    console.error('Failed to send GA4 event:', error);
+    // Don't log errors if GA4 is known to be blocked
+    if (!ga4Blocked) {
+      console.error('Failed to send GA4 event:', error);
+    }
+    
+    // Try to queue for retry (unless we know it's blocked)
+    if (!ga4Blocked && eventQueue.length < MAX_QUEUE_SIZE) {
+      eventQueue.push({
+        eventName,
+        eventParams: validatedParams,
+        timestamp: Date.now(),
+        retryCount: 0,
+      });
+    }
   }
 }
 
 /**
  * Send event to both Firebase Analytics and GA4
+ * Enhanced with UTM parameters and better error handling
  */
 function trackEventDual(
   eventName: string,
@@ -463,12 +878,14 @@ function trackEventDual(
   // Update session activity
   updateSessionActivity();
 
-  // Add journey context to event params
+  // Add journey context and UTM parameters to event params
   const enrichedParams = {
     ...eventParams,
     session_id: currentSession?.sessionId || 'unknown',
     previous_page: journeyState.previousPage || null,
     navigation_method: journeyState.navigationMethod,
+    // Include UTM parameters for attribution
+    ...currentUTMParams,
   };
 
   // Send to Firebase Analytics (only in production)
@@ -480,12 +897,13 @@ function trackEventDual(
     }
   }
 
-  // Send to GA4 (always enabled)
+  // Send to GA4 (always enabled, will queue if config not ready)
   gtagEvent(eventName, enrichedParams);
 }
 
 /**
  * Track a page view
+ * Enhanced with performance metrics, referrer info, and proper timing
  */
 export function trackPageView(pageName: string, pagePath?: string): void {
   const pagePathValue = pagePath || window.location.pathname;
@@ -506,16 +924,42 @@ export function trackPageView(pageName: string, pagePath?: string): void {
   journeyState.previousPage = pagePathValue;
   journeyState.previousPageStartTime = now;
 
-  // Track page view to both platforms
+  // Get performance metrics if available
+  let pageLoadTime: number | null = null;
+  let domContentLoaded: number | null = null;
+  if (typeof window !== 'undefined' && window.performance && window.performance.timing) {
+    const perf = window.performance.timing;
+    pageLoadTime = perf.loadEventEnd - perf.navigationStart;
+    domContentLoaded = perf.domContentLoadedEventEnd - perf.navigationStart;
+  } else if (typeof window !== 'undefined' && window.performance && window.performance.getEntriesByType) {
+    const navTiming = window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+    if (navTiming) {
+      pageLoadTime = navTiming.loadEventEnd - navTiming.fetchStart;
+      domContentLoaded = navTiming.domContentLoadedEventEnd - navTiming.fetchStart;
+    }
+  }
+
+  // Get referrer information
+  const referrer = document.referrer || 'direct';
+  const referrerDomain = referrer !== 'direct' ? new URL(referrer).hostname : 'direct';
+
+  // Track page view to both platforms with enhanced data
   trackEventDual('page_view', {
     page_title: pageName,
-    page_location: pagePathValue,
+    page_location: window.location.href,
     page_path: pagePathValue,
     time_on_previous_page: timeOnPreviousPage,
+    page_referrer: referrer,
+    referrer_domain: referrerDomain,
+    page_load_time: pageLoadTime,
+    dom_content_loaded: domContentLoaded,
+    // Include UTM parameters if present
+    ...currentUTMParams,
   });
 
   // Also send GA4 page_view event (standard GA4 event)
-  if (ga4Initialized && ga4MeasurementId) {
+  // This is handled by trackEventDual, but we ensure it's sent correctly
+  if (ga4Initialized && ga4MeasurementId && ga4ConfigComplete) {
     try {
       const gtag = (window as any).gtag;
       if (gtag) {
@@ -526,6 +970,8 @@ export function trackPageView(pageName: string, pagePath?: string): void {
             page_title: pageName,
             page_location: window.location.href,
             page_path: pagePathValue,
+            page_referrer: referrer,
+            ...currentUTMParams,
           });
         }
       }
@@ -593,9 +1039,11 @@ export function setAnalyticsUserId(userId: string | null): void {
       gtag('config', ga4MeasurementId, {
         user_id: userId || undefined,
       });
-      // Automatically set is_logged_in property for easy segmentation
+      // Automatically set is_logged_in property and user type for easy segmentation
+      const userType = determineUserType();
       gtag('set', {
         is_logged_in: isLoggedIn,
+        user_type: userType,
       });
     } catch (error: any) {
       console.error('Failed to set GA4 user ID:', error);
@@ -605,6 +1053,7 @@ export function setAnalyticsUserId(userId: string | null): void {
 
 /**
  * Set user properties for analytics
+ * Enhanced with custom dimensions support
  */
 export function setAnalyticsUserProperties(properties: {
   [key: string]: string | number | null;
@@ -619,7 +1068,7 @@ export function setAnalyticsUserProperties(properties: {
   }
 
   // GA4 - set as user properties (always enabled)
-  if (ga4Initialized && ga4MeasurementId) {
+  if (ga4Initialized && ga4MeasurementId && ga4ConfigComplete) {
     try {
       const gtag = (window as any).gtag;
       if (!gtag) {
@@ -634,14 +1083,50 @@ export function setAnalyticsUserProperties(properties: {
       }
 
       // GA4 uses set to update user properties
+      // Batch updates for better performance
+      const validProperties: Record<string, any> = {};
       Object.entries(properties).forEach(([key, value]) => {
-        if (value !== null) {
-          gtag('set', { [key]: value });
+        if (value !== null && value !== undefined) {
+          validProperties[key] = value;
         }
       });
+      
+      if (Object.keys(validProperties).length > 0) {
+        gtag('set', validProperties);
+      }
     } catch (error: any) {
       console.error('Failed to set GA4 user properties:', error);
     }
+  }
+}
+
+/**
+ * Set custom dimensions for better segmentation
+ * Tracks user type, subscription tier, and feature usage patterns
+ */
+export function setCustomDimensions(dimensions: {
+  user_type?: 'new' | 'returning';
+  subscription_tier?: string;
+  feature_usage_level?: 'low' | 'medium' | 'high' | 'power';
+  [key: string]: string | number | null | undefined;
+}): void {
+  setAnalyticsUserProperties(dimensions);
+}
+
+/**
+ * Determine user type (new vs returning) based on first visit
+ */
+function determineUserType(): 'new' | 'returning' {
+  try {
+    const firstVisit = localStorage.getItem('analytics_first_visit');
+    if (!firstVisit) {
+      // First visit - mark as new user
+      localStorage.setItem('analytics_first_visit', Date.now().toString());
+      return 'new';
+    }
+    return 'returning';
+  } catch {
+    return 'returning'; // Default to returning if storage fails
   }
 }
 

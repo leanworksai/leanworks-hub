@@ -67,6 +67,7 @@ import { cn } from "@/lib/utils";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { MoreOptionsMenu } from "@/components/MoreOptionsMenu";
+import { trackUpdate, trackEvent } from "@/lib/analytics";
 
 const getStatusIcon = (status: Task["status"]) => {
   switch (status) {

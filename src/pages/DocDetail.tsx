@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { memo, useEffect, useCallback, useMemo } from "react";
+import { memo, useEffect, useCallback, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
@@ -18,6 +18,7 @@ import { DocToolbar } from "@/components/DocToolbar";
 import { TitleWithToolbar } from "@/components/TitleWithToolbar";
 import { useDocDialogs } from "@/hooks/useDocDialogs";
 import { useDocFiles } from "@/hooks/useDocFiles";
+import type { DocFile } from "@/data/docsData";
 import { useDocForm } from "@/hooks/useDocForm";
 import { useManualSave } from "@/hooks/useManualSave";
 import { isDocOwner, formatFileSize, createDocActions } from "@/utils/docUtils";
@@ -60,6 +61,9 @@ export default memo(function DocDetail() {
     initialFiles: doc?.metadata?.files || [],
   });
   
+  // Ref to store save promise resolvers for image uploads
+  const savePromiseResolversRef = useRef<Array<(docId: string) => void>>([]);
+
   // Auto-save hook - always enabled since we're always in edit mode
   const autoSave = useAutoSave({
     docId: docId || 'new',
@@ -70,6 +74,10 @@ export default memo(function DocDetail() {
     files,
     enabled: true,
     onSaveSuccess: (savedDocId: string, isManual: boolean) => {
+      // Resolve any pending save promises
+      savePromiseResolversRef.current.forEach(resolve => resolve(savedDocId));
+      savePromiseResolversRef.current = [];
+
       // Track document save
       trackEvent('doc_saved', {
         doc_id: savedDocId,
@@ -92,6 +100,12 @@ export default memo(function DocDetail() {
       }
     },
     onSaveError: (error) => {
+      // Reject any pending save promises
+      savePromiseResolversRef.current.forEach(() => {
+        // Clear the array - promises will timeout
+      });
+      savePromiseResolversRef.current = [];
+      
       // Errors are handled by the hook's status
       console.error('Auto-save error:', error);
     },
@@ -158,6 +172,85 @@ export default memo(function DocDetail() {
       });
     }
   }, [docId, deleteDoc, toast, navigate, formState.title, doc?.title]);
+
+  // Handler to add image to attachments (bypasses handleFileUpload to avoid docId check)
+  const handleImageAdded = useCallback(async (fileInfo: {
+    fileId: string;
+    fileName: string;
+    fileUrl: string;
+    fileSize: number;
+    mimeType: string;
+  }, savedDocId: string) => {
+    // Use the saved docId passed from handleImageUpload (already saved at this point)
+    if (!savedDocId || savedDocId === 'new') {
+      console.warn('Image added but docId is invalid - file will be added on next save');
+      return;
+    }
+
+    // Create new file object
+    const newFile: DocFile = {
+      fileId: fileInfo.fileId,
+      fileName: fileInfo.fileName,
+      fileUrl: fileInfo.fileUrl,
+      fileSize: fileInfo.fileSize,
+      mimeType: fileInfo.mimeType,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    // Add to local files state (this will trigger auto-save to update metadata)
+    // Note: We don't directly update metadata here to avoid race conditions
+    // The auto-save hook will pick up the files change and save it
+    // But we need to update the files state in useDocFiles
+    // For now, we'll update the doc metadata directly since we have the file info
+    const updatedFiles = [...files, newFile];
+    
+    try {
+      await updateDoc.mutateAsync({
+        docId: savedDocId,
+        updates: {
+          metadata: {
+            files: updatedFiles,
+          },
+        },
+      });
+    } catch (error) {
+      console.error('Failed to add image to attachments:', error);
+      // Don't throw - image is already in content, attachment is secondary
+    }
+  }, [files, updateDoc]);
+
+  // Handler to save document first if needed (for image uploads on new docs)
+  const handleSaveFirst = useCallback(async (): Promise<string | null> => {
+    // If docId is not 'new', return it immediately
+    if (docId && docId !== 'new') {
+      return docId;
+    }
+
+    // Create a promise that will be resolved when save succeeds
+    return new Promise((resolve) => {
+      // Add resolver to the ref array
+      savePromiseResolversRef.current.push(resolve);
+
+      // Trigger manual save
+      handleSave().catch(() => {
+        // On error, remove this resolver and resolve with null
+        const index = savePromiseResolversRef.current.indexOf(resolve);
+        if (index > -1) {
+          savePromiseResolversRef.current.splice(index, 1);
+        }
+        resolve(null);
+      });
+
+      // Timeout after 10 seconds
+      setTimeout(() => {
+        const index = savePromiseResolversRef.current.indexOf(resolve);
+        if (index > -1) {
+          savePromiseResolversRef.current.splice(index, 1);
+          resolve(null);
+        }
+      }, 10000);
+    });
+  }, [docId, handleSave]);
 
   // Memoized handlers - stable references to prevent DocToolbar re-renders
   const handleBack = useCallback(() => navigate("/docs"), [navigate]);
@@ -263,7 +356,9 @@ export default memo(function DocDetail() {
               placeholder="Start writing..."
               readOnly={false}
               onFileUpload={handleFileUpload}
+              onImageAdded={handleImageAdded}
               docId={docId || undefined}
+              onSaveFirst={handleSaveFirst}
             />
           </div>
         </div>
