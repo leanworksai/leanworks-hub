@@ -1,0 +1,38 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: leanworks-hub-pdb
+  labels:
+    app: leanworks-hub
+spec:
+  minAvailable: 1  # Ensure at least 1 pod is always available
+  selector:
+    matchLabels:
+      app: leanworks-hub
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: transcription-worker-pdb
+  labels:
+    app: transcription-worker
+spec:
+  minAvailable: 1  # Ensure at least 1 worker is always available
+  selector:
+    matchLabels:
+      app: transcription-worker
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloud-sql-proxy-pdb
+  labels:
+    app: cloud-sql-proxy
+spec:
+  minAvailable: 1  # Ensure at least 1 proxy is always available for HA
+  selector:
+    matchLabels:
+      app: cloud-sql-proxy
+---
+# Note: LiveKit server has only 1 replica, so PDB is not recommended
+# If you scale it to 2+ replicas, you can add a PDB for it

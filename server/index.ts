@@ -6088,19 +6088,6 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
       }
     }
     
-    // Check and increment AI usage BEFORE making the AI call
-    const sharedPool = await getSharedPool();
-    const usageCheck = await checkAndIncrementAiUsage(userEmail, sharedPool, false);
-    
-    if (!usageCheck.allowed) {
-      return res.status(429).json({
-        error: usageCheck.error || 'AI usage limit reached',
-        limit: usageCheck.limit,
-        usage: usageCheck.usage,
-        remaining: usageCheck.remaining,
-      });
-    }
-    
     // Proxy the request to the AI service
     const aiResponse = await fetch(aiServiceUrl, {
       method: 'POST',

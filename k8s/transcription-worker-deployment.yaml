@@ -13,6 +13,8 @@ spec:
     metadata:
       labels:
         app: transcription-worker
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
     spec:
       serviceAccountName: leanworks-hub-sa  # Same service account, but with Pub/Sub subscriber role
       containers:

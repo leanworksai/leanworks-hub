@@ -13,6 +13,8 @@ spec:
     metadata:
       labels:
         app: cloud-sql-proxy
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
     spec:
       serviceAccountName: leanworks-hub-sa
       containers:

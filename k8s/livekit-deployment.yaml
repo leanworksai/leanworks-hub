@@ -18,6 +18,8 @@ spec:
     metadata:
       labels:
         app: livekit-server
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
     spec:
       serviceAccountName: leanworks-hub-sa  # Use same service account with Secret Manager access
       terminationGracePeriodSeconds: 120  # Give time for WebRTC connections to close gracefully
