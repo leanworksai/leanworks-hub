@@ -10,6 +10,8 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getOrgSlugById, getOrgPoolBySlug } from '../../database/multi-tenant-pool.js';
 import { publishCallEvent } from '../services/pubsub-events.js';
 import { flushCallBuffers } from '../services/audio-recorder.js';
+import { validateRequest } from '../middleware/validate-request.js';
+import { callOfferSchema, callAnswerSchema, iceCandidateSchema, endCallSchema } from '../validation/call-schemas.js';
 
 export function setupCallEndpoints(
   app: express.Application,
@@ -87,16 +89,14 @@ export function setupCallEndpoints(
   }
 
   // POST /api/calls/:chatId/offer - Create call offer
-  app.post('/api/calls/:chatId/offer', authenticateUser, async (req, res) => {
+  app.post('/api/calls/:chatId/offer', authenticateUser, validateRequest(callOfferSchema), async (req, res) => {
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { offer, calleeEmail } = req.body;
 
-      if (!offer || !calleeEmail) {
-        return res.status(400).json({ error: 'offer and calleeEmail are required' });
-      }
+      // Validation handled by middleware
 
       // Validate chatId
       const validation = validateDMChatId(chatId, userEmail);
@@ -205,16 +205,14 @@ export function setupCallEndpoints(
   });
 
   // POST /api/calls/:chatId/answer - Send call answer
-  app.post('/api/calls/:chatId/answer', authenticateUser, async (req, res) => {
+  app.post('/api/calls/:chatId/answer', authenticateUser, validateRequest(callAnswerSchema), async (req, res) => {
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { callId, answer } = req.body;
 
-      if (!callId || !answer) {
-        return res.status(400).json({ error: 'callId and answer are required' });
-      }
+      // Validation handled by middleware
 
       // Validate chatId
       const validation = validateDMChatId(chatId, userEmail);
@@ -309,16 +307,14 @@ export function setupCallEndpoints(
   });
 
   // POST /api/calls/:chatId/ice-candidate - Send ICE candidate
-  app.post('/api/calls/:chatId/ice-candidate', authenticateUser, async (req, res) => {
+  app.post('/api/calls/:chatId/ice-candidate', authenticateUser, validateRequest(iceCandidateSchema), async (req, res) => {
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { callId, candidate } = req.body;
 
-      if (!callId || !candidate) {
-        return res.status(400).json({ error: 'callId and candidate are required' });
-      }
+      // Validation handled by middleware
 
       // Validate chatId
       const validation = validateDMChatId(chatId, userEmail);
@@ -369,16 +365,14 @@ export function setupCallEndpoints(
   });
 
   // POST /api/calls/:chatId/end - End call
-  app.post('/api/calls/:chatId/end', authenticateUser, async (req, res) => {
+  app.post('/api/calls/:chatId/end', authenticateUser, validateRequest(endCallSchema), async (req, res) => {
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).userEmail?.toLowerCase();
       const chatId = req.params.chatId;
       const { callId } = req.body;
 
-      if (!callId) {
-        return res.status(400).json({ error: 'callId is required' });
-      }
+      // Validation handled by middleware
 
       // Validate chatId
       const validation = validateDMChatId(chatId, userEmail);

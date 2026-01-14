@@ -7,6 +7,8 @@
 import express from 'express';
 import { userQueries } from '../../database/queries.js';
 import { getOrgPool, getOrgSlugById, getSharedPool } from '../../database/multi-tenant-pool.js';
+import { validateRequest } from '../middleware/validate-request.js';
+import { createMessageSchema } from '../validation/message-schemas.js';
 
 /**
  * Check if a user has access to a project (checks visibility settings)
@@ -192,15 +194,13 @@ export function setupMessageEndpoints(
   });
 
   // POST new message - Write to Firestore only
-  app.post('/api/messages', authenticateUser, async (req, res) => {
+  app.post('/api/messages', authenticateUser, validateRequest(createMessageSchema), async (req, res) => {
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
       const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls, implicitContext } = req.body;
 
-      if (!chatId || !content) {
-        return res.status(400).json({ error: 'chatId and content are required' });
-      }
+      // Validation handled by middleware
 
       // Check authorization for project channels
       // Check both chatId (if it's a project channel) and projectId (if provided)

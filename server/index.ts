@@ -41,6 +41,16 @@ import { setupMessageEndpoints } from './endpoints/messages.js';
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
+import { validateRequest } from './middleware/validate-request.js';
+import { createTaskSchema, updateTaskSchema, fullUpdateTaskSchema } from './validation/task-schemas.js';
+import { createDocSchema, updateDocSchema } from './validation/doc-schemas.js';
+import { signupSchema, loginSchema, resendVerificationSchema } from './validation/auth-schemas.js';
+import { updateUserProfileSchema } from './validation/user-schemas.js';
+import { createOrgSchema, updateOrgSchema, inviteToOrgSchema } from './validation/org-schemas.js';
+import { createProjectSchema, updateProjectSchema, addProjectMemberSchema, addProjectCommentSchema } from './validation/project-schemas.js';
+import { createEventSchema, updateEventSchema } from './validation/event-schemas.js';
+import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/subscription-schemas.js';
+import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -607,13 +617,9 @@ app.get('/api/health', async (req, res) => {
 // DEMO REQUESTS ENDPOINT (Shared DB - Public, no auth required)
 // ============================================================================
 
-app.post('/api/demo-requests', async (req, res) => {
+app.post('/api/demo-requests', validateRequest(demoRequestSchema), async (req, res) => {
   try {
     const { name, email, company, message } = req.body;
-
-    if (!name || !email) {
-      return res.status(400).json({ error: 'Name and email are required' });
-    }
 
     const pool = await getSharedPool();
     const result = await pool.query(`
@@ -636,19 +642,11 @@ app.post('/api/demo-requests', async (req, res) => {
 // USER ENDPOINTS (Shared DB for users, Per-org DB for org data)
 // ============================================================================
 
-app.post('/api/auth/signup', async (req, res) => {
+app.post('/api/auth/signup', validateRequest(signupSchema), async (req, res) => {
   try {
     const { email, password, firstName, lastName, jobTitle, timezone } = req.body;
     
-    // Validate required fields
-    if (!email || !password || !firstName || !lastName) {
-      return res.status(400).json({ error: 'Email, password, first name, and last name are required' });
-    }
-    
-    if (!timezone) {
-      return res.status(400).json({ error: 'Timezone is required' });
-    }
-    
+    // Validation handled by middleware
     const normalizedEmail = email.toLowerCase();
     const sharedPool = await getSharedPool();
     
@@ -764,14 +762,11 @@ app.post('/api/auth/signup', async (req, res) => {
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', validateRequest(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
+    // Validation handled by middleware
     const normalizedEmail = email.toLowerCase();
     const sharedPool = await getSharedPool();
 
@@ -1002,14 +997,11 @@ app.get('/api/auth/verify-email', async (req, res) => {
 });
 
 // Resend verification email
-app.post('/api/auth/resend-verification', async (req, res) => {
+app.post('/api/auth/resend-verification', validateRequest(resendVerificationSchema), async (req, res) => {
   try {
     const { email } = req.body;
     
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-    
+    // Validation handled by middleware
     const normalizedEmail = email.toLowerCase();
     const sharedPool = await getSharedPool();
     
@@ -1220,7 +1212,7 @@ app.get('/api/users/profile', authenticateUser, async (req, res) => {
   }
 });
 
-app.put('/api/users/profile', authenticateUser, async (req, res) => {
+app.put('/api/users/profile', authenticateUser, validateRequest(updateUserProfileSchema), async (req, res) => {
   try {
     console.log('📝 [Backend] PUT /api/users/profile - Updating user profile');
     const userEmail = (req as any).userEmail;
@@ -1233,14 +1225,7 @@ app.put('/api/users/profile', authenticateUser, async (req, res) => {
       hasResponsibilities: !!responsibilities 
     });
     
-    // Validate required fields
-    if (!jobTitle || !jobTitle.trim()) {
-      return res.status(400).json({ error: 'Job title is required' });
-    }
-    
-    if (!timezone) {
-      return res.status(400).json({ error: 'Timezone is required' });
-    }
+    // Validation handled by middleware
     
     // User data is in shared DB
     const sharedPool = await getSharedPool();
@@ -1405,14 +1390,12 @@ app.get('/api/orgs', authenticateUser, async (req, res) => {
 });
 
 // Create a new organization
-app.post('/api/orgs', authenticateUser, async (req, res) => {
+app.post('/api/orgs', authenticateUser, validateRequest(createOrgSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const { name, description } = req.body;
     
-    if (!name || name.trim().length === 0) {
-      return res.status(400).json({ error: 'Organization name is required' });
-    }
+    // Validation handled by middleware
     
     const sharedPool = await getSharedPool();
     
@@ -1543,7 +1526,7 @@ app.get('/api/orgs/:orgId', authenticateUser, requireOrgMembership, async (req, 
 });
 
 // Update organization
-app.put('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, res) => {
+app.put('/api/orgs/:orgId', authenticateUser, requireOrgOwner, validateRequest(updateOrgSchema), async (req, res) => {
   try {
     const orgId = req.params.orgId;
     const { name, description, avatar } = req.body;
@@ -1854,7 +1837,7 @@ app.patch('/api/notifications/:notificationId/dismiss', authenticateUser, async 
 });
 
 // Invite user to organization
-app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (req, res) => {
+app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, validateRequest(inviteToOrgSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = req.params.orgId;
@@ -1862,25 +1845,8 @@ app.post('/api/orgs/:orgId/invite', authenticateUser, requireOrgOwner, async (re
     
     console.log(`[Invite] Request received - orgId: ${orgId}, userEmail: ${userEmail}, body:`, JSON.stringify(req.body));
     
-    if (!inviteeEmail) {
-      console.log(`[Invite] Missing inviteeEmail in request body`);
-      return res.status(400).json({ error: 'Invitee email is required' });
-    }
-    
-    const trimmedEmail = typeof inviteeEmail === 'string' ? inviteeEmail.trim() : String(inviteeEmail).trim();
-    if (!trimmedEmail) {
-      console.log(`[Invite] Empty inviteeEmail after trimming`);
-      return res.status(400).json({ error: 'Invitee email is required' });
-    }
-    
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(trimmedEmail)) {
-      console.log(`[Invite] Invalid email format: ${trimmedEmail}`);
-      return res.status(400).json({ error: 'Invalid email format' });
-    }
-    
-    const normalizedInviteeEmail = trimmedEmail.toLowerCase();
+    // Validation handled by middleware
+    const normalizedInviteeEmail = inviteeEmail.toLowerCase();
     const sharedPool = await getSharedPool();
     
     // Check if user is already a member
@@ -2701,38 +2667,24 @@ app.get('/api/projects/:id', authenticateUser, requireOrgMembership, async (req,
   }
 });
 
-app.post('/api/projects', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/projects', authenticateUser, requireOrgMembership, validateRequest(createProjectSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    // Extract data from project object (frontend sends full Project object)
+    // Validation handled by middleware
     const project = req.body;
-    const name = project?.name;
-    const description = project?.description || '';
-    const teamId = project?.teamId || null; // Can be null if project is not tied to a specific team
-    const status = project?.status || 'active';
-    const priority = project?.priority || 'medium';
-    const dueDate = project?.dueDate || null;
-    
-    // Validate visibility (default to 'all_members' - visible to all org members)
-    const validVisibility = ['all_members', 'specific_members'];
-    const projectVisibility = project?.visibility && validVisibility.includes(project.visibility) ? project.visibility : 'all_members';
-    
-    // Validate visibleToMembers for specific_members visibility
-    let visibleToMembersArray: string[] = [];
-    if (projectVisibility === 'specific_members') {
-      if (Array.isArray(project?.visibleToMembers) && project.visibleToMembers.length > 0) {
-        visibleToMembersArray = project.visibleToMembers.map((email: string) => email.toLowerCase());
-      } else {
-        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-      }
-    }
-    
-    if (!name) {
-      return res.status(400).json({ error: 'Project name is required' });
-    }
+    const name = project.name;
+    const description = project.description || '';
+    const teamId = project.teamId || null;
+    const status = project.status || 'active';
+    const priority = project.priority || 'medium';
+    const dueDate = project.dueDate || null;
+    const projectVisibility = project.visibility || 'all_members';
+    const visibleToMembersArray = (projectVisibility === 'specific_members' && project.visibleToMembers)
+      ? project.visibleToMembers.map((email: string) => email.toLowerCase())
+      : [];
     
     // Normalize email to lowercase
     const normalizedEmail = userEmail.toLowerCase();
@@ -2807,7 +2759,7 @@ app.post('/api/projects', authenticateUser, requireOrgMembership, async (req, re
   }
 });
 
-app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, validateRequest(updateProjectSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -2922,7 +2874,7 @@ app.delete('/api/projects/:id', authenticateUser, requireOrgMembership, async (r
 });
 
 // Add project member
-app.post('/api/projects/:id/members', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/projects/:id/members', authenticateUser, requireOrgMembership, validateRequest(addProjectMemberSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -2944,9 +2896,7 @@ app.post('/api/projects/:id/members', authenticateUser, requireOrgMembership, as
       return res.status(403).json({ error: 'Only project owner can add members' });
     }
     
-    if (!memberEmail) {
-      return res.status(400).json({ error: 'memberEmail is required' });
-    }
+    // Validation handled by middleware
     
     const normalizedMemberEmail = memberEmail.toLowerCase();
     
@@ -3066,7 +3016,7 @@ app.delete('/api/projects/:id/members/:memberEmail', authenticateUser, requireOr
 });
 
 // Add project comment
-app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, validateRequest(addProjectCommentSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -3074,9 +3024,7 @@ app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, a
     const { comment } = req.body;
     const pool = await getOrgPool(orgId);
     
-    if (!comment || !comment.trim()) {
-      return res.status(400).json({ error: 'Comment is required' });
-    }
+    // Validation handled by middleware
     
     // Verify project exists
     const projectResult = await pool.query(
@@ -3152,7 +3100,7 @@ app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, a
 });
 
 // Add task comment
-app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, validateRequest(addTaskCommentSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -3160,9 +3108,7 @@ app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, asyn
     const { comment } = req.body;
     const pool = await getOrgPool(orgId);
     
-    if (!comment || !comment.trim()) {
-      return res.status(400).json({ error: 'Comment is required' });
-    }
+    // Validation handled by middleware
     
     // Verify task exists
     const taskResult = await pool.query(
@@ -3524,7 +3470,7 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
   }
 });
 
-app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(createDocSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -3532,22 +3478,11 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     
     const { id, title, content, projectId, teamId, tags, visibility, visibleToMembers, metadata } = req.body;
     
-    if (!title || !content) {
-      return res.status(400).json({ error: 'Title and content are required' });
-    }
-    
-    // Validate visibility (default to 'all_members' - visible to all org members)
-    const validVisibility = ['all_members', 'specific_members'];
-    const docVisibility = visibility && validVisibility.includes(visibility) ? visibility : 'all_members';
-    
-    // Validate visibleToMembers for specific_members visibility
-    let visibleToMembersArray: string[] = [];
-    if (docVisibility === 'specific_members') {
-      if (!Array.isArray(visibleToMembers) || visibleToMembers.length === 0) {
-        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-      }
-      visibleToMembersArray = visibleToMembers.map((email: string) => email.toLowerCase());
-    }
+    // Validation is handled by middleware, so visibility and visibleToMembers are already validated
+    const docVisibility = visibility || 'all_members';
+    const visibleToMembersArray = (docVisibility === 'specific_members' && visibleToMembers)
+      ? visibleToMembers.map((email: string) => email.toLowerCase())
+      : [];
     
     const normalizedEmail = userEmail.toLowerCase();
     const docId = id || crypto.randomBytes(16).toString('hex');
@@ -3604,11 +3539,18 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =
     });
   } catch (error) {
     console.error('Create doc error:', error);
+    // Check if it's a database constraint error
+    if ((error as any).code === '23514' || (error as any).code === '23505') {
+      return res.status(400).json({ 
+        error: 'Database constraint violation',
+        details: { message: (error as Error).message }
+      });
+    }
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, validateRequest(updateDocSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -3705,13 +3647,7 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
     Object.entries(updates).forEach(([key, value]) => {
       if (key !== 'id' && fieldMap[key]) {
         const dbField = fieldMap[key];
-        // Validate visibility value
-        if (key === 'visibility') {
-          const validVisibility = ['private', 'specific_members', 'all_members'];
-          if (!validVisibility.includes(value as string)) {
-            return; // Skip invalid visibility
-          }
-        }
+        // Visibility is already validated by schema
         setClauses.push(`${dbField} = $${paramIndex}`);
         values.push(value);
         paramIndex++;
@@ -3746,6 +3682,13 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, r
     res.json({ success: true });
   } catch (error) {
     console.error('Update doc error:', error);
+    // Check if it's a database constraint error
+    if ((error as any).code === '23514' || (error as any).code === '23505') {
+      return res.status(400).json({ 
+        error: 'Database constraint violation',
+        details: { message: (error as Error).message }
+      });
+    }
     res.status(500).json({ error: (error as Error).message });
   }
 });
@@ -3777,7 +3720,7 @@ app.delete('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, 
 });
 
 // Share doc via email
-app.post('/api/docs/:docId/share', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/docs/:docId/share', authenticateUser, requireOrgMembership, validateRequest(docShareSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -3787,23 +3730,8 @@ app.post('/api/docs/:docId/share', authenticateUser, requireOrgMembership, async
     const sharedPool = await getSharedPool();
     const normalizedEmail = userEmail.toLowerCase();
 
-    // Validate request
-    if (!recipientEmail) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-
-    const trimmedEmail = typeof recipientEmail === 'string' ? recipientEmail.trim() : String(recipientEmail).trim();
-    if (!trimmedEmail) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
-
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(trimmedEmail)) {
-      return res.status(400).json({ error: 'Invalid email format' });
-    }
-
-    const normalizedRecipientEmail = trimmedEmail.toLowerCase();
+    // Validation handled by middleware
+    const normalizedRecipientEmail = recipientEmail.toLowerCase();
 
     // Get doc details and verify ownership/permission
     let docResult;
@@ -4625,25 +4553,18 @@ app.get('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
   }
 });
 
-app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/tasks', authenticateUser, requireOrgMembership, validateRequest(createTaskSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const { title, description, projectId, projectName, assigneeId, assignee, assigneeAvatar, status, priority, dueDate, tags, reason, estimatedHours, visibility, visibleToMembers } = req.body;
     
-    // Validate visibility (default to 'all_members' - visible to all org members)
-    const validVisibility = ['all_members', 'specific_members'];
-    const taskVisibility = visibility && validVisibility.includes(visibility) ? visibility : 'all_members';
+    // Validation is handled by middleware, so visibility and visibleToMembers are already validated
+    const taskVisibility = visibility || 'all_members';
+    const visibleToMembersArray = (taskVisibility === 'specific_members' && visibleToMembers) 
+      ? visibleToMembers.map((email: string) => email.toLowerCase())
+      : [];
     
-    // Validate visibleToMembers for specific_members visibility
-    let visibleToMembersArray: string[] = [];
-    if (taskVisibility === 'specific_members') {
-      if (Array.isArray(visibleToMembers) && visibleToMembers.length > 0) {
-        visibleToMembersArray = visibleToMembers.map((email: string) => email.toLowerCase());
-      } else {
-        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-      }
-    }
     const pool = await getOrgPool(orgId);
     
     // If assigneeId is provided but assignee/assigneeAvatar are not, look up the user
@@ -4699,16 +4620,20 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) 
     
     const taskId = crypto.randomBytes(16).toString('hex');
     
+    // Use createdDate from request or default to today
+    const createdDate = req.body.createdDate || new Date().toISOString().split('T')[0];
+    const createdAt = req.body.createdAt || Date.now();
+    
     await pool.query(`
       INSERT INTO tasks (
         id, title, description, project_id, project_name, assignee_id, assignee_name, assignee_avatar, status, 
-        priority, due_date, created_by, created_at, tags, reason, estimated_hours, visibility, visible_to_members
+        priority, due_date, created_by, created_at, created_date, tags, reason, estimated_hours, visibility, visible_to_members
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
     `, [
       taskId, 
       title, 
-      description, 
+      description || null, 
       projectId || null,
       finalProjectName || null,
       assigneeId || null,
@@ -4718,8 +4643,9 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) 
       priority || 'medium',
       dueDate || null,
       userEmail,
-      Date.now(),
-      tags ? JSON.stringify(tags) : null,
+      createdAt,
+      createdDate,
+      tags && tags.length > 0 ? JSON.stringify(tags) : null,
       reason || null,
       estimatedHours || null,
       taskVisibility,
@@ -4729,11 +4655,18 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) 
     res.status(201).json({ id: taskId, title, description, projectId, assigneeId, status, priority });
   } catch (error) {
     console.error('Create task error:', error);
+    // Check if it's a database constraint error
+    if ((error as any).code === '23514' || (error as any).code === '23505') {
+      return res.status(400).json({ 
+        error: 'Database constraint violation',
+        details: { message: (error as Error).message }
+      });
+    }
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequest(fullUpdateTaskSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -4741,17 +4674,18 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
     const updates = req.body;
     const pool = await getOrgPool(orgId);
     
+    // Check if task exists
+    const taskCheck = await pool.query(
+      'SELECT created_by FROM tasks WHERE id = $1',
+      [taskId]
+    );
+    
+    if (taskCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
     // Check if user is trying to update visibility - only creators can do this
     if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
-      const taskCheck = await pool.query(
-        'SELECT created_by FROM tasks WHERE id = $1',
-        [taskId]
-      );
-      
-      if (taskCheck.rows.length === 0) {
-        return res.status(404).json({ error: 'Task not found' });
-      }
-      
       const taskCreatorEmail = taskCheck.rows[0].created_by?.toLowerCase();
       const normalizedUserEmail = userEmail.toLowerCase();
       
@@ -4776,30 +4710,24 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
       priority: 'priority',
       dueDate: 'due_date',
       createdDate: 'created_date',
-      createdBy: 'created_by',
       estimatedHours: 'estimated_hours',
       actualHours: 'actual_hours',
       reason: 'reason'
     };
     
-    // Handle visibility separately
+    // Handle visibility separately (already validated by schema)
     if (updates.visibility !== undefined) {
-      const validVisibility = ['all_members', 'specific_members'];
-      const taskVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
+      const taskVisibility = updates.visibility;
       setClauses.push(`visibility = $${paramIndex}`);
       values.push(taskVisibility);
       paramIndex++;
       
-      // Handle visibleToMembers
+      // Handle visibleToMembers (already validated by schema)
       if (taskVisibility === 'specific_members') {
-        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
-          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
-          setClauses.push(`visible_to_members = $${paramIndex}`);
-          values.push(JSON.stringify(visibleToMembersArray));
-          paramIndex++;
-        } else {
-          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-        }
+        const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
+        setClauses.push(`visible_to_members = $${paramIndex}`);
+        values.push(JSON.stringify(visibleToMembersArray));
+        paramIndex++;
       } else {
         setClauses.push(`visible_to_members = $${paramIndex}`);
         values.push(JSON.stringify([]));
@@ -4814,11 +4742,12 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
         if (key === 'tags' && Array.isArray(value)) {
           setClauses.push(`tags = $${paramIndex}::jsonb`);
           values.push(JSON.stringify(value));
-        } else {
+          paramIndex++;
+        } else if (value !== undefined && value !== null) {
           setClauses.push(`${dbField} = $${paramIndex}`);
           values.push(value);
+          paramIndex++;
         }
-        paramIndex++;
       }
     });
     
@@ -4838,12 +4767,18 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
     res.json({ success: true });
   } catch (error) {
     console.error('Update task error:', error);
+    // Check if it's a database constraint error
+    if ((error as any).code === '23514' || (error as any).code === '23505') {
+      return res.status(400).json({ 
+        error: 'Database constraint violation',
+        details: { message: (error as Error).message }
+      });
+    }
     res.status(500).json({ error: (error as Error).message });
   }
 });
 
-app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, res) => {
-  // PATCH uses same logic as PUT
+app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequest(updateTaskSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -4851,17 +4786,18 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
     const updates = req.body;
     const pool = await getOrgPool(orgId);
     
+    // Check if task exists
+    const taskCheck = await pool.query(
+      'SELECT created_by FROM tasks WHERE id = $1',
+      [taskId]
+    );
+    
+    if (taskCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    
     // Check if user is trying to update visibility - only creators can do this
     if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
-      const taskCheck = await pool.query(
-        'SELECT created_by FROM tasks WHERE id = $1',
-        [taskId]
-      );
-      
-      if (taskCheck.rows.length === 0) {
-        return res.status(404).json({ error: 'Task not found' });
-      }
-      
       const taskCreatorEmail = taskCheck.rows[0].created_by?.toLowerCase();
       const normalizedUserEmail = userEmail.toLowerCase();
       
@@ -4886,30 +4822,24 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
       priority: 'priority',
       dueDate: 'due_date',
       createdDate: 'created_date',
-      createdBy: 'created_by',
       estimatedHours: 'estimated_hours',
       actualHours: 'actual_hours',
       reason: 'reason'
     };
     
-    // Handle visibility separately (same as PUT endpoint)
+    // Handle visibility separately (already validated by schema)
     if (updates.visibility !== undefined) {
-      const validVisibility = ['all_members', 'specific_members'];
-      const taskVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
+      const taskVisibility = updates.visibility;
       setClauses.push(`visibility = $${paramIndex}`);
       values.push(taskVisibility);
       paramIndex++;
       
-      // Handle visibleToMembers
+      // Handle visibleToMembers (already validated by schema)
       if (taskVisibility === 'specific_members') {
-        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
-          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
-          setClauses.push(`visible_to_members = $${paramIndex}`);
-          values.push(JSON.stringify(visibleToMembersArray));
-          paramIndex++;
-        } else {
-          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-        }
+        const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
+        setClauses.push(`visible_to_members = $${paramIndex}`);
+        values.push(JSON.stringify(visibleToMembersArray));
+        paramIndex++;
       } else {
         setClauses.push(`visible_to_members = $${paramIndex}`);
         values.push(JSON.stringify([]));
@@ -4924,11 +4854,12 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
         if (key === 'tags' && Array.isArray(value)) {
           setClauses.push(`tags = $${paramIndex}::jsonb`);
           values.push(JSON.stringify(value));
-        } else {
+          paramIndex++;
+        } else if (value !== undefined && value !== null) {
           setClauses.push(`${dbField} = $${paramIndex}`);
           values.push(value);
+          paramIndex++;
         }
-        paramIndex++;
       }
     });
     
@@ -4948,6 +4879,13 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, 
     res.json({ success: true });
   } catch (error) {
     console.error('Update task error:', error);
+    // Check if it's a database constraint error
+    if ((error as any).code === '23514' || (error as any).code === '23505') {
+      return res.status(400).json({ 
+        error: 'Database constraint violation',
+        details: { message: (error as Error).message }
+      });
+    }
     res.status(500).json({ error: (error as Error).message });
   }
 });
@@ -5093,59 +5031,28 @@ app.get('/api/events/:id', authenticateUser, requireOrgMembership, async (req, r
   }
 });
 
-app.post('/api/events', authenticateUser, requireOrgMembership, async (req, res) => {
+app.post('/api/events', authenticateUser, requireOrgMembership, validateRequest(createEventSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
     const { title, description, startDate, endDate, allDay, location, attendees, visibility, visibleToMembers } = req.body;
     
-    if (!title || !startDate || !endDate) {
-      return res.status(400).json({ error: 'Title, startDate, and endDate are required' });
-    }
+    // Validation handled by middleware
+    const eventVisibility = visibility || 'all_members';
+    const visibleToMembersArray = (eventVisibility === 'specific_members' && visibleToMembers)
+      ? visibleToMembers.map((email: string) => email.toLowerCase())
+      : [];
     
-    // Validate visibility (default to 'all_members' - visible to all org members)
-    const validVisibility = ['all_members', 'specific_members'];
-    const eventVisibility = visibility && validVisibility.includes(visibility) ? visibility : 'all_members';
+    const attendeesArray = attendees ? attendees.map((email: string) => email.toLowerCase()) : [];
     
-    // Validate visibleToMembers for specific_members visibility
-    let visibleToMembersArray: string[] = [];
-    if (eventVisibility === 'specific_members') {
-      if (Array.isArray(visibleToMembers) && visibleToMembers.length > 0) {
-        visibleToMembersArray = visibleToMembers.map((email: string) => email.toLowerCase());
-      } else {
-        return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-      }
-    }
+    // Parse dates
+    let startDateParsed = new Date(startDate);
+    let endDateParsed = new Date(endDate);
     
-    // Validate and normalize attendees
-    let attendeesArray: string[] = [];
-    if (Array.isArray(attendees) && attendees.length > 0) {
-      attendeesArray = attendees.map((email: string) => email.toLowerCase());
-    }
-    
-    // Parse dates - handle both date-only (YYYY-MM-DD) and datetime strings
-    let startDateParsed: Date;
-    let endDateParsed: Date;
-    
-    try {
-      startDateParsed = new Date(startDate);
-      endDateParsed = new Date(endDate);
-      
-      if (isNaN(startDateParsed.getTime()) || isNaN(endDateParsed.getTime())) {
-        return res.status(400).json({ error: 'Invalid date format' });
-      }
-      
-      // If allDay is true, set time to start of day
-      if (allDay) {
-        startDateParsed.setHours(0, 0, 0, 0);
-        endDateParsed.setHours(23, 59, 59, 999);
-      }
-    } catch (error) {
-      return res.status(400).json({ error: 'Invalid date format' });
-    }
-    
-    if (endDateParsed < startDateParsed) {
-      return res.status(400).json({ error: 'End date must be after start date' });
+    // If allDay is true, set time to start of day
+    if (allDay) {
+      startDateParsed.setHours(0, 0, 0, 0);
+      endDateParsed.setHours(23, 59, 59, 999);
     }
     
     const pool = await getOrgPool(orgId);
@@ -5179,7 +5086,7 @@ app.post('/api/events', authenticateUser, requireOrgMembership, async (req, res)
   }
 });
 
-app.patch('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
+app.patch('/api/events/:id', authenticateUser, requireOrgMembership, validateRequest(updateEventSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const orgId = (req as any).orgId;
@@ -6359,7 +6266,7 @@ app.get('/api/subscription/status', authenticateUser, async (req, res) => {
 });
 
 // Create Stripe checkout session
-app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
+app.post('/api/subscription/checkout', authenticateUser, validateRequest(checkoutSchema), async (req, res) => {
   try {
     const stripeClient = await getStripe();
     if (!stripeClient) {
@@ -6369,9 +6276,7 @@ app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
     const userEmail = (req as any).userEmail;
     const { plan, successUrl, cancelUrl } = req.body;
     
-    if (!plan || !['standard', 'pro'].includes(plan)) {
-      return res.status(400).json({ error: 'Invalid plan. Must be "standard" or "pro"' });
-    }
+    // Validation handled by middleware
     
     const priceId = STRIPE_PRICE_IDS[plan as keyof typeof STRIPE_PRICE_IDS];
     if (!priceId) {
@@ -6441,7 +6346,7 @@ app.post('/api/subscription/checkout', authenticateUser, async (req, res) => {
 });
 
 // Create Stripe customer portal session
-app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
+app.post('/api/subscription/portal', authenticateUser, validateRequest(portalSchema), async (req, res) => {
   try {
     const stripeClient = await getStripe();
     if (!stripeClient) {
@@ -6474,14 +6379,12 @@ app.post('/api/subscription/portal', authenticateUser, async (req, res) => {
 });
 
 // Switch subscription plan (upgrade or downgrade between plans)
-app.post('/api/subscription/switch', authenticateUser, async (req, res) => {
+app.post('/api/subscription/switch', authenticateUser, validateRequest(switchPlanSchema), async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
     const { plan } = req.body;
     
-    if (!plan || !['free', 'standard', 'pro'].includes(plan)) {
-      return res.status(400).json({ error: 'Invalid plan. Must be "free", "standard", or "pro"' });
-    }
+    // Validation handled by middleware
     
     const sharedPool = await getSharedPool();
     const userResult = await sharedPool.query(

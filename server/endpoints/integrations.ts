@@ -8,6 +8,15 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getOrgPool, getOrgPoolBySlug, getSharedPool, getOrgSlugById } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
+import { validateRequest } from '../middleware/validate-request.js';
+import {
+  slackIntegrationSchema,
+  atlassianIntegrationSchema,
+  outlookIntegrationSchema,
+  notionIntegrationSchema,
+  linearIntegrationSchema,
+  clickupIntegrationSchema,
+} from '../validation/integration-schemas.js';
 
 // Cache for org name lookups (org_id -> name, slug -> name)
 const orgNameCache = new Map<string, string>();
