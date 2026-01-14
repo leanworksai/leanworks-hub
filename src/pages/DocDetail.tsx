@@ -335,8 +335,8 @@ export default memo(function DocDetail() {
     [user?.email, doc?.ownerEmail]
   );
 
-  // Memoize toolbar element
-  const toolbarElement = useMemo(
+  // Memoize top toolbar (back button and menu) - always visible
+  const topToolbarElement = useMemo(
     () => (
       <DocToolbar
         onBack={handleBack}
@@ -419,27 +419,11 @@ export default memo(function DocDetail() {
               )}
             </div>
             
-            {/* Desktop toolbar - bottom (edit mode only) */}
-            <div className="hidden sm:flex fixed bottom-4 left-1/2 z-50" style={{ transform: 'translateX(-50%)' }}>
-              <div className="flex items-center gap-2 px-4 py-3 bg-background/95 backdrop-blur-sm border border-border/30 rounded-full shadow-lg">
-                {toolbarElement}
-              </div>
-            </div>
+            {/* Mobile toolbar - top (edit mode only, shows with keyboard, scrolls with content) */}
+            {/* Note: Back button and 3 dots are in the mobile header above, not in this toolbar */}
             
-            {/* Mobile toolbar - bottom (edit mode only, shows with keyboard) */}
-            {isKeyboardVisible && (
-              <div className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-sm border-t border-border/30 shadow-lg">
-                <div className="overflow-x-auto scrollbar-hide">
-                  <div className="flex items-center gap-2 px-4 py-3 min-w-max">
-                    {toolbarElement}
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            {/* Editor - padding handled internally by RichTextEditor for bottom toolbar */}
-            <div className="pb-20 sm:pb-20">
-              <RichTextEditor
+            {/* Editor - padding handled internally by RichTextEditor */}
+            <RichTextEditor
               key={docId || "new"}
               content={formState.content || ""}
               onChange={(content) => {
@@ -454,7 +438,6 @@ export default memo(function DocDetail() {
               docId={docId || undefined}
               onSaveFirst={handleSaveFirst}
             />
-            </div>
           </div>
         </div>
       )}
