@@ -295,15 +295,30 @@ async function retryFirebaseOperation<T>(
   throw lastError;
 }
 
+// Rate limiting for "No token provided" logs to prevent spam
+const noTokenLogCache = new Map<string, number>();
+const NO_TOKEN_LOG_INTERVAL = 60000; // Log once per minute per endpoint
+
 async function authenticateUser(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.error('❌ [Backend] authenticateUser: No token provided', {
-        hasAuthHeader: !!authHeader,
-        authHeader: authHeader?.substring(0, 50),
-      });
+      // Rate limit logging to prevent spam from polling/retry mechanisms
+      const endpointKey = `${req.method} ${req.path}`;
+      const now = Date.now();
+      const lastLogTime = noTokenLogCache.get(endpointKey) || 0;
+      
+      if (now - lastLogTime > NO_TOKEN_LOG_INTERVAL) {
+        console.warn('⚠️ [Backend] authenticateUser: No token provided', {
+          hasAuthHeader: !!authHeader,
+          authHeader: authHeader?.substring(0, 50),
+          method: req.method,
+          path: req.path,
+        });
+        noTokenLogCache.set(endpointKey, now);
+      }
+      
       return res.status(401).json({ error: 'No token provided' });
     }
 
