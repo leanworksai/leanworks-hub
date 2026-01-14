@@ -1101,6 +1101,12 @@ app.get('/api/users', authenticateUser, async (req, res) => {
     const userEmail = (req as any).userEmail;
     const orgId = req.headers['x-org-id'] as string;
     
+    // Extract query parameters
+    const status = req.query.status as string | undefined;
+    const role = req.query.role as string | undefined;
+    const searchTerm = req.query.searchTerm as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    
     // If org context is provided, return org members from org-specific users table
     // Otherwise, return all users the requesting user can see (from their orgs)
     if (orgId) {
@@ -1110,17 +1116,57 @@ app.get('/api/users', authenticateUser, async (req, res) => {
         return res.status(403).json({ error: 'Not a member of this organization' });
       }
       
+      // Build WHERE conditions
+      const whereConditions: string[] = [];
+      const queryParams: any[] = [];
+      let paramIndex = 1;
+      
+      // Base condition - exclude inactive by default unless status filter is provided
+      if (status) {
+        whereConditions.push(`status = $${paramIndex}`);
+        queryParams.push(status);
+        paramIndex++;
+      } else {
+        whereConditions.push(`status != 'inactive'`);
+      }
+      
+      if (role) {
+        whereConditions.push(`role = $${paramIndex}`);
+        queryParams.push(role);
+        paramIndex++;
+      }
+      
+      if (searchTerm) {
+        whereConditions.push(`(
+          email ILIKE $${paramIndex}
+          OR first_name ILIKE $${paramIndex}
+          OR last_name ILIKE $${paramIndex}
+          OR job_title ILIKE $${paramIndex}
+        )`);
+        queryParams.push(`%${searchTerm}%`);
+        paramIndex++;
+      }
+      
+      // Build LIMIT clause
+      const limitClause = limit ? `LIMIT $${paramIndex}` : '';
+      if (limit) {
+        queryParams.push(limit);
+      }
+      
+      const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+      
       // Get org members from org-specific users table
       const orgPool = await getOrgPool(orgId);
       const result = await orgPool.query(`
         SELECT email, first_name, last_name, job_title, responsibilities,
                avatar, timezone, status, role, joined_at, last_active_at, created_at
         FROM users 
-        WHERE status != 'inactive'
+        ${whereClause}
         ORDER BY 
           CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
           created_at ASC
-      `);
+        ${limitClause}
+      `, queryParams);
       
       const transformed = result.rows.map(member => ({
         email: member.email,
@@ -1141,15 +1187,43 @@ app.get('/api/users', authenticateUser, async (req, res) => {
     } else {
       // No org context - return users from all orgs the user belongs to
       const sharedPool = await getSharedPool();
+      
+      // Build WHERE conditions
+      const whereConditions: string[] = [];
+      const queryParams: any[] = [userEmail];
+      let paramIndex = 2;
+      
+      whereConditions.push(`om.org_id IN (
+        SELECT org_id FROM org_members WHERE user_email = $1
+      )`);
+      
+      if (searchTerm) {
+        whereConditions.push(`(
+          u.email ILIKE $${paramIndex}
+          OR u.first_name ILIKE $${paramIndex}
+          OR u.last_name ILIKE $${paramIndex}
+          OR u.job_title ILIKE $${paramIndex}
+        )`);
+        queryParams.push(`%${searchTerm}%`);
+        paramIndex++;
+      }
+      
+      // Build LIMIT clause
+      const limitClause = limit ? `LIMIT $${paramIndex}` : '';
+      if (limit) {
+        queryParams.push(limit);
+      }
+      
+      const whereClause = whereConditions.join(' AND ');
+      
       const result = await sharedPool.query(`
         SELECT DISTINCT u.email, u.first_name, u.last_name, u.job_title, u.responsibilities, u.created_at
         FROM users u
         INNER JOIN org_members om ON u.email = om.user_email
-        WHERE om.org_id IN (
-          SELECT org_id FROM org_members WHERE user_email = $1
-        )
+        WHERE ${whereClause}
         ORDER BY u.created_at DESC
-      `, [userEmail]);
+        ${limitClause}
+      `, queryParams);
       
     const transformed = result.rows.map(row => {
       const user = transformRow(row);
@@ -2309,6 +2383,57 @@ app.get('/api/projects', authenticateUser, requireOrgMembership, async (req, res
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
+    // Extract query parameters
+    const status = req.query.status as string | undefined;
+    const owner = req.query.owner as string | undefined;
+    const memberEmail = req.query.memberEmail as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    
+    // Build WHERE conditions
+    const whereConditions: string[] = [];
+    const queryParams: any[] = [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])];
+    let paramIndex = 3;
+    
+    // Base visibility conditions
+    whereConditions.push(`(
+      -- Owner always has access
+      p.owner_email = $1
+      -- OR visibility is 'all_members' (default - visible to all org members)
+      OR (p.visibility = 'all_members' OR p.visibility IS NULL)
+      -- OR visibility is 'specific_members' and user is in visible_to_members
+      OR (p.visibility = 'specific_members' AND p.visible_to_members IS NOT NULL AND p.visible_to_members @> $2::jsonb)
+    )`);
+    
+    // Add filter conditions
+    if (status) {
+      whereConditions.push(`p.status = $${paramIndex}`);
+      queryParams.push(status);
+      paramIndex++;
+    }
+    
+    if (owner) {
+      whereConditions.push(`p.owner_email = $${paramIndex}`);
+      queryParams.push(owner.toLowerCase());
+      paramIndex++;
+    }
+    
+    if (memberEmail) {
+      whereConditions.push(`EXISTS (
+        SELECT 1 FROM project_members pm
+        WHERE pm.project_id = p.id AND pm.user_email = $${paramIndex}
+      )`);
+      queryParams.push(memberEmail.toLowerCase());
+      paramIndex++;
+    }
+    
+    // Build LIMIT clause
+    const limitClause = limit ? `LIMIT $${paramIndex}` : '';
+    if (limit) {
+      queryParams.push(limit);
+    }
+    
+    const whereClause = whereConditions.join(' AND ');
+    
     const result = await pool.query(`
       SELECT 
         p.*,
@@ -2348,16 +2473,10 @@ app.get('/api/projects', authenticateUser, requireOrgMembership, async (req, res
         LEFT JOIN projects p2 ON t.project_id = p2.id
         WHERE t.project_id = p.id), '[]'::json) as tasks
       FROM projects p
-      WHERE (
-        -- Owner always has access
-        p.owner_email = $1
-        -- OR visibility is 'all_members' (default - visible to all org members)
-        OR (p.visibility = 'all_members' OR p.visibility IS NULL)
-        -- OR visibility is 'specific_members' and user is in visible_to_members
-        OR (p.visibility = 'specific_members' AND p.visible_to_members IS NOT NULL AND p.visible_to_members @> $2::jsonb)
-      )
+      WHERE ${whereClause}
       ORDER BY p.created_at DESC
-    `, [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
+      ${limitClause}
+    `, queryParams);
     
     // Collect all member emails for batch user lookup
     const allMemberEmails: string[] = [];
@@ -3963,6 +4082,110 @@ app.get('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) =
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
+    // Extract query parameters
+    const status = req.query.status as string | undefined;
+    const priority = req.query.priority as string | undefined;
+    const assignee = req.query.assignee as string | undefined;
+    const projectId = req.query.projectId as string | undefined;
+    const createdAfter = req.query.createdAfter as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    const sortBy = req.query.sortBy as string | undefined;
+    const sortOrder = (req.query.sortOrder as string | undefined)?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    
+    // Build WHERE conditions
+    const whereConditions: string[] = [];
+    const queryParams: any[] = [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])];
+    let paramIndex = 3;
+    
+    // Base visibility conditions
+    whereConditions.push(`(
+      -- Tasks with projects: project visibility determines task visibility
+      (t.project_id IS NOT NULL AND (
+        -- Project owner always has access
+        p.owner_email = $1
+        -- OR project visibility is 'all_members' (default - all org members can see)
+        OR (p.visibility = 'all_members' OR p.visibility IS NULL)
+        -- OR project visibility is 'specific_members' and user is in visible_to_members
+        OR (p.visibility = 'specific_members' AND p.visible_to_members IS NOT NULL AND p.visible_to_members @> $2::jsonb)
+      ))
+      -- OR tasks without projects: check task visibility
+      OR (t.project_id IS NULL AND (
+        -- Creator or assignee always has access
+        (t.created_by = $1 OR t.assignee_id = $1)
+        -- OR task visibility is 'all_members' (default - visible to all org members)
+        OR (t.visibility = 'all_members' OR t.visibility IS NULL)
+        -- OR task visibility is 'specific_members' and user is in visible_to_members
+        OR (t.visibility = 'specific_members' AND t.visible_to_members IS NOT NULL AND t.visible_to_members @> $2::jsonb)
+      ))
+    )`);
+    
+    // Add filter conditions
+    if (status) {
+      whereConditions.push(`t.status = $${paramIndex}`);
+      queryParams.push(status);
+      paramIndex++;
+    }
+    
+    if (priority) {
+      whereConditions.push(`t.priority = $${paramIndex}`);
+      queryParams.push(priority);
+      paramIndex++;
+    }
+    
+    if (assignee) {
+      whereConditions.push(`t.assignee_id = $${paramIndex}`);
+      queryParams.push(assignee.toLowerCase());
+      paramIndex++;
+    }
+    
+    if (projectId) {
+      whereConditions.push(`t.project_id = $${paramIndex}`);
+      queryParams.push(projectId);
+      paramIndex++;
+    }
+    
+    if (createdAfter) {
+      whereConditions.push(`(t.created_date >= $${paramIndex}::date OR (t.created_date IS NULL AND t.created_at >= $${paramIndex}::timestamp))`);
+      queryParams.push(createdAfter);
+      paramIndex++;
+    }
+    
+    // Build ORDER BY clause
+    let orderByClause = '';
+    if (sortBy) {
+      const validSortFields: { [key: string]: string } = {
+        'status': 't.status',
+        'priority': 't.priority',
+        'createdAt': 't.created_at',
+        'createdDate': 't.created_date',
+        'dueDate': 't.due_date',
+        'title': 't.title',
+        'assignee': 't.assignee_id'
+      };
+      const sortField = validSortFields[sortBy] || 't.created_at';
+      orderByClause = `ORDER BY ${sortField} ${sortOrder}`;
+    } else {
+      // Default ordering
+      orderByClause = `ORDER BY 
+        CASE t.status
+          WHEN 'todo' THEN 1
+          WHEN 'in-progress' THEN 2
+          WHEN 'review' THEN 3
+          WHEN 'blocked' THEN 4
+          WHEN 'completed' THEN 5
+          ELSE 6
+        END,
+        t.created_at DESC`;
+    }
+    
+    // Build LIMIT clause
+    const limitClause = limit ? `LIMIT $${paramIndex}` : '';
+    if (limit) {
+      queryParams.push(limit);
+    }
+    
+    const whereClause = whereConditions.join(' AND ');
+    
     const result = await pool.query(`
       SELECT 
         t.id,
@@ -4004,37 +4227,10 @@ app.get('/api/tasks', authenticateUser, requireOrgMembership, async (req, res) =
         ) latest_update) as progressUpdates
       FROM tasks t
       LEFT JOIN projects p ON t.project_id = p.id
-      WHERE (
-        -- Tasks with projects: project visibility determines task visibility
-        (t.project_id IS NOT NULL AND (
-          -- Project owner always has access
-          p.owner_email = $1
-          -- OR project visibility is 'all_members' (default - all org members can see)
-          OR (p.visibility = 'all_members' OR p.visibility IS NULL)
-          -- OR project visibility is 'specific_members' and user is in visible_to_members
-          OR (p.visibility = 'specific_members' AND p.visible_to_members IS NOT NULL AND p.visible_to_members @> $2::jsonb)
-        ))
-        -- OR tasks without projects: check task visibility
-        OR (t.project_id IS NULL AND (
-          -- Creator or assignee always has access
-          (t.created_by = $1 OR t.assignee_id = $1)
-          -- OR task visibility is 'all_members' (default - visible to all org members)
-          OR (t.visibility = 'all_members' OR t.visibility IS NULL)
-          -- OR task visibility is 'specific_members' and user is in visible_to_members
-          OR (t.visibility = 'specific_members' AND t.visible_to_members IS NOT NULL AND t.visible_to_members @> $2::jsonb)
-        ))
-      )
-      ORDER BY 
-        CASE t.status
-          WHEN 'todo' THEN 1
-          WHEN 'in-progress' THEN 2
-          WHEN 'review' THEN 3
-          WHEN 'blocked' THEN 4
-          WHEN 'completed' THEN 5
-          ELSE 6
-        END,
-        t.created_at DESC
-    `, [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
+      WHERE ${whereClause}
+      ${orderByClause}
+      ${limitClause}
+    `, queryParams);
     
     // Collect all user emails for batch lookup
     const allEmails: string[] = [];
@@ -4916,6 +5112,60 @@ app.get('/api/events', authenticateUser, requireOrgMembership, async (req, res) 
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
+    // Extract query parameters
+    const filterUserEmail = req.query.userEmail as string | undefined;
+    const startDate = req.query.startDate as string | undefined;
+    const endDate = req.query.endDate as string | undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+    
+    // Build WHERE conditions
+    const whereConditions: string[] = [];
+    const queryParams: any[] = [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])];
+    let paramIndex = 3;
+    
+    // Base visibility conditions
+    whereConditions.push(`(
+      -- Creator always has access
+      e.created_by = $1
+      -- OR event visibility is 'all_members' (default - visible to all org members)
+      OR (e.visibility = 'all_members' OR e.visibility IS NULL)
+      -- OR event visibility is 'specific_members' and user is in visible_to_members
+      OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $2::jsonb)
+      -- OR user is in attendees
+      OR (e.attendees IS NOT NULL AND e.attendees @> $2::jsonb)
+    )`);
+    
+    // Add filter conditions
+    if (filterUserEmail) {
+      whereConditions.push(`(
+        e.created_by = $${paramIndex}
+        OR (e.attendees IS NOT NULL AND e.attendees @> $${paramIndex + 1}::jsonb)
+      )`);
+      queryParams.push(filterUserEmail.toLowerCase());
+      queryParams.push(JSON.stringify([filterUserEmail.toLowerCase()]));
+      paramIndex += 2;
+    }
+    
+    if (startDate) {
+      whereConditions.push(`e.start_date >= $${paramIndex}::date`);
+      queryParams.push(startDate);
+      paramIndex++;
+    }
+    
+    if (endDate) {
+      whereConditions.push(`e.end_date <= $${paramIndex}::date`);
+      queryParams.push(endDate);
+      paramIndex++;
+    }
+    
+    // Build LIMIT clause
+    const limitClause = limit ? `LIMIT $${paramIndex}` : '';
+    if (limit) {
+      queryParams.push(limit);
+    }
+    
+    const whereClause = whereConditions.join(' AND ');
+    
     const result = await pool.query(`
       SELECT 
         e.id,
@@ -4932,18 +5182,10 @@ app.get('/api/events', authenticateUser, requireOrgMembership, async (req, res) 
         e.created_at,
         e.updated_at
       FROM events e
-      WHERE (
-        -- Creator always has access
-        e.created_by = $1
-        -- OR event visibility is 'all_members' (default - visible to all org members)
-        OR (e.visibility = 'all_members' OR e.visibility IS NULL)
-        -- OR event visibility is 'specific_members' and user is in visible_to_members
-        OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $2::jsonb)
-        -- OR user is in attendees
-        OR (e.attendees IS NOT NULL AND e.attendees @> $2::jsonb)
-      )
+      WHERE ${whereClause}
       ORDER BY e.start_date ASC
-    `, [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
+      ${limitClause}
+    `, queryParams);
     
     const events = result.rows.map(row => ({
       id: row.id,
@@ -5310,6 +5552,9 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       const userEmail = (req as any).user?.email?.toLowerCase() || (req as any).userEmail?.toLowerCase();
       const chatId = decodeURIComponent(req.params.chatId);
       const afterTimestamp = req.query.afterTimestamp ? new Date(req.query.afterTimestamp as string) : undefined;
+      const role = req.query.role as string | undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+      const orderBy = (req.query.orderBy as string | undefined)?.toLowerCase() === 'desc' ? 'desc' : 'asc';
       const collectionPath = await getOrgCollectionPath('messages', orgId);
     
     // For AI assistant conversations, ensure privacy by filtering by userId
@@ -5352,7 +5597,13 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
         query = query.where('teamId', '==', teamId);
       }
       
-      query = query.limit(100);
+      // Filter by role if provided
+      if (role) {
+        query = query.where('role', '==', role);
+      }
+      
+      // Use a higher limit initially to allow filtering and sorting in memory
+      query = query.limit(Math.max(limit, 500));
       
       const snapshot = await query.get();
       docs = Array.from(snapshot.docs);
@@ -5372,17 +5623,22 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           
           // For AI assistant conversations, also check userId
           if (chatId.startsWith('ai-assistant-') && userEmail) {
-            return matchesChatId && data.userId?.toLowerCase() === userEmail;
+            if (!matchesChatId || data.userId?.toLowerCase() !== userEmail) return false;
           }
           
           // For project channels, also check projectId
           if (projectId) {
-            return matchesChatId && data.projectId === projectId;
+            if (!matchesChatId || data.projectId !== projectId) return false;
           }
           
           // For team channels, also check teamId
           if (teamId) {
-            return matchesChatId && data.teamId === teamId;
+            if (!matchesChatId || data.teamId !== teamId) return false;
+          }
+          
+          // Filter by role if provided
+          if (role && data.role !== role) {
+            return false;
           }
           
           return matchesChatId;
@@ -5392,25 +5648,28 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       }
     }
     
-    // Sort by timestamp in memory (ascending - oldest first)
+    // Filter by afterTimestamp if provided
+    if (afterTimestamp) {
+      docs = docs.filter(doc => {
+        const timestamp = doc.data().timestamp || 0;
+        const timestampMs = typeof timestamp === 'number' 
+          ? timestamp 
+          : (timestamp.toDate?.()?.getTime() || 0);
+        return timestampMs > afterTimestamp.getTime();
+      });
+    }
+    
+    // Sort by timestamp in memory
     docs.sort((a, b) => {
       const aTime = a.data().timestamp?.toDate?.()?.getTime() || 
                     (typeof a.data().timestamp === 'number' ? a.data().timestamp : 0);
       const bTime = b.data().timestamp?.toDate?.()?.getTime() || 
                     (typeof b.data().timestamp === 'number' ? b.data().timestamp : 0);
-      return aTime - bTime; // Ascending order (oldest first)
+      return orderBy === 'desc' ? bTime - aTime : aTime - bTime;
     });
     
-    // Filter by afterTimestamp if provided
-    if (afterTimestamp) {
-      docs = docs.filter(doc => {
-        const timestamp = doc.data().timestamp || 0;
-        return timestamp > afterTimestamp.getTime();
-      });
-    }
-    
-    // Limit to 100
-    docs = docs.slice(0, 100);
+    // Apply limit
+    docs = docs.slice(0, limit);
     
     const messages = docs.map(doc => {
       const data = doc.data();

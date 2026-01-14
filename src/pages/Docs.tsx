@@ -26,13 +26,7 @@ import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { ShareDocDialog } from "@/components/ShareDocDialog";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useUserMap } from "@/hooks/useUserMap";
-
-const truncateText = (html: string, maxLength: number) => {
-  // Remove HTML tags for truncation
-  const text = html.replace(/<[^>]*>/g, '');
-  if (text.length <= maxLength) return text;
-  return text.substring(0, maxLength) + "...";
-};
+import { extractFirstLineAsTitle, getPreviewText } from "@/utils/contentUtils";
 
 export default function Docs() {
   const navigate = useNavigate();
@@ -164,7 +158,9 @@ export default function Docs() {
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between gap-2 min-w-0">
                     <div className="flex-1 min-w-0">
-                      <CardTitle className="line-clamp-2 break-words">{doc.title}</CardTitle>
+                      <CardTitle className="line-clamp-1 break-words">
+                        {extractFirstLineAsTitle(doc.content || doc.title || '', 50)}
+                      </CardTitle>
                     </div>
                     <MoreOptionsMenu
                       size="sm"
@@ -217,10 +213,9 @@ export default function Docs() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div
-                    className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none"
-                    dangerouslySetInnerHTML={{ __html: truncateText(doc.content, 150) }}
-                  />
+                  <div className="text-sm text-muted-foreground line-clamp-3 prose prose-sm max-w-none">
+                    {getPreviewText(doc.content || '', 150)}
+                  </div>
                 </CardContent>
               </Card>
             ))}

@@ -5,6 +5,7 @@ import { queueSave, isOnline } from '@/services/offlineQueue';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Doc, DocFile } from '@/data/docsData';
 import { v4 as uuidv4 } from 'uuid';
+import { extractFirstLineAsTitle } from '@/utils/contentUtils';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'offline' | 'draft';
 
@@ -78,7 +79,8 @@ export function useAutoSave({
 
   // Check if content has changed
   const hasChanges = useCallback(() => {
-    const titleChanged = title.trim() !== lastSavedTitleRef.current;
+    const currentTitle = title.trim() || extractFirstLineAsTitle(content, 100) || '';
+    const titleChanged = currentTitle !== lastSavedTitleRef.current;
     const contentChanged = content !== lastSavedContentRef.current;
     return titleChanged || contentChanged;
   }, [title, content]);
@@ -105,14 +107,13 @@ export function useAutoSave({
   const performSave = useCallback(async (): Promise<void> => {
     if (!enabled || isSavingRef.current) return;
     
-    // Validate required fields
-    if (!title.trim()) {
-      setError(new Error('Title is required'));
-      setSaveStatus('error');
-      return;
-    }
-
-    if (!content.trim() || content === '<p></p>') {
+    // Extract title from content if title is empty
+    const finalTitle = title.trim() || extractFirstLineAsTitle(content, 100) || 'Untitled';
+    
+    // Validate content - allow empty content for new docs (will be saved as empty)
+    const isEmptyContent = !content.trim() || content === '<p></p>' || content === '{"type":"doc","content":[{"type":"paragraph"}]}';
+    if (isEmptyContent && docId !== 'new') {
+      // For existing docs, require some content
       setError(new Error('Content is required'));
       setSaveStatus('error');
       return;
@@ -145,7 +146,7 @@ export function useAutoSave({
           // For new docs, we need the full doc object
             const newDoc: Doc = {
               id: uuidv4(), // Generate ID for queue
-              title: title.trim(),
+              title: finalTitle,
               content,
               ownerEmail: user?.email || '',
               projectId: null,
@@ -159,7 +160,7 @@ export function useAutoSave({
           queueSave('new', {}, 'create', newDoc);
         } else {
           queueSave(docId, {
-            title: title.trim(),
+            title: finalTitle,
             content,
             visibility,
             visibleToMembers: Array.from(visibleToMembers),
@@ -178,7 +179,7 @@ export function useAutoSave({
           await updateDoc.mutateAsync({
             docId: createdDocIdRef.current,
             updates: {
-              title: title.trim(),
+              title: finalTitle,
               content,
               visibility,
               visibleToMembers: Array.from(visibleToMembers),
@@ -193,7 +194,7 @@ export function useAutoSave({
           
           // Update saved state immediately to prevent duplicate saves
           lastSavedContentRef.current = content;
-          lastSavedTitleRef.current = title.trim();
+          lastSavedTitleRef.current = finalTitle;
         } else if (isCreatingRef.current) {
           // Another save is already creating the doc, skip this one
           // The other save will handle it and set createdDocIdRef
@@ -206,7 +207,7 @@ export function useAutoSave({
           try {
               const newDoc: Doc = {
                 id: uuidv4(), // Generate ID for new doc
-                title: title.trim(),
+                title: finalTitle,
                 content,
                 ownerEmail: user?.email || '',
                 projectId: null,
@@ -231,7 +232,7 @@ export function useAutoSave({
             // Update saved state immediately to prevent duplicate saves
             // Use the actual saved content from the created doc if available
             lastSavedContentRef.current = createdDoc?.content || content;
-            lastSavedTitleRef.current = createdDoc?.title || title.trim();
+            lastSavedTitleRef.current = createdDoc?.title || finalTitle;
           } finally {
             // Always release the lock, even on error
             isCreatingRef.current = false;
@@ -241,7 +242,7 @@ export function useAutoSave({
         await updateDoc.mutateAsync({
           docId,
           updates: {
-            title: title.trim(),
+            title: finalTitle,
             content,
             visibility,
             visibleToMembers: Array.from(visibleToMembers),
@@ -257,7 +258,7 @@ export function useAutoSave({
 
       // Update saved state
       lastSavedContentRef.current = content;
-      lastSavedTitleRef.current = title.trim();
+      lastSavedTitleRef.current = finalTitle;
       const savedAt = new Date();
       setLastSavedAt(savedAt);
       setSaveStatus('saved');
@@ -283,7 +284,7 @@ export function useAutoSave({
         // If we've already created a doc, queue an update instead of create
         if (createdDocIdRef.current) {
           queueSave(createdDocIdRef.current, {
-            title: title.trim(),
+            title: finalTitle,
             content,
             visibility,
             visibleToMembers: Array.from(visibleToMembers),
@@ -292,7 +293,7 @@ export function useAutoSave({
         } else {
             const newDoc: Doc = {
               id: uuidv4(), // Generate ID for queue
-              title: title.trim(),
+              title: finalTitle,
               content,
               ownerEmail: user?.email || '',
               projectId: null,
@@ -307,7 +308,7 @@ export function useAutoSave({
         }
       } else {
         queueSave(docId, {
-          title: title.trim(),
+          title: finalTitle,
           content,
           visibility,
           visibleToMembers: Array.from(visibleToMembers),
@@ -429,11 +430,12 @@ export function useAutoSave({
 
   // Initialize saved state when doc loads
   useEffect(() => {
-    if (docId !== 'new' && title && content) {
-      lastSavedTitleRef.current = title.trim();
+    if (docId !== 'new' && content) {
+      const initialTitle = title.trim() || extractFirstLineAsTitle(content, 100) || '';
+      lastSavedTitleRef.current = initialTitle;
       lastSavedContentRef.current = content;
     }
-  }, [docId]); // Only run when docId changes (initial load)
+  }, [docId, title, content]); // Run when docId, title, or content changes (initial load)
 
   // Manual save function
   const manualSave = useCallback(async (): Promise<void> => {
@@ -453,14 +455,12 @@ export function useAutoSave({
     const performManualSave = async () => {
       if (!enabled || isSavingRef.current) return;
       
-      // Validate required fields
-      if (!title.trim()) {
-        setError(new Error('Title is required'));
-        setSaveStatus('error');
-        return;
-      }
-
-      if (!content.trim() || content === '<p></p>') {
+      // Extract title from content if title is empty
+      const finalTitle = title.trim() || extractFirstLineAsTitle(content, 100) || 'Untitled';
+      
+      // Validate content - allow empty content for new docs
+      const isEmptyContent = !content.trim() || content === '<p></p>' || content === '{"type":"doc","content":[{"type":"paragraph"}]}';
+      if (isEmptyContent && docId !== 'new') {
         setError(new Error('Content is required'));
         setSaveStatus('error');
         return;
@@ -485,7 +485,7 @@ export function useAutoSave({
           if (docId === 'new') {
             const newDoc: Doc = {
               id: uuidv4(),
-              title: title.trim(),
+              title: finalTitle,
               content,
               ownerEmail: user?.email || '',
               projectId: null,
@@ -499,7 +499,7 @@ export function useAutoSave({
             queueSave('new', {}, 'create', newDoc);
           } else {
             queueSave(docId, {
-              title: title.trim(),
+              title: finalTitle,
               content,
               visibility,
               visibleToMembers: Array.from(visibleToMembers),
@@ -517,7 +517,7 @@ export function useAutoSave({
             await updateDoc.mutateAsync({
               docId: createdDocIdRef.current,
               updates: {
-                title: title.trim(),
+                title: finalTitle,
                 content,
                 visibility,
                 visibleToMembers: Array.from(visibleToMembers),
@@ -533,7 +533,7 @@ export function useAutoSave({
             try {
               const newDoc: Doc = {
                 id: uuidv4(),
-                title: title.trim(),
+                title: finalTitle,
                 content,
                 ownerEmail: user?.email || '',
                 projectId: null,
@@ -558,7 +558,7 @@ export function useAutoSave({
           await updateDoc.mutateAsync({
             docId,
             updates: {
-              title: title.trim(),
+              title: finalTitle,
               content,
               visibility,
               visibleToMembers: Array.from(visibleToMembers),
@@ -571,7 +571,7 @@ export function useAutoSave({
         }
 
         lastSavedContentRef.current = content;
-        lastSavedTitleRef.current = title.trim();
+        lastSavedTitleRef.current = finalTitle;
         const savedAt = new Date();
         setLastSavedAt(savedAt);
         setSaveStatus('saved');

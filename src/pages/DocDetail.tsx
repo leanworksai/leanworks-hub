@@ -1,26 +1,25 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { memo, useEffect, useCallback, useMemo, useRef } from "react";
+import { memo, useEffect, useCallback, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { useDoc, useUpdateDoc, useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
-import { Download, File, Paperclip, Trash2 } from "lucide-react";
+import { Download, File, Paperclip, Trash2, ArrowLeft, MoreVertical } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { ShareDocDialog } from "@/components/ShareDocDialog";
-import { DetailPageHeader } from "@/components/DetailPageHeader";
 import { useAutoSave } from "@/hooks/useAutoSave";
 import { trackEvent, trackView } from "@/lib/analytics";
 import { initOfflineQueue } from "@/services/offlineQueue";
 import { useScrollTracking } from "@/hooks/useScrollTracking";
 import { usePageContext } from "@/contexts/PageContext";
 import { DocToolbar } from "@/components/DocToolbar";
-import { TitleWithToolbar } from "@/components/TitleWithToolbar";
 import { useDocDialogs } from "@/hooks/useDocDialogs";
+import { extractFirstLineAsTitle } from "@/utils/contentUtils";
+import { useSidebar } from "@/components/ui/sidebar";
 import { useDocFiles } from "@/hooks/useDocFiles";
 import type { DocFile } from "@/data/docsData";
 import { useDocForm } from "@/hooks/useDocForm";
-import { useManualSave } from "@/hooks/useManualSave";
 import { isDocOwner, formatFileSize, createDocActions } from "@/utils/docUtils";
 import {
   Dialog,
@@ -28,6 +27,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -64,10 +69,15 @@ export default memo(function DocDetail() {
   // Ref to store save promise resolvers for image uploads
   const savePromiseResolversRef = useRef<Array<(docId: string) => void>>([]);
 
+  // Extract title from first line of content
+  const extractedTitle = useMemo(() => {
+    return extractFirstLineAsTitle(formState.content || '', 100);
+  }, [formState.content]);
+
   // Auto-save hook - always enabled since we're always in edit mode
   const autoSave = useAutoSave({
     docId: docId || 'new',
-    title: formState.title,
+    title: extractedTitle,
     content: formState.content,
     visibility: formState.visibility,
     visibleToMembers: formState.visibleToMembers,
@@ -111,18 +121,6 @@ export default memo(function DocDetail() {
     },
   });
 
-  // Manual save hook - handles UI feedback for manual saves
-  // Must be defined after autoSave since it depends on it
-  const { saveStatus, isSaving, handleSave } = useManualSave({
-    onSave: () => autoSave.manualSave(),
-    onError: (error) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to save document",
-        variant: "destructive",
-      });
-    },
-  });
 
   // Initialize offline queue monitoring
   useEffect(() => {
@@ -137,10 +135,15 @@ export default memo(function DocDetail() {
     }
   }, [docId, doc]);
 
-  // Set page context when doc loads
+  // Set page context when doc loads - use extracted title from content
   useEffect(() => {
-    if (doc && docId && docId !== 'new' && doc.title) {
-      setContext('doc', { id: docId, title: doc.title });
+    if (doc && docId && docId !== 'new') {
+      const title = extractFirstLineAsTitle(doc.content || doc.title || '', 100);
+      if (title) {
+        setContext('doc', { id: docId, title });
+      } else {
+        clearContext();
+      }
     } else {
       clearContext();
     }
@@ -159,9 +162,10 @@ export default memo(function DocDetail() {
 
     try {
       await deleteDoc.mutateAsync(docId);
+      const deletedTitle = doc?.title || extractFirstLineAsTitle(doc?.content || '', 100) || 'Doc';
       toast({
         title: "Doc deleted",
-        description: `"${formState.title || doc?.title || 'Doc'}" has been deleted successfully.`,
+        description: `"${deletedTitle}" has been deleted successfully.`,
       });
       navigate('/docs');
     } catch (error) {
@@ -231,8 +235,8 @@ export default memo(function DocDetail() {
       // Add resolver to the ref array
       savePromiseResolversRef.current.push(resolve);
 
-      // Trigger manual save
-      handleSave().catch(() => {
+      // Trigger manual save using auto-save
+      autoSave.manualSave().catch(() => {
         // On error, remove this resolver and resolve with null
         const index = savePromiseResolversRef.current.indexOf(resolve);
         if (index > -1) {
@@ -250,7 +254,7 @@ export default memo(function DocDetail() {
         }
       }, 10000);
     });
-  }, [docId, handleSave]);
+  }, [docId, autoSave]);
 
   // Memoized handlers - stable references to prevent DocToolbar re-renders
   const handleBack = useCallback(() => navigate("/docs"), [navigate]);
@@ -259,20 +263,83 @@ export default memo(function DocDetail() {
   const handleAttachedFiles = useCallback(() => dialogs.openDialog('files'), [dialogs.openDialog]);
   const openDeleteDialog = useCallback(() => dialogs.openDialog('delete'), [dialogs.openDialog]);
 
+  // Track keyboard visibility on mobile
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  
+  // Get sidebar state to adjust toolbar position
+  const sidebar = useSidebar();
+  const sidebarLeft = useMemo(() => {
+    if (sidebar.state === 'collapsed' && sidebar.open) {
+      // Sidebar is collapsed to icon mode - use icon width (3rem = 48px)
+      return '3rem';
+    } else if (!sidebar.open) {
+      // Sidebar is hidden (offcanvas)
+      return '0';
+    } else {
+      // Sidebar is expanded - use full width (12rem = 192px)
+      return '12rem';
+    }
+  }, [sidebar.state, sidebar.open]);
+  
+  useEffect(() => {
+    // Only run on mobile
+    if (window.innerWidth >= 640) return;
+    
+    const handleFocus = () => {
+      setIsKeyboardVisible(true);
+    };
+    
+    const handleBlur = () => {
+      // Delay hiding to allow for keyboard dismissal animation
+      setTimeout(() => {
+        setIsKeyboardVisible(false);
+      }, 100);
+    };
+    
+    // Use visual viewport API if available (more reliable)
+    if (window.visualViewport) {
+      const handleViewportChange = () => {
+        const viewport = window.visualViewport;
+        if (viewport) {
+          // Keyboard is visible when viewport height is significantly less than window height
+          const heightDiff = window.innerHeight - viewport.height;
+          setIsKeyboardVisible(heightDiff > 150); // Threshold for keyboard detection
+        }
+      };
+      
+      window.visualViewport.addEventListener('resize', handleViewportChange);
+      window.visualViewport.addEventListener('scroll', handleViewportChange);
+      
+      return () => {
+        window.visualViewport?.removeEventListener('resize', handleViewportChange);
+        window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+      };
+    } else {
+      // Fallback: listen to focus/blur on contenteditable elements
+      const editorElement = document.querySelector('.ProseMirror');
+      if (editorElement) {
+        editorElement.addEventListener('focus', handleFocus);
+        editorElement.addEventListener('blur', handleBlur);
+        
+        return () => {
+          editorElement.removeEventListener('focus', handleFocus);
+          editorElement.removeEventListener('blur', handleBlur);
+        };
+      }
+    }
+  }, []);
+
   // Memoized computed props - stable values
   const isOwner = useMemo(
     () => isDocOwner(user?.email, doc?.ownerEmail),
     [user?.email, doc?.ownerEmail]
   );
 
-  // Memoize toolbar element - only recreates when manual save status changes
-  // Auto-save status is ignored - it runs silently in the background
+  // Memoize toolbar element
   const toolbarElement = useMemo(
     () => (
       <DocToolbar
         onBack={handleBack}
-        onSave={handleSave}
-        saveStatus={saveStatus} // Only show manual save status in UI
         onShare={handleShare}
         onShareViaEmail={handleShareViaEmail}
         onAttachedFiles={handleAttachedFiles}
@@ -280,13 +347,10 @@ export default memo(function DocDetail() {
         isOwner={isOwner}
         filesCount={files.length}
         isNew={isNew}
-        isSaving={isSaving}
       />
     ),
     [
       handleBack,
-      handleSave,
-      saveStatus, // Only recreate when manual save status changes
       handleShare,
       handleShareViaEmail,
       handleAttachedFiles,
@@ -294,7 +358,6 @@ export default memo(function DocDetail() {
       isOwner,
       files.length,
       isNew,
-      isSaving, // Only recreate when manual saving state changes
     ]
   );
 
@@ -311,22 +374,6 @@ export default memo(function DocDetail() {
 
   return (
     <div className="animate-fade-in w-full overflow-x-hidden -mt-4 sm:-mt-6 min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
-      {/* Mobile buttons at top - using DetailPageHeader for consistency */}
-      <div className="sm:hidden mb-4">
-        <DetailPageHeader
-          title={formState.title || "Untitled"}
-          backHref="/docs"
-          actions={createDocActions(isOwner, files.length, {
-            onShare: handleShare,
-            onShareViaEmail: handleShareViaEmail,
-            onAttachedFiles: handleAttachedFiles,
-            onDelete: openDeleteDialog,
-          })}
-          showActions={!isNew && !!doc}
-          hideTitle={true}
-        />
-      </div>
-
       {(!isNew && isLoading && !doc) ? (
         <div className="min-h-[500px] border border-border/30 rounded-lg flex items-center justify-center px-3 sm:px-6">
           <p className="text-muted-foreground">Loading content...</p>
@@ -334,18 +381,65 @@ export default memo(function DocDetail() {
       ) : (
         <div className="w-full min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box', overflowX: 'hidden' }}>
           <div className="border-t border-b border-border/30 w-full max-w-full bg-background shadow-sm relative min-w-0" style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
-            {/* Toolbar positioned at top-right aligned with editor content */}
-            <div className="absolute top-3 right-2 sm:right-3 z-10 hidden sm:flex items-center gap-1">
-              {toolbarElement}
+            {/* Mobile header - back button and menu (always visible) */}
+            <div className="sticky top-0 z-20 sm:hidden bg-background border-b border-border/30 px-2 py-2 flex items-center justify-between">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={handleBack}
+                className="hover:bg-muted/50"
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+              {!isNew && !!doc && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm">
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {createDocActions(isOwner, files.length, {
+                      onShare: handleShare,
+                      onShareViaEmail: handleShareViaEmail,
+                      onAttachedFiles: handleAttachedFiles,
+                      onDelete: openDeleteDialog,
+                    }).map((action, index) => (
+                      <DropdownMenuItem
+                        key={index}
+                        onClick={action.onClick}
+                        className={action.destructive ? "text-destructive focus:text-destructive" : ""}
+                      >
+                        {action.icon && <span className="mr-2">{action.icon}</span>}
+                        {action.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
             </div>
-            <TitleWithToolbar
-              title={formState.title}
-              onTitleChange={(title) => updateField('title', title)}
-              titlePlaceholder="Doc title..."
-              readOnly={false}
-              toolbar={null} // Remove toolbar from title component
-            />
-            <RichTextEditor
+            
+            {/* Desktop toolbar - bottom (edit mode only) */}
+            <div className="hidden sm:flex fixed bottom-4 left-1/2 z-50" style={{ transform: 'translateX(-50%)' }}>
+              <div className="flex items-center gap-2 px-4 py-3 bg-background/95 backdrop-blur-sm border border-border/30 rounded-full shadow-lg">
+                {toolbarElement}
+              </div>
+            </div>
+            
+            {/* Mobile toolbar - bottom (edit mode only, shows with keyboard) */}
+            {isKeyboardVisible && (
+              <div className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-sm border-t border-border/30 shadow-lg">
+                <div className="overflow-x-auto scrollbar-hide">
+                  <div className="flex items-center gap-2 px-4 py-3 min-w-max">
+                    {toolbarElement}
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Editor - padding handled internally by RichTextEditor for bottom toolbar */}
+            <div className="pb-20 sm:pb-20">
+              <RichTextEditor
               key={docId || "new"}
               content={formState.content || ""}
               onChange={(content) => {
@@ -360,6 +454,7 @@ export default memo(function DocDetail() {
               docId={docId || undefined}
               onSaveFirst={handleSaveFirst}
             />
+            </div>
           </div>
         </div>
       )}
@@ -444,7 +539,7 @@ export default memo(function DocDetail() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Document</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete "{doc?.title || formState.title || 'this document'}"? This action cannot be undone.
+              Are you sure you want to delete "{doc?.title || extractFirstLineAsTitle(doc?.content || '', 100) || 'this document'}"? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -462,7 +557,7 @@ export default memo(function DocDetail() {
           open={dialogs.shareDialogOpen}
           onOpenChange={(open) => open ? dialogs.openDialog('share') : dialogs.closeDialog()}
           title="Limit Document Visibility"
-          itemName={doc.title}
+          itemName={doc.title || extractFirstLineAsTitle(doc.content || '', 100)}
           currentVisibility={formState.visibility}
           currentVisibleToMembers={formState.visibleToMembers}
           onSave={async (newVisibility, newVisibleToMembers) => {
@@ -491,7 +586,7 @@ export default memo(function DocDetail() {
           open={dialogs.shareViaEmailDialogOpen}
           onOpenChange={(open) => open ? dialogs.openDialog('shareViaEmail') : dialogs.closeDialog()}
           docId={doc.id}
-          docTitle={doc.title}
+          docTitle={doc.title || extractFirstLineAsTitle(doc.content || '', 100)}
         />
       )}
 

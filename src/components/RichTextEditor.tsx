@@ -16,12 +16,13 @@ import '@/extensions/table/styles.css';
 import '@/components/code-highlight.css';
 import '@/components/editor.css';
 import { TableToolbar } from '@/components/editor/TableToolbar';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { marked } from 'marked';
 import mermaid from 'mermaid';
 import { useTextSelection } from '@/hooks/useTextSelection';
 import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
 import { FloatingAskAI } from '@/components/FloatingAskAI';
+import { useSidebar } from '@/components/ui/sidebar';
 // Auto word wrap hook disabled - CSS handles wrapping naturally
 // import { useAutoWordWrap } from '@/hooks/useAutoWordWrap';
 import { 
@@ -429,8 +430,6 @@ export function RichTextEditor({
   const isUndoRedoRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const toolbarContainerRef = useRef<HTMLDivElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -441,9 +440,23 @@ export function RichTextEditor({
   );
   const { setSelectedTextPosition } = useSelectedTextContext();
   const [isUploading, setIsUploading] = useState(false);
-  const [isScrolled, setIsScrolled] = useState(false);
-  const [toolbarStyle, setToolbarStyle] = useState<React.CSSProperties>({});
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const mermaidInitialized = useRef(false);
+  
+  // Get sidebar state to adjust toolbar position
+  const sidebar = useSidebar();
+  const sidebarLeft = useMemo(() => {
+    if (sidebar.state === 'collapsed' && sidebar.open) {
+      // Sidebar is collapsed to icon mode - use icon width (3rem = 48px)
+      return '3rem';
+    } else if (!sidebar.open) {
+      // Sidebar is hidden (offcanvas)
+      return '0';
+    } else {
+      // Sidebar is expanded - use full width (12rem = 192px)
+      return '12rem';
+    }
+  }, [sidebar.state, sidebar.open]);
   const renderedMermaidIds = useRef<Set<string>>(new Set());
   const mermaidRenderScheduled = useRef(false);
   // Track whether content has been converted from markdown to prevent re-conversion
@@ -585,6 +598,10 @@ export function RichTextEditor({
       attributes: {
         class: 'w-full focus:outline-none min-h-[300px] max-w-full overflow-x-hidden',
         style: 'white-space: normal !important; margin: 0; overflow-wrap: break-word; word-break: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box; overflow-x: hidden;',
+        spellcheck: 'true',
+        autocorrect: 'on',
+        autocapitalize: 'sentences',
+        'data-gramm': 'false', // Disable Grammarly to prevent conflicts
       },
       transformPastedHTML(html) {
         // Extract text content from HTML to check for markdown
@@ -802,7 +819,9 @@ export function RichTextEditor({
           }
           
           // Preserve trailing spaces when space is pressed at end of line
-          if (event.key === ' ' || event.keyCode === 32) {
+          // Skip this on mobile devices to avoid interfering with keyboard word detection
+          const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+          if (!isMobile && (event.key === ' ' || event.keyCode === 32)) {
             const { state } = view;
             const { selection } = state;
             const { $from } = selection;
@@ -1218,63 +1237,55 @@ export function RichTextEditor({
     }
   }, [content, editor, renderMermaidDiagrams]);
 
-  // Handle toolbar sticky positioning on scroll - show when scrolling down
+  // Track keyboard visibility on mobile
   useEffect(() => {
-    if (!toolbarRef.current || !toolbarContainerRef.current || readOnly) return;
-
-    const updateStickyState = () => {
-      const container = toolbarContainerRef.current;
-      const toolbar = toolbarRef.current;
-      if (!container || !toolbar) return;
-
-      const headerHeight = 64; // Header is h-16 (64px)
-      const containerRect = container.getBoundingClientRect();
-      const toolbarTop = containerRect.top;
+    if (readOnly || window.innerWidth >= 640) return;
+    
+    const handleFocus = () => {
+      setIsKeyboardVisible(true);
+    };
+    
+    const handleBlur = () => {
+      // Delay hiding to allow for keyboard dismissal animation
+      setTimeout(() => {
+        setIsKeyboardVisible(false);
+      }, 100);
+    };
+    
+    // Use visual viewport API if available (more reliable)
+    if (window.visualViewport) {
+      const handleViewportChange = () => {
+        const viewport = window.visualViewport;
+        if (viewport) {
+          // Keyboard is visible when viewport height is significantly less than window height
+          const heightDiff = window.innerHeight - viewport.height;
+          setIsKeyboardVisible(heightDiff > 150); // Threshold for keyboard detection
+        }
+      };
       
-      // Make toolbar sticky when it reaches or passes the header
-      const shouldBeSticky = toolbarTop <= headerHeight;
+      window.visualViewport.addEventListener('resize', handleViewportChange);
+      window.visualViewport.addEventListener('scroll', handleViewportChange);
       
-      setIsScrolled(shouldBeSticky);
-
-      if (shouldBeSticky) {
-        // Toolbar should be fixed at the very top of the screen
-        setToolbarStyle({
-          position: 'fixed',
-          top: '0px',
-          left: `${containerRect.left}px`,
-          width: `${containerRect.width}px`,
-          zIndex: 50,
-        });
-      } else {
-        // Toolbar in normal flow
-        setToolbarStyle({});
+      return () => {
+        window.visualViewport?.removeEventListener('resize', handleViewportChange);
+        window.visualViewport?.removeEventListener('scroll', handleViewportChange);
+      };
+    } else {
+      // Fallback: listen to focus/blur on contenteditable elements
+      const editorElement = editorContainerRef.current?.querySelector('.ProseMirror');
+      if (editorElement) {
+        editorElement.addEventListener('focus', handleFocus);
+        editorElement.addEventListener('blur', handleBlur);
+        
+        return () => {
+          editorElement.removeEventListener('focus', handleFocus);
+          editorElement.removeEventListener('blur', handleBlur);
+        };
       }
-    };
+    }
+  }, [readOnly, editorContainerRef]);
 
-    let ticking = false;
-    const onScroll = () => {
-      if (!ticking) {
-        window.requestAnimationFrame(() => {
-          updateStickyState();
-          ticking = false;
-        });
-        ticking = true;
-      }
-    };
-
-    const onResize = () => {
-      updateStickyState();
-    };
-
-    window.addEventListener('scroll', onScroll, { passive: true });
-    window.addEventListener('resize', onResize, { passive: true });
-    updateStickyState(); // Check initial position
-
-    return () => {
-      window.removeEventListener('scroll', onScroll);
-      window.removeEventListener('resize', onResize);
-    };
-  }, [readOnly]);
+  // Toolbar is now fixed at bottom, no sticky positioning needed
 
   if (!editor) {
     return null;
@@ -1451,20 +1462,13 @@ export function RichTextEditor({
 
   return (
     <div className="w-full max-w-full overflow-x-hidden">
-      {/* Toolbar Container */}
+      {/* Toolbar Container - only visible in edit mode */}
       {!readOnly && (
-        <div ref={toolbarContainerRef}>
-          {/* Spacer to prevent layout shift when toolbar becomes fixed */}
-          {isScrolled && toolbarRef.current && (
-            <div style={{ height: `${toolbarRef.current.offsetHeight}px` }} />
-          )}
-          {/* Toolbar - Always visible, fixed position when scrolling down */}
-          <div 
-            ref={toolbarRef}
-            className="z-50 border-b border-border/20 bg-background/95 backdrop-blur-sm pl-3.5 pr-2.5 py-2.5 flex flex-wrap items-center gap-1 overflow-x-auto overflow-y-visible shadow-md transition-all"
-            style={toolbarStyle}
-          >
-        {/* Text Formatting */}
+        <>
+          {/* Desktop Toolbar - fixed at bottom */}
+          <div className="hidden sm:flex fixed bottom-4 left-1/2 z-50" style={{ transform: 'translateX(-50%)' }}>
+            <div className="flex items-center gap-1 px-4 py-2.5 bg-background/95 backdrop-blur-sm border border-border/20 rounded-full shadow-lg overflow-x-auto">
+              {/* Text Formatting */}
         <Button
           type="button"
           variant="ghost"
@@ -1712,16 +1716,272 @@ export function RichTextEditor({
           </>
         )}
 
-          </div>
-        </div>
+              </div>
+            </div>
+
+          {/* Mobile Toolbar - fixed at bottom with horizontal scroll (shows with keyboard) */}
+          {isKeyboardVisible && (
+            <div className="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-sm border-t border-border/20 shadow-lg">
+              <div className="overflow-x-auto scrollbar-hide">
+                <div className="flex items-center gap-1 px-2 py-2.5 min-w-max">
+                {/* Text Formatting */}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => editor.chain().focus().toggleBold().run()}
+                  disabled={!editor.can().chain().focus().toggleBold().run()}
+                  className={getButtonClasses(editor.isActive('bold'))}
+                >
+                  <Bold className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => editor.chain().focus().toggleItalic().run()}
+                  disabled={!editor.can().chain().focus().toggleItalic().run()}
+                  className={getButtonClasses(editor.isActive('italic'))}
+                >
+                  <Italic className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => editor.chain().focus().toggleUnderline().run()}
+                  className={getButtonClasses(editor.isActive('underline'))}
+                >
+                  <UnderlineIcon className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => editor.chain().focus().toggleStrike().run()}
+                  disabled={!editor.can().chain().focus().toggleStrike().run()}
+                  className={getButtonClasses(editor.isActive('strike'))}
+                >
+                  <Strikethrough className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    editor.chain().focus().unsetAllMarks().clearNodes().run();
+                  }}
+                  title="Clear all formatting"
+                >
+                  <Eraser className="h-4 w-4" />
+                </Button>
+
+                <Separator orientation="vertical" className="h-6 opacity-30" />
+
+                {/* Headings */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className={getButtonClasses(
+                        editor.isActive('heading', { level: 1 }) ||
+                        editor.isActive('heading', { level: 2 }) ||
+                        editor.isActive('heading', { level: 3 })
+                      )}
+                      title="Headings"
+                    >
+                      <Heading className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+                    >
+                      <span className="font-bold text-lg">H1</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+                    >
+                      <span className="font-bold">H2</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+                    >
+                      <span className="font-semibold text-sm">H3</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                <Separator orientation="vertical" className="h-6 opacity-30" />
+
+                {/* Lists */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className={getButtonClasses(
+                        editor.isActive('bulletList') || editor.isActive('orderedList')
+                      )}
+                      title="Lists"
+                    >
+                      <List className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().toggleBulletList().run()}
+                    >
+                      <List className="h-4 w-4" />
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().toggleOrderedList().run()}
+                    >
+                      <ListOrdered className="h-4 w-4" />
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => editor.chain().focus().toggleBlockquote().run()}
+                  className={getButtonClasses(editor.isActive('blockquote'))}
+                >
+                  <Quote className="h-4 w-4" />
+                </Button>
+
+                <Separator orientation="vertical" className="h-6 opacity-30" />
+
+                {/* Table Menu */}
+                <TableToolbar editor={editor} getButtonClasses={getButtonClasses} />
+
+                <Separator orientation="vertical" className="h-6 opacity-30" />
+
+                {/* Alignment */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className={getButtonClasses(
+                        editor.isActive({ textAlign: 'left' }) ||
+                        editor.isActive({ textAlign: 'center' }) ||
+                        editor.isActive({ textAlign: 'right' })
+                      )}
+                      title="Text Alignment"
+                    >
+                      <AlignLeft className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().setTextAlign('left').run()}
+                    >
+                      <AlignLeft className="h-4 w-4" />
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().setTextAlign('center').run()}
+                    >
+                      <AlignCenter className="h-4 w-4" />
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => editor.chain().focus().setTextAlign('right').run()}
+                    >
+                      <AlignRight className="h-4 w-4" />
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                {/* Image Upload */}
+                {onFileUpload && (
+                  <>
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        await handleImageUpload(file);
+                        if (imageInputRef.current) {
+                          imageInputRef.current.value = '';
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => imageInputRef.current?.click()}
+                      disabled={isUploading}
+                      title="Insert image (max 10MB)"
+                    >
+                      <ImageIcon className="h-4 w-4" />
+                    </Button>
+                  </>
+                )}
+
+                {/* File Upload */}
+                {onFileUpload && docId && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+
+                        if (file.size > 10 * 1024 * 1024) {
+                          alert('File size exceeds 10MB limit');
+                          return;
+                        }
+
+                        setIsUploading(true);
+                        try {
+                          await onFileUpload(file);
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : 'Failed to upload file');
+                        } finally {
+                          setIsUploading(false);
+                          if (fileInputRef.current) {
+                            fileInputRef.current.value = '';
+                          }
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploading}
+                      title="Upload file (max 10MB)"
+                    >
+                      <Paperclip className="h-4 w-4" />
+                    </Button>
+                  </>
+                )}
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
-      {/* Editor Content */}
+      {/* Editor Content - add bottom padding when toolbar is visible */}
       <div 
         ref={editorContainerRef} 
         className={cn(
           "relative overflow-x-hidden min-w-0",
-          isDragging && "border-2 border-primary border-dashed rounded-lg"
+          isDragging && "border-2 border-primary border-dashed rounded-lg",
+          !readOnly && "pb-20" // Padding for bottom toolbar (desktop always, mobile when keyboard visible)
         )}
         style={{ maxWidth: '100%', width: '100%', wordBreak: 'break-word', overflowWrap: 'break-word' }}
         onDragOver={!readOnly ? handleDragOver : undefined}
