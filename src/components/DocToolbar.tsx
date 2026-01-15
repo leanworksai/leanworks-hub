@@ -94,18 +94,8 @@ export const DocToolbar = memo(function DocToolbar({
   isNew,
 }: DocToolbarProps) {
   return (
-    <div className="flex items-center gap-2 flex-shrink-0">
-      <BackButton onClick={onBack} />
-      {!isNew && (
-        <MoreActionsMenu
-          onShare={onShare}
-          onShareViaEmail={onShareViaEmail}
-          onAttachedFiles={onAttachedFiles}
-          onDelete={onDelete}
-          isOwner={isOwner}
-          filesCount={filesCount}
-        />
-      )}
+    <div className="flex items-center justify-end w-full flex-shrink-0">
+      {/* 3 dots menu removed from content page */}
     </div>
   );
 }, (prevProps, nextProps) => {

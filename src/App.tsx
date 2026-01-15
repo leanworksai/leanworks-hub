@@ -33,7 +33,8 @@ import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
 import TaskDetail from "./pages/TaskDetail";
-import Docs from "./pages/Docs";
+import { DocsLayout } from "./components/DocsLayout";
+import DocsPlaceholder from "./pages/DocsPlaceholder";
 import DocDetail from "./pages/DocDetail";
 import Calendar from "./pages/Calendar";
 import Profile from "./pages/Profile";
@@ -209,21 +210,14 @@ const AppRoutesContent = () => {
           element={
             <ProtectedRoute>
               <DashboardLayout>
-                <Docs />
+                <DocsLayout />
               </DashboardLayout>
             </ProtectedRoute>
           }
-        />
-        <Route
-          path="/docs/:docId"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <DocDetail />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
+        >
+          <Route index element={<DocsPlaceholder />} />
+          <Route path=":docId" element={<DocDetail />} />
+        </Route>
         <Route
           path="/calendar"
           element={

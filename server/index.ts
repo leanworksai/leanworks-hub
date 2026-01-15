@@ -305,11 +305,12 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       // Rate limit logging to prevent spam from polling/retry mechanisms
+      // Only log in development mode to reduce production noise
       const endpointKey = `${req.method} ${req.path}`;
       const now = Date.now();
       const lastLogTime = noTokenLogCache.get(endpointKey) || 0;
       
-      if (now - lastLogTime > NO_TOKEN_LOG_INTERVAL) {
+      if (process.env.NODE_ENV === 'development' && now - lastLogTime > NO_TOKEN_LOG_INTERVAL) {
         console.warn('⚠️ [Backend] authenticateUser: No token provided', {
           hasAuthHeader: !!authHeader,
           authHeader: authHeader?.substring(0, 50),

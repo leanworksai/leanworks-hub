@@ -1,0 +1,60 @@
+import { FileText } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { DocItemMenu } from "./DocItemMenu";
+import type { Doc } from "@/data/docsData";
+
+interface DocItemProps {
+  doc: Doc;
+  isActive: boolean;
+  isOwner: boolean;
+  title: string;
+  onDocClick: (docId: string) => void;
+  onDelete: (e: React.MouseEvent) => void;
+}
+
+export function DocItem({
+  doc,
+  isActive,
+  isOwner,
+  title,
+  onDocClick,
+  onDelete,
+}: DocItemProps) {
+  const filesCount = doc.metadata?.files?.length || 0;
+
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer",
+        isActive && "bg-accent text-accent-foreground"
+      )}
+      onClick={() => onDocClick(doc.id)}
+    >
+      <FileText
+        className={cn(
+          "h-3.5 w-3.5 mt-0.5 flex-shrink-0",
+          isActive ? "text-primary" : "text-muted-foreground"
+        )}
+      />
+      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+        <p
+          className={cn(
+            "text-sm font-medium truncate leading-tight flex-1 min-w-0",
+            isActive ? "text-foreground" : "text-foreground/80"
+          )}
+        >
+          {title || "Untitled Doc"}
+        </p>
+        <div className="w-5 flex-shrink-0">
+          <DocItemMenu
+            docId={doc.id}
+            isActive={isActive}
+            isOwner={isOwner}
+            filesCount={filesCount}
+            onDelete={onDelete}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}

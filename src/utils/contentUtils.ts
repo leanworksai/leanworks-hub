@@ -66,6 +66,37 @@ export function extractTextFromContent(content: string | object): string {
 }
 
 /**
+ * Extracts text from a single TipTap node (recursive)
+ * Stops at the first hardBreak to get only the first line
+ */
+function extractTextFromNode(node: any, stopAtHardBreak: boolean = false): string {
+  if (!node) return '';
+  
+  if (node.type === 'text') {
+    return node.text || '';
+  }
+  
+  // Stop at hardBreak if we're extracting first line only
+  if (stopAtHardBreak && node.type === 'hardBreak') {
+    return '';
+  }
+  
+  if (node.content && Array.isArray(node.content)) {
+    let result = '';
+    for (const child of node.content) {
+      // Stop at first hardBreak
+      if (stopAtHardBreak && child.type === 'hardBreak') {
+        break;
+      }
+      result += extractTextFromNode(child, stopAtHardBreak);
+    }
+    return result;
+  }
+  
+  return '';
+}
+
+/**
  * Extracts the first line from content for use as title
  * @param content - Document content (JSON object, JSON string, or HTML string)
  * @param maxLength - Maximum length for the title (default: 100 for DB storage)
@@ -75,16 +106,49 @@ export function extractFirstLineAsTitle(
   content: string | object,
   maxLength: number = 100
 ): string {
+  if (!content) return '';
+  
+  // Try to extract from TipTap JSON structure first (most accurate)
+  let json: any = null;
+  if (typeof content === 'object') {
+    json = content;
+  } else if (typeof content === 'string') {
+    try {
+      json = JSON.parse(content);
+    } catch {
+      // Not JSON, will fall back to text extraction
+    }
+  }
+  
+  // If it's TipTap JSON format, extract first paragraph directly
+  if (json && json.type === 'doc' && json.content && Array.isArray(json.content)) {
+    // Find the first paragraph or heading node that has actual text content
+    for (const node of json.content) {
+      if (['paragraph', 'heading'].includes(node.type)) {
+        // Extract text from this node, stopping at first hardBreak (line break)
+        let text = extractTextFromNode(node, true).trim();
+        if (text) {
+          // Safety: if text contains newlines, take only the first line
+          const firstLine = text.split(/\n/)[0].trim();
+          if (firstLine) {
+            // Truncate to maxLength
+            if (firstLine.length <= maxLength) return firstLine;
+            return firstLine.substring(0, maxLength);
+          }
+        }
+      }
+    }
+  }
+  
+  // Fallback: extract text and get first line
   const text = extractTextFromContent(content);
   
   if (!text) return '';
   
-  // Get first line - split by newline, period followed by space, or take first sentence
-  const firstLine = text
-    .split(/\n/)
-    .find(line => line.trim().length > 0) || 
-    text.split(/\.\s+/)[0] ||
-    text;
+  // Get first line only - split by newline and take the first non-empty line
+  // If no newline exists, the whole text is the first line
+  const lines = text.split(/\n/);
+  const firstLine = lines.find(line => line.trim().length > 0) || lines[0] || text;
   
   const trimmed = firstLine.trim();
   

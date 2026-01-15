@@ -458,6 +458,21 @@ export function RichTextEditor({
       return '12rem';
     }
   }, [sidebar.state, sidebar.open]);
+
+  // Calculate toolbar left position - centered in content area (accounting for both app sidebar and docs sidebar)
+  // Content area starts at: app sidebar width + docs sidebar width (16rem)
+  // Content area width: 100vw - app sidebar width - docs sidebar width  
+  // Center position: start + width/2 = app sidebar + docs sidebar + (100vw - app sidebar - docs sidebar) / 2
+  // Simplified: 50vw + app sidebar/2 + docs sidebar/2 = 50vw + app sidebar/2 + 8rem
+  const toolbarLeft = useMemo(() => {
+    if (sidebarLeft === '0') {
+      // App sidebar closed: center = 50vw + 8rem
+      return 'calc(50vw + 8rem)';
+    } else {
+      // App sidebar open: center = 50vw + app sidebar/2 + 8rem
+      return `calc(50vw + ${sidebarLeft} / 2 + 8rem)`;
+    }
+  }, [sidebarLeft]);
   const renderedMermaidIds = useRef<Set<string>>(new Set());
   const mermaidRenderScheduled = useRef(false);
   // Track whether content has been converted from markdown to prevent re-conversion
@@ -497,13 +512,13 @@ export function RichTextEditor({
           class: 'hljs',
         },
       }),
-      // Custom paragraph extension that preserves trailing spaces
+      // Custom paragraph extension that preserves trailing spaces and formatting
       Paragraph.extend({
         parseHTML() {
           return [{ tag: 'p' }];
         },
         renderHTML({ HTMLAttributes }) {
-          return ['p', { ...HTMLAttributes, style: 'white-space: normal; word-break: break-word; overflow-wrap: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box;' }, 0];
+          return ['p', { ...HTMLAttributes, style: 'white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box;' }, 0];
         },
       }),
       Underline,
@@ -611,51 +626,57 @@ export function RichTextEditor({
         tempDiv.innerHTML = html;
         const textContent = tempDiv.textContent || tempDiv.innerText || '';
         
-        // Check if pasted content looks like markdown (heuristic check)
-        // Common markdown patterns: headers (#), lists (-, *, 1.), code blocks (```), links ([text](url))
-        const markdownPatterns = [
-          /^#{1,6}\s/m,           // Headers
-          /^\s*[-*+]\s/m,         // Unordered lists
-          /^\s*\d+\.\s/m,         // Ordered lists
-          /^>\s/m,                // Blockquotes
+        // First, check if content has rich formatting or special characters that should be preserved
+        // If HTML has substantial formatting OR special Unicode characters, preserve it as-is
+        const formattingTagCount = html.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a|p|br|div|span)[^>]*>/gi)?.length || 0;
+        const hasRichFormatting = formattingTagCount >= 5;
+        
+        // Check for Unicode characters that indicate rich formatted content
+        // These are NOT standard markdown and should be preserved
+        const hasUnicodeFormatting = /[•⸻👉📱🖥\u2022\u2013\u2014\u2018-\u201F\u2026\uFE0E-\uFE0F\u{1F300}-\u{1F9FF}]/u.test(textContent);
+        
+        // Check for tabs used for indentation (common in formatted text, not typical in raw markdown)
+        const hasTabs = /\t/.test(textContent);
+        
+        // If content has rich formatting, Unicode characters, or tabs, preserve it as-is
+        // This prevents loss of special formatting during markdown conversion
+        if (hasRichFormatting || hasUnicodeFormatting || hasTabs) {
+          return html;
+        }
+        
+        // Check if pasted content looks like PURE markdown (strict check)
+        // Only convert if it's clearly raw markdown without HTML formatting
+        const strictMarkdownPatterns = [
+          /^#{1,6}\s/m,           // Headers at line start
+          /^\s*[-*+]\s/m,         // Standard markdown lists (-, *, +) at line start
+          /^\s*\d+\.\s/m,         // Ordered lists at line start
+          /^>\s/m,                // Blockquotes at line start
           /```[\s\S]*?```/m,       // Code blocks (including ```mermaid)
-          /\[([^\]]+)\]\(([^)]+)\)/m, // Links
-          /\*\*[^*]+\*\*/,        // Bold
-          /\*[^*]+\*/,            // Italic
-          /~~[^~]+~~/,            // Strikethrough
-          /`[^`]+`/,              // Inline code
         ];
 
-        // Check if text contains markdown patterns
-        const hasMarkdownSyntax = markdownPatterns.some(pattern => pattern.test(textContent));
+        // Check if text contains strict markdown patterns
+        const hasStrictMarkdownSyntax = strictMarkdownPatterns.some(pattern => pattern.test(textContent));
         
-        // If we detect markdown syntax in the text content, convert it
-        // This handles cases where markdown was pasted and browser converted some to HTML
-        if (hasMarkdownSyntax && textContent.trim().length > 0) {
-          // Check if HTML already has rich formatting that suggests it's already converted
-          // If HTML has many formatting tags, it might be from a rich text source (not raw markdown)
-          const formattingTagCount = html.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a|p)[^>]*>/gi)?.length || 0;
-          
-          // Only skip conversion if HTML has substantial formatting (likely from rich text editor)
-          // But if text clearly has markdown syntax, prioritize converting it
-          if (formattingTagCount < 10 || textContent.includes('```') || textContent.match(/^#{1,6}\s/m)) {
-            try {
-              // Convert markdown to HTML using marked
-              const htmlFromMarkdown = marked.parse(textContent, {
-                breaks: false,
-                gfm: true, // GitHub Flavored Markdown
-              }) as string;
-              
-              // Normalize code blocks for TipTap compatibility
-              const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
-              
-              // Return converted HTML for TipTap to parse
-              // TipTap will parse this with its default parseOptions
-              return normalizedHtml;
-            } catch (error) {
-              // Fall back to original HTML if parsing fails
-              return html;
-            }
+        // Only convert if:
+        // 1. Has strict markdown syntax
+        // 2. Has minimal HTML (less than 3 tags - likely just wrapper divs/spans from clipboard)
+        // 3. No rich formatting already present
+        if (hasStrictMarkdownSyntax && formattingTagCount < 3 && textContent.trim().length > 0) {
+          try {
+            // Convert markdown to HTML using marked
+            const htmlFromMarkdown = marked.parse(textContent, {
+              breaks: true, // Preserve line breaks for better formatting
+              gfm: true, // GitHub Flavored Markdown
+            }) as string;
+            
+            // Normalize code blocks for TipTap compatibility
+            const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
+            
+            // Return converted HTML for TipTap to parse
+            return normalizedHtml;
+          } catch (error) {
+            // Fall back to original HTML if parsing fails
+            return html;
           }
         }
         
@@ -745,28 +766,44 @@ export function RichTextEditor({
           const text = clipboardData.getData('text/plain');
           const html = clipboardData.getData('text/html');
 
-          // Always check plain text for markdown first, regardless of HTML
-          // This ensures we catch markdown even when HTML is present
+          // Check if we should prefer the HTML (has rich formatting or special characters)
+          if (html && html.trim().length > 0) {
+            const formattingTagCount = html.match(/<(h[1-6]|ul|ol|li|blockquote|pre|code|strong|em|b|i|a|p|br|div|span)[^>]*>/gi)?.length || 0;
+            const hasRichFormatting = formattingTagCount >= 5;
+            
+            // Check for Unicode characters that indicate rich formatted content
+            const hasUnicodeFormatting = /[•⸻👉📱🖥\u2022\u2013\u2014\u2018-\u201F\u2026\uFE0E-\uFE0F\u{1F300}-\u{1F9FF}]/u.test(text);
+            
+            // Check for tabs
+            const hasTabs = /\t/.test(text);
+            
+            // If HTML has rich formatting or special characters, let transformPastedHTML handle it
+            if (hasRichFormatting || hasUnicodeFormatting || hasTabs) {
+              return false; // Use default paste handler with transformPastedHTML
+            }
+          }
+
+          // Only check plain text for STRICT markdown patterns if no rich HTML
           if (text && text.trim().length > 0) {
-            const markdownPatterns = [
-              /^#{1,6}\s/m,           // Headers
-              /^\s*[-*+]\s/m,         // Unordered lists
-              /^\s*\d+\.\s/m,         // Ordered lists
-              /^>\s/m,                // Blockquotes
+            // Use stricter patterns - only convert obvious raw markdown
+            const strictMarkdownPatterns = [
+              /^#{1,6}\s/m,           // Headers at line start
+              /^\s*[-*+]\s/m,         // Standard markdown lists (-, *, +) at line start
+              /^\s*\d+\.\s/m,         // Ordered lists at line start
+              /^>\s/m,                // Blockquotes at line start
               /```[\s\S]*?```/m,       // Code blocks (including ```mermaid)
-              /\[([^\]]+)\]\(([^)]+)\)/m, // Links
-              /\*\*[^*]+\*\*/,        // Bold
-              /\*[^*]+\*/,            // Italic
-              /~~[^~]+~~/,            // Strikethrough
             ];
 
-            const hasMarkdownSyntax = markdownPatterns.some(pattern => pattern.test(text));
+            const hasStrictMarkdownSyntax = strictMarkdownPatterns.some(pattern => pattern.test(text));
+            
+            // Only convert if it's strict markdown AND no rich HTML is present
+            const hasMinimalHtml = !html || (html.match(/<[^>]+>/g)?.length || 0) < 3;
 
-            if (hasMarkdownSyntax) {
+            if (hasStrictMarkdownSyntax && hasMinimalHtml) {
               try {
                 // Convert markdown to HTML
                 const htmlFromMarkdown = marked.parse(text, {
-                  breaks: false,
+                  breaks: true, // Preserve line breaks
                   gfm: true,
                 }) as string;
 
@@ -774,13 +811,10 @@ export function RichTextEditor({
                 const normalizedHtml = normalizeCodeBlocksForTipTap(htmlFromMarkdown);
 
                 // Insert the HTML content using editor instance
-                // Use insertContent with parseOptions to preserve code block structure
                 event.preventDefault();
                 event.stopPropagation();
                 
                 if (editorRef.current) {
-                  // Insert content - TipTap will parse it with default options
-                  // The normalized HTML should have properly structured code blocks
                   editorRef.current.chain().focus().insertContent(normalizedHtml).run();
                   return true; // Handled
                 }
@@ -790,7 +824,7 @@ export function RichTextEditor({
             }
           }
 
-          // Let transformPastedHTML handle HTML-based markdown as fallback
+          // Let transformPastedHTML handle HTML-based content
           return false; // Use default paste handler
         },
         input: (view, event) => {
@@ -1489,8 +1523,15 @@ export function RichTextEditor({
       {/* Toolbar Container - only visible in edit mode */}
       {!readOnly && (
         <>
-          {/* Desktop Toolbar - fixed at bottom */}
-          <div className="hidden sm:flex fixed bottom-4 left-1/2 z-50" style={{ transform: 'translateX(-50%)' }}>
+          {/* Desktop Toolbar - fixed at bottom, centered in content area */}
+          <div 
+            key={`toolbar-${sidebarLeft}`}
+            className="hidden sm:flex fixed bottom-4 z-50" 
+            style={{ 
+              left: toolbarLeft,
+              transform: 'translateX(-50%)'
+            }}
+          >
             <div className="flex items-center gap-1 px-4 py-2.5 bg-background/95 backdrop-blur-sm border border-border/20 rounded-full shadow-lg overflow-x-auto">
               {/* Text Formatting */}
         <Button

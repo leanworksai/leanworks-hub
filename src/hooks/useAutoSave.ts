@@ -428,14 +428,29 @@ export function useAutoSave({
     };
   }, [enabled, hasChanges, isDirty]);
 
-  // Initialize saved state when doc loads
+  // Initialize saved state when doc loads (only when docId changes, not on every content change)
+  const initializedDocIdRef = useRef<string | null>(null);
+  const isInitializedRef = useRef(false);
+  
   useEffect(() => {
-    if (docId !== 'new' && content) {
-      const initialTitle = title.trim() || extractFirstLineAsTitle(content, 100) || '';
-      lastSavedTitleRef.current = initialTitle;
-      lastSavedContentRef.current = content;
+    // Only initialize if this is a different doc than we've already initialized
+    if (docId !== 'new' && docId !== initializedDocIdRef.current) {
+      // Wait for content to load before initializing
+      if (content) {
+        const initialTitle = title.trim() || extractFirstLineAsTitle(content, 100) || '';
+        lastSavedTitleRef.current = initialTitle;
+        lastSavedContentRef.current = content;
+        initializedDocIdRef.current = docId;
+        isInitializedRef.current = true;
+      }
+    } else if (docId === 'new' && initializedDocIdRef.current !== 'new') {
+      // Reset refs for new docs
+      lastSavedTitleRef.current = '';
+      lastSavedContentRef.current = '';
+      initializedDocIdRef.current = 'new';
+      isInitializedRef.current = true;
     }
-  }, [docId, title, content]); // Run when docId, title, or content changes (initial load)
+  }, [docId, content, title]); // Run when docId changes or when content first loads
 
   // Manual save function
   const manualSave = useCallback(async (): Promise<void> => {
