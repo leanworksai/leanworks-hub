@@ -291,10 +291,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
 
   return (
     <SidebarProvider>
-      <div className="flex min-h-[100dvh] w-full">
+      <div className="flex h-screen w-full overflow-hidden">
         <AppSidebar />
-        <div className={cn("flex-1 flex flex-col transition-all duration-300 max-w-full overflow-x-hidden min-w-0", isAIChatOpen && "mr-96")} style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
-          <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-lg">
+        <div className={cn("flex-1 flex flex-col transition-all duration-300 max-w-full min-w-0 h-screen overflow-y-auto", isAIChatOpen && "mr-96")} style={{ maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
+          <header className="sticky top-0 z-50 border-b border-border bg-card/95 backdrop-blur-lg supports-[backdrop-filter]:bg-card/80">
             <div className="flex h-16 items-center gap-2 sm:gap-4 px-3 sm:px-6">
               <SidebarTrigger className="-ml-2" />
               

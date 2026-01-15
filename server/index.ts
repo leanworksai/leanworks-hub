@@ -29,6 +29,7 @@ import {
   getUserInfoBatch,
   enrichWithUserNames,
   getOrgSlugById,
+  getOrgIdBySlug,
   closeOrgPool,
 } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
@@ -302,7 +303,58 @@ const NO_TOKEN_LOG_INTERVAL = 60000; // Log once per minute per endpoint
 async function authenticateUser(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const authHeader = req.headers.authorization;
+    const apiKey = req.headers['x-api-key'] as string | undefined;
     
+    // Check for API key authentication first
+    if (apiKey) {
+      try {
+        const validApiKey = await getApiKeyFromSecretManager();
+        if (apiKey === validApiKey) {
+          // API key is valid - allow request to proceed
+          // Extract user email from X-User-Email header if provided (for API key auth)
+          const userEmail = req.headers['x-user-email'] as string | undefined;
+          if (userEmail) {
+            (req as any).userEmail = userEmail.toLowerCase();
+          }
+          (req as any).authenticatedViaApiKey = true;
+          
+          // If org context is provided, validate membership (same as Bearer token flow)
+          const orgIdentifier = req.headers['x-org-id'] as string | undefined;
+          if (orgIdentifier && userEmail) {
+            try {
+              const orgId = await resolveOrgId(orgIdentifier);
+              const membership = await checkOrgMembership(orgId, userEmail.toLowerCase());
+              if (membership.isMember) {
+                (req as any).orgId = orgId;
+                (req as any).orgRole = membership.role;
+              }
+            } catch (error: any) {
+              // Log error but continue without org context if slug conversion fails
+              if (process.env.NODE_ENV === 'development') {
+                console.warn('⚠️ [Backend] authenticateUser: Failed to resolve org context for API key auth', {
+                  error: error.message,
+                  orgIdentifier,
+                });
+              }
+            }
+          }
+          
+          next();
+          return;
+        } else {
+          return res.status(401).json({ error: 'Invalid API key' });
+        }
+      } catch (error: any) {
+        console.error('❌ [Backend] authenticateUser: API key validation failed', {
+          error: error.message,
+          method: req.method,
+          path: req.path,
+        });
+        return res.status(401).json({ error: 'Invalid API key' });
+      }
+    }
+    
+    // Fall back to Bearer token authentication
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       // Rate limit logging to prevent spam from polling/retry mechanisms
       // Only log in development mode to reduce production noise
@@ -320,7 +372,7 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
         noTokenLogCache.set(endpointKey, now);
       }
       
-      return res.status(401).json({ error: 'No token provided' });
+      return res.status(401).json({ error: 'No token or API key provided' });
     }
 
     const token = authHeader.substring(7);
@@ -384,13 +436,24 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     }
     
     // Get org context from header (if provided)
-    const orgId = req.headers['x-org-id'] as string | undefined;
-    if (orgId && userEmail) {
+    const orgIdentifier = req.headers['x-org-id'] as string | undefined;
+    if (orgIdentifier && userEmail) {
       // Validate org membership
-      const membership = await checkOrgMembership(orgId, userEmail);
-      if (membership.isMember) {
-        (req as any).orgId = orgId;
-        (req as any).orgRole = membership.role;
+      try {
+        const orgId = await resolveOrgId(orgIdentifier);
+        const membership = await checkOrgMembership(orgId, userEmail);
+        if (membership.isMember) {
+          (req as any).orgId = orgId;
+          (req as any).orgRole = membership.role;
+        }
+      } catch (error: any) {
+        // Log error but don't fail authentication - org context is optional
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('⚠️ [Backend] authenticateUser: Failed to resolve org context', {
+            error: error.message,
+            orgIdentifier,
+          });
+        }
       }
     }
     
@@ -425,20 +488,54 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
 // ============================================================================
 
 /**
+ * Helper function to convert org identifier (slug or UUID) to org ID
+ * @param orgIdentifier - Can be a UUID or a slug
+ * @returns The org ID (UUID)
+ */
+async function resolveOrgId(orgIdentifier: string): Promise<string> {
+  // Check if orgIdentifier is a UUID or a slug
+  // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 chars with hyphens)
+  // or xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (32 hex chars)
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orgIdentifier) ||
+                /^[0-9a-f]{32}$/i.test(orgIdentifier);
+  
+  if (isUuid) {
+    return orgIdentifier;
+  } else {
+    // It's a slug, convert to ID
+    return await getOrgIdBySlug(orgIdentifier);
+  }
+}
+
+/**
  * Middleware to require org membership for org-scoped endpoints
  * Must be used after authenticateUser
  */
 async function requireOrgMembership(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const userEmail = (req as any).userEmail;
-    const orgId = req.headers['x-org-id'] as string || req.params.orgId;
+    const orgIdentifier = req.headers['x-org-id'] as string || req.params.orgId;
     
-    if (!orgId) {
+    if (!orgIdentifier) {
       return res.status(400).json({ error: 'Organization ID is required (X-Org-Id header or orgId param)' });
     }
     
     if (!userEmail) {
       return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
+    // Resolve org identifier (slug or UUID) to org ID
+    let orgId: string;
+    try {
+      orgId = await resolveOrgId(orgIdentifier);
+    } catch (error: any) {
+      console.error('❌ [Backend] requireOrgMembership: Failed to resolve org identifier', {
+        error: error.message,
+        orgIdentifier,
+        method: req.method,
+        path: req.path,
+      });
+      return res.status(404).json({ error: `Organization not found: ${orgIdentifier}` });
     }
     
     const membership = await checkOrgMembership(orgId, userEmail);
@@ -465,17 +562,31 @@ async function requireOrgOwner(req: express.Request, res: express.Response, next
     const userEmail = (req as any).userEmail;
     const headerOrgId = req.headers['x-org-id'] as string;
     const paramOrgId = req.params.orgId;
-    const orgId = headerOrgId || paramOrgId;
+    const orgIdentifier = headerOrgId || paramOrgId;
     
-    console.log(`[requireOrgOwner] Checking ownership - headerOrgId: ${headerOrgId}, paramOrgId: ${paramOrgId}, final orgId: ${orgId}, userEmail: ${userEmail}`);
+    console.log(`[requireOrgOwner] Checking ownership - headerOrgId: ${headerOrgId}, paramOrgId: ${paramOrgId}, final orgIdentifier: ${orgIdentifier}, userEmail: ${userEmail}`);
     
-    if (!orgId) {
+    if (!orgIdentifier) {
       console.error(`[requireOrgOwner] Missing orgId - headers:`, req.headers, `params:`, req.params);
       return res.status(400).json({ error: 'Organization ID is required' });
     }
     
     if (!userEmail) {
       return res.status(401).json({ error: 'User not authenticated' });
+    }
+    
+    // Resolve org identifier (slug or UUID) to org ID
+    let orgId: string;
+    try {
+      orgId = await resolveOrgId(orgIdentifier);
+    } catch (error: any) {
+      console.error('❌ [Backend] requireOrgOwner: Failed to resolve org identifier', {
+        error: error.message,
+        orgIdentifier,
+        method: req.method,
+        path: req.path,
+      });
+      return res.status(404).json({ error: `Organization not found: ${orgIdentifier}` });
     }
     
     const isOwner = await isOrgOwner(orgId, userEmail);
@@ -1126,8 +1237,15 @@ app.get('/api/users', authenticateUser, async (req, res) => {
     // If org context is provided, return org members from org-specific users table
     // Otherwise, return all users the requesting user can see (from their orgs)
     if (orgId) {
-      // Validate membership
-      const membership = await checkOrgMembership(orgId, userEmail);
+      // Validate membership - resolve org identifier (slug or UUID) to org ID first
+      let resolvedOrgId: string;
+      try {
+        resolvedOrgId = await resolveOrgId(orgId);
+      } catch (error: any) {
+        return res.status(404).json({ error: `Organization not found: ${orgId}` });
+      }
+      
+      const membership = await checkOrgMembership(resolvedOrgId, userEmail);
       if (!membership.isMember) {
         return res.status(403).json({ error: 'Not a member of this organization' });
       }
@@ -1172,7 +1290,7 @@ app.get('/api/users', authenticateUser, async (req, res) => {
       const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
       
       // Get org members from org-specific users table
-      const orgPool = await getOrgPool(orgId);
+      const orgPool = await getOrgPool(resolvedOrgId);
       const result = await orgPool.query(`
         SELECT email, first_name, last_name, job_title, responsibilities,
                avatar, timezone, status, role, joined_at, last_active_at, created_at
