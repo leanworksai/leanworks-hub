@@ -47,7 +47,7 @@ export function DocItem({
         </p>
         <div className="w-5 flex-shrink-0">
           <DocItemMenu
-            docId={doc.id}
+            doc={doc}
             isActive={isActive}
             isOwner={isOwner}
             filesCount={filesCount}

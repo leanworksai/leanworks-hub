@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { MoreVertical, Share2, Mail, Paperclip, Trash2 } from "lucide-react";
+import { MoreVertical, Share2, Mail, Paperclip, Trash2, Plus, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import {
   DropdownMenu,
@@ -8,9 +8,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
+import type { Doc } from "@/data/docsData";
 
 interface DocItemMenuProps {
-  docId: string;
+  doc: Doc;
   isActive: boolean;
   isOwner: boolean;
   filesCount: number;
@@ -18,13 +20,15 @@ interface DocItemMenuProps {
 }
 
 export function DocItemMenu({
-  docId,
+  doc,
   isActive,
   isOwner,
   filesCount,
   onDelete,
 }: DocItemMenuProps) {
   const navigate = useNavigate();
+  const { toggleDoc, isDocSelected } = useSelectedDocs();
+  const isSelected = isDocSelected(doc.id);
 
   return (
     <DropdownMenu>
@@ -42,19 +46,35 @@ export function DocItemMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+        <DropdownMenuItem onClick={(e) => {
+          e.stopPropagation();
+          toggleDoc(doc);
+        }}>
+          {isSelected ? (
+            <>
+              <X className="mr-2 h-4 w-4" />
+              Remove from Context
+            </>
+          ) : (
+            <>
+              <Plus className="mr-2 h-4 w-4" />
+              Add to Context
+            </>
+          )}
+        </DropdownMenuItem>
         {isOwner && (
-          <DropdownMenuItem onClick={() => navigate(`/docs/${docId}?action=share`)}>
+          <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}?action=share`)}>
             <Share2 className="mr-2 h-4 w-4" />
             Limit Visibility
           </DropdownMenuItem>
         )}
         {isOwner && (
-          <DropdownMenuItem onClick={() => navigate(`/docs/${docId}?action=shareEmail`)}>
+          <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}?action=shareEmail`)}>
             <Mail className="mr-2 h-4 w-4" />
             Share
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem onClick={() => navigate(`/docs/${docId}?action=files`)}>
+        <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}?action=files`)}>
           <Paperclip className="mr-2 h-4 w-4" />
           Attached Files {filesCount > 0 && `(${filesCount})`}
         </DropdownMenuItem>
