@@ -49,7 +49,7 @@ export function DocDetailToolbar({
       </div>
 
       {/* Mobile header - back button and menu (always visible) */}
-      <div className="sticky top-0 z-20 sm:hidden bg-background border-b border-border/30 px-2 py-1 flex items-center justify-between">
+      <div className="sticky top-0 z-30 sm:hidden bg-background border-b border-border/30 px-2 py-1 flex items-center justify-between">
         <Button
           variant="ghost"
           size="sm"

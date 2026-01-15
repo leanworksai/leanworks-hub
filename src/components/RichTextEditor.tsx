@@ -442,6 +442,7 @@ export function RichTextEditor({
   const { setSelectedTextPosition } = useSelectedTextContext();
   const [isUploading, setIsUploading] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [toolbarOffsetTop, setToolbarOffsetTop] = useState(64); // Start at 64px (header height)
   const mermaidInitialized = useRef(false);
   
   // Get sidebar state to adjust toolbar position
@@ -1291,6 +1292,11 @@ export function RichTextEditor({
       // Use 100px threshold (more reliable across devices)
       const keyboardCurrentlyVisible = heightDiff > 100;
       
+      // Calculate toolbar position: header height (64px) + visual viewport offset
+      const headerHeight = 64;
+      const newToolbarOffset = headerHeight + Math.max(0, viewport.offsetTop);
+      setToolbarOffsetTop(newToolbarOffset);
+      
       // Update state if keyboard visibility changed
       setIsKeyboardVisible(prev => {
         if (prev !== keyboardCurrentlyVisible) {
@@ -1309,7 +1315,7 @@ export function RichTextEditor({
       }, 50);
     };
     
-    // Handle viewport scroll - force toolbar re-render when viewport scrolls during keyboard visibility
+    // Handle viewport scroll - update toolbar position when viewport scrolls during keyboard visibility
     // This ensures the portal-rendered toolbar stays at the correct position during auto-scroll
     const handleViewportScroll = () => {
       // Only handle scroll when keyboard is visible
@@ -1317,10 +1323,9 @@ export function RichTextEditor({
       
       if (scrollTimeout) clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
-        // Force toolbar re-render by triggering state update
-        // This repositions the fixed toolbar to the new viewport position
-        setIsKeyboardVisible(prev => prev);
-      }, 50);
+        // Update toolbar position based on new viewport offset
+        updateKeyboardVisibility();
+      }, 16); // Use 16ms for smooth 60fps updates
     };
     
     if (window.visualViewport) {
@@ -1799,10 +1804,10 @@ export function RichTextEditor({
         onDragLeave={!readOnly ? handleDragLeave : undefined}
         onDrop={!readOnly ? handleDrop : undefined}
       >
-        {/* Mobile Toolbar - fixed at viewport top when keyboard is open (always visible) */}
+        {/* Mobile Toolbar - sticky below header when keyboard is open (always visible) */}
         {/* Rendered via portal to bypass parent transform context */}
         {!readOnly && isKeyboardVisible && createPortal(
-          <div className="sm:hidden fixed top-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-sm border-b border-border/20 shadow-lg">
+          <div className="sm:hidden fixed left-0 right-0 z-[45] bg-background/95 backdrop-blur-sm border-b border-border/20 shadow-lg" style={{ top: `${toolbarOffsetTop}px` }}>
             <div className="overflow-x-auto scrollbar-hide">
               <div className="flex items-center gap-1 px-2 py-2.5 min-w-max">
               {/* Text Formatting */}
