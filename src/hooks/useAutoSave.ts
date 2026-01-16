@@ -62,6 +62,18 @@ export function useAutoSave({
   const createdDocIdRef = useRef<string | null>(null);
   // Lock to prevent concurrent doc creation
   const isCreatingRef = useRef(false);
+  
+  // CRITICAL: Capture save context to prevent race conditions when switching docs
+  // This ensures saves complete for the correct doc even if user switches docs
+  const saveContextRef = useRef<{
+    docId: string | 'new';
+    content: string;
+    title: string;
+    visibility: 'all_members' | 'specific_members';
+    visibleToMembers: string[];
+    files: DocFile[];
+    timestamp: number;
+  } | null>(null);
 
   // Update userId ref when user changes
   useEffect(() => {
@@ -74,6 +86,17 @@ export function useAutoSave({
       // We're viewing an existing doc, reset the refs
       createdDocIdRef.current = null;
       isCreatingRef.current = false;
+    }
+  }, [docId]);
+  
+  // Cancel debounce timer when switching docs (but allow in-flight saves to complete in background)
+  useEffect(() => {
+    // Clear debounce timer when docId changes
+    // This prevents new saves from starting for the old doc
+    // But any in-flight saves will complete in background using captured context
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
     }
   }, [docId]);
 
@@ -107,27 +130,48 @@ export function useAutoSave({
   const performSave = useCallback(async (): Promise<void> => {
     if (!enabled || isSavingRef.current) return;
     
-    // Extract title from content if title is empty
-    const finalTitle = title.trim() || extractFirstLineAsTitle(content, 100) || 'Untitled';
+    // CRITICAL: Capture context at save initiation to prevent race conditions
+    // This ensures we save the correct doc's content even if user switches docs
+    const saveContext = {
+      docId: docId,
+      content: content,
+      title: title,
+      visibility: visibility,
+      visibleToMembers: Array.from(visibleToMembers),
+      files: files,
+      timestamp: Date.now(),
+    };
+    
+    // Store context for this save operation
+    saveContextRef.current = saveContext;
+    
+    // Extract title from content if title is empty (use captured content)
+    const finalTitle = saveContext.title.trim() || extractFirstLineAsTitle(saveContext.content, 100) || 'Untitled';
     
     // Validate content - allow empty content for new docs (will be saved as empty)
-    const isEmptyContent = !content.trim() || content === '<p></p>' || content === '{"type":"doc","content":[{"type":"paragraph"}]}';
-    if (isEmptyContent && docId !== 'new') {
+    // Use CAPTURED content, not current closure value
+    const isEmptyContent = !saveContext.content.trim() || saveContext.content === '<p></p>' || saveContext.content === '{"type":"doc","content":[{"type":"paragraph"}]}';
+    if (isEmptyContent && saveContext.docId !== 'new') {
       // For existing docs, require some content
       setError(new Error('Content is required'));
       setSaveStatus('error');
       return;
     }
 
-    // Validate visibility
-    if (visibility === 'specific_members' && visibleToMembers.length === 0) {
+    // Validate visibility (use captured values)
+    if (saveContext.visibility === 'specific_members' && saveContext.visibleToMembers.length === 0) {
       setError(new Error('Please select at least one member when visibility is set to Specific Members'));
       setSaveStatus('error');
       return;
     }
 
-    // Check if there are actual changes
-    if (!hasChanges() && docId !== 'new' && !createdDocIdRef.current) {
+    // Check if there are actual changes (compare captured content with last saved)
+    const currentTitle = finalTitle;
+    const titleChanged = currentTitle !== lastSavedTitleRef.current;
+    const contentChanged = saveContext.content !== lastSavedContentRef.current;
+    const hasChanges = titleChanged || contentChanged;
+    
+    if (!hasChanges && saveContext.docId !== 'new' && !createdDocIdRef.current) {
       return; // No changes to save
     }
 
@@ -136,24 +180,37 @@ export function useAutoSave({
     setError(null);
 
     try {
-      // Always save draft locally first
-      saveDraftLocally();
+      // Always save draft locally first (use captured context)
+      if (userIdRef.current && enabled) {
+        try {
+          saveDraft(saveContext.docId, userIdRef.current, {
+            title: saveContext.title,
+            content: saveContext.content,
+            visibility: saveContext.visibility,
+            visibleToMembers: saveContext.visibleToMembers,
+            files: saveContext.files,
+          });
+          setIsDirty(true);
+        } catch (err) {
+          console.warn('Failed to save draft locally:', err);
+        }
+      }
 
       // Check if online
       if (!isOnline()) {
-        // Queue save for when online
-        if (docId === 'new') {
+        // Queue save for when online (use CAPTURED context)
+        if (saveContext.docId === 'new') {
           // For new docs, we need the full doc object
             const newDoc: Doc = {
               id: uuidv4(), // Generate ID for queue
               title: finalTitle,
-              content,
+              content: saveContext.content, // Use captured content
               ownerEmail: user?.email || '',
               projectId: null,
               teamId: null,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
+              visibility: saveContext.visibility,
+              visibleToMembers: saveContext.visibleToMembers,
+              metadata: { files: saveContext.files },
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
@@ -162,55 +219,58 @@ export function useAutoSave({
           // Build updates object, only including valid content
           const updates: Partial<Doc> = {
             title: finalTitle,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
+            visibility: saveContext.visibility,
+            visibleToMembers: saveContext.visibleToMembers,
+            metadata: { files: saveContext.files },
           };
           
-          // Only include content if it's valid and non-empty
-          const isValidContent = content && 
-            content.trim().length > 0 && 
-            content !== '<p></p>' && 
-            content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+          // Only include content if it's valid and non-empty (use captured content)
+          const isValidContent = saveContext.content && 
+            saveContext.content.trim().length > 0 && 
+            saveContext.content !== '<p></p>' && 
+            saveContext.content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
           
           if (isValidContent) {
             try {
-              JSON.parse(content);
-              updates.content = content;
+              JSON.parse(saveContext.content);
+              updates.content = saveContext.content; // Use captured content
             } catch {
               // Invalid JSON, skip content
             }
           }
           
-          queueSave(docId, updates);
+          queueSave(saveContext.docId, updates); // Use captured docId
         }
-        setSaveStatus('offline');
+        // Only update UI if user is still on this doc
+        if (docId === saveContext.docId) {
+          setSaveStatus('offline');
+        }
         isSavingRef.current = false;
         return;
       }
 
-      // Perform actual save
-      if (docId === 'new') {
+      // Perform actual save (use CAPTURED context throughout)
+      if (saveContext.docId === 'new') {
         // If we've already created a doc but docId is still 'new', update it instead
         if (createdDocIdRef.current) {
-          // Build updates object, only including valid content
+          // Build updates object, only including valid content (use captured context)
           const updates: Partial<Doc> = {
             title: finalTitle,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
+            visibility: saveContext.visibility,
+            visibleToMembers: saveContext.visibleToMembers,
+            metadata: { files: saveContext.files },
           };
           
-          // Only include content if it's valid and non-empty
-          const isValidContent = content && 
-            content.trim().length > 0 && 
-            content !== '<p></p>' && 
-            content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+          // Only include content if it's valid and non-empty (use captured content)
+          const isValidContent = saveContext.content && 
+            saveContext.content.trim().length > 0 && 
+            saveContext.content !== '<p></p>' && 
+            saveContext.content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
           
           if (isValidContent) {
             try {
-              JSON.parse(content);
-              updates.content = content;
+              JSON.parse(saveContext.content);
+              updates.content = saveContext.content; // Use captured content
             } catch {
               console.warn('Skipping content update: invalid JSON format');
             }
@@ -226,9 +286,11 @@ export function useAutoSave({
             removeDraft(createdDocIdRef.current, userIdRef.current);
           }
           
-          // Update saved state immediately to prevent duplicate saves
-          lastSavedContentRef.current = content;
-          lastSavedTitleRef.current = finalTitle;
+          // Update saved state immediately to prevent duplicate saves (only if still on this doc)
+          if (docId === saveContext.docId) {
+            lastSavedContentRef.current = saveContext.content;
+            lastSavedTitleRef.current = finalTitle;
+          }
         } else if (isCreatingRef.current) {
           // Another save is already creating the doc, skip this one
           // The other save will handle it and set createdDocIdRef
@@ -242,13 +304,13 @@ export function useAutoSave({
               const newDoc: Doc = {
                 id: uuidv4(), // Generate ID for new doc
                 title: finalTitle,
-                content,
+                content: saveContext.content, // Use captured content
                 ownerEmail: user?.email || '',
                 projectId: null,
                 teamId: null,
-                visibility,
-                visibleToMembers: Array.from(visibleToMembers),
-                metadata: { files },
+                visibility: saveContext.visibility,
+                visibleToMembers: saveContext.visibleToMembers,
+                metadata: { files: saveContext.files },
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };
@@ -263,131 +325,144 @@ export function useAutoSave({
               removeDraft('new', userIdRef.current);
             }
             
-            // Update saved state immediately to prevent duplicate saves
+            // Update saved state immediately to prevent duplicate saves (only if still on this doc)
             // Use the actual saved content from the created doc if available
-            lastSavedContentRef.current = createdDoc?.content || content;
-            lastSavedTitleRef.current = createdDoc?.title || finalTitle;
+            if (docId === saveContext.docId) {
+              lastSavedContentRef.current = createdDoc?.content || saveContext.content;
+              lastSavedTitleRef.current = createdDoc?.title || finalTitle;
+            }
           } finally {
             // Always release the lock, even on error
             isCreatingRef.current = false;
           }
         }
       } else {
-        // Build updates object, only including valid content
+        // Build updates object, only including valid content (use CAPTURED context)
         const updates: Partial<Doc> = {
           title: finalTitle,
-          visibility,
-          visibleToMembers: Array.from(visibleToMembers),
-          metadata: { files },
+          visibility: saveContext.visibility,
+          visibleToMembers: saveContext.visibleToMembers,
+          metadata: { files: saveContext.files },
         };
         
-        // Only include content if it's valid and non-empty
+        // Only include content if it's valid and non-empty (use captured content)
         // Check if content is valid JSON and not empty
-        const isValidContent = content && 
-          content.trim().length > 0 && 
-          content !== '<p></p>' && 
-          content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+        const isValidContent = saveContext.content && 
+          saveContext.content.trim().length > 0 && 
+          saveContext.content !== '<p></p>' && 
+          saveContext.content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
         
         if (isValidContent) {
           // Validate it's valid JSON
           try {
-            JSON.parse(content);
-            updates.content = content;
+            JSON.parse(saveContext.content);
+            updates.content = saveContext.content; // Use captured content
           } catch {
             // Invalid JSON, skip content update
             console.warn('Skipping content update: invalid JSON format');
           }
         }
         
+        // CRITICAL: Use CAPTURED docId, not current docId
+        // This prevents saving old content to new doc after navigation
         await updateDoc.mutateAsync({
-          docId,
+          docId: saveContext.docId, // Use captured docId
           updates,
         });
         
         // Clear draft after successful save
         if (userIdRef.current) {
-          removeDraft(docId, userIdRef.current);
+          removeDraft(saveContext.docId, userIdRef.current); // Use captured docId
         }
       }
 
-      // Update saved state
-      lastSavedContentRef.current = content;
-      lastSavedTitleRef.current = finalTitle;
-      const savedAt = new Date();
-      setLastSavedAt(savedAt);
-      setSaveStatus('saved');
-      setIsDirty(false);
-      
-      // Keep 'saved' status visible for 2 seconds before going to idle
-      // (idle state will still show the saved timestamp)
-      setTimeout(() => {
-        // Only reset to idle if still in saved state (not changed by another save)
-        setSaveStatus((current) => current === 'saved' ? 'idle' : current);
-      }, 2000);
-      
-      // Determine the saved doc ID
-      const savedDocId = docId === 'new' ? (createdDocIdRef.current || '') : docId;
-      onSaveSuccess?.(savedDocId, false); // false = auto save
+      // Update saved state (only if user is still on this doc)
+      // Background saves for switched docs complete silently
+      if (docId === saveContext.docId) {
+        lastSavedContentRef.current = saveContext.content;
+        lastSavedTitleRef.current = finalTitle;
+        const savedAt = new Date();
+        setLastSavedAt(savedAt);
+        setSaveStatus('saved');
+        setIsDirty(false);
+        
+        // Keep 'saved' status visible for 2 seconds before going to idle
+        // (idle state will still show the saved timestamp)
+        setTimeout(() => {
+          // Only reset to idle if still in saved state (not changed by another save)
+          setSaveStatus((current) => current === 'saved' ? 'idle' : current);
+        }, 2000);
+        
+        // Determine the saved doc ID
+        const savedDocId = saveContext.docId === 'new' ? (createdDocIdRef.current || '') : saveContext.docId;
+        onSaveSuccess?.(savedDocId, false); // false = auto save
+      } else {
+        // Background save completed for a different doc - silent success
+        console.log('[useAutoSave] Background save completed for doc:', saveContext.docId);
+      }
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Failed to save document');
-      setError(error);
-      setSaveStatus('error');
       
-      // Queue save for retry
-      if (docId === 'new') {
+      // Only update UI if user is still on this doc
+      if (docId === saveContext.docId) {
+        setError(error);
+        setSaveStatus('error');
+        onSaveError?.(error);
+      }
+      
+      // Queue save for retry (use CAPTURED context)
+      if (saveContext.docId === 'new') {
         // If we've already created a doc, queue an update instead of create
         if (createdDocIdRef.current) {
           queueSave(createdDocIdRef.current, {
             title: finalTitle,
-            content,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
+            content: saveContext.content, // Use captured content
+            visibility: saveContext.visibility,
+            visibleToMembers: saveContext.visibleToMembers,
+            metadata: { files: saveContext.files },
           });
         } else {
             const newDoc: Doc = {
               id: uuidv4(), // Generate ID for queue
               title: finalTitle,
-              content,
+              content: saveContext.content, // Use captured content
               ownerEmail: user?.email || '',
               projectId: null,
               teamId: null,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
+              visibility: saveContext.visibility,
+              visibleToMembers: saveContext.visibleToMembers,
+              metadata: { files: saveContext.files },
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
           queueSave('new', {}, 'create', newDoc);
         }
       } else {
-        // Build updates object, only including valid content
+        // Build updates object, only including valid content (use captured context)
         const updates: Partial<Doc> = {
           title: finalTitle,
-          visibility,
-          visibleToMembers: Array.from(visibleToMembers),
-          metadata: { files },
+          visibility: saveContext.visibility,
+          visibleToMembers: saveContext.visibleToMembers,
+          metadata: { files: saveContext.files },
         };
         
-        // Only include content if it's valid and non-empty
-        const isValidContent = content && 
-          content.trim().length > 0 && 
-          content !== '<p></p>' && 
-          content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+        // Only include content if it's valid and non-empty (use captured content)
+        const isValidContent = saveContext.content && 
+          saveContext.content.trim().length > 0 && 
+          saveContext.content !== '<p></p>' && 
+          saveContext.content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
         
         if (isValidContent) {
           try {
-            JSON.parse(content);
-            updates.content = content;
+            JSON.parse(saveContext.content);
+            updates.content = saveContext.content; // Use captured content
           } catch {
             // Invalid JSON, skip content
           }
         }
         
-        queueSave(docId, updates);
+        queueSave(saveContext.docId, updates); // Use captured docId
       }
-      
-      onSaveError?.(error);
     } finally {
       isSavingRef.current = false;
     }
@@ -443,25 +518,9 @@ export function useAutoSave({
     performSaveRef.current = performSave;
   }, [performSave]);
 
-  // Flush pending saves on component unmount (navigation)
-  useEffect(() => {
-    return () => {
-      // On component unmount (navigation), flush pending saves
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
-        debounceTimerRef.current = null;
-        
-        // If there are unsaved changes, save them now
-        // Fire-and-forget: don't block navigation
-        // Draft is already saved, so this is just syncing to server
-        if (enabled && hasChanges() && !isSavingRef.current) {
-          performSaveRef.current().catch(() => {
-            // Silently fail - draft is already in localStorage
-          });
-        }
-      }
-    };
-  }, [enabled, hasChanges]);
+  // Don't flush saves on unmount - let them complete in background
+  // The debounce timer is already cleared when docId changes
+  // Any in-flight saves will complete using captured context
 
   // Handle page visibility changes and unload (browser close/refresh)
   useEffect(() => {
@@ -531,6 +590,20 @@ export function useAutoSave({
       debounceTimerRef.current = null;
     }
     
+    // CRITICAL: Capture context for manual save too
+    const saveContext = {
+      docId: docId,
+      content: content,
+      title: title,
+      visibility: visibility,
+      visibleToMembers: Array.from(visibleToMembers),
+      files: files,
+      timestamp: Date.now(),
+    };
+    
+    // Store context for this save operation
+    saveContextRef.current = saveContext;
+    
     // Store original onSaveSuccess to call with manual flag
     const originalOnSaveSuccess = onSaveSuccess;
     const wrappedOnSaveSuccess = (savedDocId: string) => {
@@ -541,19 +614,19 @@ export function useAutoSave({
     const performManualSave = async () => {
       if (!enabled || isSavingRef.current) return;
       
-      // Extract title from content if title is empty
-      const finalTitle = title.trim() || extractFirstLineAsTitle(content, 100) || 'Untitled';
+      // Extract title from content if title is empty (use captured context)
+      const finalTitle = saveContext.title.trim() || extractFirstLineAsTitle(saveContext.content, 100) || 'Untitled';
       
-      // Validate content - allow empty content for new docs
-      const isEmptyContent = !content.trim() || content === '<p></p>' || content === '{"type":"doc","content":[{"type":"paragraph"}]}';
-      if (isEmptyContent && docId !== 'new') {
+      // Validate content - allow empty content for new docs (use captured context)
+      const isEmptyContent = !saveContext.content.trim() || saveContext.content === '<p></p>' || saveContext.content === '{"type":"doc","content":[{"type":"paragraph"}]}';
+      if (isEmptyContent && saveContext.docId !== 'new') {
         setError(new Error('Content is required'));
         setSaveStatus('error');
         return;
       }
 
-      // Validate visibility
-      if (visibility === 'specific_members' && visibleToMembers.length === 0) {
+      // Validate visibility (use captured context)
+      if (saveContext.visibility === 'specific_members' && saveContext.visibleToMembers.length === 0) {
         setError(new Error('Please select at least one member when visibility is set to Specific Members'));
         setSaveStatus('error');
         return;
@@ -564,50 +637,67 @@ export function useAutoSave({
       setError(null);
 
       try {
-        saveDraftLocally();
+        // Save draft locally (use captured context)
+        if (userIdRef.current && enabled) {
+          try {
+            saveDraft(saveContext.docId, userIdRef.current, {
+              title: saveContext.title,
+              content: saveContext.content,
+              visibility: saveContext.visibility,
+              visibleToMembers: saveContext.visibleToMembers,
+              files: saveContext.files,
+            });
+            setIsDirty(true);
+          } catch (err) {
+            console.warn('Failed to save draft locally:', err);
+          }
+        }
 
         if (!isOnline()) {
-          // Queue save for when online
-          if (docId === 'new') {
+          // Queue save for when online (use captured context)
+          if (saveContext.docId === 'new') {
             const newDoc: Doc = {
               id: uuidv4(),
               title: finalTitle,
-              content,
+              content: saveContext.content, // Use captured content
               ownerEmail: user?.email || '',
               projectId: null,
               teamId: null,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
+              visibility: saveContext.visibility,
+              visibleToMembers: saveContext.visibleToMembers,
+              metadata: { files: saveContext.files },
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             };
             queueSave('new', {}, 'create', newDoc);
           } else {
-            queueSave(docId, {
+            queueSave(saveContext.docId, { // Use captured docId
               title: finalTitle,
-              content,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
+              content: saveContext.content, // Use captured content
+              visibility: saveContext.visibility,
+              visibleToMembers: saveContext.visibleToMembers,
+              metadata: { files: saveContext.files },
             });
           }
-          setSaveStatus('offline');
+          // Only update UI if still on this doc
+          if (docId === saveContext.docId) {
+            setSaveStatus('offline');
+          }
           isSavingRef.current = false;
           return;
         }
 
-        let savedDocId = docId;
-        if (docId === 'new') {
+        let savedDocId = saveContext.docId; // Use captured docId
+        if (saveContext.docId === 'new') {
           if (createdDocIdRef.current) {
             await updateDoc.mutateAsync({
               docId: createdDocIdRef.current,
               updates: {
                 title: finalTitle,
-                content,
-                visibility,
-                visibleToMembers: Array.from(visibleToMembers),
-                metadata: { files },
+                content: saveContext.content, // Use captured content
+                visibility: saveContext.visibility,
+                visibleToMembers: saveContext.visibleToMembers,
+                metadata: { files: saveContext.files },
               },
             });
             savedDocId = createdDocIdRef.current;
@@ -620,13 +710,13 @@ export function useAutoSave({
               const newDoc: Doc = {
                 id: uuidv4(),
                 title: finalTitle,
-                content,
+                content: saveContext.content, // Use captured content
                 ownerEmail: user?.email || '',
                 projectId: null,
                 teamId: null,
-                visibility,
-                visibleToMembers: Array.from(visibleToMembers),
-                metadata: { files },
+                visibility: saveContext.visibility,
+                visibleToMembers: saveContext.visibleToMembers,
+                metadata: { files: saveContext.files },
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               };
@@ -641,45 +731,56 @@ export function useAutoSave({
             }
           }
         } else {
+          // CRITICAL: Use CAPTURED docId and content
           await updateDoc.mutateAsync({
-            docId,
+            docId: saveContext.docId, // Use captured docId
             updates: {
               title: finalTitle,
-              content,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
+              content: saveContext.content, // Use captured content
+              visibility: saveContext.visibility,
+              visibleToMembers: saveContext.visibleToMembers,
+              metadata: { files: saveContext.files },
             },
           });
           if (userIdRef.current) {
-            removeDraft(docId, userIdRef.current);
+            removeDraft(saveContext.docId, userIdRef.current); // Use captured docId
           }
         }
 
-        lastSavedContentRef.current = content;
-        lastSavedTitleRef.current = finalTitle;
-        const savedAt = new Date();
-        setLastSavedAt(savedAt);
-        setSaveStatus('saved');
-        setIsDirty(false);
-        
-        setTimeout(() => {
-          setSaveStatus((current) => current === 'saved' ? 'idle' : current);
-        }, 2000);
-        
-        wrappedOnSaveSuccess(savedDocId);
+        // Only update UI if user is still on this doc
+        if (docId === saveContext.docId) {
+          lastSavedContentRef.current = saveContext.content;
+          lastSavedTitleRef.current = finalTitle;
+          const savedAt = new Date();
+          setLastSavedAt(savedAt);
+          setSaveStatus('saved');
+          setIsDirty(false);
+          
+          setTimeout(() => {
+            setSaveStatus((current) => current === 'saved' ? 'idle' : current);
+          }, 2000);
+          
+          wrappedOnSaveSuccess(savedDocId);
+        } else {
+          // Background manual save completed - silent success
+          console.log('[useAutoSave] Background manual save completed for doc:', saveContext.docId);
+        }
       } catch (err) {
         const error = err instanceof Error ? err : new Error('Failed to save document');
-        setError(error);
-        setSaveStatus('error');
-        onSaveError?.(error);
+        
+        // Only update UI if user is still on this doc
+        if (docId === saveContext.docId) {
+          setError(error);
+          setSaveStatus('error');
+          onSaveError?.(error);
+        }
       } finally {
         isSavingRef.current = false;
       }
     };
     
     await performManualSave();
-  }, [performSave, enabled, title, content, visibility, visibleToMembers, files, user?.email, docId, saveDraftLocally, createDoc, updateDoc, onSaveSuccess, onSaveError]);
+  }, [enabled, title, content, visibility, visibleToMembers, files, user?.email, docId, createDoc, updateDoc, onSaveSuccess, onSaveError]);
 
   // Monitor online/offline status
   useEffect(() => {

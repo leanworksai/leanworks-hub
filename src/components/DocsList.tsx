@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useDocs } from "@/hooks/useDocs";
+import { useDocs, useCreateDoc } from "@/hooks/useDocs";
 import { trackClick, trackView } from "@/lib/analytics";
 import { extractFirstLineAsTitle } from "@/utils/contentUtils";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,8 @@ import { isDocOwner } from "@/utils/docUtils";
 import { useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
 import { DocItem } from "./DocItem";
+import type { Doc } from "@/data/docsData";
+import { v4 as uuidv4 } from "uuid";
 
 type DocsListVariant = "sidebar" | "catalog";
 
@@ -23,16 +25,55 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
   const { data: docs = [], isLoading } = useDocs();
   const { user } = useAuth();
   const deleteDoc = useDeleteDoc();
+  const createDoc = useCreateDoc();
   const { toast } = useToast();
 
-  // Sort docs by updated at desc
+  // Sort docs by created at desc (newest first)
   const sortedDocs = [...docs].sort((a, b) => {
-    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
   });
 
-  const handleCreateDoc = () => {
+  const handleCreateDoc = async () => {
     trackClick('create_doc', '/docs');
-    navigate("/docs/new");
+    
+    if (!user?.email) {
+      toast({
+        title: "Error",
+        description: "You must be logged in to create a document",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      // Create the doc immediately with empty content and "Untitled" title
+      // Use default TipTap empty structure for valid JSON
+      const emptyTipTapContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
+      const newDoc: Doc = {
+        id: uuidv4(),
+        title: "Untitled",
+        content: emptyTipTapContent,
+        ownerEmail: user.email,
+        projectId: null,
+        teamId: null,
+        visibility: 'all_members',
+        visibleToMembers: [],
+        metadata: { files: [] },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const createdDoc = await createDoc.mutateAsync(newDoc);
+      
+      // Navigate to the created doc
+      navigate(`/docs/${createdDoc.id}`);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to create document",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleDocClick = (docId: string) => {
@@ -124,7 +165,7 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
               const title = extractFirstLineAsTitle(
                 doc.content || doc.title || "",
                 50
-              );
+              ) || "Untitled";
               const docIsOwner = isDocOwner(user?.email, doc.ownerEmail);
 
               return (
@@ -182,7 +223,7 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
             const title = extractFirstLineAsTitle(
               doc.content || doc.title || "",
               50
-            );
+            ) || "Untitled";
             const docIsOwner = isDocOwner(user?.email, doc.ownerEmail);
 
             return (

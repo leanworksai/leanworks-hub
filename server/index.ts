@@ -3741,6 +3741,12 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
     const normalizedEmail = userEmail.toLowerCase();
     const docId = id || crypto.randomBytes(16).toString('hex');
     
+    // Handle empty content - use default TipTap empty structure
+    let docContent = content;
+    if (!content || content.trim().length === 0) {
+      docContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
+    }
+    
     // Check if metadata column exists, if not, insert without it
     try {
       await pool.query(`
@@ -3749,7 +3755,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
       `, [
         docId,
         title,
-        content,
+        docContent,
         normalizedEmail,
         projectId || null,
         teamId || null,
@@ -3767,7 +3773,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
         `, [
           docId,
           title,
-          content,
+          docContent,
           normalizedEmail,
           projectId || null,
           teamId || null,
@@ -3783,7 +3789,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
     res.status(201).json({ 
       id: docId, 
       title, 
-      content,
+      content: docContent,
       ownerEmail: normalizedEmail,
       projectId: projectId || null,
       teamId: teamId || null,

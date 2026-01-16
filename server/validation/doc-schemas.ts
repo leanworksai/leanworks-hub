@@ -8,18 +8,22 @@ const visibilityEnum = z.enum(['all_members', 'specific_members'], {
 // Email validation
 const emailSchema = z.string().email('Invalid email format').toLowerCase();
 
-// TipTap content validation (should be valid JSON)
-const tiptapContentSchema = z.string().min(1, 'Content is required').refine(
+// TipTap content validation (should be valid JSON, but allow empty/default structure)
+const tiptapContentSchema = z.string().refine(
   (content) => {
+    // Allow empty string (will be treated as empty doc)
+    if (!content || content.trim().length === 0) {
+      return true;
+    }
+    // If content is provided, it must be valid JSON
     try {
-      // TipTap content is stored as stringified JSON
       JSON.parse(content);
       return true;
     } catch {
       return false;
     }
   },
-  { message: 'Content must be valid JSON (TipTap format)' }
+  { message: 'Content must be valid JSON (TipTap format) if provided' }
 );
 
 // Base doc schema with common fields

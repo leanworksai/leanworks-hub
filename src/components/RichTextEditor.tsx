@@ -419,6 +419,9 @@ export function RichTextEditor({
   onSaveFirst,
 }: RichTextEditorProps) {
   // Normalize initial content - handle both JSON and HTML
+  // Track docId to reset refs when switching docs
+  const prevDocIdRef = useRef<string | undefined>(docId);
+  
   const normalizedInitialContent = normalizeContentForTipTap(content || '<p></p>');
   const initialContentString = typeof normalizedInitialContent === 'string' 
     ? normalizedInitialContent 
@@ -428,6 +431,17 @@ export function RichTextEditor({
   const isUpdatingRef = useRef<boolean>(false);
   const editorInitializedRef = useRef<boolean>(false);
   const lastContentPropRef = useRef<string>(initialContentString);
+  
+  // CRITICAL: Reset content refs when docId changes to prevent showing old content
+  if (docId !== prevDocIdRef.current) {
+    const newNormalizedContent = normalizeContentForTipTap(content || '<p></p>');
+    const newContentString = typeof newNormalizedContent === 'string' 
+      ? newNormalizedContent 
+      : JSON.stringify(newNormalizedContent);
+    contentRef.current = newContentString;
+    lastContentPropRef.current = newContentString;
+    prevDocIdRef.current = docId;
+  }
   const isUndoRedoRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);

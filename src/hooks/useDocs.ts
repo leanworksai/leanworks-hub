@@ -32,36 +32,82 @@ export const useDoc = (docId: string) => {
 
 export const useCreateDoc = () => {
   const queryClient = useQueryClient();
+  const { currentOrg } = useOrg();
   
   return useMutation({
     mutationFn: (doc: Doc) => docsService.create(doc),
     onMutate: async (newDoc) => {
-      // Cancel any outgoing refetches
+      // Cancel any outgoing refetches for all orgs
       await queryClient.cancelQueries({ queryKey: ['docs'] });
       
-      // Snapshot the previous value
-      const previousDocs = queryClient.getQueryData<Doc[]>(['docs']);
+      // Get all docs queries (for all orgs) and snapshot them
+      const queryCache = queryClient.getQueryCache();
+      const docsQueries = queryCache.findAll({ queryKey: ['docs'] });
+      const previousDocsMap = new Map<string, Doc[]>();
       
-      // Optimistically update the cache
-      if (previousDocs) {
-        queryClient.setQueryData<Doc[]>(['docs'], [...previousDocs, newDoc]);
+      docsQueries.forEach(query => {
+        const orgId = query.queryKey[1] as string | undefined;
+        if (orgId) {
+          const docs = queryClient.getQueryData<Doc[]>(['docs', orgId]);
+          if (docs) {
+            previousDocsMap.set(orgId, docs);
+          }
+        }
+      });
+      
+      // Ensure new doc has "Untitled" as title if content is empty
+      // This ensures it shows "Untitled" in the menu immediately
+      const docToAdd = {
+        ...newDoc,
+        title: newDoc.title || "Untitled",
+      };
+      
+      // Update cache for current org (if available)
+      if (currentOrg?.id) {
+        const previousDocs = previousDocsMap.get(currentOrg.id) || queryClient.getQueryData<Doc[]>(['docs', currentOrg.id]);
+        if (previousDocs) {
+          // Remove any optimistic temp doc entries (starting with "new-temp-")
+          const filteredDocs = previousDocs.filter(d => !d.id.startsWith('new-temp-'));
+          queryClient.setQueryData<Doc[]>(['docs', currentOrg.id], [docToAdd, ...filteredDocs]);
+        } else {
+          queryClient.setQueryData<Doc[]>(['docs', currentOrg.id], [docToAdd]);
+        }
       }
       
       // Set the created doc in cache so it's immediately available
-      queryClient.setQueryData(['docs', newDoc.id], newDoc);
+      queryClient.setQueryData(['docs', newDoc.id, currentOrg?.id], docToAdd);
       
-      return { previousDocs };
+      return { previousDocsMap };
     },
     onError: (err, newDoc, context) => {
-      // Rollback on error
-      if (context?.previousDocs) {
-        queryClient.setQueryData(['docs'], context.previousDocs);
+      // Rollback on error - restore all org caches
+      if (context?.previousDocsMap) {
+        context.previousDocsMap.forEach((docs, orgId) => {
+          queryClient.setQueryData(['docs', orgId], docs);
+        });
       }
     },
     onSuccess: (createdDoc) => {
+      // Ensure created doc has "Untitled" as title if content is empty
+      // This ensures it shows "Untitled" in the menu
+      const docWithTitle = {
+        ...createdDoc,
+        title: createdDoc.title || "Untitled",
+      };
+      
+      // Update cache for current org
+      if (currentOrg?.id) {
+        const docs = queryClient.getQueryData<Doc[]>(['docs', currentOrg.id]);
+        if (docs) {
+          // Remove any optimistic temp doc entries and replace with real doc
+          const filteredDocs = docs.filter(d => !d.id.startsWith('new-temp-') && d.id !== createdDoc.id);
+          queryClient.setQueryData<Doc[]>(['docs', currentOrg.id], [docWithTitle, ...filteredDocs]);
+        }
+      }
+      
       // Invalidate and refetch to ensure consistency
       queryClient.invalidateQueries({ queryKey: ['docs'] });
-      queryClient.setQueryData(['docs', createdDoc.id], createdDoc);
+      queryClient.setQueryData(['docs', createdDoc.id, currentOrg?.id], docWithTitle);
     },
   });
 };

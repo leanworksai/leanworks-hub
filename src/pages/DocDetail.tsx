@@ -18,6 +18,7 @@ import { usePageContext } from "@/contexts/PageContext";
 import { useDocDialogs } from "@/hooks/useDocDialogs";
 import { useDocFiles } from "@/hooks/useDocFiles";
 import { useDocForm } from "@/hooks/useDocForm";
+import { useQueryClient } from "@tanstack/react-query";
 
 // Utils/lib
 import { trackEvent, trackView } from "@/lib/analytics";
@@ -25,9 +26,10 @@ import { initOfflineQueue } from "@/services/offlineQueue";
 import { extractFirstLineAsTitle } from "@/utils/contentUtils";
 import { saveLastOpenedDoc, loadLastOpenedDoc } from "@/utils/docsStorage";
 import { isDocOwner } from "@/utils/docUtils";
+import { removeDraft } from "@/services/draftService";
 
 // Types
-import type { DocFile } from "@/data/docsData";
+import type { DocFile, Doc } from "@/data/docsData";
 
 export default memo(function DocDetail() {
   const { docId } = useParams<{ docId: string }>();
@@ -41,14 +43,76 @@ export default memo(function DocDetail() {
   const { user } = useAuth();
   const { currentOrg } = useOrg();
   const { setContext, clearContext } = usePageContext();
+  const queryClient = useQueryClient();
   const previousOrgIdRef = useRef<string | null>(currentOrg?.id || null);
+  const previousDocIdRef = useRef<string | null>(null);
+  // Track when we switch to new doc to force complete reset
+  // Generate a unique key when transitioning to a new doc
+  const editorKeyRef = useRef<string>(docId || "new");
+  
+  // CRITICAL: Update key immediately when docId changes to force editor remount
+  // This prevents showing old content during transitions
+  const currentDocId = docId || "new";
+  if (currentDocId !== previousDocIdRef.current) {
+    // Doc changed - generate new key to force editor remount
+    if (isNew) {
+      editorKeyRef.current = `new-${Date.now()}-${Math.random()}`;
+    } else if (docId) {
+      editorKeyRef.current = docId;
+    }
+    previousDocIdRef.current = currentDocId;
+  }
+  
+  const editorKey = editorKeyRef.current;
 
   // Track scroll depth for engagement
   useScrollTracking(true);
 
   // Custom hooks for state management
   const dialogs = useDocDialogs();
-  const { formState, updateField } = useDocForm({ initialDoc: doc, isNew });
+  // When creating a new doc, explicitly pass null to prevent copying previous doc data
+  // Also ensure doc is undefined when isNew is true to prevent any stale data
+  const docForForm = isNew ? null : (doc || null);
+  const { formState, updateField, reset: resetForm, setFormState } = useDocForm({ initialDoc: docForForm, isNew });
+  
+  // Track previous docId to detect navigation to new doc
+  const prevDocIdRef = useRef<string | null>(null);
+  
+  // Immediately reset form state when transitioning to new doc (synchronously, not in useEffect)
+  if (isNew && prevDocIdRef.current !== "new" && prevDocIdRef.current !== null) {
+    // We're transitioning from an existing doc to a new one
+    console.log('[DocDetail] Transitioning to new doc, resetting form state immediately');
+    if (formState.content && formState.content.trim() && formState.content !== '<p></p>' && !formState.content.startsWith('{"type":"doc","content":[{"type":"paragraph"')) {
+      // Force synchronous reset
+      setFormState({
+        title: '',
+        content: '',
+        visibility: 'all_members',
+        visibleToMembers: [],
+      });
+    }
+  }
+  prevDocIdRef.current = docId || "new";
+  
+  // Note: Docs are now created immediately when user clicks "create"
+  // So we no longer need optimistic temp entries here
+  
+  // DEBUG: Log when formState changes
+  useEffect(() => {
+    if (isNew) {
+      console.log('[DocDetail] isNew=true, formState.content length:', formState.content?.length || 0);
+      // Force reset if content is not empty
+      if (formState.content && formState.content.trim() && formState.content !== '<p></p>' && !formState.content.startsWith('{"type":"doc","content":[{"type":"paragraph"')) {
+        console.log('[DocDetail] WARNING: formState has content when isNew=true, forcing reset in useEffect');
+        setFormState({
+          title: '',
+          content: '',
+          visibility: 'all_members',
+          visibleToMembers: [],
+        });
+      }
+    }
+  }, [isNew, formState.content, setFormState]);
   const {
     files,
     handleFileUpload,
@@ -57,8 +121,17 @@ export default memo(function DocDetail() {
     setFileToDelete,
   } = useDocFiles({
     docId: docId || "new",
-    initialFiles: doc?.metadata?.files || [],
+    initialFiles: isNew ? [] : (doc?.metadata?.files || []),
   });
+
+  // Clear draft and reset form when creating a new doc to ensure fresh start
+  useEffect(() => {
+    if (isNew && user?.email) {
+      removeDraft('new', user.email);
+      // Explicitly reset form state to ensure clean slate
+      resetForm();
+    }
+  }, [isNew, user?.email, resetForm]);
 
   // Handle action query params from catalog navigation
   useEffect(() => {
@@ -85,9 +158,81 @@ export default memo(function DocDetail() {
   const savePromiseResolversRef = useRef<Array<(docId: string) => void>>([]);
 
   // Extract title from first line of content
+  // For new docs: always show "Untitled" until user starts typing actual text
+  // For existing docs: extract from content or show "Untitled"
   const extractedTitle = useMemo(() => {
-    return extractFirstLineAsTitle(formState.content || "", 100);
-  }, [formState.content]);
+    if (isNew) {
+      // For new docs, check if content has actual user-typed text
+      // TipTap default structure: {"type":"doc","content":[{"type":"paragraph"}]}
+      // Empty content variations to check:
+      const isEmpty = !formState.content || 
+        !formState.content.trim() || 
+        formState.content === '<p></p>' || 
+        formState.content === '{"type":"doc","content":[{"type":"paragraph"}]}' ||
+        formState.content === '{"type":"doc","content":[{"type":"paragraph","content":[]}]}' ||
+        formState.content.startsWith('{"type":"doc","content":[{"type":"paragraph"}]}');
+      
+      if (isEmpty) {
+        return "Untitled";
+      }
+      
+      // Try to extract title from content
+      const title = extractFirstLineAsTitle(formState.content, 100);
+      
+      // Only use extracted title if it has actual non-whitespace text
+      // If extraction returns empty or whitespace, show "Untitled"
+      if (title && title.trim() && title.trim().length > 0) {
+        return title.trim();
+      }
+      
+      return "Untitled";
+    } else {
+      // For existing docs, extract title from content
+      const title = extractFirstLineAsTitle(formState.content || "", 100);
+      return title || "Untitled";
+    }
+  }, [formState.content, isNew]);
+
+  // Update React Query cache in real-time when content changes to sync title in docs list
+  // Note: We don't update updatedAt here to prevent list shuffling - only update content for title display
+  // CRITICAL: Only update cache if we're still on the same doc to prevent flash
+  useEffect(() => {
+    // Skip cache updates during doc transitions to prevent showing old content
+    if (isNew || !docId || !formState.content || !currentOrg?.id) {
+      return;
+    }
+    
+    // Only update if docId matches the current doc (prevents race conditions)
+    if (doc && doc.id === docId) {
+      // Get current docs list from cache
+      const docs = queryClient.getQueryData<Doc[]>(['docs', currentOrg.id]);
+      if (docs) {
+        // Find the current doc in the list
+        const docIndex = docs.findIndex(d => d.id === docId);
+        if (docIndex !== -1) {
+          // Update the doc in the list with new content only (don't change updatedAt to prevent shuffling)
+          const updatedDocs = [...docs];
+          updatedDocs[docIndex] = {
+            ...updatedDocs[docIndex],
+            content: formState.content,
+            // Keep original updatedAt to maintain sort order
+          };
+          // Update the cache
+          queryClient.setQueryData<Doc[]>(['docs', currentOrg.id], updatedDocs);
+        }
+      }
+      
+      // Also update the individual doc cache (without changing updatedAt)
+      const currentDoc = queryClient.getQueryData<Doc>(['docs', docId, currentOrg.id]);
+      if (currentDoc) {
+        queryClient.setQueryData<Doc>(['docs', docId, currentOrg.id], {
+          ...currentDoc,
+          content: formState.content,
+          // Keep original updatedAt to maintain sort order
+        });
+      }
+    }
+  }, [formState.content, docId, isNew, queryClient, currentOrg?.id]);
 
   // Auto-save hook - always enabled since we're always in edit mode
   const autoSave = useAutoSave({
@@ -102,6 +247,12 @@ export default memo(function DocDetail() {
       // Resolve any pending save promises
       savePromiseResolversRef.current.forEach((resolve) => resolve(savedDocId));
       savePromiseResolversRef.current = [];
+
+      // If this was a new doc, navigate to the created doc
+      if (docId === "new" && savedDocId && savedDocId !== "new") {
+        navigate(`/docs/${savedDocId}`, { replace: true });
+        return; // Early return to avoid showing toast/tracking for new doc creation
+      }
 
       // Track document save
       trackEvent("doc_saved", {
@@ -177,13 +328,17 @@ export default memo(function DocDetail() {
   }, [currentOrg?.id, docId, navigate, user?.email]);
 
   // Set page context when doc loads - use extracted title from content
+  // For new docs, show "Untitled" until user starts typing
   useEffect(() => {
-    if (doc && docId && docId !== "new") {
+    if (isNew) {
+      // For new docs, show "Untitled" in context initially
+      setContext("doc", { id: "new", title: "Untitled" });
+    } else if (doc && docId && docId !== "new") {
       const title = extractFirstLineAsTitle(doc.content || doc.title || "", 100);
       if (title) {
         setContext("doc", { id: docId, title });
       } else {
-        clearContext();
+        setContext("doc", { id: docId, title: "Untitled" });
       }
     } else {
       clearContext();
@@ -193,7 +348,16 @@ export default memo(function DocDetail() {
     return () => {
       clearContext();
     };
-  }, [doc, docId, setContext, clearContext]);
+  }, [doc, docId, isNew, setContext, clearContext]);
+
+  // Update page context title in real-time as user types (for new docs)
+  useEffect(() => {
+    if (isNew) {
+      // For new docs, update context title as user types
+      const title = extractedTitle;
+      setContext("doc", { id: "new", title });
+    }
+  }, [isNew, extractedTitle, setContext]);
 
   const handleDelete = useCallback(async () => {
     if (!docId || docId === "new") {
@@ -387,22 +551,45 @@ export default memo(function DocDetail() {
             />
 
             {/* Editor - padding handled internally by RichTextEditor */}
-            <RichTextEditor
-              key={docId || "new"}
-              content={formState.content || ""}
-              onChange={(content) => {
-                // Content is now a TipTap JSON object, stringify it for storage
-                const contentString =
-                  typeof content === "string" ? content : JSON.stringify(content);
-                updateField("content", contentString);
-              }}
-              placeholder="Start writing..."
-              readOnly={false}
-              onFileUpload={handleFileUpload}
-              onImageAdded={handleImageAdded}
-              docId={docId || undefined}
-              onSaveFirst={handleSaveFirst}
-            />
+            {/* CRITICAL: Pass content based on current docId to prevent flash */}
+            {(() => {
+              // Determine content to pass to editor
+              let editorContent: string;
+              
+              if (isNew) {
+                // New doc - always use empty/default TipTap structure
+                editorContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
+              } else if (doc && doc.id === docId) {
+                // Existing doc - use doc content (source of truth)
+                editorContent = doc.content || JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
+              } else if (!isLoading && formState.content && formState.content !== JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] })) {
+                // Only use formState if doc is not loading and formState has actual content
+                // This prevents showing old content during transitions
+                editorContent = formState.content;
+              } else {
+                // Default empty structure (while loading or if no content)
+                editorContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
+              }
+              
+              return (
+                <RichTextEditor
+                  key={editorKey}
+                  content={editorContent}
+                  onChange={(content) => {
+                    // Content is now a TipTap JSON object, stringify it for storage
+                    const contentString =
+                      typeof content === "string" ? content : JSON.stringify(content);
+                    updateField("content", contentString);
+                  }}
+                  placeholder="Start writing..."
+                  readOnly={false}
+                  onFileUpload={handleFileUpload}
+                  onImageAdded={handleImageAdded}
+                  docId={docId || undefined}
+                  onSaveFirst={handleSaveFirst}
+                />
+              );
+            })()}
           </div>
         </div>
       )}
