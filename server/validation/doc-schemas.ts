@@ -83,10 +83,32 @@ export const createDocSchema = baseDocSchema
     }
   );
 
+// TipTap content validation for updates (optional, but if provided must be valid)
+const optionalTiptapContentSchema = z.string().optional().refine(
+  (content) => {
+    // If content is undefined or empty string, it's valid (field is optional)
+    if (content === undefined || content === null || content.trim().length === 0) {
+      return true;
+    }
+    // If content is provided, it must be valid JSON
+    try {
+      JSON.parse(content);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: 'Content must be valid JSON (TipTap format) if provided' }
+);
+
 // Doc partial update schema - all fields optional
 export const updateDocSchema = baseDocSchema
   .omit({ id: true }) // Don't allow updating the ID
   .partial()
+  .extend({
+    // Override content to be optional with proper validation
+    content: optionalTiptapContentSchema,
+  })
   .refine(
     (data) => {
       // If visibility is being set to 'specific_members', visibleToMembers must be provided

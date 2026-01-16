@@ -331,7 +331,21 @@ export const docsService = {
       method: 'POST',
       body: JSON.stringify(doc),
     });
-    if (!response.ok) throw new Error('Failed to create doc');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Failed to create doc' }));
+      // Handle 413 Payload Too Large specifically
+      if (response.status === 413) {
+        throw new Error('Document is too large. Please reduce the content size.');
+      }
+      // Extract detailed validation errors if available
+      if (errorData.details && typeof errorData.details === 'object') {
+        const errorMessages = Object.entries(errorData.details)
+          .map(([field, message]) => `${field}: ${message}`)
+          .join('; ');
+        throw new Error(`Validation failed: ${errorMessages}`);
+      }
+      throw new Error(errorData.error || 'Failed to create doc');
+    }
     return response.json();
   },
 
@@ -341,7 +355,21 @@ export const docsService = {
       method: 'PATCH',
       body: JSON.stringify(updates),
     });
-    if (!response.ok) throw new Error('Failed to update doc');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Failed to update doc' }));
+      // Extract detailed validation errors if available
+      if (errorData.details && typeof errorData.details === 'object') {
+        const errorMessages = Object.entries(errorData.details)
+          .map(([field, message]) => `${field}: ${message}`)
+          .join('; ');
+        throw new Error(`Validation failed: ${errorMessages}`);
+      }
+      // Handle 413 Payload Too Large specifically
+      if (response.status === 413) {
+        throw new Error('Document is too large. Please reduce the content size.');
+      }
+      throw new Error(errorData.error || 'Failed to update doc');
+    }
   },
 
   async delete(docId: string): Promise<void> {

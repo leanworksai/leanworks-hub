@@ -159,13 +159,30 @@ export function useAutoSave({
             };
           queueSave('new', {}, 'create', newDoc);
         } else {
-          queueSave(docId, {
+          // Build updates object, only including valid content
+          const updates: Partial<Doc> = {
             title: finalTitle,
-            content,
             visibility,
             visibleToMembers: Array.from(visibleToMembers),
             metadata: { files },
-          });
+          };
+          
+          // Only include content if it's valid and non-empty
+          const isValidContent = content && 
+            content.trim().length > 0 && 
+            content !== '<p></p>' && 
+            content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+          
+          if (isValidContent) {
+            try {
+              JSON.parse(content);
+              updates.content = content;
+            } catch {
+              // Invalid JSON, skip content
+            }
+          }
+          
+          queueSave(docId, updates);
         }
         setSaveStatus('offline');
         isSavingRef.current = false;
@@ -176,15 +193,32 @@ export function useAutoSave({
       if (docId === 'new') {
         // If we've already created a doc but docId is still 'new', update it instead
         if (createdDocIdRef.current) {
+          // Build updates object, only including valid content
+          const updates: Partial<Doc> = {
+            title: finalTitle,
+            visibility,
+            visibleToMembers: Array.from(visibleToMembers),
+            metadata: { files },
+          };
+          
+          // Only include content if it's valid and non-empty
+          const isValidContent = content && 
+            content.trim().length > 0 && 
+            content !== '<p></p>' && 
+            content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+          
+          if (isValidContent) {
+            try {
+              JSON.parse(content);
+              updates.content = content;
+            } catch {
+              console.warn('Skipping content update: invalid JSON format');
+            }
+          }
+          
           await updateDoc.mutateAsync({
             docId: createdDocIdRef.current,
-            updates: {
-              title: finalTitle,
-              content,
-              visibility,
-              visibleToMembers: Array.from(visibleToMembers),
-              metadata: { files },
-            },
+            updates,
           });
           
           // Clear draft after successful save
@@ -239,15 +273,35 @@ export function useAutoSave({
           }
         }
       } else {
+        // Build updates object, only including valid content
+        const updates: Partial<Doc> = {
+          title: finalTitle,
+          visibility,
+          visibleToMembers: Array.from(visibleToMembers),
+          metadata: { files },
+        };
+        
+        // Only include content if it's valid and non-empty
+        // Check if content is valid JSON and not empty
+        const isValidContent = content && 
+          content.trim().length > 0 && 
+          content !== '<p></p>' && 
+          content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+        
+        if (isValidContent) {
+          // Validate it's valid JSON
+          try {
+            JSON.parse(content);
+            updates.content = content;
+          } catch {
+            // Invalid JSON, skip content update
+            console.warn('Skipping content update: invalid JSON format');
+          }
+        }
+        
         await updateDoc.mutateAsync({
           docId,
-          updates: {
-            title: finalTitle,
-            content,
-            visibility,
-            visibleToMembers: Array.from(visibleToMembers),
-            metadata: { files },
-          },
+          updates,
         });
         
         // Clear draft after successful save
@@ -307,13 +361,30 @@ export function useAutoSave({
           queueSave('new', {}, 'create', newDoc);
         }
       } else {
-        queueSave(docId, {
+        // Build updates object, only including valid content
+        const updates: Partial<Doc> = {
           title: finalTitle,
-          content,
           visibility,
           visibleToMembers: Array.from(visibleToMembers),
           metadata: { files },
-        });
+        };
+        
+        // Only include content if it's valid and non-empty
+        const isValidContent = content && 
+          content.trim().length > 0 && 
+          content !== '<p></p>' && 
+          content !== '{"type":"doc","content":[{"type":"paragraph"}]}';
+        
+        if (isValidContent) {
+          try {
+            JSON.parse(content);
+            updates.content = content;
+          } catch {
+            // Invalid JSON, skip content
+          }
+        }
+        
+        queueSave(docId, updates);
       }
       
       onSaveError?.(error);

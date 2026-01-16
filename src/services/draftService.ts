@@ -13,6 +13,8 @@ export interface DraftData {
 
 const DRAFT_PREFIX = 'doc_draft_';
 const DRAFT_EXPIRATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// Maximum size for a single draft (5MB - localStorage typically has 5-10MB total)
+const MAX_DRAFT_SIZE = 5 * 1024 * 1024; // 5MB
 
 /**
  * Get draft storage key for a document
@@ -22,6 +24,24 @@ function getDraftKey(docId: string | 'new', userId: string): string {
     return `${DRAFT_PREFIX}new_${userId}`;
   }
   return `${DRAFT_PREFIX}${docId}`;
+}
+
+/**
+ * Estimate the size of a draft in bytes
+ */
+function estimateDraftSize(data: {
+  docId: string | 'new';
+  title: string;
+  content: string;
+  visibility: 'all_members' | 'specific_members';
+  visibleToMembers: string[];
+  files: any[];
+  timestamp: number;
+  userId: string;
+}): number {
+  // Rough estimate: JSON string length * 2 (UTF-16 encoding)
+  const jsonString = JSON.stringify(data);
+  return jsonString.length * 2;
 }
 
 /**
@@ -45,6 +65,14 @@ export function saveDraft(
       timestamp: Date.now(),
       userId,
     };
+    
+    // Check size before attempting to save
+    const estimatedSize = estimateDraftSize(draft);
+    if (estimatedSize > MAX_DRAFT_SIZE) {
+      console.warn(`Draft too large to save (${(estimatedSize / 1024 / 1024).toFixed(2)}MB), skipping localStorage save`);
+      return; // Silently skip - draft is too large for localStorage
+    }
+    
     const key = getDraftKey(docId, userId);
     localStorage.setItem(key, JSON.stringify(draft));
   } catch (error) {
@@ -52,7 +80,7 @@ export function saveDraft(
     // If quota exceeded, try to clean up old drafts
     if (error instanceof DOMException && error.name === 'QuotaExceededError') {
       cleanupOldDrafts();
-      // Retry once after cleanup
+      // Retry once after cleanup, but only if size is reasonable
       try {
         const draft: DraftData = {
           docId,
@@ -60,10 +88,19 @@ export function saveDraft(
           timestamp: Date.now(),
           userId,
         };
+        const estimatedSize = estimateDraftSize(draft);
+        if (estimatedSize > MAX_DRAFT_SIZE) {
+          console.warn('Draft still too large after cleanup, skipping save');
+          return;
+        }
         const key = getDraftKey(docId, userId);
         localStorage.setItem(key, JSON.stringify(draft));
       } catch (retryError) {
         console.error('Failed to save draft after cleanup:', retryError);
+        // If still failing, the draft is likely too large - skip it
+        if (retryError instanceof DOMException && retryError.name === 'QuotaExceededError') {
+          console.warn('Draft exceeds localStorage quota, skipping save');
+        }
       }
     }
   }

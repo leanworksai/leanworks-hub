@@ -237,13 +237,14 @@ app.use((req, res, next) => {
 });
 
 // JSON parsing middleware (except for GitHub webhook, Stripe webhook, and image uploads)
+// Increase limit to 12MB to match nginx client_max_body_size and handle large documents
 app.use((req, res, next) => {
   if (req.path === '/api/integrations/github/webhooks' || 
       req.path === '/api/webhooks/stripe' || 
       req.path.startsWith('/api/images/')) {
     next();
   } else {
-    express.json()(req, res, next);
+    express.json({ limit: '12mb' })(req, res, next);
   }
 });
 
