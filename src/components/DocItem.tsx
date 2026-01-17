@@ -2,6 +2,7 @@ import { FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DocItemMenu } from "./DocItemMenu";
 import type { Doc } from "@/data/docsData";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface DocItemProps {
   doc: Doc;
@@ -21,6 +22,7 @@ export function DocItem({
   onDelete,
 }: DocItemProps) {
   const filesCount = doc.metadata?.files?.length || 0;
+  const isMobile = useIsMobile();
 
   return (
     <div
@@ -45,15 +47,18 @@ export function DocItem({
         >
           {title || "Untitled Doc"}
         </p>
-        <div className="w-5 flex-shrink-0">
-          <DocItemMenu
-            doc={doc}
-            isActive={isActive}
-            isOwner={isOwner}
-            filesCount={filesCount}
-            onDelete={onDelete}
-          />
-        </div>
+        {/* Hide menu on mobile - clicking title directly navigates to doc */}
+        {!isMobile && (
+          <div className="w-5 flex-shrink-0">
+            <DocItemMenu
+              doc={doc}
+              isActive={isActive}
+              isOwner={isOwner}
+              filesCount={filesCount}
+              onDelete={onDelete}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

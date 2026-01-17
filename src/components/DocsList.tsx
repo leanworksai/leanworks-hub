@@ -149,15 +149,6 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
           {docs.length === 0 ? (
             <div className="text-center py-8 px-4">
               <p className="text-sm text-muted-foreground mb-4">No docs yet</p>
-              <Button 
-                size="sm"
-                variant="outline"
-                className="w-full"
-                onClick={handleCreateDoc}
-              >
-                <Plus className="mr-2 h-4 w-4" />
-                New Doc
-              </Button>
             </div>
           ) : (
             sortedDocs.map((doc) => {
@@ -207,15 +198,6 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
         {docs.length === 0 ? (
           <div className="text-center py-8 px-4">
             <p className="text-sm text-muted-foreground mb-4">No docs yet</p>
-            <Button 
-              size="sm"
-              variant="outline"
-              className="w-full"
-              onClick={handleCreateDoc}
-            >
-              <Plus className="mr-2 h-4 w-4" />
-              New Doc
-            </Button>
           </div>
         ) : (
           sortedDocs.map((doc) => {
