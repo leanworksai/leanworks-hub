@@ -242,7 +242,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   const { setContext, clearContext } = usePageContext();
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
-  const { isFreePlan } = useSubscription();
+  // Removed free tier restrictions - viewing AI content is now available to all
   const { parseDateString, formatDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   const userTimezone = useUserTimezone();
   
@@ -1021,8 +1021,7 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
                             activity.type === "update" 
                               ? "border-primary/30" 
                               : "border-muted-foreground/20"
-                          }`,
-                          isFreePlan && activity.type === "update" && "blur-sm pointer-events-none"
+                          }`
                         )}
                       >
                         <div className={`absolute -left-2 top-0 h-4 w-4 rounded-full bg-background border-2 ${

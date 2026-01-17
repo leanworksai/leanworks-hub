@@ -34,7 +34,7 @@ interface TeamChatWindowProps {
 export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: TeamChatWindowProps) {
   const { user } = useAuth();
   const { currentOrg } = useOrg();
-  const { isFreePlan } = useSubscription();
+  const { hasCredits, creditsRemaining, creditsLimit } = useSubscription();
   const { toast } = useToast();
   const { data: allDomainUsers = [] } = useUsers();
   const userMap = useUserMap();
@@ -488,11 +488,12 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {
     if ((!messageContent.trim() && imageUrls.length === 0) || !user || !chatId || isSendingMessage) return;
 
-    // Block @lean mentions in team/group channels for free tier users
-    if (isFreePlan && (isProjectChannel || isTeamChannel) && messageContent.includes('@lean')) {
+    // Check if user has credits available for @lean mentions in team/group channels
+    if ((isProjectChannel || isTeamChannel) && messageContent.includes('@lean') && !hasCredits) {
+      const limitText = creditsLimit !== null ? `${creditsLimit} credits` : 'credits';
       toast({
-        title: "Upgrade Required",
-        description: "Mentioning Lean in team/group channels is available on Standard and Pro plans. Upgrade to unlock this feature.",
+        title: "AI Credits Exhausted",
+        description: `You've used all your daily AI credits (${limitText}/day). Credits reset daily. Upgrade to Pro for unlimited credits.`,
         variant: "default",
       });
       return;
@@ -580,8 +581,8 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
 
       setIsSendingMessage(false);
 
-      // Check if lean is mentioned and generate AI response for project channels
-      if (isProjectChannel && selectedProjectId && isLeanMentioned(messageContent) && !isFreePlan) {
+      // Check if lean is mentioned and generate AI response for project channels (credit-based)
+      if (isProjectChannel && selectedProjectId && isLeanMentioned(messageContent)) {
         const query = extractQueryFromMessage(messageContent);
         if (query) {
           // Generate AI response asynchronously (don't block UI)
@@ -657,7 +658,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
       });
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, isLeanMentioned, extractQueryFromMessage, generateChannelAIResponse, selectedProject]);
+  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, isLeanMentioned, extractQueryFromMessage, generateChannelAIResponse, selectedProject]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -686,10 +687,8 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   const getMentionableUsers = useMemo(() => {
     const mentionable: TeamMember[] = [];
     
-    // Add lean (AI assistant) only for paid plans
-    if (!isFreePlan) {
-      mentionable.push({ id: "lean", name: "lean", role: "", avatar: "/logo.png" });
-    }
+    // Add lean (AI assistant) - available to all users (credit-based)
+    mentionable.push({ id: "lean", name: "lean", role: "", avatar: "/logo.png" });
     
     // Add channel-specific members
     if (isProjectChannel && selectedProject) {
@@ -725,7 +724,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     }
     
     return mentionable;
-  }, [isProjectChannel, isTeamChannel, isDM, selectedProject, selectedTeam, allDomainUsers, allTeamMembers, selectedMember, isFreePlan]);
+  }, [isProjectChannel, isTeamChannel, isDM, selectedProject, selectedTeam, allDomainUsers, allTeamMembers, selectedMember]);
 
   // Filter mentionable users based on query
   const filteredMentionUsers = useMemo(() => {

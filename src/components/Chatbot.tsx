@@ -122,7 +122,7 @@ export function Chatbot() {
   const userMap = useUserMap();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
-  const { isFreePlan } = useSubscription();
+  const { hasCredits, creditsRemaining, creditsLimit } = useSubscription();
   const { toast } = useToast();
   const userTimezone = useUserTimezone();
   
@@ -1171,10 +1171,8 @@ export function Chatbot() {
   const getMentionableUsers = useMemo(() => {
     const mentionable: TeamMember[] = [];
     
-    // Add lean (AI assistant) only for paid plans
-    if (!isFreePlan) {
-      mentionable.push({ id: "lean", name: "lean", role: "", avatar: "AI" });
-    }
+    // Add lean (AI assistant) - available to all users (credit-based)
+    mentionable.push({ id: "lean", name: "lean", role: "", avatar: "AI" });
     
     // Add channel-specific members
     if (isProjectChannel && selectedProject) {
@@ -3683,23 +3681,17 @@ export function Chatbot() {
     // Allow sending if there's text OR images
     if ((!input.trim() && selectedImages.length === 0) || isLoading || !user || isSendingMessage) return;
 
-    // Block AI assistant chat for free tier
-    if (selectedMember === "ai-assistant" && isFreePlan) {
-      toast({
-        title: "Upgrade Required",
-        description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
-        variant: "default",
-      });
-      return;
-    }
-
     const messageContent = input.trim();
 
-    // Block @lean mentions in team/group channels for free tier users
-    if (isFreePlan && (isProjectChannel || isTeamChannel) && isLeanMentioned(messageContent)) {
+    // Check if user has credits available for AI features
+    const needsAICredits = selectedMember === "ai-assistant" || 
+                           ((isProjectChannel || isTeamChannel) && isLeanMentioned(messageContent));
+    
+    if (needsAICredits && !hasCredits) {
+      const limitText = creditsLimit !== null ? `${creditsLimit} credits` : 'credits';
       toast({
-        title: "Upgrade Required",
-        description: "Mentioning Lean in team/group channels is available on Standard and Pro plans. Upgrade to unlock this feature.",
+        title: "AI Credits Exhausted",
+        description: `You've used all your daily AI credits (${limitText}/day). Credits reset daily. Upgrade to Pro for unlimited credits.`,
         variant: "default",
       });
       return;
@@ -3866,8 +3858,8 @@ export function Chatbot() {
           }
         }
 
-        // Check if lean is mentioned and generate AI response (skip for free tier)
-        if (isLeanMentioned(messageContent) && !isFreePlan) {
+        // Check if lean is mentioned and generate AI response (credit-based)
+        if (isLeanMentioned(messageContent)) {
           const query = extractQueryFromMessage(messageContent);
           if (query) {
             // Generate AI response asynchronously (don't block UI)
@@ -4566,14 +4558,6 @@ export function Chatbot() {
   // Listen for custom event to open chat with AI assistant
   useEffect(() => {
     const handleOpenChatWithAI = (event: Event) => {
-      if (isFreePlan) {
-        toast({
-          title: "Upgrade Required",
-          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
-          variant: "default",
-        });
-        return;
-      }
       setIsOpen(true);
       setSelectedMember("ai-assistant");
       setMemberSearchQuery("");
@@ -4590,14 +4574,6 @@ export function Chatbot() {
     
     // Handle toggle chat event from header button
     const handleToggleChat = () => {
-      if (isFreePlan) {
-        toast({
-          title: "Feature unavailable",
-          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
-          variant: "default",
-        });
-        return;
-      }
       setIsOpen(prev => !prev);
       if (!isOpen) {
         setSelectedMember("ai-assistant");
@@ -4620,7 +4596,7 @@ export function Chatbot() {
       window.removeEventListener('openChatWithAI', handleOpenChatWithAI as EventListener);
       window.removeEventListener('toggleChat', handleToggleChat as EventListener);
     };
-  }, [isFreePlan, isMobile, toast, isOpen]);
+  }, [isMobile, toast, isOpen]);
 
   // Handle drag start (both mouse and touch)
   const handleDragStart = useCallback((clientX: number, clientY: number) => {
@@ -4850,14 +4826,6 @@ export function Chatbot() {
                   <div className="px-2 py-1.5">
                     <button
                       onClick={() => {
-                        if (isFreePlan) {
-                          toast({
-                            title: "Upgrade Required",
-                            description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
-                            variant: "default",
-                          });
-                          return;
-                        }
                         setSelectedMember("ai-assistant");
                         setMemberSearchQuery("");
                         if (isMobile) {
@@ -4867,10 +4835,10 @@ export function Chatbot() {
                           setIsMobileSidebarOpen(false);
                         }
                       }}
-                      disabled={isFreePlan}
+                      disabled={!hasCredits}
                       className={cn(
                         "w-full flex items-center gap-2 px-2 py-2 rounded-md text-sm transition-colors relative",
-                        isFreePlan && "opacity-50 cursor-not-allowed",
+                        !hasCredits && "opacity-50 cursor-not-allowed",
                         selectedMember === "ai-assistant"
                           ? "bg-primary text-primary-foreground"
                           : (unreadCounts.get(getAIAssistantChatId(user.email)) || 0) > 0

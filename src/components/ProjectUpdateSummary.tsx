@@ -18,7 +18,7 @@ interface ProjectUpdateSummaryCardProps {
 
 export function ProjectUpdateSummaryCard({ projectId, desktopOnly = false }: ProjectUpdateSummaryCardProps) {
   const { data: updateSummary } = useUpdateSummary(projectId);
-  const { isFreePlan } = useSubscription();
+  // Removed free tier restrictions - viewing AI content is now available to all
   const [hoveredProject, setHoveredProject] = useState<string | null>(null);
 
   if (!updateSummary?.updateSummary) {
@@ -60,17 +60,10 @@ export function ProjectUpdateSummaryCard({ projectId, desktopOnly = false }: Pro
                     </p>
                   )}
                 </div>
-                <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                <div className="relative">
                   <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                     {updateSummary.updateSummary}
                   </p>
-                  {isFreePlan && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                        Upgrade to view progress summary
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
@@ -104,17 +97,10 @@ export function ProjectUpdateSummaryCard({ projectId, desktopOnly = false }: Pro
           </div>
         </CardHeader>
         <div className="px-6 pb-6 flex-1 min-h-0">
-          <div className={cn("relative h-full max-h-[80px] overflow-y-auto", isFreePlan && "blur-sm pointer-events-none")}>
+          <div className="relative h-full max-h-[80px] overflow-y-auto">
             <p className="text-sm text-muted-foreground whitespace-pre-wrap">
               {updateSummary.updateSummary}
             </p>
-            {isFreePlan && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                  Upgrade to view progress summary
-                </span>
-              </div>
-            )}
           </div>
         </div>
       </Card>

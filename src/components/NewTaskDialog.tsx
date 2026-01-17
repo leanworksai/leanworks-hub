@@ -97,7 +97,7 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   const userMap = useUserMap();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
-  const { isFreePlan } = useSubscription();
+  const { hasCredits, creditsRemaining, creditsLimit } = useSubscription();
   const userTimezone = useUserTimezone();
   
   const formatDate = (date: Date): string => {
@@ -649,20 +649,21 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        if (isFreePlan) {
+                        if (!hasCredits) {
+                          const limitText = creditsLimit !== null ? `${creditsLimit} credits` : 'credits';
                           toast({
-                            title: "Upgrade Required",
-                            description: "AI features are available on Standard and Pro plans. Upgrade to unlock this feature.",
+                            title: "AI Credits Exhausted",
+                            description: `You've used all your daily AI credits (${limitText}/day). Credits reset daily. Upgrade to Pro for unlimited credits.`,
                             variant: "default",
                           });
                         } else {
                           generateAITaskDetails();
                         }
                       }}
-                      disabled={isGeneratingAI || !field.value || field.value.trim().length === 0 || isFreePlan}
+                      disabled={isGeneratingAI || !field.value || field.value.trim().length === 0 || !hasCredits}
                       className="h-8"
                     >
-                      {isFreePlan ? (
+                      {!hasCredits ? (
                         <>
                           <Lock className="h-3 w-3 mr-1.5" />
                           Draft with AI

@@ -177,7 +177,7 @@ export default function Tasks() {
   const { toast } = useToast();
   const { data: projects = [] } = useUserProjects();
   const { data: users = [] } = useUsers();
-  const { isFreePlan } = useSubscription();
+  // Removed free tier restrictions - viewing AI content is now available to all
   const { user } = useAuth();
   const { parseDateString, formatDateForDisplay, handleDateSelection } = useDateSelection();
   const [filterStatus, setFilterStatus] = useState<Task["status"] | "all">("all");
@@ -498,17 +498,10 @@ export default function Tasks() {
                                 </p>
                               )}
                             </div>
-                            <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+                            <div className="relative">
                               <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                                 {latestUpdate.update}
                               </p>
-                              {isFreePlan && (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                  <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                    Upgrade to view progress update
-                                  </span>
-                                </div>
-                              )}
                             </div>
                           </div>
                           
@@ -832,17 +825,10 @@ export default function Tasks() {
                         </div>
                       </CardHeader>
                       <div className="px-6 pb-6 flex-1 min-h-0">
-                        <div className={cn("relative h-full max-h-[80px] overflow-y-auto", isFreePlan && "blur-sm pointer-events-none")}>
+                        <div className="relative h-full max-h-[80px] overflow-y-auto">
                           <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                             {latestUpdate.update}
                           </p>
-                          {isFreePlan && (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                Upgrade to view progress update
-                              </span>
-                            </div>
-                          )}
                         </div>
                       </div>
                     </Card>

@@ -116,7 +116,7 @@ export default function ProjectDetail() {
   const removeMember = useRemoveProjectMember();
   const updateProject = useUpdateProject();
   const { toast } = useToast();
-  const { isFreePlan } = useSubscription();
+  // Removed free tier restrictions - viewing AI content is now available to all
   const queryClient = useQueryClient();
   
   // Fetch project by ID
@@ -581,16 +581,11 @@ export default function ProjectDetail() {
                     <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 data-[state=open]:rotate-180" />
                   </div>
                 </div>
-                <div className={cn("w-full bg-secondary rounded-full h-2 relative", isFreePlan && "blur-sm")}>
+                <div className="w-full bg-secondary rounded-full h-2 relative">
                   <div 
                     className="bg-primary h-2 rounded-full transition-all"
                     style={{ width: `${(project.tasks.filter(t => t.status === "completed").length / project.tasks.length) * 100}%` }}
                   />
-                  {isFreePlan && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-xs text-muted-foreground">Upgrade to view progress</span>
-                    </div>
-                  )}
                 </div>
               </div>
             </CollapsibleTrigger>
@@ -778,15 +773,8 @@ export default function ProjectDetail() {
                                   : formatDate(activity.date)}
                               </span>
                             </div>
-                            <div className={cn("relative", isFreePlan && activity.type === "summary" && "blur-sm pointer-events-none")}>
+                            <div className="relative">
                               <p className="text-sm text-muted-foreground whitespace-pre-wrap">{activity.content}</p>
-                              {isFreePlan && activity.type === "summary" && (
-                                <div className="absolute inset-0 flex items-center justify-center">
-                                  <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                                    Upgrade to view AI summary
-                                  </span>
-                                </div>
-                              )}
                             </div>
                           </div>
                         </div>

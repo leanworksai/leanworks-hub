@@ -26,6 +26,10 @@ export function useSubscription() {
 
   const isFreePlan = status?.plan === 'free';
   const hasAIAccess = status?.plan === 'standard' || status?.plan === 'pro';
+  // Credit-based access: has credits if unlimited (null) or remaining > 0
+  const hasCredits = status?.aiUsageRemaining === null || (status?.aiUsageRemaining ?? 0) > 0;
+  const creditsRemaining = status?.aiUsageRemaining ?? 0;
+  const creditsLimit = status?.aiUsageLimit ?? null;
 
   return {
     status,
@@ -33,6 +37,9 @@ export function useSubscription() {
     error,
     isFreePlan,
     hasAIAccess,
+    hasCredits,
+    creditsRemaining,
+    creditsLimit,
     refetch: loadStatus,
   };
 }

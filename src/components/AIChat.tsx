@@ -30,7 +30,7 @@ import type { Message, LikedByUser } from "@/components/chat/types";
 export function AIChat() {
   const { user } = useAuth();
   const { currentOrg } = useOrg();
-  const { isFreePlan } = useSubscription();
+  const { hasCredits, creditsRemaining, creditsLimit } = useSubscription();
   const { toast } = useToast();
   const { data: allDomainUsers = [] } = useUsers();
   const userMap = useUserMap();
@@ -325,10 +325,12 @@ export function AIChat() {
       return;
     }
 
-    if (isFreePlan) {
+    // Check if user has credits available
+    if (!hasCredits) {
+      const limitText = creditsLimit !== null ? `${creditsLimit} credits` : 'credits';
       toast({
-        title: "Upgrade Required",
-        description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
+        title: "AI Credits Exhausted",
+        description: `You've used all your daily AI credits (${limitText}/day). Credits reset daily. Upgrade to Pro for unlimited credits.`,
         variant: "default",
       });
       return;
@@ -717,7 +719,7 @@ export function AIChat() {
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, isFreePlan, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, generateResponse, saveCachedMessages]);
+  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, generateResponse, saveCachedMessages]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -908,14 +910,6 @@ export function AIChat() {
   // Listen for toggle chat event
   useEffect(() => {
     const handleToggleChat = () => {
-      if (isFreePlan) {
-        toast({
-          title: "Feature unavailable",
-          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
-          variant: "default",
-        });
-        return;
-      }
       setIsOpen(prev => {
         const newIsOpen = !prev;
         if (newIsOpen) {
@@ -934,14 +928,6 @@ export function AIChat() {
     };
 
     const handleOpenChat = () => {
-      if (isFreePlan) {
-        toast({
-          title: "Feature unavailable",
-          description: "Chat with Lean is available on Standard and Pro plans. Upgrade to unlock this feature.",
-          variant: "default",
-        });
-        return;
-      }
       setIsOpen(true);
       // Tracking is already done in the sidebar component
     };
@@ -956,7 +942,7 @@ export function AIChat() {
       window.removeEventListener('toggleChat', handleToggleChat as EventListener);
       window.removeEventListener('openChatWithAI', handleOpenChat as EventListener);
     };
-  }, [isOpen, isFreePlan, toast]);
+  }, [isOpen, toast]);
 
   // Close AI chat when navigating to a different page
   useEffect(() => {
@@ -1148,7 +1134,7 @@ export function AIChat() {
         />
         <ChatInput
           onSend={handleSend}
-          disabled={isSendingMessage || isFreePlan}
+          disabled={isSendingMessage || !hasCredits}
           isLoading={isSendingMessage}
           uploadingImages={uploadingImages}
           imagePreviewUrls={imagePreviewUrls}

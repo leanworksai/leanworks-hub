@@ -176,7 +176,6 @@ export default function Projects() {
   const deleteProject = useDeleteProject();
   const updateProject = useUpdateProject();
   const { toast } = useToast();
-  const { isFreePlan } = useSubscription();
   const { user } = useAuth();
   const [isNewProjectDialogOpen, setIsNewProjectDialogOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);

@@ -222,15 +222,8 @@ export function setupMessageEndpoints(
       // Check if this is a project channel message
       const isProjectChannel = actualProjectId !== null;
 
-      // Block @lean mentions in group channels for free tier users
-      if (isProjectChannel && containsLeanMention(content)) {
-        const isFree = await isFreePlanUser(userEmail);
-        if (isFree) {
-          return res.status(403).json({ 
-            error: 'Mentioning Lean in team/group channels requires a paid subscription. Please upgrade to Standard or Pro plan.' 
-          });
-        }
-      }
+      // Note: @lean mentions are now credit-based, not plan-based
+      // Credits are checked and consumed when AI response is generated
 
       // Get user info if not provided
       let finalMemberName = memberName || 'You';

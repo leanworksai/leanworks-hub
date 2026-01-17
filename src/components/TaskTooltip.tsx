@@ -16,7 +16,7 @@ import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason?: string }) {
   const [isHovered, setIsHovered] = useState(false);
   const { data: updates = [], isLoading } = useUpdatesByTaskId(isHovered ? taskId : null);
-  const { isFreePlan } = useSubscription();
+  // Removed free tier restrictions - viewing AI content is now available to all
   const userTimezone = useUserTimezone();
   
   // Only show tooltip if there's a reason (updates will be fetched on hover)
@@ -66,17 +66,10 @@ export function TaskTooltip({ taskId, taskReason }: { taskId: string; taskReason
                   </p>
                 )}
               </div>
-              <div className={cn("relative", isFreePlan && "blur-sm pointer-events-none")}>
+              <div className="relative">
                 <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                   {latestUpdate.update}
                 </p>
-                {isFreePlan && (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
-                      Upgrade to view progress update
-                    </span>
-                  </div>
-                )}
               </div>
             </div>
           )}
