@@ -8,22 +8,28 @@ const visibilityEnum = z.enum(['all_members', 'specific_members'], {
 // Email validation
 const emailSchema = z.string().email('Invalid email format').toLowerCase();
 
-// TipTap content validation (should be valid JSON, but allow empty/default structure)
+const looksLikeHtml = (content: string) => /<\/?[a-z][\s\S]*>/i.test(content);
+
+const isJsonString = (content: string) => {
+  try {
+    JSON.parse(content);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// TipTap content validation (JSON or HTML, allow empty/default structure)
 const tiptapContentSchema = z.string().refine(
   (content) => {
     // Allow empty string (will be treated as empty doc)
     if (!content || content.trim().length === 0) {
       return true;
     }
-    // If content is provided, it must be valid JSON
-    try {
-      JSON.parse(content);
-      return true;
-    } catch {
-      return false;
-    }
+    // Accept JSON (TipTap format) or HTML (to be converted server-side)
+    return isJsonString(content) || looksLikeHtml(content);
   },
-  { message: 'Content must be valid JSON (TipTap format) if provided' }
+  { message: 'Content must be valid JSON (TipTap format) or HTML if provided' }
 );
 
 // Base doc schema with common fields
@@ -94,15 +100,10 @@ const optionalTiptapContentSchema = z.string().optional().refine(
     if (content === undefined || content === null || content.trim().length === 0) {
       return true;
     }
-    // If content is provided, it must be valid JSON
-    try {
-      JSON.parse(content);
-      return true;
-    } catch {
-      return false;
-    }
+    // Accept JSON (TipTap format) or HTML (to be converted server-side)
+    return isJsonString(content) || looksLikeHtml(content);
   },
-  { message: 'Content must be valid JSON (TipTap format) if provided' }
+  { message: 'Content must be valid JSON (TipTap format) or HTML if provided' }
 );
 
 // Doc partial update schema - all fields optional
