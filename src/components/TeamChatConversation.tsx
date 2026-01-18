@@ -18,11 +18,13 @@ import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useOrg } from "@/contexts/OrgContext";
 import { usePageContext } from "@/contexts/PageContext";
+import { useSelectedTextContext } from "@/contexts/SelectedTextContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
 import { VoiceCallButton } from "./VoiceCall";
 import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import type { Message, ChannelMessage, LikedByUser, TeamMember } from "@/components/chat/types";
+import { buildCitedContext } from "@/lib/citedContext";
 
 interface TeamChatConversationProps {
   chatId: string | null;
@@ -41,6 +43,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
+  const { selectedTextPosition, clearSelectedText } = useSelectedTextContext();
   const { callStatus, currentCallId } = useWebRTCContext();
   const { contextType, contextRef, setContext, clearContext } = usePageContext();
 
@@ -363,11 +366,15 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     setImagePreviewUrls([]);
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
-      projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
-      tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-      docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
-    } : undefined;
+    const citedContext = buildCitedContext({
+      selectedProjects,
+      selectedTasks,
+      selectedDocs,
+      selectedTextPosition,
+      contextType,
+      contextRef,
+      includeImplicitDoc: true,
+    });
 
     try {
       if (isProjectChannel && selectedProjectId) {
@@ -410,6 +417,9 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
         clearSelectedProjects();
         clearSelectedTasks();
         clearSelectedDocs();
+        if (selectedTextPosition) {
+          clearSelectedText();
+        }
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -421,7 +431,7 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     } finally {
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs]);
+  }, [user, chatId, isSendingMessage, isProjectChannel, isTeamChannel, selectedProjectId, selectedTeamId, selectedMember, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, clearSelectedText]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -846,6 +856,17 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
           selectedProjects={selectedProjects}
           selectedTasks={selectedTasks}
           selectedDocs={selectedDocs}
+          selectedText={selectedTextPosition ? {
+            id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
+            // Show preview in UI (truncate to 100 chars), but full text is saved via selectedTextPosition.
+            text: selectedTextPosition.text
+              ? (selectedTextPosition.text.length > 100
+                  ? selectedTextPosition.text.substring(0, 100) + '...'
+                  : selectedTextPosition.text)
+              : "Text selection from document",
+            docId: selectedTextPosition.docId,
+          } : null}
+          onRemoveSelectedText={clearSelectedText}
           implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
           onRemoveImplicitContext={clearContext}
           onRemoveProject={toggleProject}
@@ -870,4 +891,3 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
     </div>
   );
 }
-

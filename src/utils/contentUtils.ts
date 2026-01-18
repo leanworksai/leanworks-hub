@@ -183,3 +183,158 @@ export function getPreviewText(
   if (remainingLines.length <= maxLength) return remainingLines;
   return remainingLines.substring(0, maxLength) + '...';
 }
+
+/**
+ * Block node utilities for mapping ProseMirror positions to document content
+ * These functions help locate and extract content using block positions
+ */
+
+/**
+ * Parse document content to JSON format
+ */
+function parseDocContent(doc: any): any {
+  if (!doc) return null;
+  
+  if (typeof doc === 'object' && doc.type === 'doc') {
+    return doc;
+  }
+  
+  if (typeof doc === 'string') {
+    try {
+      const parsed = JSON.parse(doc);
+      if (parsed && typeof parsed === 'object' && parsed.type === 'doc') {
+        return parsed;
+      }
+    } catch {
+      return null;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Get block node at a specific ProseMirror position
+ * @param doc - Document content (TipTap JSON format)
+ * @param blockPos - Block start position in ProseMirror document
+ * @returns Block node object or null if not found
+ */
+export function getBlockNodeByPosition(doc: any, blockPos: number): any | null {
+  const docJson = parseDocContent(doc);
+  if (!docJson || !docJson.content) return null;
+
+  try {
+    // Traverse document to find node at position
+    let currentPos = 1; // Start after doc opening (position 0 is before doc, 1 is after)
+    
+    const traverse = (nodes: any[]): any | null => {
+      for (const node of nodes) {
+        const nodeSize = getNodeSize(node);
+        const nodeStart = currentPos;
+        const nodeEnd = currentPos + nodeSize;
+        
+        // Check if blockPos is within this node
+        if (blockPos >= nodeStart && blockPos < nodeEnd) {
+          // Check if this is a block-level node
+          if (['paragraph', 'heading', 'listItem', 'blockquote', 'codeBlock', 'tableCell', 'tableHeader'].includes(node.type)) {
+            return node;
+          }
+          
+          // If node has content, traverse deeper
+          if (node.content && Array.isArray(node.content)) {
+            currentPos += 1; // Account for node opening
+            const result = traverse(node.content);
+            if (result) return result;
+            currentPos += nodeSize - 1; // Skip to after node
+          } else {
+            currentPos = nodeEnd;
+          }
+        } else {
+          currentPos = nodeEnd;
+        }
+      }
+      
+      return null;
+    };
+    
+    return traverse(docJson.content);
+  } catch (error) {
+    console.debug('Error getting block node by position:', error);
+    return null;
+  }
+}
+
+/**
+ * Calculate the size of a node (including all its children)
+ */
+function getNodeSize(node: any): number {
+  if (!node) return 0;
+  
+  // Text nodes contribute their text length
+  if (node.type === 'text') {
+    return (node.text || '').length;
+  }
+  
+  // Other nodes contribute 1 (opening) + content + 1 (closing)
+  let size = 2; // Opening and closing
+  
+  if (node.content && Array.isArray(node.content)) {
+    for (const child of node.content) {
+      size += getNodeSize(child);
+    }
+  }
+  
+  return size;
+}
+
+/**
+ * Extract text from a block node at a specific position
+ * @param doc - Document content (TipTap JSON format)
+ * @param blockPos - Block start position
+ * @param from - Optional: start offset within block (default: 0)
+ * @param to - Optional: end offset within block (default: end of block)
+ * @returns Text content from the block node
+ */
+export function getTextByBlockPosition(
+  doc: any,
+  blockPos: number,
+  from?: number,
+  to?: number
+): string {
+  const blockNode = getBlockNodeByPosition(doc, blockPos);
+  if (!blockNode) return '';
+  
+  const blockText = extractTextFromNode(blockNode);
+  
+  if (from === undefined && to === undefined) {
+    return blockText;
+  }
+  
+  const start = from || 0;
+  const end = to !== undefined ? to : blockText.length;
+  
+  return blockText.substring(start, end);
+}
+
+/**
+ * Get block node information (type, content, metadata)
+ * @param doc - Document content (TipTap JSON format)
+ * @param blockPos - Block start position
+ * @returns Block node information object or null
+ */
+export function getBlockNodeInfo(doc: any, blockPos: number): {
+  type: string;
+  content: string;
+  attrs?: any;
+  node: any;
+} | null {
+  const blockNode = getBlockNodeByPosition(doc, blockPos);
+  if (!blockNode) return null;
+  
+  return {
+    type: blockNode.type,
+    content: extractTextFromNode(blockNode),
+    attrs: blockNode.attrs || {},
+    node: blockNode,
+  };
+}

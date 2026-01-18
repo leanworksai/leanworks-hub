@@ -20,6 +20,7 @@ import { usePageContext } from "@/contexts/PageContext";
 import { useSelectedTextContext } from "@/contexts/SelectedTextContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
+import { buildCitedContext } from "@/lib/citedContext";
 import { useAIChat } from "@/hooks/useAIChat";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
@@ -277,7 +278,7 @@ export function AIChat() {
   const generateResponse = useCallback(async (
     message: string,  // Just the current message
     chatId: string,
-    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } },  // Add citedContext parameter
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTexts?: Array<{ id: string; text: string; docId?: string }>; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } },  // Add citedContext parameter
     implicitContext?: string  // Add implicitContext parameter
   ): Promise<string> => {
     // Debug: Log what we received (dev only)
@@ -286,7 +287,7 @@ export function AIChat() {
         hasCitedContext: !!citedContext,
         citedContext,
         hasSelectedTextPosition: !!(citedContext && (citedContext as any).selectedTextPosition),
-        selectedTextPreview: citedContext && (citedContext as any).selectedTextPosition?.text?.substring(0, 50),
+        selectedTextPreview: citedContext && (citedContext as any).selectedTexts?.[0]?.text?.substring(0, 50),
         implicitContext,
       });
     }
@@ -383,17 +384,9 @@ export function AIChat() {
       });
     }
     
-    // Convert selectedTextPosition to selectedTexts format for message display
-    // Show only preview in UI (truncate to 100 chars), but keep full text for API
-    const selectedTexts = selectedTextPosition && selectedTextPosition.text ? [{
-      id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
-      text: selectedTextPosition.text.length > 100 
-        ? selectedTextPosition.text.substring(0, 100) + '...' 
-        : selectedTextPosition.text,
-      docId: selectedTextPosition.docId,
-    }] : undefined;
     
     // Filter out items that are already in implicit context to avoid duplicates
+    // Keep current doc in cited context so selected text + doc are not treated as duplicates.
     let filteredProjects = selectedProjects;
     let filteredTasks = selectedTasks;
     let filteredDocs = selectedDocs;
@@ -403,19 +396,18 @@ export function AIChat() {
         filteredProjects = selectedProjects.filter(p => p.id !== contextRef.id);
       } else if (contextType === 'task') {
         filteredTasks = selectedTasks.filter(t => t.id !== contextRef.id);
-      } else if (contextType === 'doc') {
-        filteredDocs = selectedDocs.filter(d => d.id !== contextRef.id);
       }
     }
-    
-    const citedContext = (filteredProjects.length > 0 || filteredTasks.length > 0 || filteredDocs.length > 0 || selectedTexts) ? {
-      projects: filteredProjects.length > 0 ? [...filteredProjects] : undefined,
-      tasks: filteredTasks.length > 0 ? [...filteredTasks] : undefined,
-      docs: filteredDocs.length > 0 ? [...filteredDocs] : undefined,
-      selectedTexts: selectedTexts,
-      // Keep selectedTextPosition for API calls
-      selectedTextPosition: selectedTextPosition || undefined,
-    } : undefined;
+
+    const citedContext = buildCitedContext({
+      selectedProjects: filteredProjects,
+      selectedTasks: filteredTasks,
+      selectedDocs: filteredDocs,
+      selectedTextPosition,
+      contextType,
+      contextRef,
+      includeImplicitDoc: true,
+    });
 
     // Debug logging for contexts (dev only)
     if (import.meta.env.DEV && citedContext) {
@@ -424,7 +416,7 @@ export function AIChat() {
         tasks: citedContext.tasks?.length || 0,
         docs: citedContext.docs?.length || 0,
         selectedTexts: citedContext.selectedTexts?.length || 0,
-        hasSelectedText: !!citedContext.selectedTextPosition?.text,
+        hasSelectedText: !!citedContext.selectedTexts?.length,
       });
     }
 
@@ -458,7 +450,7 @@ export function AIChat() {
         chatId: chatId,
         role: 'user',
         content: messageContent,
-        citedContext: citedContext,
+        citedContext,
         implicitContext: implicitContext,
         imageUrls: finalImageUrls.length > 0 ? finalImageUrls : undefined,
       });
@@ -473,7 +465,7 @@ export function AIChat() {
                 timestamp: savedUserMessage.timestamp instanceof Date ? savedUserMessage.timestamp : new Date(savedUserMessage.timestamp),
                 userId: savedUserMessage.userId || user.email?.toLowerCase(),
                 imageUrls: savedUserMessage.imageUrls || finalImageUrls.length > 0 ? finalImageUrls : undefined,
-                citedContext: savedUserMessage.citedContext || citedContext,
+                citedContext: citedContext || savedUserMessage.citedContext,
                 implicitContext: savedUserMessage.implicitContext || implicitContext,
               }
             : msg
@@ -516,17 +508,8 @@ export function AIChat() {
       const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!currentSelectedTextPosition;
 
       try {
-        // Build citedContext from selected items
-        // Always create object if there are any selections (including just selected text)
-        // Make sure selectedTextPosition includes the text field
-        // Use captured value to avoid timing issues
-        const selectedTextPosForAPI = currentSelectedTextPosition ? {
-          ...currentSelectedTextPosition,
-          // Ensure text field is preserved
-          text: currentSelectedTextPosition.text,
-        } : undefined;
-        
         // Filter out items that are already in implicit context to avoid duplicates
+        // Keep current doc in cited context so selected text + doc are not treated as duplicates.
         let filteredProjectsForAPI = selectedProjects;
         let filteredTasksForAPI = selectedTasks;
         let filteredDocsForAPI = selectedDocs;
@@ -536,36 +519,26 @@ export function AIChat() {
             filteredProjectsForAPI = selectedProjects.filter(p => p.id !== contextRef.id);
           } else if (contextType === 'task') {
             filteredTasksForAPI = selectedTasks.filter(t => t.id !== contextRef.id);
-          } else if (contextType === 'doc') {
-            filteredDocsForAPI = selectedDocs.filter(d => d.id !== contextRef.id);
           }
         }
-        
-        // Always create citedContextForAPI if we have any selections OR if we have selectedTextPosition with text
-        // This ensures selected text is always included even if it's the only selection
-        const hasSelectedTextWithText = currentSelectedTextPosition && currentSelectedTextPosition.text;
-        const shouldCreateContext = (filteredProjectsForAPI.length > 0 || filteredTasksForAPI.length > 0 || filteredDocsForAPI.length > 0 || !!currentSelectedTextPosition) || hasSelectedTextWithText;
-        
-        const citedContextForAPI = shouldCreateContext ? {
-          projects: filteredProjectsForAPI.length > 0 ? [...filteredProjectsForAPI] : undefined,
-          tasks: filteredTasksForAPI.length > 0 ? [...filteredTasksForAPI] : undefined,
-          docs: filteredDocsForAPI.length > 0 ? [...filteredDocsForAPI] : undefined,
-          selectedTextPosition: selectedTextPosForAPI,
-        } : undefined;
+
+        const citedContextForAPI = buildCitedContext({
+          selectedProjects: filteredProjectsForAPI,
+          selectedTasks: filteredTasksForAPI,
+          selectedDocs: filteredDocsForAPI,
+          selectedTextPosition: currentSelectedTextPosition,
+          contextType,
+          contextRef,
+          includeImplicitDoc: true,
+        });
         
         // Debug: Log what we're about to pass (dev only)
         if (import.meta.env.DEV) {
           console.log('🔍 [AIChat] About to call generateResponse with:', {
             hadSelections,
-            shouldCreateContext,
-            hasSelectedTextWithText,
             citedContextForAPI,
             willPassContext: !!citedContextForAPI,
-            selectedTextPosForAPI: selectedTextPosForAPI ? {
-              hasText: !!selectedTextPosForAPI.text,
-              docId: selectedTextPosForAPI.docId,
-              textPreview: selectedTextPosForAPI.text?.substring(0, 50),
-            } : null,
+            selectedTextPreview: citedContextForAPI?.selectedTexts?.[0]?.text?.substring(0, 50),
           });
         }
 
@@ -581,15 +554,15 @@ export function AIChat() {
               docId: currentSelectedTextPosition.docId,
               startOffset: currentSelectedTextPosition.startOffset,
               endOffset: currentSelectedTextPosition.endOffset,
-              hasText: !!currentSelectedTextPosition.text,
-              textLength: currentSelectedTextPosition.text?.length,
-              textPreview: currentSelectedTextPosition.text?.substring(0, 50) + (currentSelectedTextPosition.text?.length > 50 ? '...' : ''),
+              hasText: !!citedContextForAPI?.selectedTexts?.length,
+              textLength: citedContextForAPI?.selectedTexts?.[0]?.text?.length,
+              textPreview: citedContextForAPI?.selectedTexts?.[0]?.text?.substring(0, 50) + (citedContextForAPI?.selectedTexts?.[0]?.text?.length > 50 ? '...' : ''),
             } : null,
             citedContextForAPI: citedContextForAPI ? {
               ...citedContextForAPI,
               selectedTextPosition: citedContextForAPI.selectedTextPosition ? {
                 docId: citedContextForAPI.selectedTextPosition.docId,
-                hasText: !!(citedContextForAPI.selectedTextPosition as any).text,
+                hasText: !!citedContextForAPI.selectedTexts?.length,
               } : undefined,
             } : null,
           });
@@ -601,21 +574,15 @@ export function AIChat() {
           implicitContext = `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})`;
         }
 
-        // Final safety check: if citedContextForAPI is undefined but we have selectedTextPosition with text, create it
-        const finalCitedContext = citedContextForAPI || (currentSelectedTextPosition && currentSelectedTextPosition.text ? {
-          selectedTextPosition: {
-            ...currentSelectedTextPosition,
-            text: currentSelectedTextPosition.text,
-          }
-        } : undefined);
+        const finalCitedContext = citedContextForAPI;
 
         // Debug: Log final context before calling generateResponse (dev only)
         if (import.meta.env.DEV) {
           console.log('🔍 [AIChat] Final context before generateResponse:', {
             originalCitedContextForAPI: citedContextForAPI,
             finalCitedContext,
-            hasSelectedText: !!(finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text),
-            selectedTextPreview: finalCitedContext && (finalCitedContext as any).selectedTextPosition?.text?.substring(0, 50),
+            hasSelectedText: !!finalCitedContext?.selectedTexts?.length,
+            selectedTextPreview: finalCitedContext?.selectedTexts?.[0]?.text?.substring(0, 50),
           });
         }
 
@@ -1182,4 +1149,3 @@ export function AIChat() {
     </div>
   );
 }
-

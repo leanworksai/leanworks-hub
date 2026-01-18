@@ -1,17 +1,5 @@
 import { useEditor, EditorContent } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import { Underline } from '@tiptap/extension-underline';
-import { Link } from '@tiptap/extension-link';
-import { TextAlign } from '@tiptap/extension-text-align';
-import { Color } from '@tiptap/extension-color';
-import TextStyle from '@tiptap/extension-text-style';
-import Paragraph from '@tiptap/extension-paragraph';
-import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
-import { Image } from '@tiptap/extension-image';
-import ImageResize from 'tiptap-extension-resize-image';
-import { Markdown } from 'tiptap-markdown';
-import { common, createLowlight } from 'lowlight';
-import { tableExtensions, handleTableDblClick } from '@/extensions/table';
+import { handleTableDblClick } from '@/extensions/table';
 import '@/extensions/table/styles.css';
 import '@/components/code-highlight.css';
 import '@/components/editor.css';
@@ -24,6 +12,7 @@ import { useTextSelection } from '@/hooks/useTextSelection';
 import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
 import { FloatingAskAI } from '@/components/FloatingAskAI';
 import { useSidebar } from '@/components/ui/sidebar';
+import { getTiptapExtensions } from '@/lib/tiptapExtensions';
 // Auto word wrap hook disabled - CSS handles wrapping naturally
 // import { useAutoWordWrap } from '@/hooks/useAutoWordWrap';
 import { 
@@ -112,8 +101,6 @@ function normalizeCodeBlocksForTipTap(html: string): string {
   return verifyDoc.body.innerHTML;
 }
 
-// Create lowlight instance with common languages
-const lowlight = createLowlight(common);
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
@@ -448,11 +435,6 @@ export function RichTextEditor({
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const { selectedText, hasSelection, selectionBounds, selectionPosition } = useTextSelection(
-    editorContainerRef,
-    editorRef, // Pass ref instead of editor instance
-    docId
-  );
   const { setSelectedTextPosition } = useSelectedTextContext();
   const [isUploading, setIsUploading] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
@@ -507,69 +489,7 @@ export function RichTextEditor({
   }>({ handleInput: null, handleCompositionEnd: null, handleTouchEnd: null, handleBlur: null });
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({
-        heading: {
-          levels: [1, 2, 3],
-        },
-        // Disable paragraph from StarterKit so we can configure our own
-        paragraph: false,
-        // Disable gapcursor from StarterKit since we use ConfiguredGapcursor from table extensions
-        gapcursor: false,
-        // Disable default codeBlock so we can use CodeBlockLowlight for syntax highlighting
-        codeBlock: false,
-      }),
-      // Code block with syntax highlighting
-      CodeBlockLowlight.configure({
-        lowlight,
-        defaultLanguage: 'plaintext',
-        HTMLAttributes: {
-          class: 'hljs',
-        },
-      }),
-      // Custom paragraph extension that preserves trailing spaces and formatting
-      Paragraph.extend({
-        parseHTML() {
-          return [{ tag: 'p' }];
-        },
-        renderHTML({ HTMLAttributes }) {
-          return ['p', { ...HTMLAttributes, style: 'white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box;' }, 0];
-        },
-      }),
-      Underline,
-      Link.configure({
-        openOnClick: false,
-        HTMLAttributes: {
-          class: 'text-primary underline break-all',
-          style: 'word-break: break-all; overflow-wrap: anywhere;',
-        },
-      }),
-      TextAlign.configure({
-        types: ['heading', 'paragraph', 'tableCell'],
-      }),
-      // Table extensions with best practices
-      ...tableExtensions,
-      Color,
-      TextStyle,
-      // Image extension with resize capability
-      Image.configure({
-        inline: true,
-        allowBase64: false,
-        HTMLAttributes: {
-          class: 'editor-image',
-        },
-      }),
-      // Image resize extension - enables drag handles for resizing
-      ImageResize.configure({
-        inline: true,
-      }),
-      // Markdown extension for markdown copy/export support
-      Markdown.configure({
-        html: true,
-        transformPastedText: false,
-        transformCopiedText: false,
-      }),
-    ],
+    extensions: getTiptapExtensions(),
     content: normalizedInitialContent,
     editable: !readOnly,
     onUpdate: ({ editor }) => {
@@ -893,6 +813,12 @@ export function RichTextEditor({
       },
     },
   });
+
+  const { selectedText, hasSelection, selectionBounds, selectionPosition } = useTextSelection(
+    editorContainerRef,
+    editor,
+    docId
+  );
 
   // Auto word wrap hook disabled - CSS handles wrapping naturally
   // The auto-wrap was inserting hard breaks which caused issues on mobile
@@ -2079,8 +2005,9 @@ export function RichTextEditor({
           style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'none', overflowX: 'hidden', maxWidth: '100%', width: '100%' }}
         />
         <FloatingAskAI
-          visible={hasSelection && selectedText.length > 0 && !readOnly && !!selectionPosition}
+          visible={hasSelection && (selectedText.length > 0 || selectionPosition?.text?.length > 0) && !readOnly && !!selectionPosition}
           position={selectionBounds}
+          containerBounds={editorContainerRef.current?.getBoundingClientRect() ?? null}
           onAskAI={handleAskAI}
           selectionPosition={selectionPosition}
           selectedText={selectedText}
@@ -2092,4 +2019,3 @@ export function RichTextEditor({
 
 // Default export for compatibility
 export default RichTextEditor;
-

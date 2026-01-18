@@ -7,16 +7,50 @@ import { TextSelectionPosition } from '@/hooks/useTextSelection';
 interface FloatingAskAIProps {
   visible: boolean;
   position: DOMRect | null;
+  containerBounds?: DOMRect | null;
   onAskAI: (selectionPosition: TextSelectionPosition) => void;
   selectionPosition: TextSelectionPosition | null;
   selectedText: string; // Keep for display purposes
 }
 
-export function FloatingAskAI({ visible, position, onAskAI, selectionPosition, selectedText }: FloatingAskAIProps) {
+export function FloatingAskAI({ visible, position, containerBounds, onAskAI, selectionPosition, selectedText }: FloatingAskAIProps) {
   const [buttonPosition, setButtonPosition] = useState<{ top: number; left: number } | null>(null);
 
+  // Debug logging
   useEffect(() => {
-    if (!visible || !position) {
+    if (import.meta.env.DEV) {
+      console.log('[FloatingAskAI] Props:', {
+        visible,
+        hasPosition: !!position,
+        hasSelectionPosition: !!selectionPosition,
+        selectedTextLength: selectedText?.length || 0,
+        selectionPositionTextLength: selectionPosition?.text?.length || 0
+      });
+    }
+  }, [visible, position, selectionPosition, selectedText]);
+
+  useEffect(() => {
+    if (!visible) {
+      if (import.meta.env.DEV) {
+        console.log('[FloatingAskAI] Not visible, clearing position');
+      }
+      setButtonPosition(null);
+      return;
+    }
+    
+    // If position is null but we have selectionPosition, create a fallback position
+    let actualPosition = position;
+    if (!actualPosition && selectionPosition) {
+      // Create a fallback position based on viewport center
+      actualPosition = new DOMRect(
+        window.innerWidth / 2 - 50,
+        window.innerHeight / 2,
+        100,
+        20
+      );
+    }
+    
+    if (!actualPosition) {
       setButtonPosition(null);
       return;
     }
@@ -24,26 +58,26 @@ export function FloatingAskAI({ visible, position, onAskAI, selectionPosition, s
     // Calculate button position
     // Position above selection if there's space, otherwise below
     const viewportHeight = window.innerHeight;
-    const spaceAbove = position.top;
-    const spaceBelow = viewportHeight - position.bottom;
+    const spaceAbove = actualPosition.top;
+    const spaceBelow = viewportHeight - actualPosition.bottom;
     const buttonHeight = 36; // Approximate button height
     const offset = 8; // 8px offset from selection
 
     let top: number;
     if (spaceAbove > buttonHeight + offset) {
       // Position above
-      top = position.top - buttonHeight - offset;
+      top = actualPosition.top - buttonHeight - offset;
     } else if (spaceBelow > buttonHeight + offset) {
       // Position below
-      top = position.bottom + offset;
+      top = actualPosition.bottom + offset;
     } else {
       // Default to below if neither has enough space
-      top = position.bottom + offset;
+      top = actualPosition.bottom + offset;
     }
 
     // Center horizontally on selection, but keep within viewport
     const buttonWidth = 100; // Approximate button width
-    let left = position.left + (position.width / 2) - (buttonWidth / 2);
+    let left = actualPosition.left + (actualPosition.width / 2) - (buttonWidth / 2);
     
     // Ensure button doesn't overflow viewport
     const padding = 8;
@@ -53,17 +87,36 @@ export function FloatingAskAI({ visible, position, onAskAI, selectionPosition, s
       left = window.innerWidth - buttonWidth - padding;
     }
 
-    setButtonPosition({ top, left });
-  }, [visible, position]);
+    if (containerBounds) {
+      top = top - containerBounds.top;
+      left = left - containerBounds.left;
+    }
 
-  if (!visible || !buttonPosition || !selectedText || !selectionPosition) {
+    setButtonPosition({ top, left });
+    
+    if (import.meta.env.DEV) {
+      console.log('[FloatingAskAI] Button position calculated:', { top, left });
+    }
+  }, [visible, position, selectionPosition]);
+
+  if (!visible || !buttonPosition || !selectionPosition) {
+    if (import.meta.env.DEV && visible) {
+      console.log('[FloatingAskAI] Not rendering - missing:', {
+        visible,
+        hasButtonPosition: !!buttonPosition,
+        hasSelectionPosition: !!selectionPosition
+      });
+    }
     return null;
   }
+  
+  // Use selectedText from selectionPosition if available, otherwise use prop
+  const displayText = selectionPosition.text || selectedText;
 
   return (
     <div
       className={cn(
-        "fixed z-50 transition-all duration-200",
+        "absolute z-50 transition-all duration-200",
         visible ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none"
       )}
       style={{
@@ -76,7 +129,7 @@ export function FloatingAskAI({ visible, position, onAskAI, selectionPosition, s
           // Pass position with text included
           onAskAI({
             ...selectionPosition,
-            text: selectedText,
+            text: displayText,
           });
         }}
         size="sm"

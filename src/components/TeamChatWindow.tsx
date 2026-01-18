@@ -20,9 +20,12 @@ import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
 import { useOrg } from "@/contexts/OrgContext";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
+import { usePageContext } from "@/contexts/PageContext";
+import { useSelectedTextContext } from "@/contexts/SelectedTextContext";
 import { VoiceCallButton } from "./VoiceCall";
 import { useWebRTCContext } from "@/contexts/WebRTCContext";
 import type { Message, ChannelMessage, LikedByUser, TeamMember } from "@/components/chat/types";
+import { buildCitedContext } from "@/lib/citedContext";
 
 interface TeamChatWindowProps {
   open: boolean;
@@ -43,7 +46,9 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
   const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
   const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
   const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
+  const { selectedTextPosition, clearSelectedText } = useSelectedTextContext();
   const { callStatus, currentCallId } = useWebRTCContext();
+  const { contextType, contextRef, clearContext } = usePageContext();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [channelMessages, setChannelMessages] = useState<Map<string, ChannelMessage[]>>(new Map());
@@ -530,11 +535,15 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     setImagePreviewUrls([]);
 
     const finalImageUrls = uploadedImageUrls.length > 0 ? uploadedImageUrls : imageUrls;
-    const citedContext = (selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0) ? {
-      projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
-      tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
-      docs: selectedDocs.length > 0 ? [...selectedDocs] : undefined,
-    } : undefined;
+    const citedContext = buildCitedContext({
+      selectedProjects,
+      selectedTasks,
+      selectedDocs,
+      selectedTextPosition,
+      contextType,
+      contextRef,
+      includeImplicitDoc: true,
+    });
 
     try {
       if (isProjectChannel && selectedProjectId) {
@@ -577,6 +586,9 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
         clearSelectedProjects();
         clearSelectedTasks();
         clearSelectedDocs();
+        if (selectedTextPosition) {
+          clearSelectedText();
+        }
       }
 
       setIsSendingMessage(false);
@@ -1080,6 +1092,19 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
             selectedProjects={selectedProjects}
             selectedTasks={selectedTasks}
             selectedDocs={selectedDocs}
+            selectedText={selectedTextPosition ? {
+              id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
+              // Show preview in UI (truncate to 100 chars), full text is saved via selectedTexts.
+              text: selectedTextPosition.text
+                ? (selectedTextPosition.text.length > 100
+                    ? selectedTextPosition.text.substring(0, 100) + '...'
+                    : selectedTextPosition.text)
+                : "Text selection from document",
+              docId: selectedTextPosition.docId,
+            } : null}
+            onRemoveSelectedText={clearSelectedText}
+            implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
+            onRemoveImplicitContext={clearContext}
             onRemoveProject={toggleProject}
             onRemoveTask={toggleTask}
             onRemoveDoc={toggleDoc}
@@ -1103,4 +1128,3 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     </Sheet>
   );
 }
-
