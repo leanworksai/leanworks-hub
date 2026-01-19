@@ -1,5 +1,5 @@
 import React from 'react';
-import { Share2, Mail, Paperclip, Trash2 } from 'lucide-react';
+import { Share2, Mail, Paperclip, Trash2, Download } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 /**
@@ -31,6 +31,7 @@ export function createDocActions(
     onShareViaEmail: () => void;
     onAttachedFiles: () => void;
     onDelete: () => void;
+    onExportPDF?: () => void;
   }
 ): Array<{
   label: string;
@@ -66,6 +67,15 @@ export function createDocActions(
     icon: <Paperclip className="h-4 w-4" />,
     onClick: handlers.onAttachedFiles,
   });
+
+  // Add PDF export option
+  if (handlers.onExportPDF) {
+    actions.push({
+      label: "Export as PDF",
+      icon: <Download className="h-4 w-4" />,
+      onClick: handlers.onExportPDF,
+    });
+  }
 
   if (isOwner) {
     actions.push({

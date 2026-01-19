@@ -262,13 +262,13 @@ function restoreMarkdownLineBreaks(text: string): string {
       fixedContent = fixedContent.replace(/\s+(journey)\s+/g, '\n$1\n');
       
       // Add newlines before node definitions (A[...], B(...), etc.)
-      fixedContent = fixedContent.replace(/\s+([A-Za-z_][A-Za-z0-9_]*\s*[\[\(\{<])/g, '\n    $1');
-      
+      fixedContent = fixedContent.replace(/\s+([A-Za-z_][A-Za-z0-9_]*\s*[\[({<])/g, '\n    $1');
+
       // Add newlines before arrows (--> , --- , ==> , etc.)
-      fixedContent = fixedContent.replace(/\s+(-->|--\>|---|==>|-.->|==)/g, ' $1');
-      
+      fixedContent = fixedContent.replace(/\s+(-->|-->|---|==>|-.->|==)/g, ' $1');
+
       // Add newlines after arrow destinations
-      fixedContent = fixedContent.replace(/(-->|--\>|---|==>|-.->|==)\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*[\[\(\{<][^\]\)\}>]*[\]\)\}>])?)\s+/g, '$1 $2\n    ');
+      fixedContent = fixedContent.replace(/(-->|-->|---|==>|-.->|==)\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*[\[({<][^\]\)\}>]*[\]\)\}>])?)\s+/g, '$1 $2\n    ');
       
       // Add newlines for subgraph
       fixedContent = fixedContent.replace(/\s+(subgraph\s+)/g, '\n$1');
@@ -548,7 +548,7 @@ export function RichTextEditor({
     editorProps: {
       attributes: {
         class: 'w-full focus:outline-none min-h-[300px] max-w-full overflow-x-hidden',
-        style: 'white-space: normal !important; margin: 0; overflow-wrap: break-word; word-break: break-word; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box; overflow-x: hidden;',
+        style: 'white-space: pre-wrap !important; margin: 0; overflow-wrap: break-word; word-break: normal; hyphens: none; max-width: 100%; width: 100%; box-sizing: border-box; overflow-x: hidden;',
         spellcheck: 'true',
         autocorrect: 'on',
         autocapitalize: 'sentences',
@@ -579,24 +579,25 @@ export function RichTextEditor({
           return html;
         }
         
-        // Check if pasted content looks like PURE markdown (strict check)
-        // Only convert if it's clearly raw markdown without HTML formatting
-        const strictMarkdownPatterns = [
+        // Check if pasted content contains markdown that should be converted
+        // Include code blocks and other markdown patterns
+        const markdownPatterns = [
           /^#{1,6}\s/m,           // Headers at line start
           /^\s*[-*+]\s/m,         // Standard markdown lists (-, *, +) at line start
           /^\s*\d+\.\s/m,         // Ordered lists at line start
           /^>\s/m,                // Blockquotes at line start
           /```[\s\S]*?```/m,       // Code blocks (including ```mermaid)
+          /\[([^\]]+)\]\(([^)]+)\)/, // Links
+          /\*\*[^*]+\*\*/,         // Bold
+          /\*[^*]+\*/,             // Italic
         ];
 
-        // Check if text contains strict markdown patterns
-        const hasStrictMarkdownSyntax = strictMarkdownPatterns.some(pattern => pattern.test(textContent));
-        
-        // Only convert if:
-        // 1. Has strict markdown syntax
-        // 2. Has minimal HTML (less than 3 tags - likely just wrapper divs/spans from clipboard)
-        // 3. No rich formatting already present
-        if (hasStrictMarkdownSyntax && formattingTagCount < 3 && textContent.trim().length > 0) {
+        // Check if text contains markdown patterns
+        const hasMarkdownSyntax = markdownPatterns.some(pattern => pattern.test(textContent));
+
+        // Convert if it has markdown syntax and doesn't have substantial rich formatting
+        // Allow some HTML tags (like from copying markdown) but not rich formatting
+        if (hasMarkdownSyntax && formattingTagCount < 5 && textContent.trim().length > 0) {
           try {
             // Convert markdown to HTML using marked
             const htmlFromMarkdown = marked.parse(textContent, {
@@ -718,23 +719,28 @@ export function RichTextEditor({
             }
           }
 
-          // Only check plain text for STRICT markdown patterns if no rich HTML
+          // Check for markdown that should be converted, even with some HTML
           if (text && text.trim().length > 0) {
-            // Use stricter patterns - only convert obvious raw markdown
-            const strictMarkdownPatterns = [
+            // Use patterns that detect markdown, including code blocks
+            const markdownPatterns = [
               /^#{1,6}\s/m,           // Headers at line start
               /^\s*[-*+]\s/m,         // Standard markdown lists (-, *, +) at line start
               /^\s*\d+\.\s/m,         // Ordered lists at line start
               /^>\s/m,                // Blockquotes at line start
               /```[\s\S]*?```/m,       // Code blocks (including ```mermaid)
+              /\[([^\]]+)\]\(([^)]+)\)/, // Links
+              /\*\*[^*]+\*\*/,         // Bold
+              /\*[^*]+\*/,             // Italic
             ];
 
-            const hasStrictMarkdownSyntax = strictMarkdownPatterns.some(pattern => pattern.test(text));
-            
-            // Only convert if it's strict markdown AND no rich HTML is present
-            const hasMinimalHtml = !html || (html.match(/<[^>]+>/g)?.length || 0) < 3;
+            const hasMarkdownSyntax = markdownPatterns.some(pattern => pattern.test(text));
 
-            if (hasStrictMarkdownSyntax && hasMinimalHtml) {
+            // Convert if it has markdown syntax, but allow some HTML (like from copying markdown)
+            // Only skip if HTML has substantial rich formatting that should be preserved
+            const htmlTagCount = html ? (html.match(/<[^>]+>/g)?.length || 0) : 0;
+            const shouldPreserveHtml = html && htmlTagCount >= 5; // Lower threshold to be more permissive
+
+            if (hasMarkdownSyntax && !shouldPreserveHtml) {
               try {
                 // Convert markdown to HTML
                 const htmlFromMarkdown = marked.parse(text, {
@@ -2001,7 +2007,7 @@ export function RichTextEditor({
         )}
         <EditorContent
           editor={editor}
-          className="min-h-[500px] overflow-x-hidden px-2 sm:px-3 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-normal [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror]:overflow-x-hidden [&_.ProseMirror]:max-w-full [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:max-w-full [&_.ProseMirror_p]:box-border [&_.ProseMirror_p]:whitespace-normal [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:break-words [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:whitespace-normal [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60"
+          className="min-h-[500px] overflow-x-hidden px-2 sm:px-3 py-4 w-full max-w-full [&_.ProseMirror]:prose [&_.ProseMirror]:prose-base [&_.ProseMirror]:sm:prose-lg [&_.ProseMirror]:max-w-full [&_.ProseMirror]:w-full [&_.ProseMirror]:leading-relaxed [&_.ProseMirror]:whitespace-pre-wrap [&_.ProseMirror]:p-0 [&_.ProseMirror]:mx-0 [&_.ProseMirror]:min-h-[460px] [&_.ProseMirror]:box-border [&_.ProseMirror]:overflow-x-hidden [&_.ProseMirror]:max-w-full [&_.ProseMirror_p]:my-0 [&_.ProseMirror_p]:leading-relaxed [&_.ProseMirror_p]:max-w-full [&_.ProseMirror_p]:box-border [&_.ProseMirror_p]:whitespace-pre-wrap [&_.ProseMirror_pre]:max-w-full [&_.ProseMirror_pre]:overflow-x-auto [&_.ProseMirror_pre]:bg-[#1e1e1e] [&_.ProseMirror_pre]:text-[#d4d4d4] [&_.ProseMirror_pre]:rounded-lg [&_.ProseMirror_pre]:p-4 [&_.ProseMirror_pre]:my-4 [&_.ProseMirror_pre]:font-mono [&_.ProseMirror_pre]:text-sm [&_.ProseMirror_pre]:leading-relaxed [&_.ProseMirror_pre]:border [&_.ProseMirror_pre]:border-[#333] [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:break-words [&_.ProseMirror_code]:max-w-full [&_.ProseMirror_code]:break-words [&_.ProseMirror_:not(pre)>code]:bg-muted [&_.ProseMirror_:not(pre)>code]:px-1.5 [&_.ProseMirror_:not(pre)>code]:py-0.5 [&_.ProseMirror_:not(pre)>code]:rounded [&_.ProseMirror_:not(pre)>code]:text-[#e06c75] [&_.ProseMirror_a]:break-words [&_.ProseMirror_ul]:max-w-full [&_.ProseMirror_ol]:max-w-full [&_.ProseMirror_li]:break-words [&_.ProseMirror_li]:whitespace-pre-wrap [&_.ProseMirror_.table-wrapper]:overflow-x-auto [&_.ProseMirror_.table-wrapper]:my-4 [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border [&_.ProseMirror_table]:border-border [&_.ProseMirror_table]:rounded-md [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-border [&_.ProseMirror_th]:bg-muted/50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:text-left [&_.ProseMirror_th]:font-semibold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-border [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:min-w-[100px] [&_.ProseMirror_td]:break-words [&_.ProseMirror_tr:hover_td]:bg-muted/30 [&_.ProseMirror_tr:hover_th]:bg-muted/60"
           style={{ wordBreak: 'break-word', overflowWrap: 'break-word', hyphens: 'none', overflowX: 'hidden', maxWidth: '100%', width: '100%' }}
         />
         <FloatingAskAI

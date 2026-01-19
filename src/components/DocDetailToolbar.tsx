@@ -15,6 +15,7 @@ interface DocDetailToolbarProps {
   onShareViaEmail: () => void;
   onAttachedFiles: () => void;
   onDelete: () => void;
+  onExportPDF?: () => void;
   isOwner: boolean;
   filesCount: number;
   isNew: boolean;
@@ -27,6 +28,7 @@ export function DocDetailToolbar({
   onShareViaEmail,
   onAttachedFiles,
   onDelete,
+  onExportPDF,
   isOwner,
   filesCount,
   isNew,
@@ -71,6 +73,7 @@ export function DocDetailToolbar({
                 onShareViaEmail,
                 onAttachedFiles,
                 onDelete,
+                onExportPDF,
               }).map((action, index) => (
                 <DropdownMenuItem
                   key={index}

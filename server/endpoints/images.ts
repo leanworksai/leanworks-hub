@@ -406,5 +406,77 @@ export function setupImageEndpoints(
       }
     }
   );
+
+  // GET /api/images/proxy - Proxy images with proper CORS headers for PDF export
+  // This endpoint fetches images from GCS/Firebase Storage and serves them with CORS headers
+  // Usage: /api/images/proxy?url=<encoded-gcs-signed-url>
+  app.get(
+    '/api/images/proxy',
+    async (req, res) => {
+      try {
+        const { url } = req.query;
+
+        if (!url || typeof url !== 'string') {
+          return res.status(400).json({ error: 'url parameter is required' });
+        }
+
+        // Decode the URL (it might be encoded to avoid issues with query parameters)
+        let imageUrl: string;
+        try {
+          imageUrl = decodeURIComponent(url);
+        } catch (decodeError) {
+          imageUrl = url; // Use as-is if decoding fails
+        }
+
+        // Validate that it's a Google Cloud Storage URL to prevent abuse
+        if (!imageUrl.includes('storage.googleapis.com') && !imageUrl.includes('firebasestorage.googleapis.com')) {
+          return res.status(400).json({ error: 'Only Google Cloud Storage URLs are allowed' });
+        }
+
+        console.log('🖼️ Proxying image:', imageUrl.substring(0, 100) + '...');
+
+        // Fetch the image from GCS
+        const response = await fetch(imageUrl, {
+          timeout: 30000, // 30 second timeout
+        });
+
+        if (!response.ok) {
+          console.error('Failed to fetch image from GCS:', response.status, response.statusText);
+          return res.status(response.status).json({ error: `Failed to fetch image: ${response.statusText}` });
+        }
+
+        // Get the image buffer
+        const imageBuffer = await response.arrayBuffer();
+
+        // Set proper CORS headers
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+
+        // Set content type based on the response
+        const contentType = response.headers.get('content-type') || 'image/jpeg';
+        res.setHeader('Content-Type', contentType);
+
+        // Set cache headers (cache for 1 hour)
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+
+        // Set content length
+        res.setHeader('Content-Length', imageBuffer.byteLength);
+
+        console.log(`✅ Image proxied successfully: ${contentType}, ${(imageBuffer.byteLength / 1024).toFixed(1)}KB`);
+
+        // Send the image buffer
+        res.send(Buffer.from(imageBuffer));
+
+      } catch (error: any) {
+        console.error('Image proxy error:', error);
+        res.status(500).json({
+          error: error.message || 'Failed to proxy image',
+          code: error.code || 'PROXY_ERROR'
+        });
+      }
+    }
+  );
 }
 

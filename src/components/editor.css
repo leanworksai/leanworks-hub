@@ -6,7 +6,7 @@
   white-space: pre-wrap;
   hyphens: none;
   overflow-wrap: break-word;
-  word-break: break-word;
+  word-break: normal; /* Changed from break-word to normal for proper word boundaries */
   font-size: clamp(14px, 1.2vw + 12px, 16px);
   line-height: 1.5;
 }
@@ -15,8 +15,8 @@
 .ProseMirror p {
   hyphens: none;
   overflow-wrap: break-word;
-  word-break: break-word;
-  white-space: normal;
+  word-break: normal; /* Changed from break-word to normal for proper word boundaries */
+  white-space: pre-wrap; /* Changed from normal to pre-wrap to preserve line breaks */
   font-size: inherit;
 }
 
@@ -24,8 +24,8 @@
 .ProseMirror li {
   hyphens: none;
   overflow-wrap: break-word;
-  word-break: break-word;
-  white-space: normal;
+  word-break: normal; /* Changed from break-word to normal for proper word boundaries */
+  white-space: pre-wrap; /* Changed from normal to pre-wrap to preserve line breaks */
 }
 
 /* Long string handling for editor content - links */
@@ -55,12 +55,13 @@
 .ProseMirror .editor-image {
   max-width: 100%;
   height: auto;
-  display: block;
-  margin: 1rem 0;
+  display: inline-block;
+  margin: 0.5rem 0;
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   object-fit: contain;
   cursor: default;
+  vertical-align: middle;
 }
 
 /* Image resize container and handles - for tiptap-extension-resize-image */
@@ -71,9 +72,10 @@
 }
 
 .ProseMirror .image-resizer img {
-  display: block;
+  display: inline-block;
   max-width: 100%;
   height: auto;
+  vertical-align: middle;
 }
 
 .ProseMirror .image-resizer .resize-handle {

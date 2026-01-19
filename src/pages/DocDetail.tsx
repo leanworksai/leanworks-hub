@@ -27,6 +27,7 @@ import { extractFirstLineAsTitle } from "@/utils/contentUtils";
 import { saveLastOpenedDoc, loadLastOpenedDoc } from "@/utils/docsStorage";
 import { isDocOwner } from "@/utils/docUtils";
 import { removeDraft } from "@/services/draftService";
+import { exportEditorToPDF, generateFilenameWithTimestamp } from "@/utils/pdfExport";
 
 // Types
 import type { DocFile, Doc } from "@/data/docsData";
@@ -495,6 +496,62 @@ export default memo(function DocDetail() {
     [dialogs.openDialog]
   );
 
+  const handleExportPDF = useCallback(async () => {
+    console.log("PDF export triggered from DocDetail page");
+    try {
+      // Get the document title
+      const docTitle = extractedTitle || "Document";
+
+      // Get the content - use doc content if available, otherwise use formState
+      const contentToExport = doc?.content || formState.content || "";
+      console.log("Content to export available:", !!contentToExport, "length:", contentToExport.length);
+
+      // Validate that there's actual content to export
+      const isEmpty = !contentToExport ||
+        !contentToExport.trim() ||
+        contentToExport === '<p></p>' ||
+        contentToExport === '{"type":"doc","content":[{"type":"paragraph"}]}' ||
+        contentToExport === '{"type":"doc","content":[{"type":"paragraph","content":[]}]}' ||
+        contentToExport.startsWith('{"type":"doc","content":[{"type":"paragraph"}]}');
+
+      if (isEmpty) {
+        toast({
+          title: "Cannot Export Empty Document",
+          description: "Please add some content to the document before exporting to PDF.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Generate filename with timestamp
+      const filename = generateFilenameWithTimestamp(
+        docTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()
+      );
+
+      // Export to PDF
+      await exportEditorToPDF(contentToExport, docTitle, filename);
+
+      // Show success toast
+      toast({
+        title: "PDF Exported",
+        description: `"${docTitle}" has been exported as PDF successfully.`,
+      });
+
+      // Track the export event
+      trackEvent("doc_exported_pdf", {
+        doc_id: docId,
+        doc_title: docTitle,
+      });
+    } catch (error) {
+      console.error("Error exporting PDF:", error);
+      toast({
+        title: "Export Failed",
+        description: error instanceof Error ? error.message : "Failed to export document as PDF",
+        variant: "destructive",
+      });
+    }
+  }, [doc?.content, formState.content, extractedTitle, docId, toast]);
+
   // Memoized computed props - stable values
   const isOwner = useMemo(
     () => isDocOwner(user?.email, doc?.ownerEmail),
@@ -544,6 +601,7 @@ export default memo(function DocDetail() {
               onShareViaEmail={handleShareViaEmail}
               onAttachedFiles={handleAttachedFiles}
               onDelete={openDeleteDialog}
+              onExportPDF={handleExportPDF}
               isOwner={isOwner}
               filesCount={files.length}
               isNew={isNew}
