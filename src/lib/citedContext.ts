@@ -38,12 +38,40 @@ export function buildCitedContext({
   contextRef,
   includeImplicitDoc = false,
 }: BuildCitedContextInput) {
+  let projects = selectedProjects;
+  let tasks = selectedTasks;
   let docs = selectedDocs;
 
-  if (includeImplicitDoc && contextType === "doc" && contextRef) {
-    const hasDoc = docs.some((doc) => doc.id === contextRef.id);
-    if (!hasDoc) {
-      docs = [...docs, { id: contextRef.id, title: contextRef.title }];
+  // Debug logging (dev only)
+  if (typeof window !== 'undefined' && (window as any).__DEV__) {
+    console.log('🔍 [buildCitedContext] Input params:', {
+      includeImplicitDoc,
+      contextType,
+      contextRef,
+      selectedProjectsLen: selectedProjects.length,
+      selectedTasksLen: selectedTasks.length,
+      selectedDocsLen: selectedDocs.length,
+      hasSelectedText: !!selectedTextPosition?.text,
+    });
+  }
+
+  // Add implicit context if available (merge into appropriate array)
+  if (includeImplicitDoc && contextRef && contextType) {
+    if (contextType === "project") {
+      const hasProject = projects.some((p) => p.id === contextRef.id);
+      if (!hasProject) {
+        projects = [...projects, { id: contextRef.id, title: contextRef.title }];
+      }
+    } else if (contextType === "task") {
+      const hasTask = tasks.some((t) => t.id === contextRef.id);
+      if (!hasTask) {
+        tasks = [...tasks, { id: contextRef.id, title: contextRef.title }];
+      }
+    } else if (contextType === "doc") {
+      const hasDoc = docs.some((doc) => doc.id === contextRef.id);
+      if (!hasDoc) {
+        docs = [...docs, { id: contextRef.id, title: contextRef.title }];
+      }
     }
   }
 
@@ -51,8 +79,8 @@ export function buildCitedContext({
   const trimmedSelectedTextPosition = trimSelectedTextPosition(selectedTextPosition);
 
   const hasContext =
-    selectedProjects.length > 0 ||
-    selectedTasks.length > 0 ||
+    projects.length > 0 ||
+    tasks.length > 0 ||
     docs.length > 0 ||
     !!selectedTexts?.length ||
     !!trimmedSelectedTextPosition;
@@ -60,8 +88,8 @@ export function buildCitedContext({
   if (!hasContext) return undefined;
 
   return {
-    projects: selectedProjects.length > 0 ? [...selectedProjects] : undefined,
-    tasks: selectedTasks.length > 0 ? [...selectedTasks] : undefined,
+    projects: projects.length > 0 ? [...projects] : undefined,
+    tasks: tasks.length > 0 ? [...tasks] : undefined,
     docs: docs.length > 0 ? [...docs] : undefined,
     selectedTexts,
     selectedTextPosition: trimmedSelectedTextPosition,

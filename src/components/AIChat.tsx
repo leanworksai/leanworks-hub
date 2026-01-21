@@ -278,8 +278,7 @@ export function AIChat() {
   const generateResponse = useCallback(async (
     message: string,  // Just the current message
     chatId: string,
-    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTexts?: Array<{ id: string; text: string; docId?: string }>; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } },  // Add citedContext parameter
-    implicitContext?: string  // Add implicitContext parameter
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTexts?: Array<{ id: string; text: string; docId?: string }>; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } }  // citedContext with all context merged into same structures
   ): Promise<string> => {
     // Debug: Log what we received (dev only)
     if (import.meta.env.DEV) {
@@ -288,7 +287,6 @@ export function AIChat() {
         citedContext,
         hasSelectedTextPosition: !!(citedContext && (citedContext as any).selectedTextPosition),
         selectedTextPreview: citedContext && (citedContext as any).selectedTexts?.[0]?.text?.substring(0, 50),
-        implicitContext,
       });
     }
     
@@ -298,8 +296,7 @@ export function AIChat() {
       chatId,
       message,
       sessionId: chatId, // Conversation-scoped session ID
-      citedContext,  // Pass citedContext
-      implicitContext,  // Pass implicitContext
+      citedContext,
     });
 
     return response.response || response.content;
@@ -522,6 +519,19 @@ export function AIChat() {
           }
         }
 
+        // Debug: Log inputs to buildCitedContext (dev only)
+        if (import.meta.env.DEV) {
+          console.log('🔍 [AIChat] Calling buildCitedContext with:', {
+            filteredProjectsLen: filteredProjectsForAPI.length,
+            filteredTasksLen: filteredTasksForAPI.length,
+            filteredDocsLen: filteredDocsForAPI.length,
+            currentSelectedTextPosition,
+            contextType,
+            contextRef,
+            includeImplicitDoc: true,
+          });
+        }
+
         const citedContextForAPI = buildCitedContext({
           selectedProjects: filteredProjectsForAPI,
           selectedTasks: filteredTasksForAPI,
@@ -568,26 +578,20 @@ export function AIChat() {
           });
         }
 
-        // Build implicit context from current page
-        let implicitContext: string | undefined = undefined;
-        if (contextRef && contextType) {
-          implicitContext = `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})`;
-        }
-
-        const finalCitedContext = citedContextForAPI;
-
         // Debug: Log final context before calling generateResponse (dev only)
         if (import.meta.env.DEV) {
           console.log('🔍 [AIChat] Final context before generateResponse:', {
-            originalCitedContextForAPI: citedContextForAPI,
-            finalCitedContext,
-            hasSelectedText: !!finalCitedContext?.selectedTexts?.length,
-            selectedTextPreview: finalCitedContext?.selectedTexts?.[0]?.text?.substring(0, 50),
+            citedContextForAPI,
+            hasSelectedText: !!citedContextForAPI?.selectedTexts?.length,
+            projectsCount: citedContextForAPI?.projects?.length || 0,
+            tasksCount: citedContextForAPI?.tasks?.length || 0,
+            docsCount: citedContextForAPI?.docs?.length || 0,
+            selectedTextPreview: citedContextForAPI?.selectedTexts?.[0]?.text?.substring(0, 50),
           });
         }
 
         // Pass only the current message - backend will load conversation from Firestore
-        const response = await generateResponse(messageContent, chatId, finalCitedContext, implicitContext);
+        const response = await generateResponse(messageContent, chatId, citedContextForAPI);
         
         // Increment AI usage credit (1 credit per response)
         try {

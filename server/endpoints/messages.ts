@@ -198,7 +198,7 @@ export function setupMessageEndpoints(
     try {
       const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
       const userEmail = (req as any).user.email?.toLowerCase();
-      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls, implicitContext } = req.body;
+      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls } = req.body;
 
       // Validation handled by middleware
 
@@ -255,14 +255,9 @@ export function setupMessageEndpoints(
         likes: [], // Initialize likes as empty array for new messages
       };
 
-      // Add citedContext if provided
+      // Add citedContext if provided (includes all context merged into same structures)
       if (citedContext) {
         messageData.citedContext = citedContext;
-      }
-
-      // Add implicitContext if provided
-      if (implicitContext) {
-        messageData.implicitContext = implicitContext;
       }
 
       // Add imageUrls if provided

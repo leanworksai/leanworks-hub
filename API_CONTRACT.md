@@ -1476,18 +1476,37 @@ Get a specific document by ID.
 **Parameters:**
 - `id` (path) - Document ID
 
+**Query Parameters:**
+- `format` (optional) - Response format: `json` (default) or `html`
+
 **Headers:**
 ```
 Authorization: Bearer <token>
 X-Org-Id: <orgId>
 ```
 
-**Response (200 OK):**
+**Response (200 OK) - JSON format (default):**
 ```json
 {
   "id": "doc-id-123",
   "title": "Project Requirements",
-  "content": "Document content...",
+  "content": {"type": "doc", "content": [...]},
+  "format": "json",
+  "createdBy": "user@example.com",
+  "createdAt": "2024-11-15T10:30:00.000Z",
+  "updatedAt": "2024-11-15T10:30:00.000Z"
+}
+```
+
+**Response (200 OK) - HTML format (?format=html):**
+```json
+{
+  "id": "doc-id-123",
+  "title": "Project Requirements",
+  "content": "<p>Document <strong>content</strong>...</p>",
+  "format": "html",
+  "htmlFrom": 42,
+  "htmlTo": 75,
   "createdBy": "user@example.com",
   "createdAt": "2024-11-15T10:30:00.000Z",
   "updatedAt": "2024-11-15T10:30:00.000Z"
@@ -2083,6 +2102,95 @@ X-Org-Id: <orgId>
 **Error Responses:**
 - `401` - Unauthorized
 - `500` - Server error
+
+---
+
+### POST /api/messages/generate-response
+
+Generate an AI response to a message. This endpoint sends the message to an external AI service for processing.
+
+**Headers:**
+```
+Authorization: Bearer <token>
+X-Org-Id: <orgId>
+```
+
+**Request Body:**
+```json
+{
+  "user_id": "user@example.com",
+  "org_slug": "my_org",
+  "message": "Please help me understand this code",
+  "chatId": "ai-assistant-user@example.com",
+  "session_id": "ai-assistant-user@example.com",
+  "cited_context": {
+    "docs": [
+      {
+        "id": "doc-id-123",
+        "title": "Code Documentation"
+      },
+      {
+        "id": "implicit-page-context",
+        "title": "Current Page: Design System Documentation"
+      }
+    ],
+    "selectedText": {
+      "text": "function example() { return true; }",
+      "docId": "doc-id-123",
+      "from": 3752,
+      "to": 3834,
+      "blockType": "paragraph",
+      "blockPos": 3752,
+      "blockOffset": 0,
+      "htmlFrom": 42,
+      "htmlTo": 75
+    }
+  }
+}
+```
+```
+
+**Request Body Fields:**
+- `user_id` (string, required) - Email of the authenticated user
+- `org_slug` (string, required) - Organization slug for the request
+- `message` (string, required) - The message to generate a response for
+- `chatId` (string, required) - Chat identifier
+- `session_id` (string, required) - Session identifier
+- `cited_context` (object, optional) - Context information for the AI response
+  - `docs` (array, optional) - Array of referenced documents (both explicit and implicit)
+    - `id` (string) - Document ID
+    - `title` (string) - Document title
+    - Note: Implicit context (e.g., current page) is merged into this array
+  - `projects` (array, optional) - Array of referenced projects (both explicit and implicit)
+  - `tasks` (array, optional) - Array of referenced tasks (both explicit and implicit)
+  - `selectedText` (object, optional) - Selected text from a document
+    - `text` (string) - The selected text content
+    - `docId` (string) - ID of the document the text was selected from
+    - `from` (number) - Start position in the document (ProseMirror position)
+    - `to` (number) - End position in the document (ProseMirror position)
+    - `blockType` (string) - Type of block (e.g., "paragraph")
+    - `blockPos` (number) - Block position (ProseMirror position)
+    - `blockOffset` (number) - Block offset
+    - `htmlFrom` (number, optional) - Character position in HTML where selection starts
+    - `htmlTo` (number, optional) - Character position in HTML where selection ends
+
+**Response (200 OK):**
+```json
+{
+  "response": "Based on the code you shared, the function `example()` returns `true`. This appears to be a simple example function.",
+  "content": "Based on the code you shared, the function `example()` returns `true`. This appears to be a simple example function."
+}
+```
+
+**Response Fields:**
+- `response` (string) - The AI-generated response
+- `content` (string) - Same as response (for compatibility)
+
+**Error Responses:**
+- `400` - Missing required fields
+- `401` - Unauthorized
+- `403` - Not a member of this organization
+- `500` - Server error or AI service unavailable
 
 ---
 

@@ -46,6 +46,7 @@ import Chats from "./pages/Chats";
 
 const queryClient = new QueryClient();
 
+
 const AppRoutesContent = () => {
   const { user } = useAuth();
   const location = useLocation();

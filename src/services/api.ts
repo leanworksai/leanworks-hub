@@ -569,8 +569,9 @@ export interface ChatMessage {
   citedContext?: {
     projects?: any[];
     tasks?: any[];
+    docs?: any[];
+    selectedText?: any;
   };
-  implicitContext?: string;
 }
 
 export type MessageListener = (messages: ChatMessage[]) => void;
@@ -610,7 +611,6 @@ export const messagesService = {
       selectedTexts?: Array<{ id: string; text: string; docId?: string }>;
       selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string };
     };
-    implicitContext?: string;
   }): Promise<ChatMessage> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/messages` : `${API_BASE}/messages`;
     const response = await authenticatedFetch(url, {
@@ -651,8 +651,7 @@ export const messagesService = {
     chatId: string;
     message: string;  // Just the current message
     sessionId?: string;
-    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTexts?: Array<{ id: string; text: string; docId?: string }>; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } } | string;  // Add citedContext parameter
-    implicitContext?: string;  // Add implicitContext parameter
+    citedContext?: { projects?: any[]; tasks?: any[]; docs?: any[]; selectedTexts?: Array<{ id: string; text: string; docId?: string }>; selectedTextPosition?: { docId: string; startOffset: number; endOffset: number; text?: string } } | string;  // citedContext with all context merged into same structures
   }): Promise<{ response: string; content: string }> {
     const userEmail = auth?.currentUser?.email;
     if (!userEmail) {
@@ -726,6 +725,7 @@ export const messagesService = {
         blockPos: number;
         blockOffset: number;
       };
+      implicitContext?: string;
     } | undefined = undefined;
     
     // Debug: Log what we received (dev only)
@@ -735,7 +735,7 @@ export const messagesService = {
         hasCitedContext: !!params.citedContext,
         citedContextType: typeof params.citedContext,
         hasSelectedTextPosition: !!(params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).selectedTextPosition),
-        implicitContext: params.implicitContext,
+        hasImplicitContext: !!(params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).implicitContext),
       });
     }
     
@@ -776,8 +776,8 @@ export const messagesService = {
           contextObj.docs = params.citedContext.docs.map((doc: any) => ({
             id: doc.id,
             title: doc.title,
-            // Include other relevant fields if needed
-            ...(doc.content && { content: doc.content }),
+            // Note: Full document content is NOT included here
+            // Selected text from the document is sent separately in selectedText
           }));
         }
 
@@ -855,8 +855,6 @@ export const messagesService = {
       }
     }
 
-    // Note: implicitContext is handled separately and merged in the prompt, not in cited_context
-
     const requestPayload: any = {
       user_id: userEmail.toLowerCase(),
       org_slug: orgSlug,
@@ -870,51 +868,13 @@ export const messagesService = {
       requestPayload.cited_context = cited_context;
     }
 
-    // Add selected text if available (send block node information for stable position mapping)
-    if (params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).selectedTextPosition) {
-      const selectedTextPos = (params.citedContext as any).selectedTextPosition;
-      const selectedTextFromList = (params.citedContext as any).selectedTexts?.[0]?.text;
-      const selectedTextValue = selectedTextPos.text || selectedTextFromList;
-      // Send the actual selected text if available
-      if (selectedTextValue) {
-        requestPayload.selected_text = selectedTextValue;
-        // Also include docId for reference if needed
-        if (selectedTextPos.docId) {
-          requestPayload.selected_text_doc_id = selectedTextPos.docId;
-        }
-        
-        // Send ProseMirror positions (primary, stable references)
-        if (selectedTextPos.from !== undefined && selectedTextPos.to !== undefined) {
-          requestPayload.selected_text_from = selectedTextPos.from;
-          requestPayload.selected_text_to = selectedTextPos.to;
-        }
-        
-        // Send block node information (stable block-level reference)
-        if (selectedTextPos.blockType) {
-          requestPayload.selected_text_block_type = selectedTextPos.blockType;
-        }
-        if (selectedTextPos.blockPos !== undefined) {
-          requestPayload.selected_text_block_pos = selectedTextPos.blockPos;
-        }
-        if (selectedTextPos.blockOffset !== undefined) {
-          requestPayload.selected_text_block_offset = selectedTextPos.blockOffset;
-        }
-        
-        // Keep legacy fields for backward compatibility during transition
-        if (selectedTextPos.startOffset !== undefined && selectedTextPos.endOffset !== undefined) {
-          requestPayload.selected_text_start_offset = selectedTextPos.startOffset;
-          requestPayload.selected_text_end_offset = selectedTextPos.endOffset;
-        }
-      }
-    }
-
     // Log the payload being sent to the ask API (dev only)
     if (import.meta.env.DEV) {
       console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
       console.log('📤 Ask API URL:', aiServiceUrl);
       console.log('📋 Cited Context (string):', cited_context || '(none)');
-      if (requestPayload.selected_text) {
-        console.log('📝 Selected Text:', requestPayload.selected_text.substring(0, 100) + (requestPayload.selected_text.length > 100 ? '...' : ''));
+      if (cited_context?.selectedText?.text) {
+        console.log('📝 Selected Text:', cited_context.selectedText.text.substring(0, 100) + (cited_context.selectedText.text.length > 100 ? '...' : ''));
       }
       if (params.citedContext) {
         console.log('🔍 Original citedContext param:', {

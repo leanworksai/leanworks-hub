@@ -52,6 +52,7 @@ import { createProjectSchema, updateProjectSchema, addProjectMemberSchema, addPr
 import { createEventSchema, updateEventSchema } from './validation/event-schemas.js';
 import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/subscription-schemas.js';
 import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
+import { convertJsonToHtml, convertJsonToHtmlWithPositions } from './utils/contentUtils.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -3713,7 +3714,26 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     doc.metadata = doc.metadata !== undefined ? parseMetadata(doc.metadata) : {};
     doc.createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString() : new Date().toISOString();
     doc.updatedAt = doc.updatedAt ? new Date(doc.updatedAt).toISOString() : new Date().toISOString();
-    
+
+    // Check if HTML format is requested
+    const format = req.query.format as string;
+    if (format === 'html' && doc.content) {
+      console.log('🔄 [API] Converting document content to HTML format');
+      try {
+        const conversionResult = await convertJsonToHtmlWithPositions(doc.content);
+        doc.content = conversionResult.html;
+        doc.format = 'html';
+
+        console.log('✅ [API] Document converted to HTML format');
+      } catch (conversionError) {
+        console.error('❌ [API] Failed to convert document to HTML:', conversionError);
+        // Fall back to JSON format if conversion fails
+        doc.format = 'json';
+      }
+    } else {
+      doc.format = 'json';
+    }
+
     res.json(doc);
   } catch (error) {
     console.error('❌ Get doc error:', error);
