@@ -39,6 +39,8 @@ import { setupFileEndpoints } from './endpoints/files.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
 import { setupMessageEndpoints } from './endpoints/messages.js';
+import { setupUpdateEndpoints } from './endpoints/updates.js';
+import { setupQueryEndpoints } from './endpoints/query.js';
 import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
@@ -52,6 +54,7 @@ import { createProjectSchema, updateProjectSchema, addProjectMemberSchema, addPr
 import { createEventSchema, updateEventSchema } from './validation/event-schemas.js';
 import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/subscription-schemas.js';
 import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
+import { queryTaskProgressUpdatesSchema, queryProjectProgressUpdatesSchema } from './validation/update-schemas.js';
 import { convertJsonToHtml, convertJsonToHtmlWithPositions } from './utils/contentUtils.js';
 
 // Get __dirname equivalent for ESM
@@ -321,7 +324,8 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
           (req as any).authenticatedViaApiKey = true;
           
           // If org context is provided, validate membership (same as Bearer token flow)
-          const orgIdentifier = req.headers['x-org-id'] as string | undefined;
+          const orgIdentifier = req.headers['x-org-identifier'] as string ||
+                               req.headers['x-org-id'] as string | undefined;
           if (orgIdentifier && userEmail) {
             try {
               const orgId = await resolveOrgId(orgIdentifier);
@@ -438,7 +442,8 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     }
     
     // Get org context from header (if provided)
-    const orgIdentifier = req.headers['x-org-id'] as string | undefined;
+    const orgIdentifier = req.headers['x-org-identifier'] as string ||
+                         req.headers['x-org-id'] as string | undefined;
     if (orgIdentifier && userEmail) {
       // Validate org membership
       try {
@@ -516,10 +521,12 @@ async function resolveOrgId(orgIdentifier: string): Promise<string> {
 async function requireOrgMembership(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const userEmail = (req as any).userEmail;
-    const orgIdentifier = req.headers['x-org-id'] as string || req.params.orgId;
-    
+    const orgIdentifier = req.headers['x-org-identifier'] as string ||
+                          req.headers['x-org-id'] as string ||
+                          req.params.orgId;
+
     if (!orgIdentifier) {
-      return res.status(400).json({ error: 'Organization ID is required (X-Org-Id header or orgId param)' });
+      return res.status(400).json({ error: 'Organization identifier is required (X-Org-Identifier or X-Org-Id header, or orgId param)' });
     }
     
     if (!userEmail) {
@@ -6464,6 +6471,18 @@ setupFileEndpoints(app, authenticateUser, storage);
 // ============================================================================
 
 setupMessageEndpoints(app, authenticateUser, db, storage);
+
+// ============================================================================
+// UPDATE ENDPOINTS (Project and Task Progress Updates)
+// ============================================================================
+
+setupUpdateEndpoints(app, authenticateUser);
+
+// ============================================================================
+// QUERY ENDPOINTS (PostgreSQL - Read-only SQL queries)
+// ============================================================================
+
+setupQueryEndpoints(app, authenticateUser, requireOrgMembership);
 
 // ============================================================================
 // TURN SERVER ENDPOINTS (Twilio TURN credentials)

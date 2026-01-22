@@ -742,29 +742,30 @@ export const integrationQueries = {
 // ============================================================================
 
 export const updateSummaryQueries = {
-  async getByProjectId(projectId: string, domain: string) {
-    return queryOne(
-      `SELECT project_id, date_id, update_summary 
-       FROM project_progress_updates 
-       WHERE project_id = $1 
-       ORDER BY date_id DESC 
+  async getByProjectId(projectId: string, orgId: string) {
+    const pool = await getOrgPool(orgId);
+    return pool.query(
+      `SELECT project_id, date_id, update_summary
+       FROM project_progress_updates
+       WHERE project_id = $1
+       ORDER BY date_id DESC
        LIMIT 1`,
       [projectId]
-    );
+    ).then(result => result.rows[0] || null);
   },
 
-  async getLatestByDomain(domain: string) {
-    const result = await queryMany(
-      `SELECT DISTINCT ON (project_id) 
-        project_id, date_id, update_summary 
-       FROM project_progress_updates 
-       ORDER BY project_id, date_id DESC`,
-      []
+  async getLatestByDomain(orgId: string) {
+    const pool = await getOrgPool(orgId);
+    const result = await pool.query(
+      `SELECT DISTINCT ON (project_id)
+        project_id, date_id, update_summary
+       FROM project_progress_updates
+       ORDER BY project_id, date_id DESC`
     );
     
     // Convert to object format
     const summaries: Record<string, { dateId: string; updateSummary: string }> = {};
-    result.forEach((row: any) => {
+    result.rows.forEach((row: any) => {
       summaries[row.project_id] = {
         dateId: row.date_id,
         updateSummary: row.update_summary
@@ -772,6 +773,156 @@ export const updateSummaryQueries = {
     });
     return summaries;
   },
+};
+
+// ============================================================================
+// TASK PROGRESS UPDATE QUERIES
+// ============================================================================
+
+export const taskProgressUpdateQueries = {
+  /**
+   * Query task progress updates with flexible filtering
+   */
+  async query(orgId: string, filters: {
+    userId?: string;
+    projectId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    limit?: number;
+    sortOrder?: 'asc' | 'desc';
+  }) {
+    const pool = await getOrgPool(orgId);
+    
+    const limit = Math.min(filters.limit || 100, 500);
+    const sortOrder = filters.sortOrder || 'desc';
+    
+    let sql = `
+      SELECT 
+        tpu.id,
+        tpu.update_id,
+        tpu.project_id,
+        tpu.user_id,
+        tpu.associated_tasks,
+        tpu.date_id,
+        tpu.reason,
+        tpu.update_text,
+        tpu.timestamp,
+        COALESCE(u.first_name || ' ' || u.last_name, tpu.user_id) as user_name
+      FROM task_progress_updates tpu
+      LEFT JOIN users u ON tpu.user_id = u.email
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    let paramIndex = 1;
+    
+    if (filters.userId) {
+      sql += ` AND tpu.user_id = $${paramIndex++}`;
+      params.push(filters.userId.toLowerCase());
+    }
+    
+    if (filters.projectId) {
+      sql += ` AND tpu.project_id = $${paramIndex++}`;
+      params.push(filters.projectId);
+    }
+    
+    if (filters.dateFrom) {
+      sql += ` AND tpu.date_id >= $${paramIndex++}`;
+      params.push(filters.dateFrom);
+    }
+    
+    if (filters.dateTo) {
+      sql += ` AND tpu.date_id <= $${paramIndex++}`;
+      params.push(filters.dateTo);
+    }
+    
+    sql += ` ORDER BY tpu.timestamp ${sortOrder.toUpperCase()}`;
+    sql += ` LIMIT $${paramIndex++}`;
+    params.push(limit);
+    
+    const result = await pool.query(sql, params);
+    
+    return result.rows.map((row: any) => ({
+      id: row.id,
+      updateId: row.update_id,
+      projectId: row.project_id,
+      userId: row.user_id,
+      userName: row.user_name,
+      associatedTasks: Array.isArray(row.associated_tasks) ? row.associated_tasks : (row.associated_tasks ? JSON.parse(row.associated_tasks) : []),
+      dateId: row.date_id,
+      reason: row.reason,
+      updateText: row.update_text,
+      timestamp: row.timestamp
+    }));
+  }
+};
+
+// ============================================================================
+// PROJECT PROGRESS UPDATE QUERIES
+// ============================================================================
+
+export const projectProgressUpdateQueries = {
+  /**
+   * Query project progress summaries with flexible filtering
+   */
+  async query(orgId: string, filters: {
+    projectId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    limit?: number;
+    sortOrder?: 'asc' | 'desc';
+  }) {
+    const pool = await getOrgPool(orgId);
+    
+    const limit = Math.min(filters.limit || 50, 200);
+    const sortOrder = filters.sortOrder || 'desc';
+    
+    let sql = `
+      SELECT 
+        ppu.id,
+        ppu.project_id,
+        ppu.date_id,
+        ppu.update_summary,
+        ppu.generated_at,
+        p.name as project_name
+      FROM project_progress_updates ppu
+      LEFT JOIN projects p ON ppu.project_id = p.id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    let paramIndex = 1;
+    
+    if (filters.projectId) {
+      sql += ` AND ppu.project_id = $${paramIndex++}`;
+      params.push(filters.projectId);
+    }
+    
+    if (filters.dateFrom) {
+      sql += ` AND ppu.date_id >= $${paramIndex++}`;
+      params.push(filters.dateFrom);
+    }
+    
+    if (filters.dateTo) {
+      sql += ` AND ppu.date_id <= $${paramIndex++}`;
+      params.push(filters.dateTo);
+    }
+    
+    sql += ` ORDER BY ppu.date_id ${sortOrder.toUpperCase()}`;
+    sql += ` LIMIT $${paramIndex++}`;
+    params.push(limit);
+    
+    const result = await pool.query(sql, params);
+    
+    return result.rows.map((row: any) => ({
+      id: row.id,
+      projectId: row.project_id,
+      projectName: row.project_name,
+      dateId: row.date_id,
+      updateSummary: row.update_summary,
+      generatedAt: row.generated_at
+    }));
+  }
 };
 
 // ============================================================================

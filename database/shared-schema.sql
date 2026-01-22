@@ -300,14 +300,57 @@ GROUP BY o.id, o.name, o.slug, o.type, o.owner_email, o.description, o.avatar, o
 -- COMMENTS
 -- ============================================================================
 
+-- ============================================================================
+-- QUERY AUDIT LOG TABLE (For Query API security auditing)
+-- ============================================================================
+
+-- Query audit log - tracks all SQL query executions for security monitoring
+CREATE TABLE IF NOT EXISTS query_audit_log (
+  id SERIAL PRIMARY KEY,
+  timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
+  user_email VARCHAR(255) NOT NULL,
+  org_id VARCHAR(50) NOT NULL,
+  org_slug VARCHAR(100) NOT NULL,
+  query_hash VARCHAR(64) NOT NULL,  -- SHA-256 hash of the query for privacy
+  execution_time_ms INTEGER,
+  row_count INTEGER,
+  success BOOLEAN NOT NULL,
+  error_code VARCHAR(50),
+  error_message TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON COLUMN query_audit_log.id IS 'Auto-incrementing primary key (SERIAL)';
+COMMENT ON COLUMN query_audit_log.timestamp IS 'When the query was executed (use for ordering and time-based queries)';
+COMMENT ON COLUMN query_audit_log.user_email IS 'Email address of user who executed the query (references global users table)';
+COMMENT ON COLUMN query_audit_log.org_id IS 'Unique identifier of the organization where query was executed';
+COMMENT ON COLUMN query_audit_log.org_slug IS 'URL-safe slug of the organization (used for database naming)';
+COMMENT ON COLUMN query_audit_log.execution_time_ms IS 'Query execution time in milliseconds (performance metric)';
+COMMENT ON COLUMN query_audit_log.row_count IS 'Number of rows returned by the query (if applicable)';
+COMMENT ON COLUMN query_audit_log.success IS 'Whether the query executed successfully (true) or failed (false)';
+COMMENT ON COLUMN query_audit_log.error_code IS 'Database error code if query failed (NULL for successful queries)';
+COMMENT ON COLUMN query_audit_log.error_message IS 'Error message if query failed (NULL for successful queries)';
+COMMENT ON COLUMN query_audit_log.created_at IS 'When this audit log entry was created';
+
+CREATE INDEX IF NOT EXISTS idx_query_audit_timestamp ON query_audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_query_audit_user ON query_audit_log(user_email);
+CREATE INDEX IF NOT EXISTS idx_query_audit_org ON query_audit_log(org_id);
+CREATE INDEX IF NOT EXISTS idx_query_audit_success ON query_audit_log(success);
+
+-- ============================================================================
+-- COMMENTS
+-- ============================================================================
+
 COMMENT ON TABLE users IS 'Global registry of all users across all organizations';
 COMMENT ON TABLE organizations IS 'Organizations - each org has its own isolated database';
 COMMENT ON TABLE org_members IS 'Membership records linking users to organizations';
 COMMENT ON TABLE org_invitations IS 'Pending invitations to join organizations';
 COMMENT ON TABLE email_verification_tokens IS 'Tokens for email verification during signup';
 COMMENT ON TABLE demo_requests IS 'Public demo request form submissions';
+COMMENT ON TABLE query_audit_log IS 'Audit log for Query API executions - tracks security and usage';
 
 COMMENT ON COLUMN organizations.type IS 'personal = auto-created personal workspace, team = user-created org';
 COMMENT ON COLUMN organizations.slug IS 'URL-safe identifier used for database naming (org_{slug})';
 COMMENT ON COLUMN org_invitations.token IS 'Secure token for invitation acceptance link';
+COMMENT ON COLUMN query_audit_log.query_hash IS 'SHA-256 hash of the executed query for privacy and security monitoring';
 

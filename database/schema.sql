@@ -37,6 +37,20 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
+COMMENT ON COLUMN users.email IS 'Primary key - User email address (links to global users table in shared database)';
+COMMENT ON COLUMN users.first_name IS 'User first name';
+COMMENT ON COLUMN users.last_name IS 'User last name';
+COMMENT ON COLUMN users.job_title IS 'User job title or role description';
+COMMENT ON COLUMN users.responsibilities IS 'Text description of user responsibilities';
+COMMENT ON COLUMN users.avatar IS 'Avatar color code (VARCHAR 10)';
+COMMENT ON COLUMN users.timezone IS 'User timezone (defaults to America/Los_Angeles)';
+COMMENT ON COLUMN users.status IS 'User status: active, inactive, or pending';
+COMMENT ON COLUMN users.role IS 'User role in organization: owner, admin, member, or viewer';
+COMMENT ON COLUMN users.joined_at IS 'When user joined this organization';
+COMMENT ON COLUMN users.last_active_at IS 'Timestamp of user last activity';
+COMMENT ON COLUMN users.created_at IS 'Record creation time';
+COMMENT ON COLUMN users.updated_at IS 'Last modification time (auto-updated by trigger)';
+
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 CREATE INDEX IF NOT EXISTS idx_users_joined_at ON users(joined_at);
@@ -130,6 +144,21 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
+COMMENT ON COLUMN projects.id IS 'Primary key - Unique project identifier (VARCHAR 50)';
+COMMENT ON COLUMN projects.name IS 'Project name/title';
+COMMENT ON COLUMN projects.description IS 'Project description or overview';
+COMMENT ON COLUMN projects.team_id IS 'References teams.id (SET NULL when team is deleted)';
+COMMENT ON COLUMN projects.status IS 'Project status (e.g., active, completed, archived)';
+COMMENT ON COLUMN projects.priority IS 'Project priority level: low, medium, high, or urgent';
+COMMENT ON COLUMN projects.start_date IS 'Project planned start date';
+COMMENT ON COLUMN projects.end_date IS 'Project planned end date';
+COMMENT ON COLUMN projects.due_date IS 'Project due date';
+COMMENT ON COLUMN projects.owner_email IS 'Email address of project owner (references global users table in shared database)';
+COMMENT ON COLUMN projects.visibility IS 'Access control level: all_members (everyone in org) or specific_members (restricted to visible_to_members list)';
+COMMENT ON COLUMN projects.visible_to_members IS 'JSONB array of user email strings who can access this project when visibility=specific_members';
+COMMENT ON COLUMN projects.created_at IS 'Record creation time';
+COMMENT ON COLUMN projects.updated_at IS 'Last modification time (auto-updated by trigger)';
+
 CREATE INDEX IF NOT EXISTS idx_projects_team ON projects(team_id);
 CREATE INDEX IF NOT EXISTS idx_projects_owner ON projects(owner_email);
 CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
@@ -148,6 +177,13 @@ CREATE TABLE IF NOT EXISTS project_members (
   UNIQUE(project_id, user_email)
 );
 
+COMMENT ON COLUMN project_members.id IS 'Auto-incrementing primary key (SERIAL)';
+COMMENT ON COLUMN project_members.project_id IS 'References projects.id (CASCADE delete when project is deleted)';
+COMMENT ON COLUMN project_members.user_email IS 'Email address of user (references global users table in shared database)';
+COMMENT ON COLUMN project_members.role IS 'User role in this project (e.g., member, admin, viewer)';
+COMMENT ON COLUMN project_members.avatar IS 'Avatar color code for this user in this project';
+COMMENT ON COLUMN project_members.joined_at IS 'When user joined this project';
+
 CREATE INDEX IF NOT EXISTS idx_project_members_project ON project_members(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_email);
 
@@ -161,6 +197,14 @@ CREATE TABLE IF NOT EXISTS project_comments (
   comment TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+COMMENT ON COLUMN project_comments.id IS 'Primary key - Unique comment identifier (VARCHAR 50)';
+COMMENT ON COLUMN project_comments.project_id IS 'References projects.id (CASCADE delete when project is deleted)';
+COMMENT ON COLUMN project_comments.member_name IS 'Display name of user who made the comment (denormalized for performance)';
+COMMENT ON COLUMN project_comments.member_avatar IS 'Avatar color code of user who made the comment (denormalized for performance)';
+COMMENT ON COLUMN project_comments.date IS 'Date when comment was made';
+COMMENT ON COLUMN project_comments.comment IS 'Comment text content';
+COMMENT ON COLUMN project_comments.created_at IS 'When this comment was created';
 
 CREATE INDEX IF NOT EXISTS idx_project_comments_project ON project_comments(project_id);
 
@@ -193,6 +237,28 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
+COMMENT ON COLUMN tasks.id IS 'Primary key - Unique task identifier (VARCHAR 50)';
+COMMENT ON COLUMN tasks.title IS 'Task title/name';
+COMMENT ON COLUMN tasks.description IS 'Task description or details';
+COMMENT ON COLUMN tasks.status IS 'Task status: todo, in-progress, review, completed, or blocked';
+COMMENT ON COLUMN tasks.priority IS 'Task priority level: low, medium, high, or urgent';
+COMMENT ON COLUMN tasks.assignee_id IS 'Email address of assigned user (references global users table in shared database)';
+COMMENT ON COLUMN tasks.assignee_name IS 'Display name of assigned user (denormalized for performance)';
+COMMENT ON COLUMN tasks.assignee_avatar IS 'Avatar color code of assigned user (denormalized for performance)';
+COMMENT ON COLUMN tasks.project_id IS 'References projects.id (CASCADE delete when project is deleted)';
+COMMENT ON COLUMN tasks.project_name IS 'Project name (denormalized for performance)';
+COMMENT ON COLUMN tasks.created_by IS 'Email address of user who created this task (references global users table in shared database)';
+COMMENT ON COLUMN tasks.visibility IS 'Access control level: all_members (everyone in org) or specific_members (restricted to visible_to_members list)';
+COMMENT ON COLUMN tasks.visible_to_members IS 'JSONB array of user email strings who can access this task when visibility=specific_members';
+COMMENT ON COLUMN tasks.due_date IS 'Task due date';
+COMMENT ON COLUMN tasks.created_date IS 'Date task was created';
+COMMENT ON COLUMN tasks.created_at IS 'Task creation timestamp (BIGINT, likely Unix timestamp)';
+COMMENT ON COLUMN tasks.estimated_hours IS 'Estimated hours to complete task (decimal)';
+COMMENT ON COLUMN tasks.actual_hours IS 'Actual hours spent on task (decimal)';
+COMMENT ON COLUMN tasks.tags IS 'JSONB array of tag strings for categorization and filtering';
+COMMENT ON COLUMN tasks.reason IS 'Optional reason or context for the task';
+COMMENT ON COLUMN tasks.updated_at IS 'Last modification time (auto-updated by trigger)';
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
@@ -212,6 +278,14 @@ CREATE TABLE IF NOT EXISTS task_comments (
   comment TEXT,
   created_at TIMESTAMP DEFAULT NOW()
 );
+
+COMMENT ON COLUMN task_comments.id IS 'Primary key - Unique comment identifier (VARCHAR 50)';
+COMMENT ON COLUMN task_comments.task_id IS 'References tasks.id (CASCADE delete when task is deleted)';
+COMMENT ON COLUMN task_comments.member_name IS 'Display name of user who made the comment (denormalized for performance)';
+COMMENT ON COLUMN task_comments.member_avatar IS 'Avatar color code of user who made the comment (denormalized for performance)';
+COMMENT ON COLUMN task_comments.date IS 'Date when comment was made';
+COMMENT ON COLUMN task_comments.comment IS 'Comment text content';
+COMMENT ON COLUMN task_comments.created_at IS 'When this comment was created';
 
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 
@@ -235,6 +309,20 @@ CREATE TABLE IF NOT EXISTS events (
   created_at BIGINT,
   updated_at TIMESTAMP DEFAULT NOW()
 );
+
+COMMENT ON COLUMN events.id IS 'Primary key - Unique event identifier (VARCHAR 50)';
+COMMENT ON COLUMN events.title IS 'Event title/name';
+COMMENT ON COLUMN events.description IS 'Event description or agenda';
+COMMENT ON COLUMN events.start_date IS 'Event start date and time';
+COMMENT ON COLUMN events.end_date IS 'Event end date and time';
+COMMENT ON COLUMN events.all_day IS 'Whether this is an all-day event (true) or has specific times (false)';
+COMMENT ON COLUMN events.location IS 'Event location or meeting link';
+COMMENT ON COLUMN events.attendees IS 'JSONB array of user email strings invited to this event';
+COMMENT ON COLUMN events.created_by IS 'Email address of user who created this event (references global users table in shared database)';
+COMMENT ON COLUMN events.visibility IS 'Access control level: all_members (everyone in org) or specific_members (restricted to visible_to_members list)';
+COMMENT ON COLUMN events.visible_to_members IS 'JSONB array of user email strings who can access this event when visibility=specific_members';
+COMMENT ON COLUMN events.created_at IS 'Event creation timestamp (BIGINT, likely Unix timestamp)';
+COMMENT ON COLUMN events.updated_at IS 'Last modification time (auto-updated by trigger)';
 
 CREATE INDEX IF NOT EXISTS idx_events_start_date ON events(start_date);
 CREATE INDEX IF NOT EXISTS idx_events_end_date ON events(end_date);
@@ -260,6 +348,16 @@ CREATE TABLE IF NOT EXISTS task_progress_updates (
   timestamp TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
+COMMENT ON COLUMN task_progress_updates.id IS 'Auto-incrementing primary key (SERIAL)';
+COMMENT ON COLUMN task_progress_updates.update_id IS 'Unique identifier for this update (VARCHAR 50)';
+COMMENT ON COLUMN task_progress_updates.project_id IS 'References projects.id (CASCADE delete when project is deleted)';
+COMMENT ON COLUMN task_progress_updates.user_id IS 'Email address of user who created the update (references global users table in shared database)';
+COMMENT ON COLUMN task_progress_updates.associated_tasks IS 'JSONB array of task ID strings this update relates to (use JSONB operators like ? or @> to query)';
+COMMENT ON COLUMN task_progress_updates.date_id IS 'Date this update is associated with';
+COMMENT ON COLUMN task_progress_updates.reason IS 'Optional category or reason for the update (e.g., "completed", "blocked")';
+COMMENT ON COLUMN task_progress_updates.update_text IS 'Main content/body of the progress update';
+COMMENT ON COLUMN task_progress_updates.timestamp IS 'When this update was created (use for ordering, not created_at)';
+
 CREATE INDEX IF NOT EXISTS idx_task_progress_updates_project ON task_progress_updates(project_id);
 CREATE INDEX IF NOT EXISTS idx_task_progress_updates_date ON task_progress_updates(date_id);
 CREATE INDEX IF NOT EXISTS idx_task_progress_updates_user ON task_progress_updates(user_id);
@@ -274,6 +372,12 @@ CREATE TABLE IF NOT EXISTS project_progress_updates (
   generated_at TIMESTAMP DEFAULT NOW(),
   UNIQUE(project_id, date_id)
 );
+
+COMMENT ON COLUMN project_progress_updates.id IS 'Auto-incrementing primary key (SERIAL)';
+COMMENT ON COLUMN project_progress_updates.project_id IS 'References projects.id (CASCADE delete when project is deleted)';
+COMMENT ON COLUMN project_progress_updates.date_id IS 'Date this progress update is for';
+COMMENT ON COLUMN project_progress_updates.update_summary IS 'Auto-generated summary of project progress for this date';
+COMMENT ON COLUMN project_progress_updates.generated_at IS 'When this summary was generated';
 
 CREATE INDEX IF NOT EXISTS idx_project_progress_updates_project_date ON project_progress_updates(project_id, date_id);
 
