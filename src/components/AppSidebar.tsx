@@ -35,7 +35,6 @@ import { trackSidebarNavigation, trackOrgSwitch, trackAIChat, trackContextSelect
 import { useTeamChats } from "@/hooks/useTeamChats";
 
 const menuItems = [
-  { title: "Calendar", url: "/calendar", icon: Calendar },
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Docs", url: "/docs", icon: StickyNote },
