@@ -155,15 +155,16 @@ export class QueryService {
         };
       }
 
-      // Step 3: Get org database pool
+      // Step 3: Get org database pool and name
       const pool = await getOrgPool(orgId);
+      const dbName = await this.getOrgDatabaseName(orgId);
 
       // Step 4: Set query options
       const timeout = Math.min(options.timeout || DEFAULT_TIMEOUT, MAX_TIMEOUT);
       const maxRows = Math.min(options.maxRows || DEFAULT_MAX_ROWS, MAX_ROWS);
 
       // Step 5: Execute query with timeout
-      const result = await this.executeWithTimeout(pool, sql, params, timeout, maxRows);
+      const result = await this.executeWithTimeout(pool, dbName, sql, params, timeout, maxRows);
 
       // Step 6: Format results
       const executionTime = Date.now() - startTime;
@@ -314,10 +315,40 @@ export class QueryService {
   }
 
   /**
-   * Execute query with timeout
+   * Parse and apply LIMIT clause to SQL query
+   */
+  private parseAndApplyLimit(sql: string, maxRows: number): { sql: string, effectiveLimit: number } {
+    // Check if SQL already has a LIMIT clause
+    const limitMatch = sql.match(/LIMIT\s+(\d+)/i);
+
+    if (limitMatch) {
+      const sqlLimit = parseInt(limitMatch[1], 10);
+
+      // Validate and cap the limit
+      const effectiveLimit = Math.min(sqlLimit, maxRows);
+
+      // Remove existing LIMIT and add validated one
+      const sqlWithoutLimit = sql.replace(/LIMIT\s+\d+/i, '').trim();
+
+      return {
+        sql: `${sqlWithoutLimit} LIMIT ${effectiveLimit}`,
+        effectiveLimit
+      };
+    } else {
+      // No LIMIT in SQL, add the default
+      return {
+        sql: `${sql} LIMIT ${maxRows}`,
+        effectiveLimit: maxRows
+      };
+    }
+  }
+
+  /**
+   * Execute query with timeout and connection retry
    */
   private async executeWithTimeout(
     pool: any,
+    dbName: string,
     sql: string,
     params: any[],
     timeout: number,
@@ -328,10 +359,11 @@ export class QueryService {
         reject(new Error(`Query execution timed out after ${timeout}ms`));
       }, timeout);
 
-      // Modify SQL to include row limit
-      const limitedSql = `${sql} LIMIT ${maxRows}`;
+      // Parse and apply LIMIT clause properly (handles existing LIMIT clauses)
+      const { sql: limitedSql } = this.parseAndApplyLimit(sql, maxRows);
 
-      pool.query(limitedSql, params)
+      // Use retry logic for connection failures
+      this.executeWithRetry(pool, dbName, limitedSql, params)
         .then((result: QueryResult) => {
           clearTimeout(timeoutId);
           resolve(result);
@@ -341,6 +373,53 @@ export class QueryService {
           reject(error);
         });
     });
+  }
+
+  /**
+   * Execute query with connection retry logic
+   */
+  private async executeWithRetry(
+    pool: any,
+    dbName: string,
+    sql: string,
+    params: any[],
+    maxRetries: number = 2
+  ): Promise<QueryResult> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        // Test connection health before using it
+        const client = await pool.connect();
+        try {
+          // Test the connection
+          await client.query('SELECT 1');
+          // Execute the actual query
+          const result = await client.query(sql, params);
+          return result;
+        } finally {
+          client.release();
+        }
+      } catch (error: any) {
+        console.warn(`⚠️  Query attempt ${attempt + 1} failed for database ${dbName}:`, error.message);
+
+        // If this is a connection-related error and we have retries left, continue
+        if (attempt < maxRetries && (
+          error.message.includes('Connection terminated') ||
+          error.message.includes('connection was closed') ||
+          error.message.includes('Client has encountered a connection error') ||
+          error.code === 'ECONNRESET' ||
+          error.code === 'EPIPE'
+        )) {
+          // Wait before retrying (exponential backoff)
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+          continue;
+        }
+
+        // For non-connection errors or exhausted retries, throw
+        throw error;
+      }
+    }
+
+    throw new Error('Unexpected error in query retry logic');
   }
 
   /**
@@ -394,6 +473,19 @@ export class QueryService {
       return await getOrgSlugById(orgId);
     } catch {
       return orgId; // Fallback
+    }
+  }
+
+  /**
+   * Get org database name for connection retry logic
+   */
+  private async getOrgDatabaseName(orgId: string): Promise<string> {
+    try {
+      const { getOrgDatabaseName } = await import('../../database/multi-tenant-pool.js');
+      return await getOrgDatabaseName(orgId);
+    } catch {
+      // Fallback to constructing database name from org ID
+      return `org_${orgId.replace(/-/g, '_').toLowerCase()}`;
     }
   }
 
@@ -453,9 +545,65 @@ export class QueryService {
   }
 
   /**
-   * Get schema information for allowed tables
+   * Get schema information for allowed tables (multiple tables supported)
+   */
+  async getTableSchemas(orgId: string, tableNames: string | string[]): Promise<any> {
+    const tables = Array.isArray(tableNames) ? tableNames : [tableNames];
+
+    // Validate all tables are allowed
+    for (const tableName of tables) {
+      if (!ALLOWED_TABLES.includes(tableName.toLowerCase())) {
+        throw new Error(`Table '${tableName}' is not allowed`);
+      }
+    }
+
+    const pool = await getOrgPool(orgId);
+    const schemas: Record<string, any> = {};
+
+    // Get schema for each table
+    for (const tableName of tables) {
+      const result = await pool.query(`
+        SELECT
+          c.column_name,
+          c.data_type,
+          c.is_nullable,
+          c.column_default,
+          pgd.description as column_description
+        FROM information_schema.columns c
+        LEFT JOIN pg_catalog.pg_statio_all_tables st ON (
+          c.table_name = st.relname
+        )
+        LEFT JOIN pg_catalog.pg_description pgd ON (
+          pgd.objoid = st.relid
+          AND pgd.objsubid = c.ordinal_position
+        )
+        WHERE c.table_name = $1
+        AND c.table_schema = 'public'
+        ORDER BY c.ordinal_position
+      `, [tableName]);
+
+      schemas[tableName] = {
+        table: tableName,
+        columns: result.rows
+      };
+    }
+
+    // Return single schema if only one table requested, otherwise return all schemas
+    if (tables.length === 1) {
+      return schemas[tables[0]];
+    } else {
+      return {
+        tables: schemas,
+        note: `Retrieved schemas for ${tables.length} tables: ${tables.join(', ')}`
+      };
+    }
+  }
+
+  /**
+   * Get schema information for allowed tables (legacy single table method)
    */
   async getTableSchema(orgId: string, tableName: string): Promise<any> {
+    return this.getTableSchemas(orgId, tableName);
     if (!ALLOWED_TABLES.includes(tableName.toLowerCase())) {
       throw new Error(`Table '${tableName}' is not allowed`);
     }

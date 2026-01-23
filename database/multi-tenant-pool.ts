@@ -259,8 +259,9 @@ async function createPool(dbName: string): Promise<Pool> {
     user: process.env.DB_USER || 'postgres',
     password: password,
     max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
+    idleTimeoutMillis: 300000, // 5 minutes (increased from 30 seconds)
+    connectionTimeoutMillis: 20000, // 20 seconds (increased from 10 seconds)
+    allowExitOnIdle: true, // Allow pool to exit when idle
     ssl: false,
   };
 
@@ -271,6 +272,52 @@ async function createPool(dbName: string): Promise<Pool> {
   });
 
   return pool;
+}
+
+// ============================================================================
+// CONNECTION HEALTH CHECKING
+// ============================================================================
+
+/**
+ * Test if a connection is still alive
+ */
+async function testConnection(pool: Pool, dbName: string): Promise<boolean> {
+  try {
+    const client = await pool.connect();
+    await client.query('SELECT 1');
+    client.release();
+    return true;
+  } catch (error) {
+    console.warn(`⚠️  Connection test failed for database ${dbName}:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * Get a healthy connection from the pool, with retry logic
+ */
+async function getHealthyConnection(pool: Pool, dbName: string, maxRetries: number = 2): Promise<import('pg').PoolClient> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const client = await pool.connect();
+
+      // Test the connection with a simple query
+      await client.query('SELECT 1');
+
+      return client;
+    } catch (error) {
+      console.warn(`⚠️  Connection attempt ${attempt + 1} failed for database ${dbName}:`, error.message);
+
+      if (attempt === maxRetries) {
+        throw new Error(`Failed to get healthy connection after ${maxRetries + 1} attempts: ${error.message}`);
+      }
+
+      // Wait before retrying (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+    }
+  }
+
+  throw new Error('Unexpected error in connection retry logic');
 }
 
 // ============================================================================
@@ -334,6 +381,14 @@ export async function getOrgSlugById(orgId: string): Promise<string> {
   const slug = result.rows[0].slug;
   orgSlugCache.set(orgId, slug);
   return slug;
+}
+
+/**
+ * Get org database name from org ID
+ */
+export async function getOrgDatabaseName(orgId: string): Promise<string> {
+  const slug = await getOrgSlugById(orgId);
+  return sanitizeSlugForDb(slug);
 }
 
 /**
@@ -436,23 +491,66 @@ export async function getOrgPoolBySlug(slug: string): Promise<Pool> {
 }
 
 // ============================================================================
-// QUERY HELPERS
+// QUERY HELPERS WITH RETRY LOGIC
 // ============================================================================
 
 /**
- * Execute a query on the shared database
+ * Execute a query with automatic retry on connection failures
+ */
+export async function queryWithRetry(
+  pool: Pool,
+  dbName: string,
+  sql: string,
+  params: any[] = [],
+  maxRetries: number = 2
+): Promise<any> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    let client: import('pg').PoolClient | null = null;
+
+    try {
+      client = await getHealthyConnection(pool, dbName, 0); // Get connection, don't retry here
+      const result = await client.query(sql, params);
+      return result;
+    } catch (error) {
+      console.warn(`⚠️  Query attempt ${attempt + 1} failed for database ${dbName}:`, error.message);
+
+      // If this is a connection-related error and we have retries left, continue
+      if (attempt < maxRetries && (
+        error.message.includes('Connection terminated') ||
+        error.message.includes('connection was closed') ||
+        error.message.includes('Client has encountered a connection error')
+      )) {
+        // Wait before retrying (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        continue;
+      }
+
+      // For non-connection errors or exhausted retries, throw
+      throw error;
+    } finally {
+      if (client) {
+        client.release();
+      }
+    }
+  }
+
+  throw new Error('Unexpected error in query retry logic');
+}
+
+/**
+ * Execute a query on the shared database with retry logic
  */
 export async function queryShared<T = any>(
   text: string,
   params?: any[]
 ): Promise<T[]> {
   const pool = await getSharedPool();
-  const result = await pool.query<T>(text, params);
+  const result = await queryWithRetry(pool, SHARED_DB_NAME, text, params);
   return result.rows;
 }
 
 /**
- * Execute a query on an organization's database
+ * Execute a query on an organization's database with retry logic
  */
 export async function queryOrg<T = any>(
   orgId: string,
@@ -460,7 +558,8 @@ export async function queryOrg<T = any>(
   params?: any[]
 ): Promise<T[]> {
   const pool = await getOrgPool(orgId);
-  const result = await pool.query<T>(text, params);
+  const dbName = await getOrgDatabaseName(orgId);
+  const result = await queryWithRetry(pool, dbName, text, params);
   return result.rows;
 }
 

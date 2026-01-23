@@ -134,20 +134,19 @@ export function setupQueryEndpoints(
           });
         }
 
-        const { query } = validationResult.data;
-        const tableName = query?.table;
+        const { table: tableParam } = validationResult.data;
 
         let schemaInfo;
 
-        if (tableName) {
-          // Get schema for specific table
-          schemaInfo = await queryService.getTableSchema(orgId, tableName);
+        if (tableParam) {
+          // Get schema for specific table(s) - handles both single string and array
+          schemaInfo = await queryService.getTableSchemas(orgId, tableParam);
         } else {
           // Get schema for all allowed tables
           const allowedTables = queryService.getAllowedTables();
           schemaInfo = {
             tables: allowedTables,
-            note: 'Use ?table=<table_name> to get detailed schema for a specific table'
+            note: 'Use ?table=<table_name> or ?table[]=table1&table[]=table2 to get detailed schema for specific table(s)'
           };
         }
 

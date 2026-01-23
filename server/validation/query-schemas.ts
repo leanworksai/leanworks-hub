@@ -34,20 +34,23 @@ export const executeQuerySchema = z.object({
 // ============================================================================
 
 export const getSchemaSchema = z.object({
-  query: z.object({
-    table: z.string()
+  table: z.union([
+    z.string()
       .min(1, 'Table name is required')
       .max(100, 'Table name too long')
-      .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'Invalid table name format')
-      .optional(),
-    includeComments: z.string().optional()
-  }).optional()
+      .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'Invalid table name format'),
+    z.array(
+      z.string()
+        .min(1, 'Table name is required')
+        .max(100, 'Table name too long')
+        .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, 'Invalid table name format')
+    )
+  ]).optional(),
+  includeComments: z.string().optional()
 });
 
 export const getTablesSchema = z.object({
-  query: z.object({
-    includeSchema: z.string().optional()
-  }).optional()
+  includeSchema: z.string().optional()
 });
 
 // ============================================================================
