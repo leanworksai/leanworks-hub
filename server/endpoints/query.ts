@@ -140,14 +140,18 @@ export function setupQueryEndpoints(
 
         if (tableParam) {
           // Get schema for specific table(s) - handles both single string and array
+          // For specific tables, return only column details without descriptions
           schemaInfo = await queryService.getTableSchemas(orgId, tableParam);
         } else {
-          // Get schema for all allowed tables
-          const allowedTables = queryService.getAllowedTables();
-          schemaInfo = {
-            tables: allowedTables,
-            note: 'Use ?table=<table_name> or ?table[]=table1&table[]=table2 to get detailed schema for specific table(s)'
-          };
+          // When no table specified, redirect to /api/query/tables for discovery
+          // This provides table names and descriptions
+          return res.json({
+            success: true,
+            data: {
+              tables: queryService.getAllowedTables(),
+              note: 'For table descriptions, use GET /api/query/tables. For detailed column schema, use ?table=<table_name> or ?table[]=table1&table[]=table2'
+            }
+          });
         }
 
         res.json({
