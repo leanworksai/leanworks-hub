@@ -27,7 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUsers } from "@/hooks/useUsers";
@@ -139,30 +139,37 @@ export default function ProjectDetail() {
   const userEmail = user?.email?.toLowerCase();
   
   // Check if current user is the project owner (for UI permissions)
-  const isOwner = project && userEmail && project.ownerEmail?.toLowerCase() === userEmail;
+  const isOwner = useMemo(() => 
+    project && userEmail && project.ownerEmail?.toLowerCase() === userEmail,
+    [project, userEmail]
+  );
   
   // Check if current user is a project member (for UI permissions)
-  const isMember = project && userEmail && project.members.some((member) => 
-    member.email?.toLowerCase() === userEmail || member.id?.toLowerCase() === userEmail
+  const isMember = useMemo(() => 
+    project && userEmail && project.members.some((member) => 
+      member.email?.toLowerCase() === userEmail || member.id?.toLowerCase() === userEmail
+    ),
+    [project, userEmail]
   );
   
   // Get available users to add (exclude existing members)
-  const existingMemberEmails = new Set(
+  const existingMemberEmails = useMemo(() => new Set(
     project?.members.map(m => m.email?.toLowerCase() || m.id?.toLowerCase()) || []
-  );
-  const availableUsers = users.filter(u => {
+  ), [project?.members]);
+  
+  const availableUsers = useMemo(() => users.filter(u => {
     const userEmailLower = u.email?.toLowerCase();
     return userEmailLower && !existingMemberEmails.has(userEmailLower);
-  });
+  }), [users, existingMemberEmails]);
   
   // Filter users based on search query
-  const filteredUsers = availableUsers.filter(u => {
+  const filteredUsers = useMemo(() => availableUsers.filter(u => {
     const query = memberSearchQuery.toLowerCase();
     const fullName = `${u.firstName} ${u.lastName}`.toLowerCase();
     const email = u.email?.toLowerCase() || '';
     const jobTitle = u.jobTitle?.toLowerCase() || '';
     return fullName.includes(query) || email.includes(query) || jobTitle.includes(query);
-  });
+  }), [availableUsers, memberSearchQuery]);
   
   // Redirect if backend returns 403 (access denied) or project not found
   useEffect(() => {

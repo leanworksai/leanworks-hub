@@ -10,6 +10,7 @@ import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import sharp from 'sharp';
 import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
+import { generateSignedUrl as generateSignedUrlUtil, extractStoragePath as extractStoragePathUtil } from '../utils/storage.js';
 
 // Image URL expiration time (default: 1 year)
 // Can be configured via environment variable IMAGE_URL_EXPIRATION_DAYS
@@ -293,67 +294,6 @@ export function setupImageEndpoints(
     }
   );
 
-  // Helper function to generate signed URL for an image
-  const generateSignedUrl = async (storagePath: string): Promise<string> => {
-    const bucketName = 'leanworks-prod';
-    const bucket = storage.bucket(bucketName);
-    const file = bucket.file(storagePath);
-    
-    const expiresIn = IMAGE_URL_EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
-    const expiresAt = new Date(Date.now() + expiresIn);
-    
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: expiresAt,
-    });
-    
-    return signedUrl;
-  };
-
-  // Helper function to extract storage path from signed URL or imageId
-  const extractStoragePath = async (imageUrlOrId: string, chatId: string, orgId: string | undefined, orgSlug?: string): Promise<string | null> => {
-    // If it's already a storage path (either old domains/ or new orgs/ format), return it
-    if (imageUrlOrId.startsWith('domains/') || imageUrlOrId.startsWith('orgs/')) {
-      return imageUrlOrId;
-    }
-    
-    // Get org slug for path construction
-    // Prefer org slug if provided, otherwise convert from orgId
-    let orgSlugForPath: string;
-    if (orgSlug) {
-      orgSlugForPath = orgSlug;
-    } else if (orgId) {
-      try {
-        orgSlugForPath = await getOrgSlugById(orgId);
-      } catch (error) {
-        console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-        orgSlugForPath = 'default';
-      }
-    } else {
-      orgSlugForPath = 'default';
-    }
-    
-    // If it's an imageId (UUID.jpg), construct the path using org-based format
-    if (imageUrlOrId.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/i)) {
-      return `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageUrlOrId}`;
-    }
-    
-    // Try to extract from signed URL
-    try {
-      const url = new URL(imageUrlOrId);
-      // Extract path from Google Cloud Storage signed URL
-      // Format: https://storage.googleapis.com/bucket/path?signature=...
-      const pathMatch = url.pathname.match(/\/[^\/]+\/(.+)$/);
-      if (pathMatch) {
-        return decodeURIComponent(pathMatch[1]);
-      }
-    } catch (e) {
-      // Not a valid URL, try to construct from chatId
-      return `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageUrlOrId}`;
-    }
-    
-    return null;
-  };
 
   // POST /api/images/refresh - Refresh signed URLs for images in messages
   app.post(
@@ -376,9 +316,9 @@ export function setupImageEndpoints(
         // Process all URLs in parallel for better performance
         const refreshPromises = imageUrls.map(async (imageUrl) => {
           try {
-            const storagePath = await extractStoragePath(imageUrl, chatId, orgId, orgSlug);
+            const storagePath = await extractStoragePathUtil(storage, imageUrl, orgId, 'chat-images', chatId, orgSlug);
             if (storagePath) {
-              const newSignedUrl = await generateSignedUrl(storagePath);
+              const newSignedUrl = await generateSignedUrlUtil(storage, storagePath, IMAGE_URL_EXPIRATION_DAYS);
               return newSignedUrl;
             } else {
               // If we can't extract the path, keep the original URL

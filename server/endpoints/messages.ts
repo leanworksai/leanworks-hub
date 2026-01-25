@@ -6,7 +6,8 @@
 
 import express from 'express';
 import { userQueries } from '../../database/queries.js';
-import { getOrgPool, getOrgSlugById, getSharedPool } from '../../database/multi-tenant-pool.js';
+import { getOrgPool, getSharedPool } from '../../database/multi-tenant-pool.js';
+import { getOrgCollectionPath } from '../utils/org-paths.js';
 import { validateRequest } from '../middleware/validate-request.js';
 import { createMessageSchema } from '../validation/message-schemas.js';
 
@@ -119,18 +120,7 @@ export function setupMessageEndpoints(
       
       
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let messagesPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          messagesPath = `orgs/${orgSlug}/messages`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          messagesPath = `orgs/default/messages`;
-        }
-      } else {
-        messagesPath = `orgs/default/messages`;
-      }
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
       let query = db.collection(messagesPath).where('chatId', '==', chatId);
       
       // For AI assistant conversations, ensure privacy by filtering by userId
@@ -267,18 +257,7 @@ export function setupMessageEndpoints(
 
       // Write to Firestore only - single source of truth for messages
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let messagesPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          messagesPath = `orgs/${orgSlug}/messages`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          messagesPath = `orgs/default/messages`;
-        }
-      } else {
-        messagesPath = `orgs/default/messages`;
-      }
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
       const docRef = await db.collection(messagesPath).add(messageData);
       
       res.json({
@@ -306,18 +285,7 @@ export function setupMessageEndpoints(
       const messageId = req.params.messageId;
       
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let messagesPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          messagesPath = `orgs/${orgSlug}/messages`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          messagesPath = `orgs/default/messages`;
-        }
-      } else {
-        messagesPath = `orgs/default/messages`;
-      }
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
       const messageRef = db.collection(messagesPath).doc(messageId);
       const messageDoc = await messageRef.get();
       
@@ -359,18 +327,7 @@ export function setupMessageEndpoints(
       }
 
       // Use org slug for Firestore path
-      let messagesPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          messagesPath = `orgs/${orgSlug}/messages`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          messagesPath = `orgs/default/messages`;
-        }
-      } else {
-        messagesPath = `orgs/default/messages`;
-      }
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
 
       // Get all messages for this user (they can see messages where they're the sender or in channels they have access to)
       // We'll group by chatId and get the most recent message for each
@@ -609,18 +566,7 @@ export function setupMessageEndpoints(
       }
 
       // Get org slug for Firestore path
-      let readReceiptsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          readReceiptsPath = `orgs/${orgSlug}/read_receipts`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          readReceiptsPath = `orgs/default/read_receipts`;
-        }
-      } else {
-        readReceiptsPath = `orgs/default/read_receipts`;
-      }
+      const readReceiptsPath = await getOrgCollectionPath('read_receipts', orgId);
 
       // Sanitize document ID: replace @ and . with - in userId and chatId
       const sanitizedUserId = userEmail.replace(/[@.]/g, '-');
@@ -656,18 +602,7 @@ export function setupMessageEndpoints(
       }
 
       // Get org slug for Firestore path
-      let readReceiptsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          readReceiptsPath = `orgs/${orgSlug}/read_receipts`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          readReceiptsPath = `orgs/default/read_receipts`;
-        }
-      } else {
-        readReceiptsPath = `orgs/default/read_receipts`;
-      }
+      const readReceiptsPath = await getOrgCollectionPath('read_receipts', orgId);
 
       // Query all read receipts for this user
       const snapshot = await db.collection(readReceiptsPath)
@@ -705,18 +640,7 @@ export function setupMessageEndpoints(
       }
 
       // Get org slug for Firestore path
-      let readReceiptsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          readReceiptsPath = `orgs/${orgSlug}/read_receipts`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          readReceiptsPath = `orgs/default/read_receipts`;
-        }
-      } else {
-        readReceiptsPath = `orgs/default/read_receipts`;
-      }
+      const readReceiptsPath = await getOrgCollectionPath('read_receipts', orgId);
 
       // Build document IDs for the requested chats
       const sanitizedUserId = userEmail.replace(/[@.]/g, '-');
@@ -769,18 +693,7 @@ export function setupMessageEndpoints(
       }
 
       // Use org slug for Firestore path
-      let messagesPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          messagesPath = `orgs/${orgSlug}/messages`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          messagesPath = `orgs/default/messages`;
-        }
-      } else {
-        messagesPath = `orgs/default/messages`;
-      }
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
 
       // Query all messages for this chatId
       let query = db.collection(messagesPath).where('chatId', '==', chatId);

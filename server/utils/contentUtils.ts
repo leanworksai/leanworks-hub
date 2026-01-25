@@ -97,6 +97,16 @@ export async function convertJsonToHtmlWithPositions(
   try {
     console.log('🔄 [Server] Converting content to HTML format');
 
+    // If content is already HTML (starts with <), return as-is
+    if (typeof jsonContent === 'string' && jsonContent.trim().startsWith('<')) {
+      console.log('✅ [Server] Content is already HTML, returning as-is');
+      return {
+        html: jsonContent,
+        htmlFrom: proseMirrorFrom,
+        htmlTo: proseMirrorTo
+      };
+    }
+
     // Parse JSON content if it's a string
     let contentObj;
     if (typeof jsonContent === 'string') {
@@ -104,8 +114,8 @@ export async function convertJsonToHtmlWithPositions(
         contentObj = JSON.parse(jsonContent);
         console.log('✅ [Server] Successfully parsed JSON content');
       } catch (parseError) {
-        console.error('❌ [Server] Failed to parse JSON content:', parseError);
-        // If it's not valid JSON, return as-is
+        // If it's not valid JSON and not HTML, return as-is
+        console.log('ℹ️ [Server] Content is not JSON, returning as-is');
         return {
           html: jsonContent,
           htmlFrom: proseMirrorFrom,

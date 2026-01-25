@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, memo } from "react";
 import { useForm } from "react-hook-form";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -87,7 +87,7 @@ const getInitials = (name: string): string => {
 };
 
 
-export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskDialogProps) {
+function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTaskDialogProps) {
   const { toast } = useToast();
   const createTask = useCreateTask();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -958,3 +958,4 @@ export function NewTaskDialog({ open, onOpenChange, initialProjectId }: NewTaskD
   );
 }
 
+export const NewTaskDialog = memo(NewTaskDialogComponent);

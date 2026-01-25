@@ -9,6 +9,7 @@ import express from 'express';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
+import { generateSignedUrl as generateSignedUrlUtil, extractStoragePath as extractStoragePathUtil } from '../utils/storage.js';
 
 // File URL expiration time (default: 1 year)
 const FILE_URL_EXPIRATION_DAYS = parseInt(process.env.FILE_URL_EXPIRATION_DAYS || '365', 10);
@@ -204,22 +205,6 @@ export function setupFileEndpoints(
     }
   );
 
-  // Helper function to generate signed URL for a file
-  const generateSignedUrl = async (storagePath: string): Promise<string> => {
-    const bucketName = 'leanworks-prod';
-    const bucket = storage.bucket(bucketName);
-    const file = bucket.file(storagePath);
-    
-    const expiresIn = FILE_URL_EXPIRATION_DAYS * 24 * 60 * 60 * 1000;
-    const expiresAt = new Date(Date.now() + expiresIn);
-    
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: expiresAt,
-    });
-    
-    return signedUrl;
-  };
 
   // POST /api/files/refresh - Refresh signed URLs for files
   app.post(
@@ -243,9 +228,9 @@ export function setupFileEndpoints(
         const refreshPromises = fileUrls.map(async (fileUrl: string) => {
           try {
             // Extract storage path from signed URL
-            const storagePath = await extractStoragePath(fileUrl, docId, orgId, orgSlug);
+            const storagePath = await extractStoragePathUtil(storage, fileUrl, orgId, 'doc-files', docId, orgSlug);
             if (storagePath) {
-              const newSignedUrl = await generateSignedUrl(storagePath);
+              const newSignedUrl = await generateSignedUrlUtil(storage, storagePath, FILE_URL_EXPIRATION_DAYS);
               return newSignedUrl;
             } else {
               return fileUrl;
@@ -272,41 +257,5 @@ export function setupFileEndpoints(
     }
   );
 
-  // Helper function to extract storage path from signed URL
-  async function extractStoragePath(fileUrl: string, docId: string, orgId: string | undefined, orgSlug?: string): Promise<string | null> {
-    // If it's already a storage path, return it
-    if (fileUrl.startsWith('orgs/')) {
-      return fileUrl;
-    }
-    
-    // Try to extract from signed URL
-    try {
-      const url = new URL(fileUrl);
-      const pathMatch = url.pathname.match(/\/[^\/]+\/(.+)$/);
-      if (pathMatch) {
-        return decodeURIComponent(pathMatch[1]);
-      }
-    } catch (e) {
-      // Not a valid URL, try to construct from docId
-      let orgSlugForPath: string;
-      if (orgSlug) {
-        orgSlugForPath = orgSlug;
-      } else if (orgId) {
-        try {
-          orgSlugForPath = await getOrgSlugById(orgId);
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          orgSlugForPath = 'default';
-        }
-      } else {
-        orgSlugForPath = 'default';
-      }
-      // Construct path from docId and fileId (extract from URL if possible)
-      // For now, return null if we can't extract the path
-      return null;
-    }
-    
-    return null;
-  }
 }
 

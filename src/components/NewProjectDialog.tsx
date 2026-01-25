@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 import { useForm } from "react-hook-form";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -63,7 +63,7 @@ const getInitials = (name: string): string => {
     .slice(0, 2);
 };
 
-export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) {
+function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps) {
   const { toast } = useToast();
   const createProject = useCreateProject();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -501,3 +501,4 @@ export function NewProjectDialog({ open, onOpenChange }: NewProjectDialogProps) 
   );
 }
 
+export const NewProjectDialog = memo(NewProjectDialogComponent);

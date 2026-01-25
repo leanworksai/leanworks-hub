@@ -7,7 +7,8 @@
 import express from 'express';
 import crypto from 'crypto';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getOrgSlugById, getOrgPoolBySlug } from '../../database/multi-tenant-pool.js';
+import { getOrgPoolBySlug } from '../../database/multi-tenant-pool.js';
+import { getOrgCollectionPath } from '../utils/org-paths.js';
 import { publishCallEvent } from '../services/pubsub-events.js';
 import { flushCallBuffers } from '../services/audio-recorder.js';
 import { validateRequest } from '../middleware/validate-request.js';
@@ -111,19 +112,7 @@ export function setupCallEndpoints(
 
       // Create call document in Firestore
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let callsPath: string;
-      let orgSlug: string | null = null;
-      if (orgId) {
-        try {
-          orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       const callId = `${chatId}-${Date.now()}`;
       
       const callData = {
@@ -222,18 +211,7 @@ export function setupCallEndpoints(
 
       // Update call document
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let callsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -324,18 +302,7 @@ export function setupCallEndpoints(
 
       // Update call document with ICE candidate
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let callsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -382,18 +349,7 @@ export function setupCallEndpoints(
 
       // Update call document
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let callsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -477,18 +433,7 @@ export function setupCallEndpoints(
 
       // Get all active calls where user is the callee
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let callsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       let snapshot;
       
       try {
@@ -577,18 +522,7 @@ export function setupCallEndpoints(
       const callId = req.params.callId;
 
       // Get call document
-      let callsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       const callRef = db.collection(callsPath).doc(callId);
       const callDoc = await callRef.get();
 
@@ -701,18 +635,7 @@ export function setupCallEndpoints(
 
       // Get latest call for this chat
       // Use org slug for Firestore path (sanitized name instead of ID)
-      let callsPath: string;
-      if (orgId) {
-        try {
-          const orgSlug = await getOrgSlugById(orgId);
-          callsPath = `orgs/${orgSlug}/calls`;
-        } catch (error) {
-          console.error(`Failed to get org slug for ${orgId}, using default:`, error);
-          callsPath = `orgs/default/calls`;
-        }
-      } else {
-        callsPath = `orgs/default/calls`;
-      }
+      const callsPath = await getOrgCollectionPath('calls', orgId);
       let snapshot;
       
       try {

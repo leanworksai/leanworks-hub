@@ -1,68 +1,7 @@
 import express from 'express';
-// TODO: Install express-rate-limit package: npm install express-rate-limit
-// import rateLimit from 'express-rate-limit';
 import { queryService } from '../services/query-service.js';
 import { validateRequest } from '../middleware/validate-request.js';
 import { executeQuerySchema, getSchemaSchema, getTablesSchema } from '../validation/query-schemas.js';
-
-// ============================================================================
-// RATE LIMITING (TODO: Install express-rate-limit)
-// ============================================================================
-
-// Rate limiter for query execution (stricter limits)
-// const queryExecuteLimiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 100, // 100 requests per window
-//   keyGenerator: (req: express.Request) => {
-//     const user = (req as any).user;
-//     const orgId = req.headers['x-org-id'] as string;
-//     return `${user?.email || 'unknown'}:${orgId || 'unknown'}`;
-//   },
-//   message: {
-//     success: false,
-//     error: {
-//       code: 'RATE_LIMIT_EXCEEDED',
-//       message: 'Too many query requests. Please try again later.',
-//       details: { retryAfter: '15 minutes' }
-//     }
-//   },
-//   standardHeaders: true,
-//   legacyHeaders: false,
-// });
-
-// Rate limiter for schema/metadata endpoints (more lenient)
-// const querySchemaLimiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 20, // 20 requests per window
-//   keyGenerator: (req: express.Request) => {
-//     const user = (req as any).user;
-//     const orgId = req.headers['x-org-id'] as string;
-//     return `${user?.email || 'unknown'}:${orgId || 'unknown'}`;
-//   },
-//   message: {
-//     success: false,
-//     error: {
-//       code: 'RATE_LIMIT_EXCEEDED',
-//       message: 'Too many schema requests. Please try again later.',
-//       details: { retryAfter: '15 minutes' }
-//     }
-//   },
-//   standardHeaders: true,
-//   legacyHeaders: false,
-// });
-
-// Temporary rate limiting middleware (basic implementation)
-const queryExecuteLimiter = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  // TODO: Replace with express-rate-limit once installed
-  // For now, allow all requests (implement proper rate limiting after package installation)
-  next();
-};
-
-const querySchemaLimiter = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  // TODO: Replace with express-rate-limit once installed
-  // For now, allow all requests (implement proper rate limiting after package installation)
-  next();
-};
 
 // ============================================================================
 // QUERY ENDPOINTS
@@ -83,7 +22,6 @@ export function setupQueryEndpoints(
   app.post('/api/query/execute',
     authenticateUser,
     requireOrgMembership,
-    queryExecuteLimiter,
     validateRequest(executeQuerySchema),
     async (req: express.Request, res: express.Response) => {
       try {
@@ -120,7 +58,6 @@ export function setupQueryEndpoints(
   app.get('/api/query/schema',
     authenticateUser,
     requireOrgMembership,
-    querySchemaLimiter,
     async (req: express.Request, res: express.Response) => {
       try {
         const orgId = (req as any).orgId;
@@ -181,7 +118,6 @@ export function setupQueryEndpoints(
   app.get('/api/query/tables',
     authenticateUser,
     requireOrgMembership,
-    querySchemaLimiter,
     async (req: express.Request, res: express.Response) => {
       try {
         // Validate query parameters

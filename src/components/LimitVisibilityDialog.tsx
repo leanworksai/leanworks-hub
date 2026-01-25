@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, memo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -31,7 +31,7 @@ interface LimitVisibilityDialogProps {
   onSave: (visibility: 'all_members' | 'specific_members', visibleToMembers: string[]) => Promise<void>;
 }
 
-export function LimitVisibilityDialog({
+function LimitVisibilityDialogComponent({
   open,
   onOpenChange,
   title,
@@ -485,3 +485,5 @@ export function LimitVisibilityDialog({
     </>
   );
 }
+
+export const LimitVisibilityDialog = memo(LimitVisibilityDialogComponent);

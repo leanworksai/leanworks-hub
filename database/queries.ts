@@ -43,45 +43,6 @@ export async function queryMany<T = any>(text: string, params?: any[]): Promise<
   return result.rows;
 }
 
-/**
- * Begin a transaction
- */
-export async function beginTransaction() {
-  await query('BEGIN');
-}
-
-/**
- * Commit a transaction
- */
-export async function commitTransaction() {
-  await query('COMMIT');
-}
-
-/**
- * Rollback a transaction
- */
-export async function rollbackTransaction() {
-  await query('ROLLBACK');
-}
-
-/**
- * Execute function within a transaction
- */
-export async function transaction<T>(callback: () => Promise<T>): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const result = await callback();
-    await client.query('COMMIT');
-    return result;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 // ============================================================================
 // USER QUERIES (Org-level users table)
 // ============================================================================

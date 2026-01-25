@@ -1,4 +1,4 @@
-import React from "react";
+import React, { memo } from "react";
 import { MoreVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,7 +25,7 @@ interface MoreOptionsMenuProps {
   onTriggerClick?: (e: React.MouseEvent) => void;
 }
 
-export function MoreOptionsMenu({
+function MoreOptionsMenuComponent({
   items,
   size = "icon",
   align = "end",
@@ -79,3 +79,4 @@ export function MoreOptionsMenu({
   );
 }
 
+export const MoreOptionsMenu = memo(MoreOptionsMenuComponent);

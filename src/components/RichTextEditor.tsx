@@ -13,8 +13,6 @@ import { useSelectedTextContext } from '@/contexts/SelectedTextContext';
 import { FloatingAskAI } from '@/components/FloatingAskAI';
 import { useSidebar } from '@/components/ui/sidebar';
 import { getTiptapExtensions } from '@/lib/tiptapExtensions';
-// Auto word wrap hook disabled - CSS handles wrapping naturally
-// import { useAutoWordWrap } from '@/hooks/useAutoWordWrap';
 import { 
   detectMarkdownConversionNeeded, 
   convertMarkdownToHtml,
@@ -826,11 +824,6 @@ export function RichTextEditor({
     docId
   );
 
-  // Auto word wrap hook disabled - CSS handles wrapping naturally
-  // The auto-wrap was inserting hard breaks which caused issues on mobile
-  // With proper CSS (overflow-wrap: break-word, hyphens: none), browser handles wrapping
-  // const { handleInput, handleCompositionEnd, handleTouchEnd, handleBlur } = useAutoWordWrap(editor);
-  
   // Disable auto-wrap handlers - return false to use default behavior
   useEffect(() => {
     autoWrapHandlersRef.current = { 
