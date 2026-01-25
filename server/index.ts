@@ -3029,23 +3029,26 @@ app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, validateR
     const updates = req.body;
     const pool = await getOrgPool(orgId);
     
-    // Check if user is trying to update visibility - only owners can do this
-    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
-      const projectCheck = await pool.query(
-        'SELECT owner_email FROM projects WHERE id = $1',
-        [projectId]
-      );
-      
-      if (projectCheck.rows.length === 0) {
-        return res.status(404).json({ error: 'Project not found' });
-      }
-      
-      const projectOwnerEmail = projectCheck.rows[0].owner_email?.toLowerCase();
-      const normalizedUserEmail = userEmail.toLowerCase();
-      
-      if (projectOwnerEmail !== normalizedUserEmail) {
-        return res.status(403).json({ error: 'Only the project owner can update visibility settings' });
-      }
+    // Get project details for ownership check
+    const projectCheck = await pool.query(
+      'SELECT owner_email FROM projects WHERE id = $1',
+      [projectId]
+    );
+    
+    if (projectCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    const projectOwnerEmail = projectCheck.rows[0].owner_email?.toLowerCase();
+    const normalizedUserEmail = userEmail.toLowerCase();
+    
+    // Check if user is trying to update fields that require ownership
+    // Only owners can update: name, description, status, dueDate, startDate, endDate
+    const ownerOnlyFields = ['name', 'description', 'status', 'dueDate', 'startDate', 'endDate', 'visibility', 'visibleToMembers', 'priority'];
+    const hasOwnerOnlyChanges = ownerOnlyFields.some(field => updates[field] !== undefined);
+    
+    if (hasOwnerOnlyChanges && projectOwnerEmail !== normalizedUserEmail) {
+      return res.status(403).json({ error: 'Only the project owner can update this project' });
     }
     
     const setClauses: string[] = [];

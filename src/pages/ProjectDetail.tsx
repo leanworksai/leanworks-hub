@@ -65,6 +65,13 @@ import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { DetailPageHeader } from "@/components/DetailPageHeader";
 import { usePageContext } from "@/contexts/PageContext";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 // Helper function to safely convert date values to strings
 // Handles Firestore Timestamps, Date objects, strings, and numbers
@@ -111,6 +118,8 @@ export default function ProjectDetail() {
   const [memberToRemove, setMemberToRemove] = useState<{ email: string; name: string } | null>(null);
   const [showNewTaskDialog, setShowNewTaskDialog] = useState(false);
   const [showLimitVisibilityDialog, setShowLimitVisibilityDialog] = useState(false);
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [editedProject, setEditedProject] = useState<any>(null);
   const deleteProject = useDeleteProject();
   const addMember = useAddProjectMember();
   const removeMember = useRemoveProjectMember();
@@ -151,6 +160,18 @@ export default function ProjectDetail() {
     ),
     [project, userEmail]
   );
+
+  // Initialize editedProject when project loads
+  useEffect(() => {
+    if (project) {
+      setEditedProject({
+        name: project.name,
+        description: project.description,
+        dueDate: project.dueDate,
+        status: project.status || 'active',
+      });
+    }
+  }, [project]);
   
   // Get available users to add (exclude existing members)
   const existingMemberEmails = useMemo(() => new Set(
@@ -170,6 +191,53 @@ export default function ProjectDetail() {
     const jobTitle = u.jobTitle?.toLowerCase() || '';
     return fullName.includes(query) || email.includes(query) || jobTitle.includes(query);
   }), [availableUsers, memberSearchQuery]);
+
+  // Field save handler
+  const handleFieldSave = async (field: string, value: any) => {
+    if (!editedProject || !project) return;
+
+    try {
+      const updatedProject = { ...editedProject, [field]: value };
+      setEditedProject(updatedProject);
+      
+      await updateProject.mutateAsync({
+        projectId: project.id,
+        updates: { [field]: value },
+      });
+
+      trackUpdate('project', project.id);
+      
+      toast({
+        title: "Success",
+        description: `Project ${field} updated successfully`,
+      });
+      setEditingField(null);
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : `Failed to update ${field}`,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleFieldCancel = () => {
+    if (project) {
+      setEditedProject({
+        name: project.name,
+        description: project.description,
+        dueDate: project.dueDate,
+        status: project.status || 'active',
+      });
+    }
+    setEditingField(null);
+  };
+
+  const handleFieldClick = (field: string) => {
+    if (isOwner) {
+      setEditingField(field);
+    }
+  };
   
   // Redirect if backend returns 403 (access denied) or project not found
   useEffect(() => {
@@ -482,21 +550,101 @@ export default function ProjectDetail() {
     <div className="space-y-4 sm:space-y-6 animate-fade-in -mt-2 sm:-mt-4">
       <div>
         <DetailPageHeader
-          title={project.name}
+          title={editingField === 'name' && editedProject ? editedProject.name : project.name}
+          onTitleChange={editingField === 'name' && editedProject && isOwner ? (newTitle) => setEditedProject({ ...editedProject, name: newTitle }) : undefined}
+          onTitleBlur={editingField === 'name' && editedProject && isOwner ? () => handleFieldSave('name', editedProject.name) : undefined}
+          onTitleKeyDown={editingField === 'name' && editedProject && isOwner ? (e) => {
+            if (e.key === 'Escape') {
+              handleFieldCancel();
+            } else if (e.key === 'Enter') {
+              handleFieldSave('name', editedProject.name);
+            }
+          } : undefined}
+          isEditingTitle={editingField === 'name' && !!editedProject && isOwner}
+          onTitleClick={editingField !== 'name' && isOwner ? () => handleFieldClick('name') : undefined}
           backHref="/projects"
           actions={headerActions}
           showActions={isOwner && !!project}
         />
-        <p className="text-foreground text-base sm:text-lg mb-4">{project.description}</p>
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 text-sm text-muted-foreground">
+        {editingField === 'description' && editedProject && isOwner ? (
+          <Textarea
+            value={editedProject.description || ''}
+            onChange={(e) => setEditedProject({ ...editedProject, description: e.target.value })}
+            onBlur={() => handleFieldSave('description', editedProject.description || null)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                handleFieldCancel();
+              }
+            }}
+            autoFocus
+            className="text-base min-h-[100px] mb-4 resize-none"
+          />
+        ) : (
+          <p 
+            className={`text-foreground text-base sm:text-lg mb-4 ${isOwner ? 'cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors' : ''} whitespace-pre-wrap`}
+            onClick={() => isOwner && handleFieldClick('description')}
+          >
+            {editedProject?.description || 'Click to add description'}
+          </p>
+        )}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 text-sm text-muted-foreground mb-3 flex-wrap">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4" />
             <span>Created: <span className="text-foreground font-medium">{formatDate(project.createdDate)}</span></span>
           </div>
-          <div className="flex items-center gap-2">
-            <Calendar className="h-4 w-4" />
-            <span>Due: <span className="text-foreground font-medium">{formatDateForDisplay(project.dueDate)}</span></span>
-          </div>
+          {editingField === 'dueDate' && editedProject && isOwner ? (
+            <Input
+              type="date"
+              value={editedProject.dueDate || ''}
+              onChange={(e) => setEditedProject({ ...editedProject, dueDate: e.target.value })}
+              onBlur={() => handleFieldSave('dueDate', editedProject.dueDate || null)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  handleFieldCancel();
+                }
+              }}
+              autoFocus
+              className="h-8 text-xs"
+            />
+          ) : (
+            <div 
+              className={`flex items-center gap-2 ${isOwner ? 'cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors' : ''}`}
+              onClick={() => isOwner && handleFieldClick('dueDate')}
+            >
+              <Calendar className="h-4 w-4" />
+              <span>Due: <span className="text-foreground font-medium">{formatDateForDisplay(editedProject?.dueDate)}</span></span>
+            </div>
+          )}
+          {editingField === 'status' && editedProject && isOwner ? (
+            <Select
+              value={editedProject.status || 'active'}
+              onValueChange={(value) => handleFieldSave('status', value)}
+            >
+              <SelectTrigger className="w-32 h-8 text-xs">
+                <SelectValue placeholder="Select status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="on_hold">On Hold</SelectItem>
+                <SelectItem value="completed">Completed</SelectItem>
+                <SelectItem value="archived">Archived</SelectItem>
+              </SelectContent>
+            </Select>
+          ) : (
+            <div 
+              className={`flex items-center gap-2 ${isOwner ? 'cursor-pointer hover:bg-muted/50 rounded px-2 py-1 -mx-2 transition-colors' : ''}`}
+              onClick={() => isOwner && handleFieldClick('status')}
+            >
+              <Badge variant={
+                editedProject?.status === 'active' ? 'default' :
+                editedProject?.status === 'completed' ? 'secondary' :
+                editedProject?.status === 'on_hold' ? 'outline' :
+                'outline'
+              } className="capitalize cursor-pointer">
+                {editedProject?.status ? editedProject.status.replace('_', ' ') : 'Active'}
+              </Badge>
+            </div>
+          )}
         </div>
       </div>
 

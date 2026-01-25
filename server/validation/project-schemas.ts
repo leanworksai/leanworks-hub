@@ -31,7 +31,11 @@ const baseProjectSchema = z.object({
   priority: z.enum(['low', 'medium', 'high', 'urgent'], {
     errorMap: () => ({ message: 'Priority must be one of: low, medium, high, urgent' }),
   }).optional(),
-  dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Due date must be in YYYY-MM-DD format').optional().nullable(),
+  dueDate: z.union([
+    z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Due date must be in YYYY-MM-DD format'),
+    z.string().length(0), // Allow empty string
+    z.null()
+  ]).optional(),
   visibility: visibilityEnum.optional().default('all_members'),
   visibleToMembers: z.array(emailSchema).optional().default([]),
   members: z.array(projectMemberSchema).optional(),
