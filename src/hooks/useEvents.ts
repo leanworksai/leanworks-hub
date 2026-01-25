@@ -5,13 +5,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
 
 export const useEvents = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['events', currentOrg?.id],
     queryFn: () => eventsService.getAll(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
+    enabled: authReady && !orgLoading && !!currentOrg, // Only fetch when auth is ready and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -29,13 +29,13 @@ export const useUserEvents = () => {
 };
 
 export const useEvent = (eventId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['events', eventId, currentOrg?.id],
     queryFn: () => eventsService.getById(eventId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!eventId, // Only fetch when user is authenticated and eventId is provided
+    enabled: authReady && !orgLoading && !!currentOrg && !!eventId, // Only fetch when auth is ready and eventId is provided
     staleTime: 1000 * 60 * 5,
   });
 };

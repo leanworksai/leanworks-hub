@@ -6,13 +6,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
 
 export const useTasks = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['tasks', currentOrg?.id],
     queryFn: () => tasksService.getAll(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
+    enabled: authReady && !orgLoading && !!currentOrg, // Only fetch when auth is ready and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -101,25 +101,25 @@ export const useUserTasks = () => {
 };
 
 export const useTask = (taskId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['tasks', taskId, currentOrg?.id],
     queryFn: () => tasksService.getById(taskId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!taskId, // Only fetch when user is authenticated and taskId is provided
+    enabled: authReady && !orgLoading && !!currentOrg && !!taskId, // Only fetch when auth is ready and taskId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
 
 export const useTasksByProject = (projectId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['tasks', 'project', projectId, currentOrg?.id],
     queryFn: () => tasksService.getByProject(projectId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId, // Only fetch when user is authenticated and projectId is provided
+    enabled: authReady && !orgLoading && !!currentOrg && !!projectId, // Only fetch when auth is ready and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };

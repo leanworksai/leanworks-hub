@@ -625,8 +625,7 @@ export default function Tasks() {
                                         onSelect={() => {
                                           if (member.id) {
                                             handleFieldSave(task.id, 'assigneeId', member.id, {
-                                              assigneeName: member.name,
-                                              assignee: member.name, // Also keep assignee for frontend display
+                                              assignee: member.name, // Display name for frontend
                                               assigneeAvatar: member.avatar
                                             });
                                             setDropdownOpen(task.id, 'assignee', false);

@@ -247,7 +247,24 @@ export const tasksService = {
       method: 'PATCH',
       body: JSON.stringify(updates),
     });
-    if (!response.ok) throw new Error('Failed to update task');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Failed to update task' }));
+      const errorMessage = Array.isArray(errorData.details) 
+        ? errorData.details.join(', ')
+        : typeof errorData.details === 'object' && errorData.details !== null
+        ? Object.entries(errorData.details).map(([k, v]) => `${k}: ${v}`).join(', ')
+        : errorData.error || 'Failed to update task';
+      
+      console.error('Task update error details:', {
+        status: response.status,
+        statusText: response.statusText,
+        fullError: errorData,
+        errorMessage,
+        updates: updates,
+        updateKeys: Object.keys(updates)
+      });
+      throw new Error(errorMessage);
+    }
   },
 
   async delete(taskId: string): Promise<void> {

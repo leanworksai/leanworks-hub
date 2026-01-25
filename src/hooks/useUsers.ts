@@ -14,13 +14,13 @@ export interface User {
 }
 
 export const useUsers = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['users', currentOrg?.id],
     queryFn: () => usersService.getAll() as Promise<User[]>,
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
+    enabled: authReady && !orgLoading && !!currentOrg, // Only fetch when auth is ready and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };

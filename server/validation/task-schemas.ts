@@ -31,16 +31,17 @@ const baseTaskSchema = z.object({
   description: z
     .string()
     .max(5000, 'Description must be 5000 characters or less')
-    .optional(),
+    .optional()
+    .nullish(),
   status: taskStatusEnum.optional().default('todo'),
   priority: taskPriorityEnum.optional().default('medium'),
-  assigneeId: emailSchema.optional(),
-  assignee: z.string().max(255, 'Assignee name must be 255 characters or less').optional(),
-  assigneeAvatar: z.string().max(10, 'Assignee avatar must be 10 characters or less').optional(),
-  projectId: z.string().max(50, 'Project ID must be 50 characters or less').optional(),
-  projectName: z.string().max(255, 'Project name must be 255 characters or less').optional(),
-  dueDate: dateStringSchema.optional(),
-  createdDate: dateStringSchema.optional(),
+  assigneeId: emailSchema.optional().nullish(),
+  assignee: z.string().max(255, 'Assignee name must be 255 characters or less').optional().nullish(),
+  assigneeAvatar: z.string().max(10, 'Assignee avatar must be 10 characters or less').optional().nullish(),
+  projectId: z.string().max(50, 'Project ID must be 50 characters or less').optional().nullish(),
+  projectName: z.string().max(255, 'Project name must be 255 characters or less').optional().nullish(),
+  dueDate: dateStringSchema.optional().nullish(),
+  createdDate: dateStringSchema.optional().nullish(),
   estimatedHours: z
     .number()
     .positive('Estimated hours must be a positive number')
@@ -59,7 +60,8 @@ const baseTaskSchema = z.object({
   reason: z
     .string()
     .max(5000, 'Reason must be 5000 characters or less')
-    .optional(),
+    .optional()
+    .nullish(),
   visibility: visibilityEnum.optional().default('all_members'),
   visibleToMembers: z
     .array(emailSchema)

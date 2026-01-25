@@ -5067,7 +5067,9 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, validateReques
       title: 'title',
       description: 'description',
       projectId: 'project_id',
+      projectName: 'project_name',
       assigneeId: 'assignee_id',
+      assignee: 'assignee_name',
       assigneeName: 'assignee_name',
       assigneeAvatar: 'assignee_avatar',
       status: 'status',
@@ -5148,6 +5150,12 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
     const orgId = (req as any).orgId;
     const taskId = req.params.id;
     const updates = req.body;
+    console.log('📝 PATCH /api/tasks/:id - Received updates:', {
+      taskId,
+      updates,
+      updateKeys: Object.keys(updates),
+      updateValues: Object.entries(updates).map(([k, v]) => `${k}=${v}`)
+    });
     const pool = await getOrgPool(orgId);
     
     // Check if task exists
@@ -5179,7 +5187,9 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       title: 'title',
       description: 'description',
       projectId: 'project_id',
+      projectName: 'project_name',
       assigneeId: 'assignee_id',
+      assignee: 'assignee_name',
       assigneeName: 'assignee_name',
       assigneeAvatar: 'assignee_avatar',
       status: 'status',
@@ -5218,16 +5228,25 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
         if (key === 'tags' && Array.isArray(value)) {
           setClauses.push(`tags = $${paramIndex}::jsonb`);
           values.push(JSON.stringify(value));
+          console.log(`  ✅ Adding field: ${key} -> ${dbField} = ${JSON.stringify(value)}`);
           paramIndex++;
         } else if (value !== undefined && value !== null) {
           setClauses.push(`${dbField} = $${paramIndex}`);
           values.push(value);
+          console.log(`  ✅ Adding field: ${key} -> ${dbField} = ${value}`);
           paramIndex++;
+        } else {
+          console.log(`  ⏭️ Skipping field: ${key} (value is null/undefined)`);
         }
+      } else if (fieldMap[key]) {
+        console.log(`  🚫 Skipping field: ${key} (reserved/ignored)`);
+      } else {
+        console.log(`  ❌ Unmapped field: ${key}`);
       }
     });
     
     if (setClauses.length === 0) {
+      console.log('⚠️ No fields to update after processing');
       return res.status(400).json({ error: 'No fields to update' });
     }
     

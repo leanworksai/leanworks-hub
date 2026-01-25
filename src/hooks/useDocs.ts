@@ -5,25 +5,25 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
 
 export const useDocs = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['docs', currentOrg?.id],
     queryFn: () => docsService.getAll(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
+    enabled: authReady && !orgLoading && !!currentOrg, // Only fetch when auth is ready and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
 
 export const useDoc = (docId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['docs', docId, currentOrg?.id],
     queryFn: () => docsService.getById(docId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!docId && docId !== "new", // Only fetch when user is authenticated and docId is provided (not "new")
+    enabled: authReady && !orgLoading && !!currentOrg && !!docId && docId !== "new", // Only fetch when auth is ready and docId is provided (not "new")
     staleTime: 0, // Always refetch to ensure fresh data
     refetchOnMount: true, // Always refetch when component mounts
     refetchOnWindowFocus: false, // Don't refetch on window focus to avoid unnecessary requests

@@ -149,12 +149,12 @@ export const useAcceptInvitation = () => {
 
 // System notifications hooks
 export const useSystemNotifications = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   
   return useQuery({
     queryKey: ['systemNotifications'],
     queryFn: () => systemNotificationsService.getNotifications(),
-    enabled: !loading && !!user, // Only fetch when user is authenticated
+    enabled: authReady, // Only fetch when auth is ready
     staleTime: 0, // Always consider data stale to allow immediate refetches
     refetchInterval: 1000 * 5, // Auto-refresh every 5 seconds for faster updates
     refetchOnWindowFocus: true, // Refetch when user returns to the tab

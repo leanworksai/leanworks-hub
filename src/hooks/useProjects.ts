@@ -5,13 +5,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
 
 export const useProjects = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['projects', currentOrg?.id],
     queryFn: () => projectsService.getAll(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
+    enabled: authReady && !orgLoading && !!currentOrg, // Only fetch when auth is ready and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
@@ -29,13 +29,13 @@ export const useUserProjects = () => {
 };
 
 export const useProject = (projectId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['projects', projectId, currentOrg?.id],
     queryFn: () => projectsService.getById(projectId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId, // Only fetch when user is authenticated and projectId is provided
+    enabled: authReady && !orgLoading && !!currentOrg && !!projectId, // Only fetch when auth is ready and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };

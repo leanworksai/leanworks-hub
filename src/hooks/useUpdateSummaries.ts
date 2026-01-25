@@ -4,37 +4,37 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
 
 export const useUpdateSummaries = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['updateSummaries', currentOrg?.id],
     queryFn: () => updateSummariesService.getAll(),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg, // Only fetch when user is authenticated and org is selected
+    enabled: authReady && !orgLoading && !!currentOrg, // Only fetch when auth is ready and org is selected
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
 
 export const useUpdateSummary = (projectId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['updateSummaries', projectId, currentOrg?.id],
     queryFn: () => updateSummariesService.getByProjectId(projectId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId, // Only fetch when user is authenticated and projectId is provided
+    enabled: authReady && !orgLoading && !!currentOrg && !!projectId, // Only fetch when auth is ready and projectId is provided
     staleTime: 1000 * 60 * 5,
   });
 };
 
 export const useAllUpdateSummaries = (projectId: string) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authReady } = useAuth();
   const { currentOrg, loading: orgLoading } = useOrg();
   
   return useQuery({
     queryKey: ['allUpdateSummaries', projectId, currentOrg?.id],
     queryFn: () => updateSummariesService.getAllByProjectId(projectId),
-    enabled: !loading && !orgLoading && !!user && !!currentOrg && !!projectId,
+    enabled: authReady && !orgLoading && !!currentOrg && !!projectId,
     staleTime: 1000 * 60 * 5,
   });
 };

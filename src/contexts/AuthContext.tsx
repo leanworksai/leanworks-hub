@@ -73,6 +73,7 @@ async function parseJSONResponse(response: Response): Promise<any> {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
+  authReady: boolean; // True when authentication is fully initialized and ready to use (token is available)
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, firstName: string, lastName: string, jobTitle: string, responsibilities?: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -84,6 +85,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false); // True when auth is fully initialized and token is available
   const { toast } = useToast();
 
   // Restore authentication state from localStorage on mount
@@ -150,6 +152,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               emailVerified: userData.emailVerified ?? false,
             } as User;
             setUser(restoredUser);
+            // If we have saved data and a token, auth is ready
+            if (savedToken) {
+              setAuthReady(true);
+            }
           } catch (parseError) {
             console.warn('Failed to parse saved user data:', parseError);
           }
@@ -234,6 +240,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 email: firebaseUser.email,
                 emailVerified: firebaseUser.emailVerified,
               }));
+              // Firebase Auth is ready, auth is ready
+              setAuthReady(true);
             } else if (savedUserData) {
               // If Firebase Auth says no user but we have saved data, keep the saved user
               // This handles cases where Firebase Auth isn't fully initialized
@@ -241,6 +249,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               setUser(null);
               // Clear cache if no user
               storage.clear();
+              setAuthReady(false);
             }
             setLoading(false);
           });
@@ -250,6 +259,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // If no cached data, clear everything
           if (!savedUserData && !savedToken) {
             storage.clear();
+          }
+          // If we have saved data and a token, auth is ready even without Firebase Auth
+          if (savedUserData && savedToken) {
+            setAuthReady(true);
           }
           setLoading(false);
         }
@@ -332,7 +345,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           
           // Wait for auth.currentUser to be available using onAuthStateChanged
           // This is more reliable than polling
-          const authReady = await new Promise<boolean>((resolve) => {
+          const firebaseAuthReady = await new Promise<boolean>((resolve) => {
             let resolved = false;
             const timeout = setTimeout(() => {
               if (!resolved) {
@@ -370,13 +383,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             }
           });
 
-          if (!authReady) {
+          if (!firebaseAuthReady) {
             console.error('❌ Firebase Auth currentUser not available after sign-in');
             console.error('Auth state:', {
               hasAuth: !!auth,
               currentUser: auth.currentUser,
               currentUserEmail: auth.currentUser?.email,
             });
+          } else {
+            // Firebase Auth is ready, set authReady state
+            setAuthReady(true);
           }
           
           // onAuthStateChanged will update the user state
@@ -433,6 +449,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
           // Create a mock user object for state management
           setUser(userData as User);
+          // Custom token is available, auth is ready
+          setAuthReady(true);
           // Track login
           trackEvent('login', { method: 'email' });
           setAnalyticsUserId(userData.uid);
@@ -456,22 +474,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               try {
                 await signInWithCustomToken(auth, data.customToken);
                 console.log('✅ Sign-in successful after initialization');
+                setAuthReady(true);
               } catch (initSignInError) {
                 console.warn('⚠️ Sign-in failed after initialization, using mock user');
                 setUser(userData as User);
+                // Custom token is still available, auth is ready
+                setAuthReady(true);
               }
             } else {
               setUser(userData as User);
+              // Custom token is available, auth is ready
+              setAuthReady(true);
             }
           } catch (initError) {
             console.error('❌ Failed to initialize Firebase:', initError);
             setUser(userData as User);
+            // Custom token is available, auth is ready
+            setAuthReady(true);
           }
         } else {
           // Auth exists but is not properly configured (invalid API key)
           console.warn('⚠️ Firebase Auth is not properly configured (invalid API key)');
           console.warn('⚠️ Using custom token for API authentication only');
           setUser(userData as User);
+          // Custom token is available, auth is ready
+          setAuthReady(true);
         }
       }
 
@@ -548,6 +575,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       
       // Clear user state
       setUser(null);
+      setAuthReady(false);
       
       // Track logout
       trackEvent('logout');
@@ -569,6 +597,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // ignore
       }
       setUser(null);
+      setAuthReady(false);
       
       toast({
         title: 'Error',
@@ -586,6 +615,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       value={{
         user,
         loading,
+        authReady,
         signIn,
         signUp,
         logout,
