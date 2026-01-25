@@ -228,7 +228,17 @@ export const tasksService = {
       method: 'POST',
       body: JSON.stringify(task),
     });
-    if (!response.ok) throw new Error('Failed to create task');
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Failed to create task' }));
+      // Extract detailed validation errors if available
+      if (errorData.details && typeof errorData.details === 'object') {
+        const errorMessages = Object.entries(errorData.details)
+          .map(([field, message]) => `${field}: ${message}`)
+          .join('; ');
+        throw new Error(`Validation failed: ${errorMessages}`);
+      }
+      throw new Error(errorData.error || 'Failed to create task');
+    }
   },
 
   async update(taskId: string, updates: Partial<Task>): Promise<void> {

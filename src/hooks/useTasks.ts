@@ -128,7 +128,18 @@ export const useCreateTask = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (task: Task) => tasksService.create(task),
+    mutationFn: async (task: Task) => {
+      try {
+        return await tasksService.create(task);
+      } catch (error: any) {
+        // Enhance error messages for validation failures
+        if (error.message === 'Failed to create task' && error instanceof Error) {
+          // Try to extract validation details if available
+          console.error('Task creation error details:', error);
+        }
+        throw error;
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
     },
