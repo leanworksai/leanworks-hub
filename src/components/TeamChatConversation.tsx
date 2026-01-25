@@ -774,14 +774,14 @@ export function TeamChatConversation({ chatId, selectedMember }: TeamChatConvers
             </p>
           </div>
         </div>
-        {!isProjectChannel && !isTeamChannel && (
-          <VoiceCallButton
-            chatId={chatId}
-            otherUserEmail={selectedMember.includes('@') ? selectedMember : allTeamMembers.find(m => m.id === selectedMember)?.email || ''}
-            otherUserName={member.name}
-            otherUserAvatar={member.avatar}
-          />
-        )}
+        <VoiceCallButton
+          chatId={chatId}
+          otherUserEmail={selectedMember.includes('@') ? selectedMember : allTeamMembers.find(m => m.id === selectedMember)?.email || ''}
+          otherUserName={member.name}
+          otherUserAvatar={member.avatar}
+          isGroupCall={isProjectChannel || isTeamChannel}
+          groupMembers={isProjectChannel ? (selectedProject?.members?.map(m => ({ email: m.email || m.id || '', name: m.name })) || []) : (isTeamChannel ? allTeamMembers.map(m => ({ email: m.email, name: m.name })) : [])}
+        />
       </div>
 
       {/* Messages */}
