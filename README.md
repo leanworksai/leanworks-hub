@@ -9,6 +9,17 @@ A comprehensive team collaboration platform built with modern technologies. Lean
 - [Architecture Overview](#architecture-overview)
 - [Main Components](#main-components)
 - [Component Architecture Walkthroughs](#component-architecture-walkthroughs)
+  - [Task Management](#task-management-architecture)
+  - [Collaborative Document Editing](#collaborative-document-editing-architecture)
+  - [Chat & Messaging](#chat--messaging-architecture)
+  - [Video Conferencing](#video-conferencing-architecture)
+  - [Calendar](#calendar-architecture)
+  - [Voice Chat and Transcription](#voice-chat-and-transcription-architecture)
+  - [AI Integration](#ai-integration-architecture)
+  - [Authentication & Multi-tenant](#authentication--multi-tenant-architecture)
+  - [File Upload & Storage](#file-upload--storage-architecture)
+  - [Transcription Worker](#transcription-worker-architecture)
+  - [Error Handling & Validation](#error-handling--validation-architecture)
 - [Access Management](#access-management)
 - [Getting Started](#getting-started)
 - [Development](#development)
@@ -608,6 +619,338 @@ UI updates calendar view
 - Event notifications
 - Multi-day events
 - Calendar sharing (visibility controls)
+
+---
+
+### Voice Chat and Transcription Architecture
+
+**Files:** `src/components/VoiceCall.tsx`, `src/hooks/useLiveKit.ts`, `server/endpoints/livekit.ts`, `server/workers/transcription-worker.ts`, `server/services/audio-recorder.ts`
+
+**Technology Stack:**
+- **LiveKit** - WebRTC infrastructure for real-time audio/video
+- **AssemblyAI** - AI-powered transcription service
+- **Google Cloud Pub/Sub** - Asynchronous message queue
+- **Google Cloud Storage** - Audio chunk storage
+- **WebRTC MediaRecorder API** - Browser audio capture
+
+**Voice Call Flow:**
+
+```
+User initiates call (1-on-1 or group)
+  ↓
+Frontend requests access token from /api/calls/token
+  ↓
+Backend generates LiveKit access token (time-limited JWT)
+  ↓
+Token includes room name, participant identity, permissions
+  ↓
+Frontend connects to LiveKit server with token
+  ↓
+WebRTC peer connections established
+  ↓
+Audio/video streams transmitted
+  ↓
+Browser records audio chunks (45 seconds each)
+  ↓
+Audio chunks published to Pub/Sub topic
+  ↓
+Transcription worker picks up chunks
+  ↓
+AssemblyAI transcribes each chunk
+  ↓
+Transcript stored in PostgreSQL
+  ↓
+Real-time notifications sent to participants
+```
+
+**Detailed Architecture:**
+
+**1. Call Initiation:**
+
+```typescript
+// Frontend: src/components/VoiceCall.tsx
+const handleStartCall = async () => {
+  // Request token from backend
+  const response = await fetch('/api/calls/token', {
+    method: 'POST',
+    body: JSON.stringify({
+      roomName: 'chat-123-call',
+      participantIdentity: 'john.doe@acme.com',
+      participantName: 'John Doe'
+    })
+  });
+
+  const { token, url } = await response.json();
+  // token = JWT signed by LiveKit for accessing the room
+  
+  // Connect to LiveKit with token
+  await startCall(roomName, token);
+};
+```
+
+**2. Token Generation (Backend):**
+
+```typescript
+// server/endpoints/livekit.ts
+app.post('/api/calls/token', async (req, res) => {
+  const { roomName, participantIdentity, participantName } = req.body;
+
+  // Fetch LiveKit credentials from Secret Manager
+  const credentials = await getLiveKitCredentials(...);
+
+  // Create access token (valid for 24 hours)
+  const at = new AccessToken(credentials.apiKey, credentials.apiSecret, {
+    identity: participantIdentity,
+    name: participantName,
+  });
+
+  at.addGrant({
+    room: roomName,
+    roomJoin: true,
+    canPublish: true,
+    canSubscribe: true,
+  });
+
+  const token = await at.toJwt();
+  
+  res.json({
+    token,
+    url: 'wss://livekit.example.com' // LiveKit server URL
+  });
+});
+```
+
+**3. Audio Recording (Browser):**
+
+```typescript
+// Browser automatically records audio from MediaStream
+// Uses MediaRecorder API to capture PCM audio
+
+// Audio is recorded in chunks of 45 seconds
+// Each chunk is resampled to 16kHz mono (AssemblyAI requirement)
+// Stored with 300ms overlap (for continuity)
+
+const audioContext = new AudioContext({ sampleRate: 16000 });
+const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+const source = audioContext.createMediaStreamAudioSource(stream);
+
+// Every 45 seconds:
+const audioChunk = getRecordedAudio(); // Buffer from last 45s + 300ms overlap
+await recordChunk(callId, participantEmail, audioChunk);
+```
+
+**4. Audio Chunk Publishing (Backend):**
+
+```typescript
+// server/services/audio-recorder.ts
+export async function recordChunk(
+  callId: string,
+  participantEmail: string,
+  audioBuffer: Buffer
+): Promise<void> {
+  // Upload chunk to Google Cloud Storage
+  const filename = `calls/${callId}/${participantEmail}/${Date.now()}.pcm`;
+  const bucketName = 'leanworks-audio-storage';
+  
+  await storage.bucket(bucketName).file(filename).save(audioBuffer);
+
+  // Publish to Pub/Sub for async processing
+  const message = {
+    callId,
+    participantEmail,
+    storagePath: filename,
+    duration: 45000, // milliseconds
+    timestamp: new Date().toISOString(),
+  };
+
+  await pubsub.topic('audio-chunks-topic').publishJSON(message);
+}
+```
+
+**5. Transcription Worker (Async Processing):**
+
+```typescript
+// server/workers/transcription-worker.ts
+const subscription = pubsub.subscription('audio-chunks-subscription');
+
+subscription.on('message', async (message) => {
+  const { callId, participantEmail, storagePath } = message.json();
+
+  try {
+    // 1. Download audio chunk from GCS
+    const audioBuffer = await storage
+      .bucket('leanworks-audio-storage')
+      .file(storagePath)
+      .download();
+
+    // 2. Detect and handle sample rate
+    const actualSampleRate = detectActualSampleRate(audioBuffer);
+    if (actualSampleRate === 48000) {
+      // Resample 48kHz → 16kHz
+      audioBuffer = resample48kHzTo16kHz(audioBuffer);
+    }
+
+    // 3. Convert PCM to WAV format (AssemblyAI requirement)
+    const wavBuffer = pcmToWav(audioBuffer, 16000);
+
+    // 4. Submit to AssemblyAI for transcription
+    const config = {
+      encoding: AudioEncoding.PCM_S16LE,
+      sample_rate: 16000,
+      language_code: 'en_US',
+    };
+
+    const transcript = await assemblyAI.transcripts.submit({
+      audio_url: wavBuffer, // Or upload to temp storage
+      config,
+    });
+
+    // 5. Poll for completion (AssemblyAI processes asynchronously)
+    let finalTranscript;
+    let retries = 0;
+    while (transcript.status !== 'completed' && retries < 150) {
+      await sleep(2000); // Poll every 2 seconds
+      
+      finalTranscript = await assemblyAI.transcripts.get(transcript.id);
+      retries++;
+    }
+
+    // 6. Store transcription in PostgreSQL
+    const orgPool = await getOrgPoolBySlug(orgSlug);
+    
+    await orgPool.query(`
+      INSERT INTO call_transcripts (call_id, participant_email, chunk_index, text, confidence, duration)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (call_id, participant_email, chunk_index) DO UPDATE
+      SET text = $4, confidence = $5
+    `, [callId, participantEmail, chunkIndex, finalTranscript.text, finalTranscript.confidence, 45000]);
+
+    // 7. Publish real-time update via Pub/Sub
+    await pubsub.topic('transcription-updates').publishJSON({
+      callId,
+      participantEmail,
+      transcript: finalTranscript.text,
+      chunkIndex,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Mark message as acknowledged
+    message.ack();
+
+  } catch (error) {
+    console.error('Transcription failed:', error);
+    // Retry logic - Pub/Sub will requeue after deadline
+    message.nack();
+  }
+});
+```
+
+**6. Call End and Transcript Compilation:**
+
+```
+Call ends (all participants leave)
+  ↓
+Wait for pending transcriptions (max 5 minutes)
+  ↓
+Fetch all chunks from PostgreSQL (ordered by chunk_index)
+  ↓
+Stitch transcripts together with speaker names
+  ↓
+Format as: "<strong>John Doe:</strong> Hello everyone..."
+  ↓
+Store final transcript in call document
+  ↓
+Notify participants of completion
+```
+
+**Data Model:**
+
+```sql
+-- Calls table (org-specific)
+calls:
+  - id (UUID)
+  - room_name (LiveKit room identifier)
+  - initiator_email
+  - participants[] (list of emails)
+  - started_at
+  - ended_at
+  - duration_seconds
+  - recording_path (GCS path to final audio)
+  - transcript_status ('pending', 'processing', 'completed', 'failed')
+  - final_transcript (HTML formatted)
+
+-- Call transcripts (org-specific, chunked storage)
+call_transcripts:
+  - call_id (FK to calls)
+  - participant_email
+  - chunk_index (0, 1, 2, ...)
+  - text (transcript for this chunk)
+  - confidence (0.0-1.0)
+  - duration_ms (usually 45000)
+  - transcribed_at
+
+-- Call events (org-specific, for real-time updates)
+call_events:
+  - id
+  - call_id (FK to calls)
+  - event_type ('joined', 'left', 'muted', 'unmuted', 'transcript_chunk')
+  - participant_email
+  - data (JSON with event details)
+  - timestamp
+```
+
+**Real-time Update Flow:**
+
+```
+Transcription completed for chunk
+  ↓
+Worker publishes to Pub/Sub: transcription-updates topic
+  ↓
+Backend receives message
+  ↓
+Stores in PostgreSQL call_transcripts table
+  ↓
+Broadcasts to connected WebSocket clients
+  ↓
+Frontend receives update
+  ↓
+Appends transcript chunk to call transcript UI in real-time
+```
+
+**Features:**
+
+- **Speaker Attribution** - Tracks which participant's audio is being transcribed
+- **Chunk Overlap** - 300ms overlap prevents cutting off words between chunks
+- **Error Recovery** - Failed chunks are automatically retried via Pub/Sub
+- **Sample Rate Detection** - Automatically detects and resamples 48kHz → 16kHz
+- **Confidence Scoring** - AssemblyAI provides confidence for each transcription
+- **Real-time Display** - Transcripts appear as they're processed (not waiting for call end)
+- **Call Recording** - Full audio stored in GCS for archival
+- **Multi-participant** - Separate transcript streams per participant
+
+**Performance Optimizations:**
+
+- **Asynchronous Processing** - Transcription happens in background workers
+- **Chunking** - 45-second chunks instead of full-call batching (faster first results)
+- **Parallelization** - Multiple chunks transcribed concurrently (up to 32 AssemblyAI jobs)
+- **Pub/Sub Queueing** - Automatic retry with backoff on failures
+- **GCS Storage** - Chunks stored separately for durability
+
+**Error Handling:**
+
+```
+❌ Audio chunk too large
+  → Skip chunk, publish error event, continue
+
+❌ AssemblyAI API timeout
+  → Pub/Sub retries up to max attempts, then marks as failed
+
+❌ Sample rate mismatch
+  → Auto-detect and resample (transparent to user)
+
+❌ Call ends before transcription complete
+  → Store in pendingSummaries, compile when all chunks done
+```
 
 ---
 
