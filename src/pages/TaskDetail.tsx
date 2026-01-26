@@ -321,10 +321,12 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
         if (import.meta.env.DEV) {
           console.log(`Checking project match: task.project="${task.project}" vs project.name="${project.name}"`, {
             exactMatch: project.name === task.project,
+            caseInsensitiveMatch: project.name.toLowerCase() === task.project.toLowerCase(),
             project: { id: project.id, name: project.name }
           });
         }
-        return project.name === task.project;
+        // Match by name (case-insensitive)
+        return project.name.toLowerCase() === task.project.toLowerCase();
       });
       if (hasProjectAccess) return true;
     
