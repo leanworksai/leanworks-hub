@@ -288,59 +288,24 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     
     // If task has a projectId, check if user has access to that project
     if (task.projectId) {
-      // First try matching by ID (UUID format)
+      // Try matching by ID (UUID format) only - no slug fallback
       const hasProjectAccessById = projects.some((project) => project.id === task.projectId);
       if (hasProjectAccessById) {
         return true;
       }
       
-      // If ID match fails, try matching by name or slug (for legacy tasks where projectId is actually a name/slug)
-      const hasProjectAccessByNameOrSlug = projects.some((project) => {
-        // Exact name match
-        if (project.name === task.projectId) return true;
-        // Slug match (project name with spaces replaced by hyphens)
-        const slug = project.name.toLowerCase().replace(/\s+/g, '-');
-        if (slug === task.projectId.toLowerCase()) return true;
-        return false;
-      });
-      if (hasProjectAccessByNameOrSlug) return true;
-      
-      // Task has a project but user doesn't have access
+      // If ID match fails, treat as no project (task becomes unlinked)
       if (import.meta.env.DEV) {
-        console.warn(`Task access denied: projectId="${task.projectId}" not found in available projects`, {
+        console.warn(`Task project link invalid: projectId="${task.projectId}" not found in available projects`, {
           taskProjectId: task.projectId,
-          availableProjects: projects.map(p => ({ id: p.id, name: p.name, slug: p.name.toLowerCase().replace(/\s+/g, '-') }))
+          availableProjects: projects.map(p => p.id),
+          msg: 'Treating as unlinked task'
         });
       }
-      return false;
+      // Fall through to no-project logic
     }
     
-    // If task has a project name (legacy), try to find it by name
-    if (task.project) {
-      const hasProjectAccess = projects.some((project) => {
-        if (import.meta.env.DEV) {
-          console.log(`Checking project match: task.project="${task.project}" vs project.name="${project.name}"`, {
-            exactMatch: project.name === task.project,
-            caseInsensitiveMatch: project.name.toLowerCase() === task.project.toLowerCase(),
-            project: { id: project.id, name: project.name }
-          });
-        }
-        // Match by name (case-insensitive)
-        return project.name.toLowerCase() === task.project.toLowerCase();
-      });
-      if (hasProjectAccess) return true;
-    
-      // Task has a project but user doesn't have access
-      if (import.meta.env.DEV) {
-        console.warn(`Task project name not found: project="${task.project}" not in available projects`, {
-          taskProject: task.project,
-          availableProjects: projects.map(p => p.name)
-        });
-      }
-      return false;
-    }
-    
-    // If task has no project, it's visible to all org members
+    // If task has no valid project ID, it's visible to all org members
     return true;
   })() : false;
   
