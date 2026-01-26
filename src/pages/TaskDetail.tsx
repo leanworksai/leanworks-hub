@@ -287,11 +287,24 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
         return true;
       }
       
-      // If ID match fails, try matching by name (for legacy tasks where projectId is actually a name)
-      const hasProjectAccessByName = projects.some((project) => project.name === task.projectId);
-      if (hasProjectAccessByName) return true;
+      // If ID match fails, try matching by name or slug (for legacy tasks where projectId is actually a name/slug)
+      const hasProjectAccessByNameOrSlug = projects.some((project) => {
+        // Exact name match
+        if (project.name === task.projectId) return true;
+        // Slug match (project name with spaces replaced by hyphens)
+        const slug = project.name.toLowerCase().replace(/\s+/g, '-');
+        if (slug === task.projectId.toLowerCase()) return true;
+        return false;
+      });
+      if (hasProjectAccessByNameOrSlug) return true;
       
       // Task has a project but user doesn't have access
+      if (import.meta.env.DEV) {
+        console.warn(`Task access denied: projectId="${task.projectId}" not found in available projects`, {
+          taskProjectId: task.projectId,
+          availableProjects: projects.map(p => ({ id: p.id, name: p.name, slug: p.name.toLowerCase().replace(/\s+/g, '-') }))
+        });
+      }
       return false;
     }
     
@@ -312,8 +325,24 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   // Don't redirect if in dialog mode - let the dialog handle closing
   useEffect(() => {
     if (!isLoading && task && !hasAccess && !isDialog) {
+      if (import.meta.env.DEV) {
+        console.error('Task access denied - redirecting to /tasks', {
+          taskId,
+          taskProjectId: task.projectId,
+          taskProject: task.project,
+          projectsCount: projects.length,
+          projects: projects.map(p => ({ id: p.id, name: p.name }))
+        });
+      }
       navigate("/tasks");
     } else if (!isLoading && task && !hasAccess && isDialog && onClose) {
+      if (import.meta.env.DEV) {
+        console.error('Task access denied in dialog mode - closing', {
+          taskId,
+          taskProjectId: task.projectId,
+          taskProject: task.project,
+        });
+      }
       onClose();
     }
   }, [isLoading, task, hasAccess, navigate, projects.length, isDialog, onClose]);
