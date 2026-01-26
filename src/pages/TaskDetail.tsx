@@ -279,6 +279,13 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
   
   // Check if user has access to the task
   const hasAccess = task ? (() => {
+    if (import.meta.env.DEV) {
+      console.log('Checking task access', {
+        task: { id: task.id, title: task.title, projectId: task.projectId, project: task.project },
+        availableProjects: projects.map(p => ({ id: p.id, name: p.name }))
+      });
+    }
+    
     // If task has a projectId, check if user has access to that project
     if (task.projectId) {
       // First try matching by ID (UUID format)
@@ -310,10 +317,24 @@ export default function TaskDetail({ taskId: propTaskId, onClose, isDialog = fal
     
     // If task has a project name (legacy), try to find it by name
     if (task.project) {
-      const hasProjectAccess = projects.some((project) => project.name === task.project);
+      const hasProjectAccess = projects.some((project) => {
+        if (import.meta.env.DEV) {
+          console.log(`Checking project match: task.project="${task.project}" vs project.name="${project.name}"`, {
+            exactMatch: project.name === task.project,
+            project: { id: project.id, name: project.name }
+          });
+        }
+        return project.name === task.project;
+      });
       if (hasProjectAccess) return true;
     
       // Task has a project but user doesn't have access
+      if (import.meta.env.DEV) {
+        console.warn(`Task project name not found: project="${task.project}" not in available projects`, {
+          taskProject: task.project,
+          availableProjects: projects.map(p => p.name)
+        });
+      }
       return false;
     }
     
