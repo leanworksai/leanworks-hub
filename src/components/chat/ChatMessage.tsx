@@ -349,70 +349,81 @@ function CallJoinButton({ callId, roomName }: { callId: string; roomName: string
   React.useEffect(() => {
     if (!callId || !db || !user?.email) return;
 
-    const checkCallStatus = async () => {
+    const mountedRef = { current: true };
+    let unsubscribe: (() => void) | null = null;
+
+    const setupSubscription = async () => {
       try {
         const { doc, getDoc, onSnapshot } = await import('firebase/firestore');
         const orgSlug = getCurrentOrgSlug();
-        if (!orgSlug) return;
+        if (!orgSlug || !mountedRef.current) return;
 
         const callRef = doc(db, `orgs/${orgSlug}/calls`, callId);
         
-        // Check immediately, but retry if document doesn't exist (might be a timing issue)
-        let callDoc = await getDoc(callRef);
-        if (callDoc.exists()) {
-          const data = callDoc.data();
-          setCallStatusFromFirestore(data.status || 'ringing');
-        } else {
-          // Document doesn't exist yet - might be a timing issue
-          // Retry once after a short delay before assuming it's ended
-          await new Promise(resolve => setTimeout(resolve, 500));
-          callDoc = await getDoc(callRef);
-          if (callDoc.exists()) {
-            const data = callDoc.data();
-            setCallStatusFromFirestore(data.status || 'ringing');
-          } else {
-            // Still doesn't exist after retry - only then assume ended
-            // But don't set it immediately, let the listener handle it
-            setCallStatusFromFirestore(null);
-          }
-        }
-
-        // Subscribe to real-time updates
-        const unsubscribe = onSnapshot(callRef, (snapshot) => {
-          if (snapshot.exists()) {
-            const data = snapshot.data();
-            setCallStatusFromFirestore(data.status || 'ringing');
-          } else {
-            // Only mark as ended if we've confirmed the document doesn't exist
-            // and it's not just a cache issue (check if it's from server)
-            if (!snapshot.metadata.fromCache) {
-              // This is a server snapshot confirming the document doesn't exist
-            setCallStatusFromFirestore('ended');
+        // Initial read for immediate state (prevents UI flicker)
+        try {
+          const initialDoc = await getDoc(callRef);
+          if (mountedRef.current) {
+            if (initialDoc.exists()) {
+              const status = initialDoc.data().status || 'ringing';
+              setCallStatusFromFirestore(status);
+            } else {
+              // Document doesn't exist yet - don't mark as ended immediately
+              // Let the real-time listener handle it
+              setCallStatusFromFirestore(null);
             }
-            // If it's from cache and empty, don't update status (might be stale cache)
           }
-        }, (error) => {
-          console.error('Error subscribing to call status:', error);
-        });
-
-        return unsubscribe;
+        } catch (initialError) {
+          console.warn('Initial call status fetch failed, will rely on listener:', initialError);
+        }
+        
+        // Set up real-time listener for updates
+        if (!mountedRef.current) return;
+        
+        unsubscribe = onSnapshot(
+          callRef,
+          (snapshot) => {
+            if (!mountedRef.current) return;
+            
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              const status = data.status || 'ringing';
+              setCallStatusFromFirestore(status);
+              
+              if (import.meta.env.DEV) {
+                console.log(`CallJoinButton: Status updated to ${status} for call ${callId}`);
+              }
+            } else {
+              // Document doesn't exist - call might be deleted or not yet created
+              // Only mark as ended if we're sure it's from the server (not cache)
+              if (!snapshot.metadata.fromCache) {
+                setCallStatusFromFirestore('ended');
+                
+                if (import.meta.env.DEV) {
+                  console.log(`CallJoinButton: Call ${callId} document not found (ended)`);
+                }
+              }
+            }
+          },
+          (error) => {
+            console.error('Error subscribing to call status:', error);
+            // On error, don't assume ended - keep current state
+          }
+        );
       } catch (err) {
-        console.error('Error checking call status:', err);
-        return () => {}; // Return empty cleanup function
+        console.error('Error setting up call status subscription:', err);
       }
     };
 
-    let unsubscribe: (() => void) | undefined;
-    checkCallStatus().then((unsub) => {
-      unsubscribe = unsub;
-    });
+    setupSubscription();
 
     return () => {
+      mountedRef.current = false;
       if (unsubscribe) {
         unsubscribe();
       }
     };
-  }, [callId, user?.email]);
+  }, [callId, user?.email, db]);
 
   const handleJoinCall = async () => {
     if (callStatus !== 'idle') {

@@ -1580,6 +1580,7 @@ export interface CallSignal {
   iceCandidates?: RTCIceCandidateInit[];
   createdAt: Date | string;
   endedAt?: Date | string;
+  endReason?: 'auto_ended_empty' | 'auto_ended_initiator' | string; // Reason for call ending
   roomName?: string; // LiveKit room name
   isGroupCall?: boolean; // Whether this is a group call
   participantEmails?: string[]; // All participants for group calls

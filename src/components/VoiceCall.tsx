@@ -13,6 +13,7 @@ import { useUserMap } from '@/hooks/useUserMap';
 import { signInWithCustomToken } from 'firebase/auth';
 import { cn } from '@/lib/utils';
 import { db, auth } from '@/lib/firebase-client';
+import { useToast } from '@/hooks/use-toast';
 import { getCurrentOrgSlug } from '@/services/api';
 import { trackVoiceCall, trackConversion, trackFirstFeatureUse } from '@/lib/analytics';
 import { getUserSignupDate, getDaysSinceSignup } from '@/lib/first-time-tracker';
@@ -50,6 +51,7 @@ export function VoiceCallButton({
   const { user, loading: authLoading } = useAuth();
   const { data: allDomainUsers = [] } = useUsers();
   const userMap = useUserMap();
+  const { toast } = useToast();
   const [isCalling, setIsCalling] = useState(false);
   const [callSignal, setCallSignal] = useState<CallSignal | null>(null);
   const [showRecordingConsent, setShowRecordingConsent] = useState(false);
@@ -236,6 +238,35 @@ export function VoiceCallButton({
               processedAnswerRef.current = null; // Reset processed answer tracking
               setCallSignal(null); // Clear call signal state
               endCall();
+              
+              // Show notification based on end reason
+              const endReason = (signal as any).endReason;
+              const isCallCreator = signal.callerEmail?.toLowerCase() === user?.email?.toLowerCase();
+              
+              if (endReason === 'auto_ended_empty') {
+                // Call ended due to inactivity
+                toast({
+                  title: "Call ended",
+                  description: "The call was ended automatically due to inactivity (no participants for 1 minute).",
+                });
+              } else if (endReason === 'auto_ended_initiator') {
+                // Call ended by initiator (for future use)
+                toast({
+                  title: "Call ended",
+                  description: "The call was ended by the call initiator.",
+                });
+              } else if (!isCallCreator) {
+                // Regular call end - show notification if we're not the one who ended it
+                const initiatorName = isGroupCall 
+                  ? (signal.callerEmail ? userMap[signal.callerEmail]?.name || signal.callerEmail : 'the initiator')
+                  : (otherUserName || otherUserEmail || 'the other participant');
+                  
+                toast({
+                  title: "Call ended",
+                  description: `The call was ended by ${initiatorName}.`,
+                });
+              }
+              
               // For Firestore, the status change should propagate automatically
               // But we can ensure cleanup
               if (endedCallId) {
@@ -1092,11 +1123,8 @@ export function IncomingCallDialog({
       setIsAnswering(false);
       
       // Clean up call state on answer failure
-      setIsCalling(false);
       callIdRef.current = null;
       setCurrentCallId(null);
-      setCallSignal(null);
-      processedAnswerRef.current = null;
       endCall();
       
       // Show user-friendly error message

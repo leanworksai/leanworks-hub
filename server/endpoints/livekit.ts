@@ -24,6 +24,10 @@ const LIVEKIT_CREDENTIALS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 // Key: sessionKey (callId:participantEmail), Value: locked sample rate
 const sessionSampleRates = new Map<string, number>();
 
+// Track empty call timers to auto-end calls when no participants remain
+// Key: roomName, Value: NodeJS.Timeout
+const emptyCallTimers = new Map<string, NodeJS.Timeout>();
+
 // Helper function to normalize byte order value from environment variable
 // Only supports little-endian (or small-endian as alias)
 // Big-endian support has been removed - LiveKit always sends little-endian
@@ -146,6 +150,85 @@ async function generateLiveKitToken(
       participantIdentity
     });
     throw error;
+  }
+}
+
+// Helper function to end a call internally (used by auto-end logic)
+async function endCallInternal(
+  db: Firestore,
+  roomName: string,
+  reason: 'auto_ended_empty' | 'auto_ended_initiator'
+): Promise<void> {
+  try {
+    // Find the call document by roomName
+    const callSnapshot = await db.collectionGroup('calls')
+      .where('roomName', '==', roomName)
+      .where('status', 'in', ['active', 'ringing'])
+      .limit(1)
+      .get();
+    
+    if (callSnapshot.empty) {
+      console.log(`ℹ️ No active call found for room ${roomName}`);
+      return;
+    }
+    
+    const callDoc = callSnapshot.docs[0];
+    const callData = callDoc.data();
+    const callId = callDoc.id;
+    
+    console.log(`🔚 Auto-ending call ${callId} (reason: ${reason})`);
+    
+    // Update call status to ended
+    await callDoc.ref.update({
+      status: 'ended',
+      endedAt: new Date(),
+      endReason: reason,
+    });
+    
+    // Import flushCallBuffers dynamically to avoid circular dependencies
+    const { flushCallBuffers } = await import('../services/audio-recorder.js');
+    
+    // Flush audio buffers in background
+    flushCallBuffers(callId).catch((flushError: any) => {
+      console.warn('⚠️ Error flushing audio buffers:', flushError.message);
+    });
+    
+    // Get participants for the call_ended event
+    const participants: Array<{ email: string; name?: string }> = [];
+    if (callData?.callerEmail) {
+      participants.push({ email: callData.callerEmail });
+    }
+    if (callData?.calleeEmail && !callData.calleeEmail.startsWith('project-') && !callData.calleeEmail.startsWith('team-')) {
+      participants.push({ email: callData.calleeEmail });
+    }
+    if (callData?.participantEmails && Array.isArray(callData.participantEmails)) {
+      for (const email of callData.participantEmails) {
+        if (!participants.find(p => p.email.toLowerCase() === email.toLowerCase())) {
+          participants.push({ email });
+        }
+      }
+    }
+    
+    // Extract orgSlug from path
+    const pathParts = callDoc.ref.path.split('/');
+    let orgSlug: string | undefined;
+    if (pathParts.length >= 2 && pathParts[0] === 'orgs') {
+      orgSlug = pathParts[1];
+    }
+    
+    // Publish call_ended event
+    const { publishCallEvent } = await import('../services/pubsub-events.js');
+    await publishCallEvent('call_ended', {
+      callId,
+      roomName: callData.roomName,
+      participants,
+      endReason: reason,
+      ...(orgSlug && { orgSlug }),
+    });
+    
+    console.log(`✅ Call ${callId} auto-ended successfully (reason: ${reason})`);
+  } catch (error: any) {
+    console.error(`❌ Error auto-ending call for room ${roomName}:`, error);
   }
 }
 
@@ -849,8 +932,64 @@ export function setupLiveKitEndpoints(
           console.log('📞 LiveKit room started:', event.room?.name);
         } else if (eventType === 'participant_joined') {
           console.log('👤 Participant joined:', event.participant?.identity, 'in room:', event.room?.name);
+          
+          // Cancel empty call timer if someone joins
+          const roomName = event.room?.name;
+          if (roomName && emptyCallTimers.has(roomName)) {
+            const timer = emptyCallTimers.get(roomName);
+            if (timer) {
+              clearTimeout(timer);
+              emptyCallTimers.delete(roomName);
+              console.log(`⏱️ Cancelled empty call timer for room ${roomName} (participant rejoined)`);
+            }
+          }
         } else if (eventType === 'participant_left') {
           console.log('👋 Participant left:', event.participant?.identity, 'from room:', event.room?.name, 'reason:', event.participant?.disconnectReason);
+          
+          // Check if room is now empty and start timer if needed
+          const roomName = event.room?.name;
+          if (roomName) {
+            // Query LiveKit to get current participant count
+            try {
+              const livekitUrl = process.env.LIVEKIT_URL || 
+                                (process.env.NODE_ENV === 'production' 
+                                  ? 'wss://livekit.leanworks.ai' 
+                                  : 'ws://localhost:7880');
+              const isLocalDev = livekitUrl.includes('localhost') || livekitUrl.includes('127.0.0.1');
+              const credentials = await getLiveKitCredentials(secretManagerClient, projectId, isLocalDev);
+              const httpUrl = livekitUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+              const roomService = new RoomServiceClient(httpUrl, credentials.apiKey, credentials.apiSecret);
+              
+              // List participants in the room
+              const participants = await roomService.listParticipants(roomName);
+              const participantCount = participants.length;
+              
+              console.log(`📊 Room ${roomName} now has ${participantCount} participant(s)`);
+              
+              // If room is empty, start 1-minute timer to auto-end call
+              if (participantCount === 0) {
+                // Cancel any existing timer for this room
+                if (emptyCallTimers.has(roomName)) {
+                  const existingTimer = emptyCallTimers.get(roomName);
+                  if (existingTimer) {
+                    clearTimeout(existingTimer);
+                  }
+                }
+                
+                // Start new 1-minute (60 second) timer
+                console.log(`⏱️ Starting 60-second empty call timer for room ${roomName}`);
+                const timer = setTimeout(async () => {
+                  console.log(`⏰ Empty call timer expired for room ${roomName}, ending call...`);
+                  emptyCallTimers.delete(roomName);
+                  await endCallInternal(db, roomName, 'auto_ended_empty');
+                }, 60000); // 60 seconds = 1 minute
+                
+                emptyCallTimers.set(roomName, timer);
+              }
+            } catch (error: any) {
+              console.error('❌ Error checking participant count:', error);
+            }
+          }
         } else if (eventType === 'participant_connection_aborted') {
           console.log('⚠️ Participant connection aborted:', event.participant?.identity, 'from room:', event.room?.name, 'reason:', event.participant?.disconnectReason);
           // Connection aborted - similar to participant_left but indicates abnormal disconnection
@@ -1065,7 +1204,16 @@ export function setupLiveKitWebSocketServer(server: any): void {
   sessionSampleRates.clear();
   clearAllResamplerState();
   clearAllStreamingSessions();
-  console.log('🧹 Cleared all module-level state on server startup');
+  
+  // Clear empty call timers
+  const emptyCallTimersSize = emptyCallTimers.size;
+  emptyCallTimers.forEach((timer) => clearTimeout(timer));
+  emptyCallTimers.clear();
+  
+  console.log('🧹 Cleared all module-level state on server startup', {
+    sessionSampleRatesSize,
+    emptyCallTimersSize,
+  });
   // #region agent log
   fetch('http://127.0.0.1:7242/ingest/156ece8c-6c97-4de8-beda-eee9a64e6408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'livekit.ts:1046',message:'Server startup - clearing all module-level state',data:{sessionSampleRatesSize},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'F'})}).catch(()=>{});
   // #endregion

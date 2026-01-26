@@ -72,6 +72,7 @@ export async function publishCallEvent(
     roomName?: string;
     participants?: Array<{ email: string; name?: string }>;
     orgSlug?: string; // Use orgSlug instead of orgId
+    endReason?: string; // For call_ended event: reason for call ending
     // For audio_chunk_ready event:
     participantEmail?: string;
     chunkIndex?: number;
