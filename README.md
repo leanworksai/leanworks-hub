@@ -9,6 +9,7 @@ A comprehensive team collaboration platform built with modern technologies. Lean
 - [Architecture Overview](#architecture-overview)
 - [Main Components](#main-components)
 - [Component Architecture Walkthroughs](#component-architecture-walkthroughs)
+- [Access Management](#access-management)
 - [Getting Started](#getting-started)
 - [Development](#development)
 - [Deployment](#deployment)
@@ -813,7 +814,329 @@ Frontend handles error
 - Offline queue for operations (offlineQueue.ts)
 - Network error detection and user notification
 
+---
 
+## Access Management
+
+### Overview
+
+Leanworks Hub implements a comprehensive access management system that controls user permissions across different organizational scopes and resource types. The system supports fine-grained role-based access control (RBAC) with visibility levels for documents, tasks, and team resources.
+
+### Permission Model
+
+**Scope Levels (Hierarchical):**
+```
+Global (App Admin)
+  └─ Organization (Admin, Member)
+      └─ Team (Owner, Lead, Member)
+          └─ Project (Owner, Member)
+              └─ Resource (Owner, Editor, Viewer)
+```
+
+**Resource Types:**
+- Documents (docs)
+- Tasks
+- Projects
+- Teams
+- Calendar Events
+- Chat Conversations
+
+### Role Hierarchy
+
+| Role | Scope | Permissions |
+|------|-------|-------------|
+| **App Admin** | Global | Full system access, org management, user management |
+| **Org Admin** | Organization | Manage teams, users, billing, integrations |
+| **Org Member** | Organization | Create teams, projects, access shared resources |
+| **Team Owner** | Team | Create projects, manage team members, delete team |
+| **Team Lead** | Team | Create projects, manage team members (limited) |
+| **Team Member** | Team | Create and edit own resources, collaborate |
+| **Project Owner** | Project | Manage project members, configure project settings |
+| **Project Member** | Project | Create and edit tasks, view project resources |
+| **Document Owner** | Document | Full edit rights, sharing control, deletion |
+| **Document Editor** | Document | View and edit content |
+| **Document Viewer** | Document | View only, no edit rights |
+
+### Visibility Controls
+
+**Document Visibility:**
+```
+PRIVATE
+  └─ Only owner and explicitly shared users
+TEAM
+  └─ All team members
+ORGANIZATION
+  └─ All organization members
+PUBLIC
+  └─ Anyone with link (if enabled)
+```
+
+**Task Visibility:**
+```
+PRIVATE
+  └─ Assigned users only
+PROJECT
+  └─ Project members
+TEAM
+  └─ Team members
+```
+
+### Authentication & Authorization Flow
+
+**Session Management:**
+```
+User Login
+  ↓
+Firebase authentication
+  ↓
+Backend creates JWT token with claims:
+  ├─ userId
+  ├─ email
+  ├─ organizations[] (list of org IDs)
+  └─ roles (per organization)
+  ↓
+Token stored in secure httpOnly cookie
+  ↓
+Frontend stores auth context
+  ↓
+All API requests include authorization header
+  ↓
+Backend middleware verifies token & permissions
+```
+
+**Permission Checks:**
+
+1. **Authentication Check** - Verify user is logged in
+2. **Organization Check** - Verify user belongs to organization
+3. **Role Check** - Verify user has minimum required role
+4. **Resource Check** - Verify user has access to specific resource
+5. **Field-level Check** - Verify user can access specific fields
+
+### Database Schema for Access Control
+
+**Key Tables:**
+```sql
+-- Organization membership
+org_members
+  ├─ org_id
+  ├─ user_id
+  ├─ role (admin, member)
+  └─ created_at
+
+-- Team membership
+team_members
+  ├─ team_id
+  ├─ user_id
+  ├─ role (owner, lead, member)
+  └─ joined_at
+
+-- Document access control
+doc_visibility
+  ├─ doc_id
+  ├─ visibility_type (private, team, organization, public)
+  ├─ owner_id
+  └─ shared_with[] (user IDs for private docs)
+
+-- Task access control
+task_assignees
+  ├─ task_id
+  ├─ user_id
+  └─ role (owner, assignee)
+
+-- Project membership
+project_members
+  ├─ project_id
+  ├─ user_id
+  ├─ role (owner, member)
+  └─ joined_at
+```
+
+### Permission Implementation Details
+
+**Backend Authorization Middleware:**
+
+All protected routes use the authorization middleware stack:
+
+```
+Request
+  ├─ validateToken() - Verify JWT signature and expiration
+  ├─ checkOrgAccess() - Verify user belongs to organization
+  ├─ checkResourceAccess() - Verify user can access resource
+  ├─ checkPermission() - Verify user has required permission
+  └─ Request proceeds to endpoint
+```
+
+**Frontend Permission Checks:**
+
+Components conditionally render based on permissions:
+
+```typescript
+// Hide/disable UI elements based on user role
+{canEdit && <EditButton />}
+{canDelete && <DeleteButton />}
+{isOwner && <ShareDialog />}
+
+// Conditionally render pages
+{userRole === 'admin' && <AdminPanel />}
+{hasTeamAccess && <TeamResources />}
+```
+
+### Multi-tenant Isolation
+
+**Org-level Isolation:**
+```
+Each organization has:
+  ├─ Separate database schema or isolated connection pool
+  ├─ All queries scoped to organization
+  ├─ Separate file storage (GCS buckets or prefixes)
+  └─ Isolated Pub/Sub topics for real-time updates
+```
+
+**Query Scoping Pattern:**
+```sql
+-- All queries include org context
+SELECT * FROM tasks
+WHERE organization_id = $1
+  AND (
+    -- User is owner
+    owner_id = $2
+    -- User is assignee
+    OR assignee_id = $2
+    -- Task is in user's team/project
+    OR project_id IN (SELECT project_id FROM user_projects WHERE user_id = $2)
+  )
+```
+
+### API Endpoint Permission Examples
+
+**Documents Endpoint:**
+```
+GET /api/docs
+  └─ Return only docs user can view
+  
+POST /api/docs
+  └─ Require org_member role
+  
+PUT /api/docs/:id
+  └─ Require doc owner or editor role
+  
+DELETE /api/docs/:id
+  └─ Require doc owner role
+
+POST /api/docs/:id/share
+  └─ Require doc owner role
+```
+
+**Tasks Endpoint:**
+```
+GET /api/tasks
+  └─ Return tasks user can access
+  
+POST /api/tasks
+  └─ Require project_member role
+  
+PUT /api/tasks/:id
+  └─ Require task owner or assignee role
+  
+DELETE /api/tasks/:id
+  └─ Require task owner or project owner role
+```
+
+**Teams Endpoint:**
+```
+GET /api/teams/:id
+  └─ Require team member role
+  
+POST /api/teams/:id/members
+  └─ Require team owner or lead role
+  
+DELETE /api/teams/:id/members/:userId
+  └─ Require team owner role
+```
+
+### Invitation & Access Grant System
+
+**Invitation Flow:**
+```
+Admin/Owner creates invitation
+  ↓
+Generates unique token
+  ↓
+Sends email with link
+  ↓
+User clicks link
+  ↓
+Verifies token validity
+  ↓
+Creates membership record
+  ↓
+Grants access to resource
+```
+
+**Accepted Invitation:**
+- User membership added to team/organization
+- User receives notifications for relevant channels
+- User can see shared resources immediately
+
+### Audit Logging
+
+**Permission Change Audit Trail:**
+```
+Events logged:
+  ├─ User membership created/updated
+  ├─ Role changes
+  ├─ Resource sharing changes
+  ├─ Access removal
+  ├─ Failed permission checks
+  └─ Sensitive operations (delete, export)
+
+Audit log includes:
+  ├─ Timestamp
+  ├─ Actor (who made change)
+  ├─ Action type
+  ├─ Resource affected
+  ├─ Before/after state
+  └─ IP address
+```
+
+### Best Practices
+
+**For Developers:**
+1. Always check permissions in backend endpoints - never rely only on frontend checks
+2. Use the permission middleware consistently across all protected routes
+3. Scope all database queries to organization context
+4. Log permission-related events for auditing
+5. Validate user has permission before exposing sensitive data
+6. Use principle of least privilege when granting roles
+7. Implement role-based route guards in frontend
+
+**For Security:**
+1. Use JWT tokens with short expiration times (15-60 minutes)
+2. Implement refresh token rotation
+3. Invalidate tokens on logout
+4. Never store sensitive data in JWT payload
+5. Implement rate limiting on authentication endpoints
+6. Monitor failed permission checks for suspicious patterns
+7. Enforce strong passwords and 2FA for admin accounts
+8. Regularly audit user permissions and remove inactive users
+
+### Testing Permissions
+
+**Test Cases to Cover:**
+```
+✓ User can access own resources
+✓ User cannot access others' private resources
+✓ User can access team/org resources based on membership
+✓ Role elevation is prevented
+✓ Permissions are revoked when membership ends
+✓ Cross-org data leakage is prevented
+✓ Expired tokens are rejected
+✓ Invalid tokens are rejected
+✓ Permission changes take effect immediately
+✓ Audit logs capture all permission changes
+```
+
+---
 
 ### Prerequisites
 - Node.js (via nvm recommended)
