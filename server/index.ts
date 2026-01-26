@@ -686,7 +686,9 @@ async function hasProjectAccess(orgId: string, userEmail: string, projectId: str
   try {
     const pool = await getOrgPool(orgId);
     const normalizedEmail = userEmail.toLowerCase();
-    const result = await pool.query(`
+    
+    // First, try matching by ID (UUID format - primary method)
+    let result = await pool.query(`
       SELECT 
         p.visibility,
         p.visible_to_members,
@@ -694,6 +696,18 @@ async function hasProjectAccess(orgId: string, userEmail: string, projectId: str
       FROM projects p
       WHERE p.id = $1
     `, [projectId]);
+    
+    // If no match by ID, try matching by project name slug (for legacy tasks with slug-based project_id)
+    if (result.rows.length === 0) {
+      result = await pool.query(`
+        SELECT 
+          p.visibility,
+          p.visible_to_members,
+          p.owner_email
+        FROM projects p
+        WHERE LOWER(p.name) = $1 OR LOWER(REPLACE(p.name, ' ', '-')) = $1
+      `, [projectId.toLowerCase()]);
+    }
     
     if (result.rows.length === 0) {
       return false;
@@ -4767,7 +4781,11 @@ app.get('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req, re
         ) ORDER BY upd.timestamp DESC) FROM task_progress_updates upd
         WHERE upd.associated_tasks @> $2::jsonb), '[]'::json) as progressUpdates
       FROM tasks t
-      LEFT JOIN projects p ON t.project_id = p.id
+      LEFT JOIN projects p ON (
+        t.project_id = p.id 
+        OR LOWER(p.name) = LOWER(t.project_id)
+        OR LOWER(REPLACE(p.name, ' ', '-')) = LOWER(t.project_id)
+      )
       WHERE t.id = $1
     `, [taskId, JSON.stringify([taskId])]);
     
