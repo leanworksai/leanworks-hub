@@ -167,11 +167,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
   // Load project members when project is selected, or use all org users when no project is selected
   useEffect(() => {
     if (selectedProjectId && projectsMemo.length > 0) {
-      // Find the selected project
-      const selectedProject = projectsMemo.find(p => {
-        const slug = p.name.toLowerCase().replace(/\s+/g, '-');
-        return slug === selectedProjectId;
-      });
+      // Find the selected project by ID
+      const selectedProject = projectsMemo.find(p => p.id === selectedProjectId);
 
       if (selectedProject && selectedProject.members) {
         // Set project members for assignee selection
@@ -204,9 +201,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
         // Find the project by ID
         const project = projects.find(p => p.id === initialProjectId);
         if (project) {
-          const slug = project.name.toLowerCase().replace(/\s+/g, '-');
-          form.setValue("projectId", slug);
-          setSelectedProjectId(slug);
+          form.setValue("projectId", project.id);
+          setSelectedProjectId(project.id);
           // Load project members
           if (project.members) {
             setProjectMembers(project.members);
@@ -285,8 +281,11 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
       // Get current form values to pass as context
       const currentFormData = form.getValues();
       const currentProject = currentFormData.projectId ? projects.find((p) => {
+        // Match by ID (primary)
+        if (p.id === currentFormData.projectId) return true;
+        // Fallback to matching by name or slug for backward compatibility
         const slug = p.name.toLowerCase().replace(/\s+/g, '-');
-        return slug === currentFormData.projectId || p.id === currentFormData.projectId || p.name === currentFormData.projectId;
+        return slug === currentFormData.projectId || p.name === currentFormData.projectId;
       }) : null;
 
       // Prepare request body
@@ -401,9 +400,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
         });
 
         if (suggestedProject) {
-          const slug = suggestedProject.name.toLowerCase().replace(/\s+/g, '-');
-          form.setValue("projectId", slug);
-          setSelectedProjectId(slug);
+          form.setValue("projectId", suggestedProject.id);
+          setSelectedProjectId(suggestedProject.id);
           
           // Load project members for assignee selection
           if (suggestedProject.members) {
@@ -517,11 +515,11 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
       const now = new Date();
       
       // Find the selected project (if provided)
-      // data.projectId could be either a project ID or a project name/slug
+      // data.projectId is now always an ID (UUID)
       const project = data.projectId ? projects.find((p) => {
-        // Try matching by ID first
+        // Try matching by ID first (primary)
         if (p.id === data.projectId) return true;
-        // Fall back to matching by name or slug
+        // Fall back to matching by name or slug (for backward compatibility with any legacy data)
         const slug = p.name.toLowerCase().replace(/\s+/g, '-');
         return slug === data.projectId || p.name === data.projectId;
       }) : null;
@@ -731,9 +729,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
                     <SelectContent>
                       <SelectItem value="none">No Project (Team-wide task)</SelectItem>
                       {projects.map((project) => {
-                        const slug = project.name.toLowerCase().replace(/\s+/g, '-');
                         return (
-                          <SelectItem key={project.id} value={slug}>
+                          <SelectItem key={project.id} value={project.id}>
                             {project.name}
                           </SelectItem>
                         );
