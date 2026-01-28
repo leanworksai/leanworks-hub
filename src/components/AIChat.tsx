@@ -27,6 +27,8 @@ import { getUserDisplayName, getUserInitials } from "@/lib/utils";
 import { trackAIChat, trackError, trackMessageLike, trackImageUpload, trackImageRemove, trackContextRemove, trackDraftResponse, trackFirstFeatureUse } from "@/lib/analytics";
 import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
 import type { Message, LikedByUser } from "@/components/chat/types";
+import { useStreamingChat } from "@/hooks/useStreamingChat";
+import { StreamingMessage } from "@/components/chat/StreamingMessage";
 
 export function AIChat() {
   const { user } = useAuth();
@@ -44,10 +46,37 @@ export function AIChat() {
   const { contextType, contextRef, clearContext } = usePageContext();
   const { selectedTextPosition, clearSelectedText } = useSelectedTextContext();
 
+  // State declarations - must come before hooks that use them
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [streamingComplete, setStreamingComplete] = useState(false);
+
+  // Streaming chat hook - call this FIRST before using streamingState in effects
+  const { streamingState, startStreaming, stopStreaming, resetState: resetStreamingState } = useStreamingChat({
+    onComplete: async (content, dataSources) => {
+      console.log('✨ Streaming complete from hook', { 
+        contentLength: content?.length,
+        contentPreview: content?.substring(0, 100),
+      });
+      
+      // Signal that streaming is done - the useEffect will handle saving
+      setStreamingComplete(true);
+    },
+    onError: (error) => {
+      console.error('Streaming error:', error);
+      toast({
+        title: "Streaming Error",
+        description: error,
+        variant: "destructive",
+      });
+      setIsLoading(false);
+      setIsSendingMessage(false);
+    },
+  });
+
+  // Additional state declarations
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [visibleMessageCount, setVisibleMessageCount] = useState(50);
   const [selectedImages, setSelectedImages] = useState<File[]>([]);
   const [imagePreviewUrls, setImagePreviewUrls] = useState<string[]>([]);
@@ -144,6 +173,76 @@ export function AIChat() {
       console.error('Failed to save cached messages:', error);
     }
   }, [getCacheKey]);
+
+  // useEffect to save streaming responses to Firestore (after saveCachedMessages is defined)
+  useEffect(() => {
+    if (!streamingComplete || streamingState.isStreaming) {
+      return;
+    }
+
+    console.log('📤 useEffect: Streaming complete detected, saving message...');
+    
+    const saveMessage = async () => {
+      if (!chatId || !streamingState.content) {
+        console.warn('⚠️ Cannot save: missing chatId or content', { chatId, hasContent: !!streamingState.content });
+        setStreamingComplete(false);
+        setIsLoading(false);
+        setIsSendingMessage(false);
+        return;
+      }
+
+      try {
+        console.log('📝 Saving assistant message to Firestore...');
+        const savedAssistantMessage = await messagesService.create({
+          chatId: chatId,
+          role: 'assistant',
+          content: streamingState.content,
+        });
+        
+        console.log('✅ Message saved successfully:', {
+          messageId: savedAssistantMessage.id,
+          contentLength: savedAssistantMessage.content?.length,
+        });
+        
+        // Add to messages list
+        setMessages((prev) => {
+          const updated = [...prev, {
+            id: savedAssistantMessage.id,
+            role: "assistant",
+            content: streamingState.content,
+            timestamp: savedAssistantMessage.timestamp instanceof Date ? savedAssistantMessage.timestamp : new Date(savedAssistantMessage.timestamp),
+            likes: [],
+          }];
+          console.log('✅ Messages updated in state');
+          return updated;
+        });
+        
+        // Save to cache
+        saveCachedMessages(chatId, [...messagesRef.current, {
+          id: savedAssistantMessage.id,
+          chatId: chatId,
+          role: 'assistant',
+          content: streamingState.content,
+          timestamp: savedAssistantMessage.timestamp,
+          userId: user?.email?.toLowerCase() || '',
+          likes: [],
+        }]);
+      } catch (error) {
+        console.error('❌ Failed to save message:', error);
+        toast({
+          title: "Save Failed",
+          description: error instanceof Error ? error.message : 'Failed to save message',
+          variant: "destructive",
+        });
+      } finally {
+        setStreamingComplete(false);
+        setIsLoading(false);
+        setIsSendingMessage(false);
+      }
+    };
+
+    saveMessage();
+  }, [streamingComplete, streamingState.isStreaming, streamingState.content, chatId, user?.email, saveCachedMessages, toast, messagesRef]);
 
   // Load messages when chat opens
   useEffect(() => {
@@ -483,30 +582,15 @@ export function AIChat() {
         return updatedMessages;
       });
 
-      // Generate AI response
+      // Generate AI response using streaming
       setIsLoading(true);
       
       // Capture selectedTextPosition early to avoid any timing issues
       const currentSelectedTextPosition = selectedTextPosition;
-      
-      // Debug: Log selectedTextPosition before building context (dev only)
-      if (import.meta.env.DEV) {
-        console.log('🔍 [AIChat] Before building citedContextForAPI:', {
-          selectedTextPosition: currentSelectedTextPosition,
-          selectedTextPositionFromContext: selectedTextPosition,
-          selectedProjects: selectedProjects.length,
-          selectedTasks: selectedTasks.length,
-          selectedDocs: selectedDocs.length,
-          hasText: !!currentSelectedTextPosition?.text,
-          textPreview: currentSelectedTextPosition?.text?.substring(0, 50),
-        });
-      }
-      
       const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!currentSelectedTextPosition;
 
       try {
         // Filter out items that are already in implicit context to avoid duplicates
-        // Keep current doc in cited context so selected text + doc are not treated as duplicates.
         let filteredProjectsForAPI = selectedProjects;
         let filteredTasksForAPI = selectedTasks;
         let filteredDocsForAPI = selectedDocs;
@@ -519,19 +603,6 @@ export function AIChat() {
           }
         }
 
-        // Debug: Log inputs to buildCitedContext (dev only)
-        if (import.meta.env.DEV) {
-          console.log('🔍 [AIChat] Calling buildCitedContext with:', {
-            filteredProjectsLen: filteredProjectsForAPI.length,
-            filteredTasksLen: filteredTasksForAPI.length,
-            filteredDocsLen: filteredDocsForAPI.length,
-            currentSelectedTextPosition,
-            contextType,
-            contextRef,
-            includeImplicitDoc: true,
-          });
-        }
-
         const citedContextForAPI = buildCitedContext({
           selectedProjects: filteredProjectsForAPI,
           selectedTasks: filteredTasksForAPI,
@@ -542,63 +613,31 @@ export function AIChat() {
           includeImplicitDoc: true,
         });
         
-        // Debug: Log what we're about to pass (dev only)
         if (import.meta.env.DEV) {
-          console.log('🔍 [AIChat] About to call generateResponse with:', {
-            hadSelections,
-            citedContextForAPI,
-            willPassContext: !!citedContextForAPI,
-            selectedTextPreview: citedContextForAPI?.selectedTexts?.[0]?.text?.substring(0, 50),
+          console.log('🌊 [AIChat] Starting streaming response:', {
+            chatId,
+            messageLength: messageContent.length,
+            citedContext: citedContextForAPI,
           });
         }
 
-        // Debug logging (dev only)
-        if (import.meta.env.DEV) {
-          console.log('🔍 [AIChat] Building citedContextForAPI:', {
-            hadSelections,
-            hasProjects: selectedProjects.length > 0,
-            hasTasks: selectedTasks.length > 0,
-            hasDocs: selectedDocs.length > 0,
-            hasSelectedText: !!currentSelectedTextPosition,
-            selectedTextPosition: currentSelectedTextPosition ? {
-              docId: currentSelectedTextPosition.docId,
-              startOffset: currentSelectedTextPosition.startOffset,
-              endOffset: currentSelectedTextPosition.endOffset,
-              hasText: !!citedContextForAPI?.selectedTexts?.length,
-              textLength: citedContextForAPI?.selectedTexts?.[0]?.text?.length,
-              textPreview: citedContextForAPI?.selectedTexts?.[0]?.text?.substring(0, 50) + (citedContextForAPI?.selectedTexts?.[0]?.text?.length > 50 ? '...' : ''),
-            } : null,
-            citedContextForAPI: citedContextForAPI ? {
-              ...citedContextForAPI,
-              selectedTextPosition: citedContextForAPI.selectedTextPosition ? {
-                docId: citedContextForAPI.selectedTextPosition.docId,
-                hasText: !!citedContextForAPI.selectedTexts?.length,
-              } : undefined,
-            } : null,
-          });
-        }
+        // Reset streaming state before starting
+        resetStreamingState();
 
-        // Debug: Log final context before calling generateResponse (dev only)
-        if (import.meta.env.DEV) {
-          console.log('🔍 [AIChat] Final context before generateResponse:', {
-            citedContextForAPI,
-            hasSelectedText: !!citedContextForAPI?.selectedTexts?.length,
-            projectsCount: citedContextForAPI?.projects?.length || 0,
-            tasksCount: citedContextForAPI?.tasks?.length || 0,
-            docsCount: citedContextForAPI?.docs?.length || 0,
-            selectedTextPreview: citedContextForAPI?.selectedTexts?.[0]?.text?.substring(0, 50),
-          });
-        }
-
-        // Pass only the current message - backend will load conversation from Firestore
-        const response = await generateResponse(messageContent, chatId, citedContextForAPI);
+        // Start streaming
+        await startStreaming({
+          chatId,
+          message: messageContent,
+          citedContext: citedContextForAPI,
+          orgId: currentOrg?.id,
+          orgSlug: currentOrg?.slug,
+        });
         
         // Increment AI usage credit (1 credit per response)
         try {
           await subscriptionService.incrementAiUsage();
         } catch (error: any) {
           console.error('Failed to increment AI usage:', error);
-          // If limit reached, show error but don't block the response
           if (error.message?.includes('limit reached')) {
             toast({
               title: "AI Usage Limit Reached",
@@ -608,6 +647,7 @@ export function AIChat() {
           }
         }
         
+        // Clear selections after streaming completes
         if (hadSelections) {
           clearSelectedProjects();
           clearSelectedTasks();
@@ -616,51 +656,8 @@ export function AIChat() {
             clearSelectedText();
           }
         }
-        
-        const assistantMessage: Message = {
-          id: `temp-assistant-${Date.now()}`,
-          role: "assistant",
-          content: response,
-          timestamp: new Date(),
-        };
-
-        setMessages((prev) => [...prev, assistantMessage]);
-
-        try {
-          const savedAssistantMessage = await messagesService.create({
-            chatId: chatId,
-            role: 'assistant',
-            content: response,
-          });
-          
-          setMessages((prev) => {
-            const updated = prev.map(msg => 
-              msg.id === assistantMessage.id 
-                ? {
-                    ...msg,
-                    id: savedAssistantMessage.id,
-                    timestamp: savedAssistantMessage.timestamp instanceof Date ? savedAssistantMessage.timestamp : new Date(savedAssistantMessage.timestamp),
-                  }
-                : msg
-            );
-            saveCachedMessages(chatId, updated.map(msg => ({
-              id: msg.id,
-              chatId: chatId,
-              role: msg.role,
-              content: msg.content,
-              timestamp: msg.timestamp,
-              userId: msg.userId,
-              imageUrls: msg.imageUrls,
-              citedContext: msg.citedContext,
-            })));
-            return updated;
-          });
-        } catch (error) {
-          console.error('Failed to save assistant message:', error);
-          setMessages((prev) => prev.filter(msg => msg.id !== assistantMessage.id));
-        }
       } catch (error) {
-        console.error('Failed to generate response:', error);
+        console.error('Failed to start streaming:', error);
         
         trackError(
           'ai_chat_error',
@@ -690,7 +687,7 @@ export function AIChat() {
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, generateResponse, saveCachedMessages]);
+  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, startStreaming, resetStreamingState, saveCachedMessages, contextType, contextRef, clearSelectedText, currentOrg]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1072,7 +1069,12 @@ export function AIChat() {
               hideContext={false}
             />
           )}
-          {isLoading && (
+          {/* Show streaming message when streaming */}
+          {streamingState.isStreaming && (
+            <StreamingMessage streamingState={streamingState} theme="ai-chat" />
+          )}
+          {/* Show loading animation only when loading but not streaming */}
+          {isLoading && !streamingState.isStreaming && (
             <div className="flex gap-3 justify-start animate-in fade-in slide-in-from-bottom-2">
               <Avatar className="h-9 w-9 flex-shrink-0 ring-2 ring-purple-200/50">
                 <AvatarImage src="/logo.png" alt="lean" className="object-contain" />

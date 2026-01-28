@@ -6381,7 +6381,7 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
     // Determine the external AI service URL
     const isLocalDev = process.env.NODE_ENV !== 'production';
     const aiServiceBase = isLocalDev 
-      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
       : process.env.AI_SERVICE_URL || 'http://ask-api:80';
     
     const aiServiceUrl = `${aiServiceBase}/api/generate-task`;

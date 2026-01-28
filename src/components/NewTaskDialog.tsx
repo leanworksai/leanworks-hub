@@ -233,7 +233,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
     setIsGeneratingAI(true);
     try {
       const isLocalDev = import.meta.env.DEV;
-      const API_BASE = isLocalDev ? 'http://0.0.0.0:8081' : '';
+      const API_BASE = isLocalDev ? 'http://0.0.0.0:8082' : '';
       const apiUrl = `${API_BASE}/api/generate-task`;
 
       // Prepare headers

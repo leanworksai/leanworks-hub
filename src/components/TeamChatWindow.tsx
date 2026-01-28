@@ -404,7 +404,7 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
     }
 
     // Determine API base URL and authentication method
-    const API_BASE = isLocalDev ? 'http://0.0.0.0:8081' : '';
+    const API_BASE = isLocalDev ? 'http://0.0.0.0:8082' : '';
     const apiUrl = `${API_BASE}/api/ask`;
 
     // Prepare headers

@@ -1444,7 +1444,7 @@ async function generateMeetingDocSummary(
     // Determine the AI service URL
     const isLocalDev = process.env.NODE_ENV !== 'production';
     const aiServiceBase = isLocalDev 
-      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8081'
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
       : process.env.AI_SERVICE_URL || 'http://ask-api:80';
     
     // Use the correct endpoint path for doc summary

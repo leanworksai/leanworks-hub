@@ -732,5 +732,275 @@ export function setupMessageEndpoints(
       res.status(500).json({ error: (error as Error).message });
     }
   });
+
+  // POST /api/messages/stream - Stream AI response using SSE
+  app.post('/api/messages/stream', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] || req.body.orgId;
+      const orgSlug = req.body.orgSlug;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const { chatId, message, citedContext } = req.body;
+
+      if (!userEmail || !chatId || !message) {
+        return res.status(400).json({ error: 'Missing required fields: chatId, message' });
+      }
+
+      console.log('🌊 [Streaming] Request received:', {
+        userEmail,
+        orgId,
+        orgSlug,
+        chatId,
+        messageLength: message.length,
+      });
+
+      if (!orgId) {
+        console.error('❌ [Streaming] Missing orgId - cannot authenticate with Ask API');
+        return res.status(400).json({ error: 'Missing organization context' });
+      }
+
+      if (!orgSlug) {
+        console.error('❌ [Streaming] Missing orgSlug - Ask API requires org_slug');
+        return res.status(400).json({ error: 'Missing organization slug' });
+      }
+
+      // Set SSE headers
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+
+      // Determine the AI service URL - auto-detect environment
+      const isLocalDev = process.env.NODE_ENV !== 'production';
+      const aiServiceBase = isLocalDev 
+        ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
+        : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+      
+      const aiServiceUrl = `${aiServiceBase}/api/ask`;
+
+      // Prepare headers for AI service
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+
+      // Use Bearer token for production, API key for local testing
+      if (isLocalDev) {
+        // Local development: use API key via Secret Manager
+        try {
+          const apiKeyUrl = `http://localhost:3001/api/ask-api-key`;
+          const apiKeyResponse = await fetch(apiKeyUrl, {
+            method: 'GET',
+            headers: {
+              'Authorization': req.headers['authorization'] || '',
+            },
+          });
+
+          if (apiKeyResponse.ok) {
+            const apiKeyData = await apiKeyResponse.json();
+            if (apiKeyData.apiKey) {
+              headers['X-API-Key'] = apiKeyData.apiKey;
+              console.log('🔑 [Streaming] Got API key from secret manager');
+            }
+          } else {
+            console.warn('⚠️ [Streaming] Failed to get API key from secret manager:', apiKeyResponse.status);
+          }
+        } catch (error) {
+          console.error('Failed to fetch API key from secret manager:', error);
+        }
+      } else {
+        // Production (GKE): use Bearer token from incoming request
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          headers['Authorization'] = authHeader;
+          console.log('🔐 [Streaming] Using Bearer token for production');
+        } else {
+          console.warn('⚠️ [Streaming] No Bearer token in request for production');
+        }
+      }
+
+      // Build request body for leanworks API
+      // Transform cited_context the same way the non-streaming API does
+      let cited_context: any = undefined;
+
+      if (citedContext) {
+        const contextObj: any = {};
+        
+        if (citedContext.projects && citedContext.projects.length > 0) {
+          contextObj.projects = citedContext.projects.map((project: any) => ({
+            id: project.id,
+            name: project.name,
+            ...(project.description && { description: project.description }),
+            ...(project.status && { status: project.status }),
+          }));
+        }
+
+        if (citedContext.tasks && citedContext.tasks.length > 0) {
+          contextObj.tasks = citedContext.tasks.map((task: any) => ({
+            id: task.id,
+            title: task.title,
+            ...(task.description && { description: task.description }),
+            ...(task.status && { status: task.status }),
+            ...(task.priority && { priority: task.priority }),
+          }));
+        }
+
+        if (citedContext.docs && citedContext.docs.length > 0) {
+          contextObj.docs = citedContext.docs.map((doc: any) => ({
+            id: doc.id,
+            title: doc.title,
+          }));
+        }
+
+        // Add selected text to cited_context as structured object
+        const selectedTextPos = citedContext.selectedTextPosition as any;
+        const selectedTextFromList = citedContext.selectedTexts && citedContext.selectedTexts.length > 0
+          ? citedContext.selectedTexts[0]
+          : null;
+        const selectedTextValue = selectedTextPos?.text || selectedTextFromList?.text;
+
+        if (selectedTextPos && selectedTextValue && selectedTextPos.docId) {
+          contextObj.selectedText = {
+            text: selectedTextValue,
+            docId: selectedTextPos.docId,
+            from: selectedTextPos.from ?? selectedTextPos.startOffset ?? 0,
+            to: selectedTextPos.to ?? selectedTextPos.endOffset ?? 0,
+            blockType: selectedTextPos.blockType || 'paragraph',
+            blockPos: selectedTextPos.blockPos ?? 0,
+            blockOffset: selectedTextPos.blockOffset ?? 0,
+          };
+        }
+
+        if (Object.keys(contextObj).length > 0) {
+          cited_context = contextObj;
+        }
+
+        console.log('📋 [Streaming] Transformed cited_context:', {
+          hasProjects: !!contextObj.projects?.length,
+          hasTasks: !!contextObj.tasks?.length,
+          hasDocs: !!contextObj.docs?.length,
+          hasSelectedText: !!contextObj.selectedText,
+        });
+      }
+
+      // Build request body for leanworks API
+      // Note: Ask API expects user_id and org_slug in the body for context
+      const requestBody = {
+        user_id: userEmail,
+        org_slug: orgSlug,
+        query: message,
+        session_id: chatId,
+        stream: true,
+        cited_context: cited_context,
+      };
+
+      console.log('🌊 [Streaming] Calling leanworks API:', {
+        url: aiServiceUrl,
+        user: userEmail,
+        orgId: orgId,
+        orgSlug: orgSlug,
+        chatId,
+        environment: isLocalDev ? 'local' : 'production',
+        authMethod: isLocalDev ? 'X-API-Key' : 'Bearer Token',
+        hasAuth: !!headers['X-API-Key'] || !!headers['Authorization'],
+        requestBody: {
+          user_id: requestBody.user_id,
+          org_slug: requestBody.org_slug,
+          query: requestBody.query,
+          session_id: requestBody.session_id,
+          stream: requestBody.stream,
+          cited_context: requestBody.cited_context,
+        },
+        headers: {
+          'Content-Type': headers['Content-Type'],
+          'X-API-Key': headers['X-API-Key'] ? `***${headers['X-API-Key'].slice(-10)}` : 'none',
+          'Authorization': headers['Authorization'] ? 'Bearer ***' : 'none',
+        },
+      });
+      
+      console.log('📤 [Streaming] Full Request Body:', JSON.stringify(requestBody, null, 2));
+
+      // Make streaming request to leanworks API
+      const response = await fetch(aiServiceUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ [Streaming] AI service error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText,
+          headers: Object.fromEntries(response.headers),
+          sentHeaders: headers,
+        });
+        res.write(`data: ${JSON.stringify({ type: 'error', error: `AI service error: ${response.status}` })}\n\n`);
+        res.end();
+        return;
+      }
+
+      // Forward the SSE stream from leanworks to frontend
+      console.log('✅ [Streaming] Connected to leanworks API, forwarding events...');
+
+      // Handle connection close
+      req.on('close', () => {
+        console.log('🔌 [Streaming] Client disconnected');
+      });
+
+      // Stream the response
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              console.log('✅ [Streaming] Stream complete');
+              res.end();
+              break;
+            }
+
+            // Decode and forward the chunk
+            const chunk = decoder.decode(value, { stream: true });
+            res.write(chunk);
+            
+            // Log events for debugging
+            if (chunk.includes('data: ')) {
+              const lines = chunk.split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const event = JSON.parse(line.substring(6));
+                    console.log('📨 [Streaming] Event:', event.type, event.tool_name || event.text?.substring(0, 50) || '');
+                  } catch (e) {
+                    // Ignore parse errors for logging
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error streaming response:', error);
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`);
+            res.end();
+          }
+        }
+      } else {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: 'No response body' })}\n\n`);
+        res.end();
+      }
+    } catch (error) {
+      console.error('Streaming endpoint error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: (error as Error).message });
+      } else if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: (error as Error).message })}\n\n`);
+        res.end();
+      }
+    }
+  });
 }
 
