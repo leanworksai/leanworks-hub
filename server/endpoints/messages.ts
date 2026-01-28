@@ -750,7 +750,10 @@ export function setupMessageEndpoints(
         orgId,
         orgSlug,
         chatId,
-        messageLength: message.length,
+        messageLength: message?.length || 0,
+        hasOrgId: !!orgId,
+        hasOrgSlug: !!orgSlug,
+        authHeader: req.headers.authorization ? 'present' : 'missing',
       });
 
       if (!orgId) {
@@ -763,7 +766,8 @@ export function setupMessageEndpoints(
         return res.status(400).json({ error: 'Missing organization slug' });
       }
 
-      // Set SSE headers
+      // Set SSE headers and 200 status
+      res.status(200);
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -919,11 +923,21 @@ export function setupMessageEndpoints(
       console.log('📤 [Streaming] Full Request Body:', JSON.stringify(requestBody, null, 2));
 
       // Make streaming request to leanworks API
-      const response = await fetch(aiServiceUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(requestBody),
-      });
+      console.log('🔌 [Streaming] About to fetch from:', aiServiceUrl);
+      let response;
+      try {
+        response = await fetch(aiServiceUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+        });
+        console.log('✅ [Streaming] Fetch completed, status:', response.status);
+      } catch (fetchError) {
+        console.error('❌ [Streaming] Fetch failed:', fetchError);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: `Failed to connect to AI service: ${(fetchError as Error).message}` })}\n\n`);
+        res.end();
+        return;
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -934,7 +948,7 @@ export function setupMessageEndpoints(
           headers: Object.fromEntries(response.headers),
           sentHeaders: headers,
         });
-        res.write(`data: ${JSON.stringify({ type: 'error', error: `AI service error: ${response.status}` })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: `AI service error: ${response.status} - ${errorText}` })}\n\n`);
         res.end();
         return;
       }
