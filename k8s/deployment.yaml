@@ -48,6 +48,8 @@ spec:
           subPath: gcp_credential.json
           readOnly: true
         env:
+        - name: NODE_ENV
+          value: "production"
         - name: DB_HOST
           value: cloud-sql-proxy-service  # Kubernetes service DNS name
         - name: DB_PORT

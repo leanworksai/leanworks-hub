@@ -774,10 +774,17 @@ export function setupMessageEndpoints(
       res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
 
       // Determine the AI service URL - auto-detect environment
+      // In production (GKE), use the Kubernetes service DNS name
+      // In development, use the local AI service or environment variable
       const isLocalDev = process.env.NODE_ENV !== 'production';
-      const aiServiceBase = isLocalDev 
-        ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
-        : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+      let aiServiceBase: string;
+      
+      if (isLocalDev) {
+        aiServiceBase = process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082';
+      } else {
+        // Production: Use Kubernetes service DNS name (can be overridden with env var)
+        aiServiceBase = process.env.AI_SERVICE_URL || 'http://ask-api:80';
+      }
       
       const aiServiceUrl = `${aiServiceBase}/api/ask`;
 
