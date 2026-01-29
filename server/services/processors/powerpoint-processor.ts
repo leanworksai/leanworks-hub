@@ -573,28 +573,13 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
    * Extract image elements
    */
   private extractImageElements(obj: any, slideNumber: number): Omit<SlideElement, 'id'>[] {
-    const elements: Omit<SlideElement, 'id'>[] = [];
-
-    // Look for images in the XML
-    const images = this.findImages(obj);
-    for (const image of images) {
-      const position = this.extractPosition(image);
-      const size = this.extractSize(image);
-
-      if (position) {
-        elements.push({
-          type: 'image',
-          position,
-          size: size || { width: 300, height: 200 },
-          style: {},
-          content: {
-            src: 'placeholder-image', // Would need to extract actual image data
-          },
-        });
-      }
-    }
-
-    return elements;
+    // Image extraction from PPTX is complex and requires:
+    // 1. Extracting image relationships from rels files
+    // 2. Decoding image data from the PPTX ZIP
+    // 3. Encoding images as data URLs or uploading them
+    // For now, return empty array - images will not be shown but won't break layout
+    // TODO: Implement proper image extraction using jszip to read image files
+    return [];
   }
 
   /**
