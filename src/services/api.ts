@@ -752,7 +752,6 @@ export const messagesService = {
         blockPos: number;
         blockOffset: number;
       };
-      implicitContext?: string;
     } | undefined = undefined;
     
     // Debug: Log what we received (dev only)
@@ -762,7 +761,6 @@ export const messagesService = {
         hasCitedContext: !!params.citedContext,
         citedContextType: typeof params.citedContext,
         hasSelectedTextPosition: !!(params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).selectedTextPosition),
-        hasImplicitContext: !!(params.citedContext && typeof params.citedContext === 'object' && (params.citedContext as any).implicitContext),
       });
     }
     
@@ -1071,7 +1069,6 @@ export const messagesService = {
                 imageUrls: data.imageUrls || null,
                 likes: Array.isArray(data.likes) ? data.likes : [],
                 citedContext: data.citedContext || null,
-                implicitContext: data.implicitContext || null,
               } as ChatMessage;
             });
 

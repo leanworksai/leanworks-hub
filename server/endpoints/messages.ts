@@ -739,7 +739,7 @@ export function setupMessageEndpoints(
       const orgId = (req as any).orgId || req.headers['x-org-id'] || req.body.orgId;
       const orgSlug = req.body.orgSlug;
       const userEmail = (req as any).user.email?.toLowerCase();
-      const { chatId, message, citedContext } = req.body;
+      const { chatId, message, citedContext, imageUrls } = req.body;
 
       if (!userEmail || !chatId || !message) {
         return res.status(400).json({ error: 'Missing required fields: chatId, message' });
@@ -751,6 +751,7 @@ export function setupMessageEndpoints(
         orgSlug,
         chatId,
         messageLength: message?.length || 0,
+        imageCount: imageUrls?.length || 0,
         hasOrgId: !!orgId,
         hasOrgSlug: !!orgSlug,
         authHeader: req.headers.authorization ? 'present' : 'missing',
@@ -894,7 +895,7 @@ export function setupMessageEndpoints(
 
       // Build request body for leanworks API
       // Note: Ask API expects user_id and org_slug in the body for context
-      const requestBody = {
+      const requestBody: any = {
         user_id: userEmail,
         org_slug: orgSlug,
         query: message,
@@ -902,6 +903,15 @@ export function setupMessageEndpoints(
         stream: true,
         cited_context: cited_context,
       };
+
+      // Add image URLs if provided (for vision support)
+      if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+        requestBody.images = imageUrls.map(url => ({ type: 'url', url }));
+        console.log('🖼️ [Streaming] Added image URLs to request:', {
+          imageCount: imageUrls.length,
+          imageUrls: imageUrls.map((url: string) => url.substring(0, 80) + '...'),
+        });
+      }
 
       console.log('🌊 [Streaming] Calling leanworks API:', {
         url: aiServiceUrl,
@@ -919,6 +929,7 @@ export function setupMessageEndpoints(
           session_id: requestBody.session_id,
           stream: requestBody.stream,
           cited_context: requestBody.cited_context,
+          images: requestBody.images ? `${requestBody.images.length} image(s)` : 'none',
         },
         headers: {
           'Content-Type': headers['Content-Type'],

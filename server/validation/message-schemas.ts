@@ -31,7 +31,6 @@ export const createMessageSchema = z.object({
     .nullable(),
   citedContext: z.any().optional(),
   imageUrls: z.array(z.string().url('Invalid image URL')).optional(),
-  implicitContext: z.any().optional(),
 });
 
 // Export types

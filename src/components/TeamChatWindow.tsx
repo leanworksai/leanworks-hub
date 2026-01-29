@@ -178,7 +178,6 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
-              implicitContext: msg.implicitContext,
             }));
           
           setChannelMessages((prev) => {
@@ -204,7 +203,6 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
-              implicitContext: msg.implicitContext,
             }));
           
           setChannelMessages((prev) => {
@@ -225,7 +223,6 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               imageUrls: msg.imageUrls,
               likes: Array.isArray(msg.likes) ? msg.likes : [],
               citedContext: msg.citedContext,
-              implicitContext: msg.implicitContext,
             }));
           
           setMessages(regularMsgs);
@@ -1103,7 +1100,6 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
               docId: selectedTextPosition.docId,
             } : null}
             onRemoveSelectedText={clearSelectedText}
-            implicitContext={contextRef && contextType ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` : undefined}
             onRemoveImplicitContext={clearContext}
             onRemoveProject={toggleProject}
             onRemoveTask={toggleTask}

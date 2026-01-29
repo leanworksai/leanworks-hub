@@ -53,6 +53,7 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
     citedContext?: any;
     orgId?: string;
     orgSlug?: string;
+    imageUrls?: string[];
   }) => {
     // Clean up any existing connection
     if (eventSourceRef.current) {
@@ -106,6 +107,7 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
           citedContext: params.citedContext,
           orgId: params.orgId,
           orgSlug: params.orgSlug,
+          imageUrls: params.imageUrls,
         }),
         signal: abortController.signal,
       });
