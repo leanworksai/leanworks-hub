@@ -1,4 +1,4 @@
-import { FileText } from "lucide-react";
+import { FileText, FileSpreadsheet, Presentation } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DocItemMenu } from "./DocItemMenu";
 import type { Doc } from "@/data/docsData";
@@ -32,12 +32,33 @@ export function DocItem({
       )}
       onClick={() => onDocClick(doc.id)}
     >
-      <FileText
-        className={cn(
-          "h-3.5 w-3.5 mt-0.5 flex-shrink-0",
-          isActive ? "text-primary" : "text-muted-foreground"
-        )}
-      />
+{(() => {
+  const getDocIcon = () => {
+    switch (doc.docType) {
+      case 'pdf':
+        return <FileText className="text-red-500" />;
+      case 'docx':
+        return <FileText className="text-blue-500" />;
+      case 'pptx':
+        return <Presentation className="text-orange-500" />;
+      case 'xlsx':
+        return <FileSpreadsheet className="text-green-500" />;
+      default:
+        return <FileText className={isActive ? "text-primary" : "text-muted-foreground"} />;
+    }
+  };
+
+  const Icon = getDocIcon();
+  return (
+    <Icon.type
+      {...Icon.props}
+      className={cn(
+        "h-3.5 w-3.5 mt-0.5 flex-shrink-0",
+        Icon.props.className
+      )}
+    />
+  );
+})()}
       <div className="flex-1 min-w-0 flex items-center gap-1.5">
         <p
           className={cn(

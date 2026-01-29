@@ -86,7 +86,7 @@ export async function getAuthToken(): Promise<string | null> {
 }
 
 // Helper to make authenticated API requests
-async function authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+export async function authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const token = await getAuthToken();
   const orgId = getCurrentOrgId();
   

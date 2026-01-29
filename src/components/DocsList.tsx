@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Plus, FileText, Upload } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useDocs, useCreateDoc } from "@/hooks/useDocs";
 import { trackClick, trackView } from "@/lib/analytics";
@@ -10,8 +10,16 @@ import { isDocOwner } from "@/utils/docUtils";
 import { useDeleteDoc } from "@/hooks/useDocs";
 import { useToast } from "@/hooks/use-toast";
 import { DocItem } from "./DocItem";
+import { DocumentUploadDialog } from "./DocumentUploadDialog";
 import type { Doc } from "@/data/docsData";
 import { v4 as uuidv4 } from "uuid";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useState } from "react";
 
 type DocsListVariant = "sidebar" | "catalog";
 
@@ -27,6 +35,7 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
   const deleteDoc = useDeleteDoc();
   const createDoc = useCreateDoc();
   const { toast } = useToast();
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
   // Sort docs by created at desc (newest first)
   const sortedDocs = [...docs].sort((a, b) => {
@@ -134,16 +143,34 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
         <div className="p-4 border-b border-border">
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-lg">Docs</h2>
-            <Button 
-              size="sm" 
-              variant="ghost"
-              className="h-8 w-8 p-0"
-              onClick={handleCreateDoc}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 w-8 p-0"
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleCreateDoc}>
+                  <FileText className="h-4 w-4 mr-2" />
+                  Create a blank page
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setUploadDialogOpen(true)}>
+                  <Upload className="h-4 w-4 mr-2" />
+                  Upload a file
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
+
+        <DocumentUploadDialog
+          open={uploadDialogOpen}
+          onOpenChange={setUploadDialogOpen}
+        />
 
         <div className="flex-1 overflow-y-auto p-1 space-y-0.5">
           {docs.length === 0 ? (

@@ -22,5 +22,21 @@ export interface Doc {
   };
   createdAt: string;
   updatedAt: string;
+
+  // Document upload fields
+  docType?: 'rich_text' | 'pdf' | 'docx' | 'pptx' | 'xlsx';
+  storagePath?: string;
+  fileMetadata?: {
+    pageCount?: number;
+    wordCount?: number;
+    slideCount?: number;
+    sheetCount?: number;
+    originalName?: string;
+    uploadedBy?: string;
+    [key: string]: any;
+  };
+  processingStatus?: 'uploading' | 'processing' | 'ready' | 'error';
+  fileSize?: number;
+  mimeType?: string;
 }
 

@@ -36,6 +36,7 @@ import { setupIntegrationEndpoints } from './endpoints/integrations.js';
 import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupFileEndpoints } from './endpoints/files.js';
+import { setupDocumentUploadEndpoints } from './endpoints/docs-upload.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
 import { setupMessageEndpoints } from './endpoints/messages.js';
@@ -78,7 +79,7 @@ let firebaseApp;
 try {
   if (getApps().length === 0) {
     // Construct storage bucket name (default is {project-id}.appspot.com)
-    const storageBucket = serviceAccount.storage_bucket || `${serviceAccount.project_id}.appspot.com`;
+    const storageBucket = serviceAccount.storage_bucket || 'leanworks-prod';
     firebaseApp = initializeApp({
       credential: cert(serviceAccount),
       projectId: serviceAccount.project_id,
@@ -525,7 +526,14 @@ async function requireOrgMembership(req: express.Request, res: express.Response,
                           req.headers['x-org-id'] as string ||
                           req.params.orgId;
 
+    console.log(`🔒 requireOrgMembership: ${req.method} ${req.path}, userEmail: ${userEmail}, orgIdentifier: ${orgIdentifier}, headers:`, {
+      'x-org-identifier': req.headers['x-org-identifier'],
+      'x-org-id': req.headers['x-org-id'],
+      'x-org-slug': req.headers['x-org-slug']
+    });
+
     if (!orgIdentifier) {
+      console.error(`❌ requireOrgMembership: No orgIdentifier found for ${req.method} ${req.path}`);
       return res.status(400).json({ error: 'Organization identifier is required (X-Org-Identifier or X-Org-Id header, or orgId param)' });
     }
     
@@ -551,8 +559,12 @@ async function requireOrgMembership(req: express.Request, res: express.Response,
     if (!membership.isMember) {
       return res.status(403).json({ error: 'Not a member of this organization' });
     }
-    
+
+    // Get the org slug for database connections
+    const orgSlug = await getOrgSlugById(orgId);
+
     (req as any).orgId = orgId;
+    (req as any).orgSlug = orgSlug;
     (req as any).orgRole = membership.role;
     
     next();
@@ -3480,7 +3492,7 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
     let result;
     try {
       result = await pool.query(`
-        SELECT 
+        SELECT
           id,
           title,
           content,
@@ -3492,9 +3504,15 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
           visibility,
           visible_to_members,
           created_at,
-          updated_at
+          updated_at,
+          doc_type,
+          storage_path,
+          file_metadata,
+          processing_status,
+          file_size,
+          mime_type
         FROM docs
-        WHERE 
+        WHERE
           visibility = 'all_members'
           OR owner_email = $1
           OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
@@ -3657,7 +3675,7 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     let result;
     try {
       result = await pool.query(`
-        SELECT 
+        SELECT
           id,
           title,
           content,
@@ -3669,7 +3687,13 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
           visibility,
           visible_to_members,
           created_at,
-          updated_at
+          updated_at,
+          doc_type,
+          storage_path,
+          file_metadata,
+          processing_status,
+          file_size,
+          mime_type
         FROM docs
         WHERE id = $1
       `, [docId]);
@@ -6489,6 +6513,7 @@ setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAcc
 setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 setupFileEndpoints(app, authenticateUser, storage);
+setupDocumentUploadEndpoints(app, authenticateUser, requireOrgMembership, storage);
 
 // ============================================================================
 // MESSAGE ENDPOINTS (Firestore)

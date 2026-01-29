@@ -1,9 +1,11 @@
 // External dependencies
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { memo, useEffect, useCallback, useMemo, useRef } from "react";
+import { memo, useEffect, useCallback, useMemo, useRef, useState } from "react";
 
 // Internal components
 import { RichTextEditor } from "@/components/RichTextEditor";
+import { PDFViewer } from "@/components/PDFViewer";
+import { DocumentViewer } from "@/components/DocumentViewer";
 import { DocDetailDialogs } from "@/components/DocDetailDialogs";
 import { DocDetailToolbar } from "@/components/DocDetailToolbar";
 
@@ -68,6 +70,9 @@ export default memo(function DocDetail() {
 
   // Track scroll depth for engagement
   useScrollTracking(true);
+
+  // State for download URL for uploaded files
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
   // Custom hooks for state management
   const dialogs = useDocDialogs();
@@ -360,6 +365,33 @@ export default memo(function DocDetail() {
     }
   }, [isNew, extractedTitle, setContext]);
 
+  // Fetch download URL when doc is loaded and is an uploaded file
+  useEffect(() => {
+    const fetchDownloadUrl = async () => {
+      if (!doc || !doc.storagePath || doc.docType === 'rich_text') {
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/docs/${doc.id}/download`, {
+          headers: {
+            'Authorization': `Bearer ${await user?.getIdToken()}`,
+            'x-org-slug': currentOrg?.slug || '',
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setDownloadUrl(data.downloadUrl);
+        }
+      } catch (error) {
+        console.error('Failed to fetch download URL:', error);
+      }
+    };
+
+    fetchDownloadUrl();
+  }, [doc?.id, doc?.storagePath, doc?.docType]);
+
   const handleDelete = useCallback(async () => {
     if (!docId || docId === "new") {
       return;
@@ -588,7 +620,7 @@ export default memo(function DocDetail() {
           }}
         >
           <div
-            className="w-full max-w-full bg-background relative min-w-0"
+            className="w-full max-w-full bg-background relative min-w-0 flex flex-col h-screen"
             style={{
               maxWidth: "100%",
               width: "100%",
@@ -608,35 +640,40 @@ export default memo(function DocDetail() {
               doc={doc}
             />
 
-            {/* Editor - padding handled internally by RichTextEditor */}
-            {/* CRITICAL: Pass content based on current docId to prevent flash */}
+            {/* Render appropriate viewer based on document type */}
+            <div className="flex-1 overflow-hidden">
             {(() => {
+              const docType = doc?.docType || 'rich_text';
+
+              // For uploaded files (PDF, Word, Excel, PowerPoint), show file viewer
+              if (docType === 'pdf') {
+                return <PDFViewer doc={doc} downloadUrl={downloadUrl} />;
+              }
+
+              if (docType === 'docx' || docType === 'pptx' || docType === 'xlsx') {
+                return <DocumentViewer doc={doc} downloadUrl={downloadUrl} />;
+              }
+
+              // For rich text documents, use the editor
               // Determine content to pass to editor
               let editorContent: string;
-              
+
               if (isNew) {
-                // New doc - always use empty/default TipTap structure
                 editorContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
               } else if (doc && doc.id === docId) {
-                // Existing doc - use doc content (source of truth)
                 editorContent = doc.content || JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
               } else if (!isLoading && formState.content && formState.content !== JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] })) {
-                // Only use formState if doc is not loading and formState has actual content
-                // This prevents showing old content during transitions
                 editorContent = formState.content;
               } else {
-                // Default empty structure (while loading or if no content)
                 editorContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
               }
-              
+
               return (
                 <RichTextEditor
                   key={editorKey}
                   content={editorContent}
                   onChange={(content) => {
-                    // Content is now a TipTap JSON object, stringify it for storage
-                    const contentString =
-                      typeof content === "string" ? content : JSON.stringify(content);
+                    const contentString = typeof content === "string" ? content : JSON.stringify(content);
                     updateField("content", contentString);
                   }}
                   placeholder="Start writing..."
@@ -648,6 +685,7 @@ export default memo(function DocDetail() {
                 />
               );
             })()}
+            </div>
           </div>
         </div>
       )}
