@@ -120,10 +120,6 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
       // Validate file first
       await this.validateFile(file, metadata);
 
-      let pdfBuffer: Buffer | undefined;
-      let layoutResult: any;
-      let conversionSuccessful = false;
-
       // Extract text from PPT directly for indexing (not from PDF to avoid metadata pollution)
       const zip = await JSZip.loadAsync(file);
       const slides = await this.extractSlides(zip);
@@ -147,7 +143,7 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
       }
 
       // Create layout result from PPT extraction (for indexing/search)
-      const layoutResult = {
+      const layoutResult: any = {
         text, // Clean text from PPT (not from PDF metadata)
         pages: slides.map((slide, index) => ({
           pageNumber: index + 1,
