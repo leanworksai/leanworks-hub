@@ -124,67 +124,49 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
       let layoutResult: any;
       let conversionSuccessful = false;
 
-      try {
-        // Convert PPT to PDF using LibreOffice
-        console.log(`🔄 Converting PPT to PDF for layout extraction`);
-        const conversionResult = await pptToPDFConverter.convertToPDF(file, metadata.fileName);
-        pdfBuffer = conversionResult.pdfBuffer;
-
-        // Extract text and layout from PDF
-        console.log(`🔄 Extracting text and layout from converted PDF`);
-        layoutResult = await pdfLayoutExtractor.extractLayout(pdfBuffer);
-        conversionSuccessful = true;
-
-        console.log(`✅ PDF conversion successful: ${layoutResult.metadata.pageCount} pages`);
-      } catch (conversionError) {
-        console.warn(`⚠️  PDF conversion failed, falling back to text extraction + PDF generation: ${conversionError instanceof Error ? conversionError.message : 'Unknown error'}`);
-
-        // Fallback: Extract text from PPT directly
-        const zip = await JSZip.loadAsync(file);
-        const slides = await this.extractSlides(zip);
-        const text = slides.map(slide => slide.content).join('\n\n');
-
-        // Create basic layout result
-        layoutResult = {
-          text,
-          pages: slides.map((slide, index) => ({
-            pageNumber: index + 1,
-            text: slide.content,
-            elements: [{
-              type: 'text' as const,
-              content: slide.content,
-              position: { x: 50, y: 50, width: 500, height: 600, pageNumber: index + 1 },
-              style: { fontFamily: 'Arial', fontSize: 12, fontWeight: 'normal' },
-              confidence: 0.5,
-            }],
-            dimensions: { width: 595, height: 842 },
-          })),
-          metadata: {
-            pageCount: slides.length,
-            wordCount: countWords(text),
-            characterCount: text.length,
-          },
-        };
-
-        // Generate a fallback PDF from the extracted text
-        try {
-          console.log(`🔄 Generating fallback PDF from extracted text`);
-          pdfBuffer = await fallbackPDFGenerator.generatePDFFromLayout(
-            layoutResult.pages,
-            extractTitleFromFileName(metadata.fileName)
-          );
-          conversionSuccessful = true;
-          console.log(`✅ Fallback PDF generated: ${pdfBuffer.length} bytes`);
-        } catch (pdfGenError) {
-          console.warn(`⚠️  Fallback PDF generation failed: ${pdfGenError instanceof Error ? pdfGenError.message : 'Unknown error'}`);
-          conversionSuccessful = false;
-        }
-      }
-
-      // Extract basic metadata from original PPT for compatibility
+      // Extract text from PPT directly for indexing (not from PDF to avoid metadata pollution)
       const zip = await JSZip.loadAsync(file);
       const slides = await this.extractSlides(zip);
+      const text = slides.map(slide => slide.content).join('\n\n');
       const pptMetadata = this.extractPowerPointMetadata(slides, metadata);
+
+      // Convert PPT to PDF using LibreOffice (for viewing only)
+      let pdfBuffer: Buffer | undefined;
+      let conversionSuccessful = false;
+      
+      try {
+        console.log(`🔄 Converting PPT to PDF for viewing`);
+        const conversionResult = await pptToPDFConverter.convertToPDF(file, metadata.fileName);
+        pdfBuffer = conversionResult.pdfBuffer;
+        conversionSuccessful = true;
+        console.log(`✅ PDF conversion successful: ${conversionResult.pdfSize} bytes, ${conversionResult.pageCount || 'unknown'} pages`);
+      } catch (conversionError) {
+        console.warn(`⚠️  PDF conversion failed: ${conversionError instanceof Error ? conversionError.message : 'Unknown error'}`);
+        // PDF conversion failed - document will still be created but without PDF viewing
+        conversionSuccessful = false;
+      }
+
+      // Create layout result from PPT extraction (for indexing/search)
+      const layoutResult = {
+        text, // Clean text from PPT (not from PDF metadata)
+        pages: slides.map((slide, index) => ({
+          pageNumber: index + 1,
+          text: slide.content,
+          elements: [{
+            type: 'text' as const,
+            content: slide.content,
+            position: { x: 50, y: 50, width: 500, height: 600, pageNumber: index + 1 },
+            style: { fontFamily: 'Arial', fontSize: 12, fontWeight: 'normal' },
+            confidence: 0.5,
+          }],
+          dimensions: { width: 595, height: 842 },
+        })),
+        metadata: {
+          pageCount: slides.length,
+          wordCount: countWords(text),
+          characterCount: text.length,
+        },
+      };
 
       // Create structured JSON with text + layout for indexing
       const layoutJson = {
