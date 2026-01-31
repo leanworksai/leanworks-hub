@@ -863,9 +863,17 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
         texts.push(...this.extractTextFromXML(obj['a:r']));
       }
 
-      // Recursively search all properties
+      // Only recursively search child elements, not attributes
+      // Attributes start with '@' or are metadata-like (xmlns, cx, cy, etc.)
       for (const key of Object.keys(obj)) {
-        if (!key.startsWith('xmlns') && key !== 'a:t' && key !== 'a:txBody' && key !== 'a:p' && key !== 'a:r') {
+        // Skip attributes and metadata properties
+        const isAttribute = key.startsWith('@') || key.startsWith('xmlns');
+        const isMetadata = ['cx', 'cy', 'x', 'y', 'rot', 'flipH', 'flipV', 'id', 'name', 'descr', 'rId', 'type', 'preset', 'rect', 'ln', 'fill', 'effectLst', 'spPr'].includes(key);
+        
+        // Skip if this is a key we already processed
+        const alreadyProcessed = ['a:t', 'a:txBody', 'a:p', 'a:r'].includes(key);
+
+        if (!isAttribute && !isMetadata && !alreadyProcessed) {
           texts.push(...this.extractTextFromXML(obj[key]));
         }
       }
