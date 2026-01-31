@@ -33,6 +33,11 @@ export interface Doc {
     sheetCount?: number;
     originalName?: string;
     uploadedBy?: string;
+    pdfStoragePath?: string; // Path to PDF file for PPTX documents
+    conversionSuccessful?: boolean; // Whether PPTX to PDF conversion was successful
+    thumbnails?: string[]; // Array of thumbnail URLs
+    htmlContent?: string; // HTML representation for certain document types
+    previewData?: any; // Type-specific preview data
     [key: string]: any;
   };
   processingStatus?: 'uploading' | 'processing' | 'ready' | 'error';

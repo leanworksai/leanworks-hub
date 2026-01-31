@@ -23,6 +23,9 @@ import {
   ThumbnailGenerationFailedError,
   ProcessingFailedError,
 } from '../../utils/document-errors.js';
+import { pptToPDFConverter } from '../../utils/ppt-to-pdf-converter.js';
+import { pdfLayoutExtractor } from '../../utils/pdf-layout-extractor.js';
+import { fallbackPDFGenerator } from '../../utils/fallback-pdf-generator.js';
 
 // xml2js is a CommonJS module, so we use createRequire
 const require = createRequire(import.meta.url);
@@ -41,68 +44,6 @@ const XML_PARSE_OPTIONS = {
   charkey: '#text',
   normalizeTagName: false,
 };
-
-/**
- * Presentation JSON interfaces for structured editing
- */
-interface PresentationJSON {
-  version: string;
-  metadata: {
-    title: string;
-    author?: string;
-    createdAt?: Date;
-    modifiedAt?: Date;
-    slideCount: number;
-  };
-  slides: SlideJSON[];
-}
-
-interface SlideJSON {
-  id: string;
-  order: number;
-  layout: string;
-  background: {
-    type: 'solid' | 'gradient' | 'image';
-    color?: string;
-    gradient?: GradientJSON;
-    imageUrl?: string;
-  };
-  elements: SlideElement[];
-  transitions?: TransitionJSON;
-}
-
-interface SlideElement {
-  id: string;
-  type: 'text' | 'image' | 'shape' | 'table' | 'video';
-  position: { x: number; y: number };
-  size: { width: number; height: number };
-  style: ElementStyle;
-  content: any;
-}
-
-interface ElementStyle {
-  fontSize?: number;
-  fontFamily?: string;
-  fontWeight?: string;
-  color?: string;
-  backgroundColor?: string;
-  textAlign?: 'left' | 'center' | 'right';
-  fillColor?: string;
-  strokeColor?: string;
-  strokeWidth?: number;
-}
-
-interface GradientJSON {
-  type: 'linear' | 'radial';
-  colors: string[];
-  angle?: number;
-}
-
-interface TransitionJSON {
-  type: string;
-  duration: number;
-  direction?: string;
-}
 
 /**
  * PowerPoint-specific metadata
@@ -169,6 +110,7 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
 
   /**
    * Process a PowerPoint file and extract content
+   * Converts PPT to PDF and extracts text + layout as structured JSON
    */
   async process(file: Buffer, metadata: FileMetadata): Promise<ProcessedDocument> {
     console.log(`🔄 Processing PowerPoint file: ${metadata.fileName} (${file.length} bytes)`);
@@ -178,67 +120,113 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
       // Validate file first
       await this.validateFile(file, metadata);
 
-      // Load the .pptx file as a ZIP archive
+      let pdfBuffer: Buffer | undefined;
+      let layoutResult: any;
+      let conversionSuccessful = false;
+
+      try {
+        // Convert PPT to PDF using LibreOffice
+        console.log(`🔄 Converting PPT to PDF for layout extraction`);
+        const conversionResult = await pptToPDFConverter.convertToPDF(file, metadata.fileName);
+        pdfBuffer = conversionResult.pdfBuffer;
+
+        // Extract text and layout from PDF
+        console.log(`🔄 Extracting text and layout from converted PDF`);
+        layoutResult = await pdfLayoutExtractor.extractLayout(pdfBuffer);
+        conversionSuccessful = true;
+
+        console.log(`✅ PDF conversion successful: ${layoutResult.metadata.pageCount} pages`);
+      } catch (conversionError) {
+        console.warn(`⚠️  PDF conversion failed, falling back to text extraction + PDF generation: ${conversionError instanceof Error ? conversionError.message : 'Unknown error'}`);
+
+        // Fallback: Extract text from PPT directly
+        const zip = await JSZip.loadAsync(file);
+        const slides = await this.extractSlides(zip);
+        const text = slides.map(slide => slide.content).join('\n\n');
+
+        // Create basic layout result
+        layoutResult = {
+          text,
+          pages: slides.map((slide, index) => ({
+            pageNumber: index + 1,
+            text: slide.content,
+            elements: [{
+              type: 'text' as const,
+              content: slide.content,
+              position: { x: 50, y: 50, width: 500, height: 600, pageNumber: index + 1 },
+              style: { fontFamily: 'Arial', fontSize: 12, fontWeight: 'normal' },
+              confidence: 0.5,
+            }],
+            dimensions: { width: 595, height: 842 },
+          })),
+          metadata: {
+            pageCount: slides.length,
+            wordCount: countWords(text),
+            characterCount: text.length,
+          },
+        };
+
+        // Generate a fallback PDF from the extracted text
+        try {
+          console.log(`🔄 Generating fallback PDF from extracted text`);
+          pdfBuffer = await fallbackPDFGenerator.generatePDFFromLayout(
+            layoutResult.pages,
+            extractTitleFromFileName(metadata.fileName)
+          );
+          conversionSuccessful = true;
+          console.log(`✅ Fallback PDF generated: ${pdfBuffer.length} bytes`);
+        } catch (pdfGenError) {
+          console.warn(`⚠️  Fallback PDF generation failed: ${pdfGenError instanceof Error ? pdfGenError.message : 'Unknown error'}`);
+          conversionSuccessful = false;
+        }
+      }
+
+      // Extract basic metadata from original PPT for compatibility
       const zip = await JSZip.loadAsync(file);
-
-      // Extract slide content
       const slides = await this.extractSlides(zip);
-
-      if (slides.length === 0) {
-        throw new ExtractionFailedError(
-          '',
-          DocumentType.PPTX,
-          'PowerPoint presentation contains no slides'
-        );
-      }
-
-      // Combine all slide content into a single text
-      const text = slides.map(slide => slide.content).join('\n\n');
-
-      if (!text || text.trim().length === 0) {
-        throw new ExtractionFailedError(
-          '',
-          DocumentType.PPTX,
-          'PowerPoint presentation contains no extractable text'
-        );
-      }
-
-      // Extract metadata
       const pptMetadata = this.extractPowerPointMetadata(slides, metadata);
 
-      // Convert slides to structured JSON format
-      const presentationJson = await this.convertSlidesToPresentationJSON(zip, slides, metadata);
+      // Create structured JSON with text + layout
+      const documentJson = {
+        text: layoutResult.text, // Full text for search indexing
+        pages: layoutResult.pages, // Layout information per page
+        metadata: {
+          ...layoutResult.metadata,
+          ...pptMetadata,
+          slideCount: slides.length,
+          originalFileName: metadata.fileName,
+          originalFileSize: metadata.fileSize,
+          pdfConversionSuccessful: conversionSuccessful,
+        },
+      };
 
-      // Create processed document with presentation JSON as content
-      const contentString = JSON.stringify(presentationJson);
+      const contentString = JSON.stringify(documentJson);
       console.log(`🔄 PowerPoint processor: JSON string length: ${contentString.length}`);
-      console.log(`🔄 PowerPoint processor: JSON preview: ${contentString.substring(0, 200)}`);
+      console.log(`🔄 PowerPoint processor: Extracted ${layoutResult.metadata.wordCount} words from ${layoutResult.metadata.pageCount} pages`);
 
-      // Don't use createBaseProcessedDocument because it sanitizes the content,
-      // which corrupts the JSON. Create the document directly.
+      // Create processed document
       const processedDoc: ProcessedDocument = {
         docId: uuidv4(),
         docType: this.getDocumentType(),
         title: extractTitleFromFileName(metadata.fileName),
-        content: contentString, // Store raw JSON without sanitization
+        content: contentString,
         metadata: {
-          wordCount: countWords(presentationJson.slides.map((s: any) => s.elements?.map((e: any) => e.content).join(' ') || '').join(' ')),
+          wordCount: layoutResult.metadata.wordCount,
+          characterCount: layoutResult.metadata.characterCount,
+          pageCount: layoutResult.metadata.pageCount,
+          slideCount: slides.length,
+          pdfConversionSuccessful: conversionSuccessful,
           ...pptMetadata,
         },
         thumbnails: [],
       };
 
-      // Store slide data in previewData for backward compatibility
-      processedDoc.previewData = {
-        slides: slides.map(slide => ({
-          slideNumber: slide.slideNumber,
-          title: slide.title,
-          content: slide.content,
-        })),
-        presentationJson, // Keep for easy access
-      };
+      // Only include PDF buffer if conversion was successful
+      if (pdfBuffer && conversionSuccessful) {
+        processedDoc.pdfBuffer = pdfBuffer;
+      }
 
-      // Generate thumbnails
+      // Generate thumbnails from original PPT file
       processedDoc.thumbnails = await this.generateThumbnails(file, metadata);
 
       return processedDoc;
@@ -318,56 +306,6 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
     return slides;
   }
 
-  /**
-   * Convert slides to structured PresentationJSON format
-   */
-  private async convertSlidesToPresentationJSON(
-    zip: JSZip,
-    slides: SlideContent[],
-    metadata: FileMetadata
-  ): Promise<PresentationJSON> {
-    const slideFiles = Object.keys(zip.files)
-      .filter(name => name.startsWith('ppt/slides/slide') && name.endsWith('.xml'))
-      .sort();
-
-    const slideElements: SlideJSON[] = [];
-
-    for (let i = 0; i < slideFiles.length; i++) {
-      const slideFile = slideFiles[i];
-      const slideContent = await zip.file(slideFile)?.async('string');
-
-      if (slideContent) {
-        const elements = await this.parseSlideElements(slideContent, i + 1);
-        
-        // If no elements were extracted, log warning instead of dumping raw text
-        if (elements.length === 0) {
-          console.warn(`⚠️ PowerPoint slide ${i + 1}: No elements extracted from slide XML`);
-          // Leave elements array empty - better than showing raw XML
-        }
-        
-        slideElements.push({
-          id: `slide-${i + 1}`,
-          order: i,
-          layout: 'content',
-          background: {
-            type: 'solid',
-            color: '#FFFFFF',
-          },
-          elements,
-        });
-      }
-    }
-
-    return {
-      version: '1.0',
-      metadata: {
-        title: extractTitleFromFileName(metadata.fileName),
-        slideCount: slides.length,
-        createdAt: new Date(),
-      },
-      slides: slideElements,
-    };
-  }
 
   /**
    * Parse slide content from XML
