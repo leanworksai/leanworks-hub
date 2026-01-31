@@ -8,8 +8,9 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { writeFile, unlink, mkdir } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, dirname, extname } from 'path';
-import { tmpdir } from 'os';
+import { tmpdir, platform } from 'os';
 import { randomUUID } from 'crypto';
 
 const execAsync = promisify(exec);
@@ -42,12 +43,9 @@ export class PPTToPDFConverter {
    * On macOS, check the standard installation location
    */
   private getLibreOfficeCommand(): string {
-    const { platform } = require('os');
-    
     // On macOS, check standard installation location
     if (platform() === 'darwin') {
       const macPath = '/Applications/LibreOffice.app/Contents/MacOS/soffice';
-      const { existsSync } = require('fs');
       if (existsSync(macPath)) {
         return macPath;
       }
