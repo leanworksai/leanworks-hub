@@ -87,13 +87,25 @@ export class PPTToPDFConverter {
         pageRange
       });
 
-      console.log(`🔄 Converting PPT to PDF: ${fileName} -> ${outputName}.pdf`);
+      // Determine expected output filename (LibreOffice uses input filename without extension)
+      const inputBaseName = fileName.replace(/\.(ppt|pptx)$/i, '');
+      const expectedOutputName = `${inputBaseName}.pdf`;
+
+      console.log(`🔄 Converting PPT to PDF: ${fileName} -> ${expectedOutputName}`);
       console.log(`🔄 Executing: ${command}`);
+      console.log(`🔄 Expected output file: ${join(tempDir, expectedOutputName)}`);
 
       // Execute conversion
-      const { stdout, stderr } = await execAsync(command);
+      const { stdout, stderr } = await execAsync(command, {
+        timeout: 300000, // 5 minute timeout for large files
+      });
 
-      if (stderr) {
+      // Check for errors in stderr (LibreOffice often outputs warnings to stderr even on success)
+      // But if there's a critical error, it will be in stderr
+      if (stderr && stderr.includes('Error')) {
+        console.error(`❌ LibreOffice error: ${stderr}`);
+        throw new Error(`LibreOffice conversion error: ${stderr}`);
+      } else if (stderr) {
         console.warn(`⚠️  LibreOffice warning: ${stderr}`);
       }
 
@@ -101,9 +113,22 @@ export class PPTToPDFConverter {
         console.log(`ℹ️  LibreOffice output: ${stdout}`);
       }
 
-      // Read output PDF
+      // LibreOffice outputs PDF with the same name as input file (without extension) + .pdf
+      // So if input is "presentation.pptx", output will be "presentation.pdf"
+      const actualOutputPath = join(tempDir, expectedOutputName);
+
+      // Verify the PDF file exists
       const fs = await import('fs/promises');
-      const pdfBuffer = await fs.readFile(outputPath);
+      if (!existsSync(actualOutputPath)) {
+        // List files in temp directory for debugging
+        const files = await fs.readdir(tempDir);
+        console.error(`❌ Expected PDF file not found: ${actualOutputPath}`);
+        console.error(`📁 Files in temp directory:`, files);
+        throw new Error(`PDF conversion failed: Output file not found. Expected: ${actualOutputPath}, Found files: ${files.join(', ')}`);
+      }
+
+      // Read output PDF
+      const pdfBuffer = await fs.readFile(actualOutputPath);
 
       // Get PDF metadata (page count)
       const pageCount = await this.getPDFPageCount(pdfBuffer);
