@@ -39,9 +39,9 @@ ALTER TABLE docs
 ALTER TABLE docs 
   DROP CONSTRAINT IF EXISTS docs_doc_type_check;
 
-ALTER TABLE docs 
-  ADD CONSTRAINT docs_doc_type_check 
-  CHECK (doc_type IN ('rich_text', 'pdf', 'docx', 'pptx', 'xlsx'));
+ALTER TABLE docs
+  ADD CONSTRAINT docs_doc_type_check
+  CHECK (doc_type IN ('rich_text', 'pdf', 'docx', 'pptx', 'xlsx', 'csv'));
 
 -- Constraint for processing_status
 ALTER TABLE docs 
@@ -173,7 +173,7 @@ $$ LANGUAGE plpgsql;
 -- STEP 6: Add comments for documentation
 -- ============================================================================
 
-COMMENT ON COLUMN docs.doc_type IS 'Type of document: rich_text (default), pdf, docx, pptx, xlsx';
+COMMENT ON COLUMN docs.doc_type IS 'Type of document: rich_text (default), pdf, docx, pptx, xlsx, csv';
 COMMENT ON COLUMN docs.file_metadata IS 'File-specific metadata (page count, sheets, author, etc.) stored as JSONB';
 COMMENT ON COLUMN docs.storage_path IS 'GCS storage path for uploaded files (e.g., orgs/{orgSlug}/doc-files/{docId}/{fileId})';
 COMMENT ON COLUMN docs.processing_status IS 'Processing status: uploading, processing, ready (default), error';

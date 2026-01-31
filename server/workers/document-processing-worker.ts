@@ -124,9 +124,39 @@ async function processDocument(job: DocumentProcessingJob): Promise<void> {
       progress: 70,
     });
 
+    // Handle PDF buffer for PPT files (upload to GCS)
+    let pdfStoragePath: string | undefined;
+    if (processedDoc.pdfBuffer && docType === 'pptx') {
+      console.log(`📤 Uploading PDF for PPT file: ${fileName}`);
+
+      // Generate PDF storage path
+      pdfStoragePath = `orgs/${orgSlug}/doc-files/${docId}/${docId}.pdf`;
+
+      // Upload PDF to GCS
+      const bucket = getStorage().bucket();
+      const pdfFile = bucket.file(pdfStoragePath);
+
+      await pdfFile.save(processedDoc.pdfBuffer, {
+        metadata: {
+          contentType: 'application/pdf',
+          metadata: {
+            originalName: `${fileName.replace(/\.(pptx?|ppt)$/i, '')}.pdf`,
+            uploadedBy: job.userId,
+            docId,
+            docType: 'pdf',
+            convertedFrom: docType,
+          },
+        },
+      });
+
+      console.log(`✅ PDF uploaded to GCS: ${pdfStoragePath}`);
+    } else if (docType === 'pptx') {
+      console.log(`ℹ️  PPT file processed without PDF conversion: ${fileName}`);
+    }
+
     // Update database with processed content
     const pool = await getOrgPoolBySlug(orgSlug);
-    
+
     await pool.query(
       `UPDATE docs
        SET
@@ -142,6 +172,10 @@ async function processDocument(job: DocumentProcessingJob): Promise<void> {
           thumbnails: processedDoc.thumbnails,
           htmlContent: processedDoc.htmlContent,
           previewData: processedDoc.previewData,
+          ...(docType === 'pptx' ? {
+            pdfStoragePath,
+            conversionSuccessful: !!pdfStoragePath,
+          } : {}),
         }),
         docId,
       ]

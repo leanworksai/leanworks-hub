@@ -61,6 +61,11 @@ const SUPPORTED_FILE_TYPES = {
       Buffer.from([0x50, 0x4B, 0x03, 0x04]), // PK.. (ZIP archive)
     ],
   },
+  csv: {
+    mimeTypes: ['text/csv', 'application/csv', 'text/comma-separated-values'],
+    extensions: ['.csv'],
+    magicBytes: [], // CSV files don't have magic bytes
+  },
 };
 
 /**
@@ -136,6 +141,19 @@ export function validateMagicBytes(file: Express.Multer.File): void {
   }
 
   const fileBuffer = file.buffer;
+
+  // For CSV files, skip magic bytes validation as they don't have a signature
+  const fileName = file.originalname.toLowerCase();
+  const isCsvFile = fileName.endsWith('.csv') ||
+    file.mimetype === 'text/csv' ||
+    file.mimetype === 'application/csv' ||
+    file.mimetype === 'text/comma-separated-values';
+
+  if (isCsvFile) {
+    // CSV files are validated by MIME type and extension, not magic bytes
+    return;
+  }
+
   const allMagicBytes = Object.values(SUPPORTED_FILE_TYPES)
     .flatMap(type => type.magicBytes);
 

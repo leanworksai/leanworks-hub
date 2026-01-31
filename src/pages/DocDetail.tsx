@@ -165,7 +165,9 @@ export default memo(function DocDetail() {
 
   // Extract title from first line of content
   // For new docs: always show "Untitled" until user starts typing actual text
-  // For existing docs: extract from content or show "Untitled"
+  // For existing docs: 
+  //   - If it's an uploaded file (PDF, DOCX, PPTX, XLSX): use user-given title, fallback to filename
+  //   - If it's a rich_text doc: extract from content
   const extractedTitle = useMemo(() => {
     if (isNew) {
       // For new docs, check if content has actual user-typed text
@@ -193,11 +195,21 @@ export default memo(function DocDetail() {
       
       return "Untitled";
     } else {
-      // For existing docs, extract title from content
+      // For existing docs
+      const docType = doc?.docType || 'rich_text';
+      
+      // For uploaded files (PDF, DOCX, PPTX, XLSX): use user-given title
+      // Title extraction from content is only for rich_text documents
+      if (docType !== 'rich_text') {
+        // Uploaded files: use doc.title which includes user-provided title or filename fallback
+        return doc?.title || "Untitled";
+      }
+      
+      // For rich_text docs: extract title from content
       const title = extractFirstLineAsTitle(formState.content || "", 100);
       return title || "Untitled";
     }
-  }, [formState.content, isNew]);
+  }, [formState.content, isNew, doc?.title, doc?.docType]);
 
   // Update React Query cache in real-time when content changes to sync title in docs list
   // Note: We don't update updatedAt here to prevent list shuffling - only update content for title display
@@ -333,19 +345,27 @@ export default memo(function DocDetail() {
     previousOrgIdRef.current = currentOrgId;
   }, [currentOrg?.id, docId, navigate, user?.email]);
 
-  // Set page context when doc loads - use extracted title from content
-  // For new docs, show "Untitled" until user starts typing
+  // Set page context when doc loads
+  // For new docs: show "Untitled" until user starts typing
+  // For uploaded files: use user-given title or filename
+  // For rich_text docs: extract title from content
   useEffect(() => {
     if (isNew) {
       // For new docs, show "Untitled" in context initially
       setContext("doc", { id: "new", title: "Untitled" });
     } else if (doc && docId && docId !== "new") {
-      const title = extractFirstLineAsTitle(doc.content || doc.title || "", 100);
-      if (title) {
-        setContext("doc", { id: docId, title });
+      const docType = doc.docType || 'rich_text';
+      let title: string;
+      
+      // For uploaded files: use user-given title or filename
+      if (docType !== 'rich_text') {
+        title = doc.title || "Untitled";
       } else {
-        setContext("doc", { id: docId, title: "Untitled" });
+        // For rich_text docs: extract title from content
+        title = extractFirstLineAsTitle(doc.content || doc.title || "", 100) || "Untitled";
       }
+      
+      setContext("doc", { id: docId, title });
     } else {
       clearContext();
     }
@@ -368,11 +388,20 @@ export default memo(function DocDetail() {
   // Fetch download URL when doc is loaded and is an uploaded file
   useEffect(() => {
     const fetchDownloadUrl = async () => {
-      if (!doc || !doc.storagePath || doc.docType === 'rich_text') {
+      // Skip if no doc or it's a rich text document
+      if (!doc || doc.docType === 'rich_text') {
+        return;
+      }
+
+      // For uploaded files, we need either storagePath or (for PPTX) pdfStoragePath
+      const hasStoragePath = doc.storagePath || (doc.docType === 'pptx' && doc.fileMetadata?.pdfStoragePath);
+      if (!hasStoragePath) {
+        console.log('[DocDetail] No storage path available for doc:', doc.id, 'docType:', doc.docType);
         return;
       }
 
       try {
+        console.log('[DocDetail] Fetching download URL for doc:', doc.id, 'docType:', doc.docType);
         const response = await fetch(`/api/docs/${doc.id}/download`, {
           headers: {
             'Authorization': `Bearer ${await user?.getIdToken()}`,
@@ -382,15 +411,19 @@ export default memo(function DocDetail() {
 
         if (response.ok) {
           const data = await response.json();
+          console.log('[DocDetail] Download URL fetched successfully:', data.downloadUrl?.substring(0, 100) + '...');
           setDownloadUrl(data.downloadUrl);
+        } else {
+          const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+          console.error('[DocDetail] Failed to fetch download URL:', response.status, errorData);
         }
       } catch (error) {
-        console.error('Failed to fetch download URL:', error);
+        console.error('[DocDetail] Error fetching download URL:', error);
       }
     };
 
     fetchDownloadUrl();
-  }, [doc?.id, doc?.storagePath, doc?.docType]);
+  }, [doc?.id, doc?.storagePath, doc?.docType, doc?.fileMetadata?.pdfStoragePath, user, currentOrg?.slug]);
 
   const handleDelete = useCallback(async () => {
     if (!docId || docId === "new") {
@@ -641,7 +674,7 @@ export default memo(function DocDetail() {
             />
 
             {/* Render appropriate viewer based on document type */}
-            <div className="flex-1 overflow-hidden">
+            <div className={`flex-1 ${(doc?.docType || 'rich_text') === 'rich_text' ? "overflow-visible" : "overflow-hidden"}`}>
             {(() => {
               const docType = doc?.docType || 'rich_text';
 
@@ -650,7 +683,13 @@ export default memo(function DocDetail() {
                 return <PDFViewer doc={doc} downloadUrl={downloadUrl} />;
               }
 
-              if (docType === 'docx' || docType === 'pptx' || docType === 'xlsx') {
+              // PPTX files that were successfully converted to PDF are viewed as PDFs
+              if (docType === 'pptx' && doc.fileMetadata?.pdfStoragePath) {
+                return <PDFViewer doc={doc} downloadUrl={downloadUrl} />;
+              }
+
+              // Other document types (DOCX, XLSX, CSV, PPTX without PDF conversion)
+              if (docType === 'docx' || docType === 'pptx' || docType === 'xlsx' || docType === 'csv') {
                 return <DocumentViewer doc={doc} downloadUrl={downloadUrl} />;
               }
 

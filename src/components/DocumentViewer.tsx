@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Download, FileText, FileSpreadsheet, Presentation } from 'lucide-react';
+import { SpreadsheetViewer } from './SpreadsheetViewer';
 import type { Doc } from '@/data/docsData';
 
 interface DocumentViewerProps {
@@ -42,7 +43,7 @@ export function DocumentViewer({ doc, downloadUrl }: DocumentViewerProps) {
   // Show processing state for PPTX files still being processed
   if (doc.docType === 'pptx' && doc.processingStatus === 'processing') {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center overflow-y-auto">
         <Card className="max-w-md w-full">
           <CardContent className="py-8 px-6 text-center">
             <Presentation className="h-16 w-16 mx-auto mb-4 text-orange-500 animate-pulse" />
@@ -62,7 +63,7 @@ export function DocumentViewer({ doc, downloadUrl }: DocumentViewerProps) {
   // Show warning if PPTX file couldn't be converted to PDF
   if (doc.docType === 'pptx' && !doc.fileMetadata?.pdfStoragePath) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center overflow-y-auto">
         <Card className="max-w-2xl w-full">
           <CardContent className="py-12 px-8 text-center">
             <Presentation className="h-24 w-24 mx-auto mb-6 text-yellow-600" />
@@ -99,9 +100,14 @@ export function DocumentViewer({ doc, downloadUrl }: DocumentViewerProps) {
     );
   }
 
+  // Use SpreadsheetViewer for Excel and CSV files
+  if (doc.docType === 'xlsx' || doc.docType === 'csv') {
+    return <SpreadsheetViewer doc={doc} downloadUrl={downloadUrl} />;
+  }
+
   // Default view for other document types
   return (
-    <div className="h-full flex items-center justify-center">
+    <div className="flex-1 flex items-center justify-center overflow-y-auto">
       <Card className="max-w-2xl w-full">
         <CardContent className="py-12 px-8 text-center">
           <Icon className="h-24 w-24 mx-auto mb-6 text-muted-foreground" />
@@ -125,7 +131,7 @@ export function DocumentViewer({ doc, downloadUrl }: DocumentViewerProps) {
           </div>
 
           {/* Extracted Content Preview */}
-          {doc.content && doc.content.length > 0 && (
+          {doc.content && doc.content.length > 0 && doc.docType !== 'pptx' && (
             <div className="mb-8 text-left">
               <h3 className="text-sm font-medium mb-2 text-muted-foreground">
                 Extracted Content Preview

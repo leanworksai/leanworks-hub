@@ -1566,6 +1566,25 @@ npm run preview
 
 ## Deployment
 
+### System Requirements
+
+**Document Processing:**
+- LibreOffice must be installed and available in the system PATH for PowerPoint to PDF conversion
+- Required for PPT/PPTX file processing
+
+**Installation:**
+```bash
+# Ubuntu/Debian
+sudo apt-get update && sudo apt-get install -y libreoffice
+
+# macOS
+brew install libreoffice
+
+# Docker
+# Add to Dockerfile:
+RUN apt-get update && apt-get install -y libreoffice && rm -rf /var/lib/apt/lists/*
+```
+
 ### Docker
 
 ```bash

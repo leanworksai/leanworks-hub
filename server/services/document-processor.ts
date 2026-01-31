@@ -23,6 +23,7 @@ export enum DocumentType {
   DOCX = 'docx',
   PPTX = 'pptx',
   XLSX = 'xlsx',
+  CSV = 'csv',
 }
 
 /**
@@ -59,6 +60,7 @@ export interface ProcessedDocument {
   };
   thumbnails: string[]; // Array of thumbnail URLs or base64 strings
   previewData?: any; // Type-specific preview data (e.g., Excel sheets)
+  pdfBuffer?: Buffer; // PDF buffer for PPT files converted to PDF
 }
 
 /**

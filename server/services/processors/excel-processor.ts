@@ -16,6 +16,9 @@ import {
   sanitizeText,
   countWords,
 } from '../document-processor.js';
+
+// Import CSV to XLSX for CSV processing
+// XLSX can handle CSV files, so we don't need a separate import
 import {
   ExtractionFailedError,
   ThumbnailGenerationFailedError,
@@ -49,17 +52,21 @@ interface SheetData {
 }
 
 /**
- * Excel Document Processor
+ * Excel/CSV Document Processor
  */
 export class ExcelProcessor extends BaseDocumentProcessor {
   private readonly SUPPORTED_MIME_TYPES = [
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.ms-excel',
+    'text/csv',
+    'application/csv',
+    'text/comma-separated-values',
   ];
 
   private readonly SUPPORTED_EXTENSIONS = [
     '.xlsx',
     '.xls',
+    '.csv',
   ];
 
   private readonly THUMBNAIL_WIDTH = 800;
@@ -85,58 +92,95 @@ export class ExcelProcessor extends BaseDocumentProcessor {
    * Get the document type this processor handles
    */
   getDocumentType(): DocumentType {
-    return DocumentType.XLSX;
+    return DocumentType.XLSX; // Default to XLSX, but can handle CSV too
   }
 
   /**
-   * Process an Excel file and extract content
+   * Process an Excel/CSV file and extract content
    */
   async process(file: Buffer, metadata: FileMetadata): Promise<ProcessedDocument> {
     try {
       // Validate file first
       await this.validateFile(file, metadata);
 
-      // Parse Excel file
-      const workbook = XLSX.read(file, { type: 'buffer' });
+      const isCsvFile = metadata.mimeType === 'text/csv' ||
+        metadata.mimeType === 'application/csv' ||
+        metadata.mimeType === 'text/comma-separated-values' ||
+        metadata.fileName.toLowerCase().endsWith('.csv');
 
-      if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-        throw new ExtractionFailedError(
-          '',
-          DocumentType.XLSX,
-          'Excel file contains no sheets'
-        );
+      let workbook: XLSX.WorkBook;
+      let sheets: SheetData[];
+      let text: string;
+      let docType: DocumentType;
+
+      if (isCsvFile) {
+        // Process CSV file
+        docType = DocumentType.CSV;
+        const csvText = file.toString('utf-8');
+        workbook = XLSX.read(csvText, { type: 'string' });
+
+        // For CSV, create a single sheet
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const csvData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+
+        sheets = [{
+          sheetName: 'Sheet1',
+          rowCount: csvData.length,
+          columnCount: csvData.length > 0 ? Math.max(...csvData.map(row => row.length)) : 0,
+          data: csvData,
+          preview: csvData.slice(0, this.MAX_PREVIEW_ROWS).map(row =>
+            row.slice(0, this.MAX_PREVIEW_COLS)
+          ),
+        }];
+
+        text = csvData.map(row => row.join(' ')).join('\n');
+      } else {
+        // Process Excel file
+        docType = DocumentType.XLSX;
+        workbook = XLSX.read(file, { type: 'buffer' });
+
+        if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+          throw new ExtractionFailedError(
+            '',
+            DocumentType.XLSX,
+            'Excel file contains no sheets'
+          );
+        }
+
+        // Extract data from all sheets
+        sheets = this.extractSheets(workbook);
+
+        // Combine all sheet data into a single text for search
+        text = sheets
+          .map(sheet => {
+            const sheetText = sheet.data
+              .map(row => row.join(' '))
+              .join('\n');
+            return `Sheet: ${sheet.sheetName}\n${sheetText}`;
+          })
+          .join('\n\n');
       }
-
-      // Extract data from all sheets
-      const sheets = this.extractSheets(workbook);
-
-      // Combine all sheet data into a single text for search
-      const text = sheets
-        .map(sheet => {
-          const sheetText = sheet.data
-            .map(row => row.join(' '))
-            .join('\n');
-          return `Sheet: ${sheet.sheetName}\n${sheetText}`;
-        })
-        .join('\n\n');
 
       if (!text || text.trim().length === 0) {
         throw new ExtractionFailedError(
           '',
-          DocumentType.XLSX,
-          'Excel file contains no extractable data'
+          docType,
+          `${docType.toUpperCase()} file contains no extractable data`
         );
       }
 
       // Extract metadata
-      const excelMetadata = this.extractExcelMetadata(workbook, sheets, metadata);
+      const fileMetadata = this.extractFileMetadata(workbook, sheets, metadata, isCsvFile);
 
-      // Create processed document
+      // Create processed document with correct docType
       const processedDoc = this.createBaseProcessedDocument(
-        metadata,
+        { ...metadata, docType },
         text,
-        excelMetadata
+        fileMetadata
       );
+
+      // Override the docType in the processed document
+      processedDoc.docType = docType;
 
       // Store sheet data in previewData
       processedDoc.previewData = {
@@ -156,16 +200,23 @@ export class ExcelProcessor extends BaseDocumentProcessor {
       if (error instanceof ExtractionFailedError || error instanceof ThumbnailGenerationFailedError) {
         throw error;
       }
+
+      const isCsvFile = metadata.mimeType === 'text/csv' ||
+        metadata.mimeType === 'application/csv' ||
+        metadata.mimeType === 'text/comma-separated-values' ||
+        metadata.fileName.toLowerCase().endsWith('.csv');
+
+      const docType = isCsvFile ? DocumentType.CSV : DocumentType.XLSX;
       throw new ProcessingFailedError(
         '',
-        DocumentType.XLSX,
-        error instanceof Error ? error.message : 'Unknown error processing Excel file'
+        docType,
+        error instanceof Error ? error.message : `Unknown error processing ${docType.toUpperCase()} file`
       );
     }
   }
 
   /**
-   * Generate thumbnails for an Excel file
+   * Generate thumbnails for an Excel/CSV file
    * Note: This is a simplified implementation. For production, you would use
    * LibreOffice or a similar library to render sheets to images.
    */
@@ -173,19 +224,36 @@ export class ExcelProcessor extends BaseDocumentProcessor {
     try {
       const thumbnails: string[] = [];
 
-      // Parse Excel file to get sheet count
-      const workbook = XLSX.read(file, { type: 'buffer' });
-      const sheetCount = workbook.SheetNames.length;
+      const isCsvFile = metadata.mimeType === 'text/csv' ||
+        metadata.mimeType === 'application/csv' ||
+        metadata.mimeType === 'text/comma-separated-values' ||
+        metadata.fileName.toLowerCase().endsWith('.csv');
 
-      // Generate a single thumbnail showing all sheets
-      const thumbnail = await this.createPlaceholderThumbnail(sheetCount, workbook.SheetNames);
-      thumbnails.push(thumbnail);
+      if (isCsvFile) {
+        // For CSV files, create a simple CSV thumbnail
+        const thumbnail = await this.createCsvThumbnail();
+        thumbnails.push(thumbnail);
+      } else {
+        // Parse Excel file to get sheet count
+        const workbook = XLSX.read(file, { type: 'buffer' });
+        const sheetCount = workbook.SheetNames.length;
+
+        // Generate a single thumbnail showing all sheets
+        const thumbnail = await this.createPlaceholderThumbnail(sheetCount, workbook.SheetNames);
+        thumbnails.push(thumbnail);
+      }
 
       return thumbnails;
     } catch (error) {
+      const isCsvFile = metadata.mimeType === 'text/csv' ||
+        metadata.mimeType === 'application/csv' ||
+        metadata.mimeType === 'text/comma-separated-values' ||
+        metadata.fileName.toLowerCase().endsWith('.csv');
+
+      const docType = isCsvFile ? DocumentType.CSV : DocumentType.XLSX;
       throw new ThumbnailGenerationFailedError(
         '',
-        DocumentType.XLSX,
+        docType,
         error instanceof Error ? error.message : 'Unknown error generating thumbnails'
       );
     }
@@ -225,12 +293,13 @@ export class ExcelProcessor extends BaseDocumentProcessor {
   }
 
   /**
-   * Extract Excel metadata
+   * Extract file metadata (Excel or CSV)
    */
-  private extractExcelMetadata(
+  private extractFileMetadata(
     workbook: XLSX.WorkBook,
     sheets: SheetData[],
-    fileMetadata: FileMetadata
+    fileMetadata: FileMetadata,
+    isCsvFile: boolean
   ): ExcelMetadata {
     // Calculate total rows and cells
     const totalRows = sheets.reduce((sum, sheet) => sum + sheet.rowCount, 0);
@@ -239,19 +308,19 @@ export class ExcelProcessor extends BaseDocumentProcessor {
       0
     );
 
-    // Extract document properties if available
+    // Extract document properties if available (only for Excel files)
     const props = workbook.Props || {};
 
     return {
       sheetCount: sheets.length,
       totalRows,
       totalCells,
-      title: props.Title || extractTitleFromFileName(fileMetadata.fileName),
-      author: props.Author,
-      subject: props.Subject,
-      keywords: props.Keywords,
-      createdAt: props.CreatedDate ? new Date(props.CreatedDate) : undefined,
-      modifiedAt: props.ModifiedDate ? new Date(props.ModifiedDate) : undefined,
+      title: isCsvFile ? extractTitleFromFileName(fileMetadata.fileName) : (props.Title || extractTitleFromFileName(fileMetadata.fileName)),
+      author: isCsvFile ? undefined : props.Author,
+      subject: isCsvFile ? undefined : props.Subject,
+      keywords: isCsvFile ? undefined : props.Keywords,
+      createdAt: isCsvFile ? undefined : (props.CreatedDate ? new Date(props.CreatedDate) : undefined),
+      modifiedAt: isCsvFile ? undefined : (props.ModifiedDate ? new Date(props.ModifiedDate) : undefined),
     };
   }
 
@@ -310,13 +379,98 @@ export class ExcelProcessor extends BaseDocumentProcessor {
   }
 
   /**
-   * Validate Excel file
+   * Create a placeholder thumbnail for CSV files
+   */
+  private async createCsvThumbnail(): Promise<string> {
+    const canvas = createCanvas(this.THUMBNAIL_WIDTH, this.THUMBNAIL_HEIGHT);
+    const ctx = canvas.getContext('2d');
+
+    // Background
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, this.THUMBNAIL_WIDTH, this.THUMBNAIL_HEIGHT);
+
+    // Border
+    ctx.strokeStyle = '#ddd';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(10, 10, this.THUMBNAIL_WIDTH - 20, this.THUMBNAIL_HEIGHT - 20);
+
+    // Title
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('CSV File', this.THUMBNAIL_WIDTH / 2, 60);
+
+    // Description
+    ctx.font = '16px Arial';
+    ctx.fillText('Comma-Separated Values', this.THUMBNAIL_WIDTH / 2, 90);
+
+    // CSV icon (simple table representation)
+    ctx.strokeStyle = '#16a34a';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(50, 120, 300, 150);
+
+    // Horizontal lines
+    for (let i = 1; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(50, 120 + i * 37.5);
+      ctx.lineTo(350, 120 + i * 37.5);
+      ctx.stroke();
+    }
+
+    // Vertical lines
+    for (let i = 1; i < 4; i++) {
+      ctx.beginPath();
+      ctx.moveTo(50 + i * 75, 120);
+      ctx.lineTo(50 + i * 75, 270);
+      ctx.stroke();
+    }
+
+    // Sample data
+    ctx.fillStyle = '#16a34a';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'left';
+    const sampleData = ['Name,Age,City', 'John,25,NYC', 'Jane,30,LA'];
+    sampleData.forEach((row, index) => {
+      ctx.fillText(row, 60, 145 + index * 37.5);
+    });
+
+    // Convert to base64
+    return canvas.toDataURL('image/png');
+  }
+
+  /**
+   * Validate Excel/CSV file
    */
   async validateFile(file: Buffer, metadata: FileMetadata): Promise<void> {
     await super.validateFile(file, metadata);
 
-    // Check if it's an .xlsx file (ZIP archive with specific structure)
-    // .xlsx files are ZIP archives starting with PK magic bytes
+    const isCsvFile = metadata.mimeType === 'text/csv' ||
+      metadata.mimeType === 'application/csv' ||
+      metadata.mimeType === 'text/comma-separated-values' ||
+      metadata.fileName.toLowerCase().endsWith('.csv');
+
+    if (isCsvFile) {
+      // For CSV files, just check that we can read the content as text
+      try {
+        const csvText = file.toString('utf-8');
+        if (!csvText || csvText.trim().length === 0) {
+          throw new ProcessingFailedError(
+            '',
+            DocumentType.CSV,
+            'Invalid CSV file: file is empty'
+          );
+        }
+      } catch (error) {
+        throw new ProcessingFailedError(
+          '',
+          DocumentType.CSV,
+          `Invalid CSV file: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+      }
+      return;
+    }
+
+    // For Excel files, validate as ZIP archive
     const zipMagicBytes = Buffer.from([0x50, 0x4B, 0x03, 0x04]); // PK..
     if (!file.subarray(0, 4).equals(zipMagicBytes)) {
       throw new ProcessingFailedError(
@@ -329,7 +483,7 @@ export class ExcelProcessor extends BaseDocumentProcessor {
     // Try to parse the Excel file to ensure it's valid
     try {
       const workbook = XLSX.read(file, { type: 'buffer' });
-      
+
       if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
         throw new ProcessingFailedError(
           '',

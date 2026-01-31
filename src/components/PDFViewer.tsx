@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Download, FileText, ZoomIn, ZoomOut } from 'lucide-react';
@@ -17,6 +17,20 @@ export function PDFViewer({ doc, downloadUrl }: PDFViewerProps) {
   const fileSizeMB = (fileSize / 1024 / 1024).toFixed(2);
   const MAX_PDF_SIZE_MB = 50; // 50MB limit for browser loading
   const isFileTooLarge = parseFloat(fileSizeMB) > MAX_PDF_SIZE_MB;
+
+  // Debug logging
+  useEffect(() => {
+    console.log('[PDFViewer] Component rendered:', {
+      docId: doc.id,
+      docType: doc.docType,
+      hasDownloadUrl: !!downloadUrl,
+      downloadUrl: downloadUrl?.substring(0, 100) + '...',
+      pdfStoragePath: doc.fileMetadata?.pdfStoragePath,
+      pageCount,
+      fileSizeMB,
+      isFileTooLarge,
+    });
+  }, [doc.id, downloadUrl, doc.fileMetadata?.pdfStoragePath]);
 
   const handleDownload = async () => {
     if (!downloadUrl) {
@@ -66,10 +80,21 @@ export function PDFViewer({ doc, downloadUrl }: PDFViewerProps) {
             className="w-full h-full"
             style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top left' }}
             title={doc.title}
+            onLoad={() => {
+              console.log('[PDFViewer] Iframe loaded successfully');
+            }}
+            onError={(e) => {
+              console.error('[PDFViewer] Iframe error:', e);
+            }}
           />
         ) : (
           <div className="flex items-center justify-center h-full">
             <p className="text-muted-foreground">Loading PDF...</p>
+            <p className="text-xs text-muted-foreground mt-2">
+              {doc.docType === 'pptx' && !doc.fileMetadata?.pdfStoragePath
+                ? 'PDF conversion may still be processing...'
+                : 'Fetching download URL...'}
+            </p>
           </div>
         )}
       </div>

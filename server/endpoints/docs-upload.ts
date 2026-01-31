@@ -14,7 +14,6 @@ import { validateUploadedFile, getSupportedFileTypes } from '../middleware/file-
 import { publishDocumentProcessingJob } from '../services/document-pubsub.js';
 import { documentProcessorFactory, DocumentType } from '../services/processors/index.js';
 import { isDocumentProcessingError, getUserFriendlyMessage } from '../utils/document-errors.js';
-import { exportPresentationToPPTX } from '../services/pptx-exporter.js';
 
 // File URL expiration time (default: 1 year)
 const FILE_URL_EXPIRATION_DAYS = parseInt(process.env.FILE_URL_EXPIRATION_DAYS || '365', 10);
@@ -516,11 +515,12 @@ export function setupDocumentUploadEndpoints(
         const pool = await getOrgPoolBySlug(orgSlug);
         
         const result = await pool.query(
-          `SELECT 
+          `SELECT
             id,
             title,
             storage_path,
-            file_metadata
+            file_metadata,
+            doc_type
           FROM docs
           WHERE id = $1 AND owner_email = $2`,
           [docId, userEmail]
@@ -534,9 +534,16 @@ export function setupDocumentUploadEndpoints(
         }
 
         const doc = result.rows[0];
+        const metadata = doc.file_metadata || {};
 
-        if (!doc.storage_path) {
-          return res.status(404).json({ 
+        // For PPT files, use the PDF storage path if available
+        let storagePath = doc.storage_path;
+        if (doc.doc_type === 'pptx' && metadata.pdfStoragePath) {
+          storagePath = metadata.pdfStoragePath;
+        }
+
+        if (!storagePath) {
+          return res.status(404).json({
             error: 'Document file not found',
             code: 'FILE_NOT_FOUND',
           });
@@ -545,13 +552,16 @@ export function setupDocumentUploadEndpoints(
         // Generate signed URL
         const downloadUrl = await generateSignedUrlUtil(
           storage,
-          doc.storage_path,
+          storagePath,
           FILE_URL_EXPIRATION_DAYS
         );
 
         // Parse metadata to get original filename
-        const metadata = doc.file_metadata || {};
-        const originalName = metadata.originalName || `${doc.title}.pdf`;
+        // For PPT files, use PDF filename
+        let originalName = metadata.originalName || `${doc.title}.pdf`;
+        if (doc.doc_type === 'pptx' && metadata.pdfStoragePath) {
+          originalName = originalName.replace(/\.(pptx?|ppt)$/i, '.pdf');
+        }
 
         res.json({
           id: doc.id,
@@ -566,6 +576,118 @@ export function setupDocumentUploadEndpoints(
         res.status(500).json({ 
           error: 'Failed to generate download URL',
           code: 'DOWNLOAD_ERROR',
+          details: error.message,
+        });
+      }
+    }
+  );
+
+  // GET /api/docs/:docId/content - Get raw file content for client-side processing
+  app.get(
+    '/api/docs/:docId/content',
+    authenticateUser,
+    async (req, res) => {
+      try {
+        const { docId } = req.params;
+        const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+        const userEmail = (req as any).user.email?.toLowerCase();
+
+        // Get org slug
+        let orgSlug: string;
+        const orgSlugFromHeader = req.headers['x-org-slug'] as string;
+
+        if (orgSlugFromHeader) {
+          orgSlug = orgSlugFromHeader;
+        } else if (orgId) {
+          orgSlug = await getOrgSlugById(orgId);
+        } else {
+          return res.status(400).json({
+            error: 'Organization ID or slug is required',
+            code: 'MISSING_ORG',
+          });
+        }
+
+        // Get document from database
+        const pool = await getOrgPoolBySlug(orgSlug);
+
+        const result = await pool.query(
+          `SELECT
+            id,
+            title,
+            storage_path,
+            file_metadata,
+            doc_type,
+            mime_type
+          FROM docs
+          WHERE id = $1 AND owner_email = $2`,
+          [docId, userEmail]
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(404).json({
+            error: 'Document not found',
+            code: 'NOT_FOUND',
+          });
+        }
+
+        const doc = result.rows[0];
+        const metadata = doc.file_metadata || {};
+
+        // For PPT files, use the PDF storage path if available
+        let storagePath = doc.storage_path;
+        if (doc.doc_type === 'pptx' && metadata.pdfStoragePath) {
+          storagePath = metadata.pdfStoragePath;
+        }
+
+        if (!storagePath) {
+          return res.status(404).json({
+            error: 'Document file not found',
+            code: 'FILE_NOT_FOUND',
+          });
+        }
+
+        // Fetch file from GCS
+        try {
+          const file = storage.bucket().file(storagePath);
+          const [exists] = await file.exists();
+
+          if (!exists) {
+            return res.status(404).json({
+              error: 'File not found in storage',
+              code: 'FILE_NOT_FOUND',
+            });
+          }
+
+          // Get file metadata to determine content type
+          const [metadata_result] = await file.getMetadata();
+          const contentType = metadata_result.contentType || doc.mime_type || 'application/octet-stream';
+
+          // Download the file content
+          const [fileContent] = await file.download();
+
+          // Set CORS headers to allow browser access
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+          res.setHeader('Content-Type', contentType);
+
+          // Send the file content
+          res.send(fileContent);
+
+        } catch (storageError: any) {
+          console.error('Storage error:', storageError);
+          return res.status(500).json({
+            error: 'Failed to access file storage',
+            code: 'STORAGE_ERROR',
+            details: storageError.message,
+          });
+        }
+
+      } catch (error: any) {
+        console.error('Error fetching document content:', error);
+        res.status(500).json({
+          error: 'Failed to fetch document content',
+          code: 'CONTENT_ERROR',
           details: error.message,
         });
       }
@@ -697,94 +819,4 @@ export function setupDocumentUploadEndpoints(
     }
   });
 
-  // POST /api/docs/:id/export-pptx - Export presentation JSON to PPTX
-  app.post('/api/docs/:id/export-pptx', authenticateUser, requireOrgMembership, async (req, res) => {
-    try {
-      console.log(`📄 Exporting presentation to PPTX for doc: ${req.params.id}`);
-
-      const { id } = req.params;
-      const orgSlug = (req as any).orgSlug;
-      const userEmail = (req as any).userEmail;
-      console.log(`🔍 POST /api/docs/${id}/export-pptx - orgSlug: ${orgSlug}, userEmail: ${userEmail}`);
-      const pool = await getOrgPoolBySlug(orgSlug);
-
-      // Get the presentation JSON from content field
-      let result;
-      try {
-        result = await pool.query(
-          `SELECT content, title, owner_email FROM docs WHERE id = $1 AND doc_type = 'pptx'`,
-          [id]
-        );
-        console.log(`🔍 POST export-pptx query succeeded for org ${orgSlug}, doc ${id}`);
-      } catch (queryError: any) {
-        console.error(`❌ POST export-pptx query failed for org ${orgSlug}, doc ${id}:`, queryError.message);
-        console.error(`   Error code:`, queryError.code);
-        console.error(`   Error details:`, queryError);
-        throw queryError;
-      }
-
-      if (!result.rows[0]?.content) {
-        return res.status(404).json({
-          error: 'Presentation data not found',
-          code: 'PRESENTATION_NOT_FOUND'
-        });
-      }
-
-      // Parse the presentation JSON from content field
-      let presentation;
-      try {
-        presentation = JSON.parse(result.rows[0].content);
-      } catch (error) {
-        return res.status(500).json({
-          error: 'Invalid presentation data format',
-          code: 'INVALID_PRESENTATION_FORMAT'
-        });
-      }
-      const title = result.rows[0].title || 'presentation';
-      const ownerEmail = result.rows[0].owner_email;
-
-      // Generate PPTX file
-      const pptxBuffer = await exportPresentationToPPTX(presentation);
-
-      // Upload to GCS
-      const storagePath = `orgs/${orgSlug}/exports/${id}/export-${Date.now()}.pptx`;
-      const bucket = storage.bucket();
-
-      const file = bucket.file(storagePath);
-      await file.save(pptxBuffer, {
-        metadata: {
-          contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-          metadata: {
-            originalName: `${title}.pptx`,
-            exportedBy: userEmail,
-            exportedAt: new Date().toISOString(),
-            sourceDocId: id,
-            ownerEmail,
-          },
-        },
-      });
-
-      // Generate signed URL for download
-      const downloadUrl = await generateSignedUrlUtil(
-        storage,
-        storagePath,
-        FILE_URL_EXPIRATION_DAYS
-      );
-
-      res.json({
-        success: true,
-        downloadUrl,
-        fileName: `${title}.pptx`,
-        message: 'PPTX exported successfully'
-      });
-
-    } catch (error: any) {
-      console.error('❌ Error exporting to PPTX:', error);
-      res.status(500).json({
-        error: 'Failed to export PPTX',
-        code: 'EXPORT_ERROR',
-        details: error.message,
-      });
-    }
-  });
 }

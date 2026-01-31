@@ -165,9 +165,14 @@ export function DocDetailDialogs({
             <AlertDialogTitle>Delete Document</AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete "
-              {doc?.title ||
-                extractFirstLineAsTitle(doc?.content || "", 100) ||
-                "this document"}
+              {(() => {
+                // For uploaded files, use doc.title directly. For rich_text, extract from content.
+                const docType = doc?.docType || 'rich_text';
+                if (docType !== 'rich_text') {
+                  return doc?.title || "this document";
+                }
+                return extractFirstLineAsTitle(doc?.content || "", 100) || "this document";
+              })()}
               "? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -191,7 +196,16 @@ export function DocDetailDialogs({
             open ? dialogs.openDialog("share") : dialogs.closeDialog()
           }
           title="Limit Document Visibility"
-          itemName={doc.title || extractFirstLineAsTitle(doc.content || "", 100)}
+          itemName={
+            (() => {
+              // For uploaded files, use doc.title directly. For rich_text, extract from content.
+              const docType = doc.docType || 'rich_text';
+              if (docType !== 'rich_text') {
+                return doc.title || "Document";
+              }
+              return extractFirstLineAsTitle(doc.content || "", 100) || "Document";
+            })()
+          }
           currentVisibility={formState.visibility}
           currentVisibleToMembers={formState.visibleToMembers}
           onSave={async (newVisibility, newVisibleToMembers) => {
@@ -225,7 +239,16 @@ export function DocDetailDialogs({
             open ? dialogs.openDialog("shareViaEmail") : dialogs.closeDialog()
           }
           docId={doc.id}
-          docTitle={doc.title || extractFirstLineAsTitle(doc.content || "", 100)}
+          docTitle={
+            (() => {
+              // For uploaded files, use doc.title directly. For rich_text, extract from content.
+              const docType = doc.docType || 'rich_text';
+              if (docType !== 'rich_text') {
+                return doc.title || "Document";
+              }
+              return extractFirstLineAsTitle(doc.content || "", 100) || "Document";
+            })()
+          }
         />
       )}
     </>

@@ -92,8 +92,11 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
 
   const performDeleteDoc = async (doc: typeof docs[0], e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent navigation when clicking delete
-    const docTitle =
-      extractFirstLineAsTitle(doc.content || doc.title || "", 50) || "this doc";
+    // For uploaded files, use doc.title directly. For rich_text, extract from content.
+    const docType = doc.docType || 'rich_text';
+    const docTitle = docType !== 'rich_text' 
+      ? (doc.title || "this doc")
+      : (extractFirstLineAsTitle(doc.content || doc.title || "", 50) || "this doc");
     if (window.confirm(`Are you sure you want to delete "${docTitle}"?`)) {
       try {
         await deleteDoc.mutateAsync(doc.id);
@@ -180,10 +183,11 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
           ) : (
             sortedDocs.map((doc) => {
               const isActive = doc.id === activeDocId;
-              const title = extractFirstLineAsTitle(
-                doc.content || doc.title || "",
-                50
-              ) || "Untitled";
+              // For uploaded files, use doc.title directly. For rich_text, extract from content.
+              const docType = doc.docType || 'rich_text';
+              const title = docType !== 'rich_text'
+                ? (doc.title || "Untitled")
+                : (extractFirstLineAsTitle(doc.content || doc.title || "", 50) || "Untitled");
               const docIsOwner = isDocOwner(user?.email, doc.ownerEmail);
 
               return (
@@ -229,10 +233,11 @@ export function DocsList({ variant = "sidebar" }: DocsListProps) {
         ) : (
           sortedDocs.map((doc) => {
             const isActive = doc.id === activeDocId;
-            const title = extractFirstLineAsTitle(
-              doc.content || doc.title || "",
-              50
-            ) || "Untitled";
+            // For uploaded files, use doc.title directly. For rich_text, extract from content.
+            const docType = doc.docType || 'rich_text';
+            const title = docType !== 'rich_text'
+              ? (doc.title || "Untitled")
+              : (extractFirstLineAsTitle(doc.content || doc.title || "", 50) || "Untitled");
             const docIsOwner = isDocOwner(user?.email, doc.ownerEmail);
 
             return (

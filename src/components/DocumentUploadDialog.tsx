@@ -46,9 +46,10 @@ const SUPPORTED_TYPES = {
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': { ext: '.docx', icon: FileText, color: 'text-blue-500', label: 'Word' },
   'application/vnd.openxmlformats-officedocument.presentationml.presentation': { ext: '.pptx', icon: Presentation, color: 'text-orange-500', label: 'PowerPoint' },
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': { ext: '.xlsx', icon: FileSpreadsheet, color: 'text-green-500', label: 'Excel' },
+  'text/csv': { ext: '.csv', icon: FileSpreadsheet, color: 'text-green-600', label: 'CSV' },
 };
 
-const ACCEPT_TYPES = '.pdf,.docx,.pptx,.xlsx';
+const ACCEPT_TYPES = '.pdf,.docx,.pptx,.xlsx,.csv';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
 
 export function DocumentUploadDialog({
