@@ -158,29 +158,21 @@ export class PPTToPDFConverter {
 
   /**
    * Build LibreOffice command for conversion
+   * Note: LibreOffice doesn't support --pdf-quality or --pdf-range options
+   * The basic conversion command is: --convert-to pdf --outdir "dir" "file"
    */
   private buildLibreOfficeCommand(
     inputPath: string,
     outputPath: string,
     options: { quality: number; pageRange?: string }
   ): string {
-    const { quality, pageRange } = options;
-
-    // Base command
+    // Base command - LibreOffice doesn't support quality/range options via CLI
+    // Quality can be controlled via filter names (e.g., pdf:writer_pdf_Export) but
+    // for simplicity, we use the default PDF export filter
     let command = `${this.LIBREOFFICE_COMMAND} --headless --convert-to pdf`;
-
-    // Add quality option (LibreOffice uses 1-100, higher is better)
-    command += ` --pdf-quality ${Math.min(100, Math.max(1, quality))}`;
-
-    // Add page range if specified
-    if (pageRange) {
-      command += ` --pdf-range ${pageRange}`;
-    }
 
     // Add output directory and input file
     const outputDir = dirname(outputPath);
-    const outputName = outputPath.replace('.pdf', '');
-
     command += ` --outdir "${outputDir}" "${inputPath}"`;
 
     return command;
