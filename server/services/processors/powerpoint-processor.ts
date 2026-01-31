@@ -186,8 +186,8 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
       const slides = await this.extractSlides(zip);
       const pptMetadata = this.extractPowerPointMetadata(slides, metadata);
 
-      // Create structured JSON with text + layout
-      const documentJson = {
+      // Create structured JSON with text + layout for indexing
+      const layoutJson = {
         text: layoutResult.text, // Full text for search indexing
         pages: layoutResult.pages, // Layout information per page
         metadata: {
@@ -200,22 +200,24 @@ export class PowerPointProcessor extends BaseDocumentProcessor {
         },
       };
 
-      const contentString = JSON.stringify(documentJson);
-      console.log(`🔄 PowerPoint processor: JSON string length: ${contentString.length}`);
-      console.log(`🔄 PowerPoint processor: Extracted ${layoutResult.metadata.wordCount} words from ${layoutResult.metadata.pageCount} pages`);
+      // For the content field, store just the plain text (easier for display/preview)
+      // The full layout JSON is stored in file_metadata for indexing
+      const plainText = layoutResult.text || slides.map(s => s.content).join('\n\n');
 
       // Create processed document
       const processedDoc: ProcessedDocument = {
         docId: uuidv4(),
         docType: this.getDocumentType(),
         title: extractTitleFromFileName(metadata.fileName),
-        content: contentString,
+        content: plainText,
         metadata: {
           wordCount: layoutResult.metadata.wordCount,
           characterCount: layoutResult.metadata.characterCount,
           pageCount: layoutResult.metadata.pageCount,
           slideCount: slides.length,
           pdfConversionSuccessful: conversionSuccessful,
+          // Store the full layout JSON in metadata for indexing
+          layoutJson: JSON.stringify(layoutJson),
           ...pptMetadata,
         },
         thumbnails: [],
