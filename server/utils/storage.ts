@@ -1,7 +1,8 @@
 import { Storage } from '@google-cloud/storage';
 import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
+import { getStorageBucket } from './env.js';
 
-const BUCKET_NAME = 'leanworks-prod';
+const BUCKET_NAME = getStorageBucket();
 
 /**
  * Generate a signed URL for a file in Google Cloud Storage

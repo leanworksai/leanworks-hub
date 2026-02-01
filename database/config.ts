@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getDbInstanceName, getDbName, isLocalDev } from '../server/utils/env.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -29,7 +30,7 @@ if (existsSync(envPath)) {
 }
 
 // Read GCP credentials to get project ID
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
+const serviceAccountPath = join(__dirname, '../gcp_credential_dev.json');
 const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
 
 // Initialize Secret Manager client
@@ -39,13 +40,18 @@ const secretManagerClient = new SecretManagerServiceClient({
 
 // PostgreSQL connection configuration for Cloud SQL
 const projectId = serviceAccount.project_id; // leanworks-474204
-const instanceName = 'leanworks-prod';
+const instanceName = getDbInstanceName();
 const region = process.env.DB_REGION || 'us-west1';
 
 // Fetch PostgreSQL password from Secret Manager
 async function getPostgresPassword(): Promise<string> {
   try {
-    const secretName = `projects/${projectId}/secrets/postgresdb-password/versions/latest`;
+    // Import isLocalDev at the function level to avoid circular dependencies
+    const { isLocalDev } = await import('../server/utils/env.js');
+    
+    // Use dev-prefixed secret for local development
+    const secretPrefix = isLocalDev() ? 'dev-' : '';
+    const secretName = `projects/${projectId}/secrets/${secretPrefix}postgresdb-password/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     const password = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');
@@ -119,15 +125,14 @@ async function initializePool(): Promise<Pool> {
   }
 
   const password = await getPostgresPassword();
-  
+
   // For local development, use localhost (Cloud SQL Proxy)
   // For production, use Unix socket path
-  const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
-  const dbHost = process.env.DB_HOST || (isLocalDev 
+  const dbHost = process.env.DB_HOST || (isLocalDev()
     ? 'localhost'  // Local development: use Cloud SQL Proxy on localhost
     : `/cloudsql/${projectId}:${region}:${instanceName}`);  // Production: use Unix socket
   const dbPort = parseInt(process.env.DB_PORT || '5432');
-  const targetDb = process.env.DB_NAME || 'leanworks-prod';
+  const targetDb = getDbName();
 
   // Ensure database exists before creating pool
   await ensureDatabaseExists(password, targetDb, dbHost, dbPort);

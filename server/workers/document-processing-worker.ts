@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
 import { getOrgPoolBySlug } from '../../database/multi-tenant-pool';
+import { getStorageBucket, getCredentialPath } from '../utils/env.js';
 import {
   getDocumentProcessingPubSubClient,
   getDocumentProcessingSubscriptionName,
@@ -34,10 +35,10 @@ const __dirname = dirname(__filename);
  */
 function initializeFirebaseAdmin(): void {
   if (getApps().length === 0) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
     if (existsSync(serviceAccountPath)) {
       const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-      const storageBucket = serviceAccount.storage_bucket || 'leanworks-prod';
+      const storageBucket = serviceAccount.storage_bucket || getStorageBucket();
       try {
         initializeApp({
           credential: cert(serviceAccount),

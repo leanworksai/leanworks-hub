@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X, Calendar, MessageSquare } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Sidebar,
@@ -32,13 +32,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ContextBadges } from "@/components/ContextBadges";
 import { Badge } from "@/components/ui/badge";
 import { trackSidebarNavigation, trackOrgSwitch, trackAIChat, trackContextSelect } from "@/lib/analytics";
-import { useTeamChats } from "@/hooks/useTeamChats";
 
 const menuItems = [
   { title: "Projects", url: "/projects", icon: FolderKanban },
   { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Docs", url: "/docs", icon: StickyNote },
-  { title: "Chats", url: "/chats", icon: MessageSquare },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
 ];
 
@@ -49,7 +47,6 @@ export function AppSidebar() {
   const { selectedTasks, toggleTask } = useSelectedTasks();
   const { selectedDocs, toggleDoc } = useSelectedDocs();
   const { contextType, contextRef, clearContext } = usePageContext();
-  const { totalUnreadCount } = useTeamChats();
   const navigate = useNavigate();
   
   // Close mobile sidebar when a navigation item is clicked
@@ -183,9 +180,6 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
-                      {item.title === "Chats" && totalUnreadCount > 0 && (
-                        <span className="ml-auto h-2 w-2 rounded-full bg-red-500" />
-                      )}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

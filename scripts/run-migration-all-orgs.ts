@@ -17,6 +17,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getCredentialPath, getSecretName } from '../server/utils/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -43,7 +44,7 @@ if (existsSync(envPath)) {
 }
 
 // Read GCP credentials
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
+const serviceAccountPath = join(__dirname, '../', getCredentialPath());
 const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
 const projectId = serviceAccount.project_id;
 
@@ -55,7 +56,7 @@ const secretManagerClient = new SecretManagerServiceClient({
 // Fetch PostgreSQL password from Secret Manager
 async function getPostgresPassword(): Promise<string> {
   try {
-    const secretName = `projects/${projectId}/secrets/postgresdb-password/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     const password = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');
@@ -69,14 +70,22 @@ async function getPostgresPassword(): Promise<string> {
 
 // Database configuration
 const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
-const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:leanworks-prod`);
+const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:${process.env.DB_INSTANCE_NAME || 'leanworks-prod'}`);
 const dbPort = parseInt(process.env.DB_PORT || '5432');
 
-// Read migration SQL
-const migrationSQL = readFileSync(
+// Read migration SQL files
+const folderMigrationSQL = readFileSync(
+  join(__dirname, '../database/migrations/add-folder-support.sql'),
+  'utf8'
+);
+
+const documentUploadMigrationSQL = readFileSync(
   join(__dirname, '../database/migrations/add-document-upload-support.sql'),
   'utf8'
 );
+
+// Combine migrations
+const migrationSQL = folderMigrationSQL + '\n' + documentUploadMigrationSQL;
 
 interface Organization {
   id: string;
@@ -128,9 +137,9 @@ async function getOrganizations(password: string): Promise<Organization[]> {
 async function checkMigrationStatus(pool: Pool): Promise<boolean> {
   try {
     const result = await pool.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_name = 'docs' 
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = 'docs'
       AND column_name = 'doc_type'
     `);
     return result.rows.length > 0;

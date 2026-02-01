@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: leanworks-config
+  labels:
+    app: leanworks-hub
+data:
+  # Environment-specific configuration values
+  # These can be overridden based on deployment environment
+  AUDIO_STORAGE_BUCKET: "leanworks-prod"
+  DB_INSTANCE_NAME: "leanworks-prod"
+  DB_INSTANCE_CONNECTION_STRING: "leanworks-474204:us-west1:leanworks-prod"
+  FIRESTORE_DATABASE_NAME: "leanworks-prod"
+  CLUSTER_NAME: "leanworks-prod"
+  ENVIRONMENT: "prod"

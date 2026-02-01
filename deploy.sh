@@ -3,7 +3,11 @@
 set -e
 
 # Configuration
-CLUSTER_NAME="leanworks-prod"
+ENVIRONMENT="${1:-prod}"  # Default to "prod" if no argument provided
+CLUSTER_NAME="leanworks-${ENVIRONMENT}"
+DB_INSTANCE_NAME="leanworks-${ENVIRONMENT}"
+AUDIO_STORAGE_BUCKET="leanworks-${ENVIRONMENT}"
+FIRESTORE_DATABASE_NAME="leanworks-${ENVIRONMENT}"
 REGION="us-west1"  # Update this to your cluster's region
 GCP_CREDENTIAL_FILE="gcp_credential.json"
 ARTIFACT_REGISTRY_REPO="docker-repo"  # Artifact Registry repository name
@@ -14,7 +18,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Starting deployment to GKE...${NC}"
+echo -e "${GREEN}Starting deployment to GKE (${ENVIRONMENT} environment)...${NC}"
 
 # Check if GCP credentials file exists
 if [ ! -f "$GCP_CREDENTIAL_FILE" ]; then
@@ -137,9 +141,16 @@ echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/backend-config.yaml
 kubectl apply -f k8s/cloud-sql-proxy.yaml
 kubectl apply -f k8s/serviceaccount.yaml
-kubectl apply -f k8s/livekit-deployment.yaml
 kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/ingress.yaml
+
+# Apply environment-specific ingress and certificates
+if [ "$ENVIRONMENT" = "dev" ]; then
+    echo -e "${YELLOW}Applying dev-specific ingress and certificates...${NC}"
+    kubectl apply -f k8s/ingress-dev.yaml
+else
+    echo -e "${YELLOW}Applying production ingress...${NC}"
+    kubectl apply -f k8s/ingress.yaml
+fi
 
 # Update the deployment with the new image tag
 echo -e "${YELLOW}Updating Kubernetes deployment with new image tag...${NC}"
@@ -150,52 +161,38 @@ echo -e "${YELLOW}Forcing deployment rollout...${NC}"
 kubectl rollout restart deployment/leanworks-hub
 
 # Wait for deployments to be ready
-echo -e "${YELLOW}Waiting for LiveKit deployment to be ready...${NC}"
-if kubectl wait --for=condition=available --timeout=300s deployment/livekit-server 2>/dev/null; then
-    echo -e "${GREEN}✅ LiveKit deployment is ready${NC}"
-else
-    echo -e "${YELLOW}⚠️  LiveKit deployment may still be starting...${NC}"
-    kubectl get pods -l app=livekit-server
-fi
 
 echo -e "${YELLOW}Waiting for backend deployment to be ready...${NC}"
 kubectl rollout status deployment/leanworks-hub
 
-# Get LiveKit LoadBalancer IP and update backend if available
-echo -e "${YELLOW}Checking LiveKit LoadBalancer IP...${NC}"
-EXTERNAL_IP=$(kubectl get svc livekit-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-
-if [ -n "$EXTERNAL_IP" ]; then
-    echo -e "${GREEN}✅ LiveKit LoadBalancer IP: ${EXTERNAL_IP}${NC}"
-    # Use secure domain URL with SSL (required for HTTPS pages)
-    # The ingress routes livekit.leanworks.ai to the LiveKit service
-    LIVEKIT_URL="wss://livekit.leanworks.ai"
-    echo -e "${YELLOW}Updating backend deployment with LiveKit URL...${NC}"
-    if kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null; then
-        echo -e "${GREEN}✅ Backend LIVEKIT_URL updated to: ${LIVEKIT_URL}${NC}"
-        echo -e "${GREEN}   (Using secure domain instead of IP for HTTPS compatibility)${NC}"
-        kubectl rollout status deployment/leanworks-hub --timeout=120s || echo -e "${YELLOW}⚠️  Rollout may still be in progress${NC}"
-    else
-        echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL. You may need to update it manually.${NC}"
-    fi
-else
-    echo -e "${YELLOW}⚠️  LiveKit LoadBalancer IP not available yet.${NC}"
-    echo -e "${YELLOW}   The LoadBalancer may take a few minutes to provision.${NC}"
-    echo -e "${YELLOW}   Using secure domain URL: wss://livekit.leanworks.ai${NC}"
-    # Still set the secure URL even if IP is not available
-    LIVEKIT_URL="wss://livekit.leanworks.ai"
-    kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null || echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL${NC}"
-fi
+# Note: LIVEKIT_URL is now handled by ConfigMap in deployment.yaml
+# No manual override needed - ConfigMap provides environment-specific URLs
 
 # Get service information
 echo -e "${GREEN}Deployment completed successfully!${NC}"
 echo -e "${YELLOW}Service information:${NC}"
 kubectl get service leanworks-hub-service
-echo ""
-echo -e "${YELLOW}LiveKit service information:${NC}"
-kubectl get service livekit-service livekit-service-udp livekit-service-rtc-tcp 2>/dev/null || echo "LiveKit services may still be provisioning..."
 
-echo -e "${GREEN}To get the external IPs, run:${NC}"
+# Display IP addresses for DNS mapping
+echo -e "${GREEN}IP Addresses for DNS mapping:${NC}"
+if [ "$ENVIRONMENT" = "dev" ]; then
+    DEV_IP=$(gcloud compute addresses describe leanworks-dev-hub-ip --global --format="value(address)" 2>/dev/null)
+    if [ -n "$DEV_IP" ]; then
+        echo -e "${GREEN}Dev Ingress IP: ${DEV_IP}${NC}"
+        echo -e "${YELLOW}DNS Records needed:${NC}"
+        echo -e "  dev.leanworks.ai     → A record → ${DEV_IP}"
+    else
+        echo -e "${YELLOW}⚠️  Dev IP not available yet. Run this command to get it:${NC}"
+        echo "gcloud compute addresses describe leanworks-dev-hub-ip --global --format=\"value(address)\""
+    fi
+else
+    # For production, show current ingress IP
+    PROD_IP=$(kubectl get ingress leanworks-hub-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+    if [ -n "$PROD_IP" ]; then
+        echo -e "${GREEN}Production Ingress IP: ${PROD_IP}${NC}"
+    fi
+fi
+
+echo -e "${GREEN}To get the external IPs manually, run:${NC}"
 echo "kubectl get service leanworks-hub-service"
-echo "kubectl get service livekit-service"
 

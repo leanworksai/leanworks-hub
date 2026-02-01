@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getSecretName } from '../utils/env.js';
 
 // Cache for email credentials to avoid repeated Secret Manager calls
 let cachedEmailCredentials: { email: string; password: string } | null = null;
@@ -21,12 +22,12 @@ async function getEmailCredentials(
 
   try {
     // Fetch email address
-    const emailSecretName = `projects/${projectId}/secrets/email-address/versions/latest`;
+    const emailSecretName = `projects/${projectId}/secrets/${getSecretName('email-address')}/versions/latest`;
     const [emailVersion] = await secretManagerClient.accessSecretVersion({ name: emailSecretName });
     const email = emailVersion.payload?.data?.toString()?.trim() || '';
 
     // Fetch email password
-    const passwordSecretName = `projects/${projectId}/secrets/email-password/versions/latest`;
+    const passwordSecretName = `projects/${projectId}/secrets/${getSecretName('email-password')}/versions/latest`;
     const [passwordVersion] = await secretManagerClient.accessSecretVersion({ name: passwordSecretName });
     const password = passwordVersion.payload?.data?.toString()?.trim() || '';
 
@@ -195,7 +196,7 @@ function getFrontendUrl(): string {
   // (NODE_ENV is exactly 'development')
   if (process.env.NODE_ENV === 'development') {
     // Vite dev server port (configured in vite.config.ts)
-    return 'http://localhost:8080';
+    return 'http://localhost:8081';
   }
   
   // Default to production URL (safer for GKE/production deployments)

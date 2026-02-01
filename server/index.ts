@@ -33,16 +33,12 @@ import {
   closeOrgPool,
 } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
-import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupFileEndpoints } from './endpoints/files.js';
 import { setupDocumentUploadEndpoints } from './endpoints/docs-upload.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
-import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
-import { setupMessageEndpoints } from './endpoints/messages.js';
 import { setupUpdateEndpoints } from './endpoints/updates.js';
 import { setupQueryEndpoints } from './endpoints/query.js';
-import { setFirestoreDb } from './services/audio-recorder.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
 import { validateRequest } from './middleware/validate-request.js';
@@ -52,18 +48,18 @@ import { signupSchema, loginSchema, resendVerificationSchema } from './validatio
 import { updateUserProfileSchema } from './validation/user-schemas.js';
 import { createOrgSchema, updateOrgSchema, inviteToOrgSchema } from './validation/org-schemas.js';
 import { createProjectSchema, updateProjectSchema, addProjectMemberSchema, addProjectCommentSchema } from './validation/project-schemas.js';
-import { createEventSchema, updateEventSchema } from './validation/event-schemas.js';
 import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/subscription-schemas.js';
 import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
 import { queryTaskProgressUpdatesSchema, queryProjectProgressUpdatesSchema } from './validation/update-schemas.js';
 import { convertJsonToHtml, convertJsonToHtmlWithPositions } from './utils/contentUtils.js';
+import { getStorageBucket, getFirestoreDatabaseName, getSecretName, getCredentialPath } from './utils/env.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Read service account credentials
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
+const serviceAccountPath = join(__dirname, '../', getCredentialPath());
 let serviceAccount;
 try {
   serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
@@ -79,7 +75,7 @@ let firebaseApp;
 try {
   if (getApps().length === 0) {
     // Construct storage bucket name (default is {project-id}.appspot.com)
-    const storageBucket = serviceAccount.storage_bucket || 'leanworks-prod';
+    const storageBucket = serviceAccount.storage_bucket || getStorageBucket();
     firebaseApp = initializeApp({
       credential: cert(serviceAccount),
       projectId: serviceAccount.project_id,
@@ -96,9 +92,9 @@ try {
   throw error;
 }
 
-// Use named database 'leanworks-prod' - this is the database configured in Firebase
+// Use named database based on environment - this is the database configured in Firebase
 // Note: Client SDK will need to be configured to use the same database
-const db = getFirestore(firebaseApp, 'leanworks-prod');
+const db = getFirestore(firebaseApp, getFirestoreDatabaseName());
 console.log('✅ Firestore database initialized:', db.databaseId);
 const auth = getAuth(firebaseApp);
 const storage = getStorage(firebaseApp);
@@ -140,17 +136,17 @@ async function getStripeSecretsFromSecretManager(): Promise<typeof cachedStripeS
   try {
     // Fetch all Stripe secrets in parallel
     const [secretKeyResult, webhookSecretResult, priceStandardResult, priceProResult] = await Promise.all([
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-secret-key/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-secret-key')}/versions/latest`
       }),
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-webhook-secret/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-webhook-secret')}/versions/latest`
       }),
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-price-standard/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-price-standard')}/versions/latest`
       }),
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-price-pro/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-price-pro')}/versions/latest`
       }),
     ]);
 
@@ -1846,7 +1842,7 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
     // 4. Drop the PostgreSQL database
     try {
       // Get password from Secret Manager
-      const passwordSecretName = `projects/${serviceAccount.project_id}/secrets/postgresdb-password/versions/latest`;
+      const passwordSecretName = `projects/${serviceAccount.project_id}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
       const [passwordVersion] = await secretManagerClient.accessSecretVersion({ name: passwordSecretName });
       const password = (passwordVersion.payload?.data?.toString() || '').trim();
       // For local development, use localhost (Cloud SQL Proxy)
@@ -3499,6 +3495,8 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
           owner_email,
           project_id,
           team_id,
+          folder_id,
+          is_folder,
           tags,
           COALESCE(metadata, '{}'::jsonb) as metadata,
           visibility,
@@ -3522,20 +3520,22 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
       // If metadata column doesn't exist, query without it
       if (error.message?.includes('column "metadata" does not exist') || error.message?.includes('column docs.metadata does not exist')) {
         result = await pool.query(`
-          SELECT 
+          SELECT
             id,
             title,
             content,
             owner_email,
             project_id,
             team_id,
+            folder_id,
+            is_folder,
             tags,
             visibility,
             visible_to_members,
             created_at,
             updated_at
           FROM docs
-          WHERE 
+          WHERE
             visibility = 'all_members'
             OR owner_email = $1
             OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
@@ -3682,6 +3682,8 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
           owner_email,
           project_id,
           team_id,
+          folder_id,
+          is_folder,
           tags,
           COALESCE(metadata, '{}'::jsonb) as metadata,
           visibility,
@@ -3701,13 +3703,15 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
       // If metadata column doesn't exist, query without it
       if (error.message?.includes('column "metadata" does not exist') || error.message?.includes('column docs.metadata does not exist')) {
         result = await pool.query(`
-          SELECT 
+          SELECT
             id,
             title,
             content,
             owner_email,
             project_id,
             team_id,
+            folder_id,
+            is_folder,
             tags,
             visibility,
             visible_to_members,
@@ -3787,7 +3791,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    const { id, title, content, projectId, teamId, tags, visibility, visibleToMembers, metadata } = req.body;
+    const { id, title, content, projectId, teamId, folderId, isFolder, tags, visibility, visibleToMembers, metadata } = req.body;
     
     // Validation is handled by middleware, so visibility and visibleToMembers are already validated
     const docVisibility = visibility || 'all_members';
@@ -3798,17 +3802,21 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
     const normalizedEmail = userEmail.toLowerCase();
     const docId = id || crypto.randomBytes(16).toString('hex');
     
-    // Handle empty content - use default TipTap empty structure
+    // Handle content based on whether this is a folder or document
     let docContent = content;
-    if (!content || content.trim().length === 0) {
+    if (isFolder) {
+      // Folders have empty content
+      docContent = '{}';
+    } else if (!content || content.trim().length === 0) {
+      // Regular documents get default TipTap empty structure
       docContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
     }
     
     // Check if metadata column exists, if not, insert without it
     try {
       await pool.query(`
-        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, metadata, visibility, visible_to_members, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, folder_id, is_folder, tags, metadata, visibility, visible_to_members, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
       `, [
         docId,
         title,
@@ -3816,6 +3824,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
         normalizedEmail,
         projectId || null,
         teamId || null,
+        folderId || null,
+        isFolder || false,
         tags ? JSON.stringify(tags) : '[]',
         metadata ? JSON.stringify(metadata) : '{}',
         docVisibility,
@@ -3825,8 +3835,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
       // If metadata column doesn't exist, insert without it
       if (error.message?.includes('column "metadata" does not exist')) {
         await pool.query(`
-          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, visibility, visible_to_members, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, folder_id, is_folder, tags, visibility, visible_to_members, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
         `, [
           docId,
           title,
@@ -3834,6 +3844,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
           normalizedEmail,
           projectId || null,
           teamId || null,
+          folderId || null,
+          isFolder || false,
           tags ? JSON.stringify(tags) : '[]',
           docVisibility,
           JSON.stringify(visibleToMembersArray)
@@ -3843,13 +3855,15 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
       }
     }
     
-    res.status(201).json({ 
-      id: docId, 
-      title, 
+    res.status(201).json({
+      id: docId,
+      title,
       content: docContent,
       ownerEmail: normalizedEmail,
       projectId: projectId || null,
       teamId: teamId || null,
+      folderId: folderId || null,
+      isFolder: isFolder || false,
       tags: tags || [],
       visibility: docVisibility,
       visibleToMembers: visibleToMembersArray
@@ -3948,7 +3962,42 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, validateReque
         delete updates.visibleToMembers;
       }
     }
-    
+
+    // Additional validation for folder operations
+    if (updates.folderId !== undefined) {
+      // Check for circular references if moving a folder
+      const currentDocResult = await pool.query(
+        'SELECT is_folder FROM docs WHERE id = $1',
+        [docId]
+      );
+
+      if (currentDocResult.rows.length > 0 && currentDocResult.rows[0].is_folder) {
+        // This is a folder being moved - check for circular references
+        let targetFolderId = updates.folderId;
+        const visitedFolders = new Set([docId]);
+
+        while (targetFolderId) {
+          if (visitedFolders.has(targetFolderId)) {
+            return res.status(400).json({
+              error: 'Cannot move folder: circular reference detected'
+            });
+          }
+
+          visitedFolders.add(targetFolderId);
+          const parentResult = await pool.query(
+            'SELECT folder_id FROM docs WHERE id = $1',
+            [targetFolderId]
+          );
+
+          if (parentResult.rows.length > 0) {
+            targetFolderId = parentResult.rows[0].folder_id;
+          } else {
+            targetFolderId = null;
+          }
+        }
+      }
+    }
+
     const setClauses: string[] = [];
     const values: any[] = [];
     let paramIndex = 1;
@@ -3958,6 +4007,8 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, validateReque
       content: 'content',
       projectId: 'project_id',
       teamId: 'team_id',
+      folderId: 'folder_id',
+      isFolder: 'is_folder',
       visibility: 'visibility'
     };
     
@@ -5320,420 +5371,6 @@ app.delete('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req,
 });
 
 // ============================================================================
-// EVENTS ENDPOINTS (PostgreSQL)
-// ============================================================================
-
-app.get('/api/events', authenticateUser, requireOrgMembership, async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const pool = await getOrgPool(orgId);
-    
-    // Extract query parameters
-    const filterUserEmail = req.query.userEmail as string | undefined;
-    const startDate = req.query.startDate as string | undefined;
-    const endDate = req.query.endDate as string | undefined;
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-    
-    // Build WHERE conditions
-    const whereConditions: string[] = [];
-    const queryParams: any[] = [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])];
-    let paramIndex = 3;
-    
-    // Base visibility conditions
-    whereConditions.push(`(
-      -- Creator always has access
-      e.created_by = $1
-      -- OR event visibility is 'all_members' (default - visible to all org members)
-      OR (e.visibility = 'all_members' OR e.visibility IS NULL)
-      -- OR event visibility is 'specific_members' and user is in visible_to_members
-      OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $2::jsonb)
-      -- OR user is in attendees
-      OR (e.attendees IS NOT NULL AND e.attendees @> $2::jsonb)
-    )`);
-    
-    // Add filter conditions
-    if (filterUserEmail) {
-      whereConditions.push(`(
-        e.created_by = $${paramIndex}
-        OR (e.attendees IS NOT NULL AND e.attendees @> $${paramIndex + 1}::jsonb)
-      )`);
-      queryParams.push(filterUserEmail.toLowerCase());
-      queryParams.push(JSON.stringify([filterUserEmail.toLowerCase()]));
-      paramIndex += 2;
-    }
-    
-    if (startDate) {
-      whereConditions.push(`e.start_date >= $${paramIndex}::date`);
-      queryParams.push(startDate);
-      paramIndex++;
-    }
-    
-    if (endDate) {
-      whereConditions.push(`e.end_date <= $${paramIndex}::date`);
-      queryParams.push(endDate);
-      paramIndex++;
-    }
-    
-    // Build LIMIT clause
-    const limitClause = limit ? `LIMIT $${paramIndex}` : '';
-    if (limit) {
-      queryParams.push(limit);
-    }
-    
-    const whereClause = whereConditions.join(' AND ');
-    
-    const result = await pool.query(`
-      SELECT 
-        e.id,
-        e.title,
-        e.description,
-        e.start_date,
-        e.end_date,
-        e.all_day,
-        e.location,
-        e.attendees,
-        e.created_by,
-        e.visibility,
-        e.visible_to_members,
-        e.created_at,
-        e.updated_at
-      FROM events e
-      WHERE ${whereClause}
-      ORDER BY e.start_date ASC
-      ${limitClause}
-    `, queryParams);
-    
-    const events = result.rows.map(row => ({
-      id: row.id,
-      title: row.title,
-      description: row.description || '',
-      startDate: row.start_date ? new Date(row.start_date).toISOString() : '',
-      endDate: row.end_date ? new Date(row.end_date).toISOString() : '',
-      allDay: row.all_day || false,
-      location: row.location || undefined,
-      attendees: row.attendees || [],
-      createdBy: row.created_by,
-      visibility: row.visibility || 'all_members',
-      visibleToMembers: row.visible_to_members || [],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
-    }));
-    
-    res.json(events);
-  } catch (error) {
-    console.error('Get events error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.get('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const eventId = req.params.id;
-    const pool = await getOrgPool(orgId);
-    
-    const result = await pool.query(`
-      SELECT 
-        e.id,
-        e.title,
-        e.description,
-        e.start_date,
-        e.end_date,
-        e.all_day,
-        e.location,
-        e.attendees,
-        e.created_by,
-        e.visibility,
-        e.visible_to_members,
-        e.created_at,
-        e.updated_at
-      FROM events e
-      WHERE e.id = $1 AND (
-        -- Creator always has access
-        e.created_by = $2
-        -- OR event visibility is 'all_members' (default - visible to all org members)
-        OR (e.visibility = 'all_members' OR e.visibility IS NULL)
-        -- OR event visibility is 'specific_members' and user is in visible_to_members
-        OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $3::jsonb)
-        -- OR user is in attendees
-        OR (e.attendees IS NOT NULL AND e.attendees @> $3::jsonb)
-      )
-    `, [eventId, userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-    
-    const row = result.rows[0];
-    const event = {
-      id: row.id,
-      title: row.title,
-      description: row.description || '',
-      startDate: row.start_date ? new Date(row.start_date).toISOString() : '',
-      endDate: row.end_date ? new Date(row.end_date).toISOString() : '',
-      allDay: row.all_day || false,
-      location: row.location || undefined,
-      attendees: row.attendees || [],
-      createdBy: row.created_by,
-      visibility: row.visibility || 'all_members',
-      visibleToMembers: row.visible_to_members || [],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
-    };
-    
-    res.json(event);
-  } catch (error) {
-    console.error('Get event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.post('/api/events', authenticateUser, requireOrgMembership, validateRequest(createEventSchema), async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const { title, description, startDate, endDate, allDay, location, attendees, visibility, visibleToMembers } = req.body;
-    
-    // Validation handled by middleware
-    const eventVisibility = visibility || 'all_members';
-    const visibleToMembersArray = (eventVisibility === 'specific_members' && visibleToMembers)
-      ? visibleToMembers.map((email: string) => email.toLowerCase())
-      : [];
-    
-    const attendeesArray = attendees ? attendees.map((email: string) => email.toLowerCase()) : [];
-    
-    // Parse dates
-    let startDateParsed = new Date(startDate);
-    let endDateParsed = new Date(endDate);
-    
-    // If allDay is true, set time to start of day
-    if (allDay) {
-      startDateParsed.setHours(0, 0, 0, 0);
-      endDateParsed.setHours(23, 59, 59, 999);
-    }
-    
-    const pool = await getOrgPool(orgId);
-    const eventId = crypto.randomBytes(16).toString('hex');
-    
-    await pool.query(`
-      INSERT INTO events (
-        id, title, description, start_date, end_date, all_day, location, 
-        attendees, created_by, visibility, visible_to_members, created_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-    `, [
-      eventId,
-      title,
-      description || null,
-      startDateParsed,
-      endDateParsed,
-      allDay || false,
-      location || null,
-      JSON.stringify(attendeesArray),
-      userEmail.toLowerCase(),
-      eventVisibility,
-      JSON.stringify(visibleToMembersArray),
-      Date.now(),
-    ]);
-    
-    res.status(201).json({ id: eventId, title, startDate, endDate });
-  } catch (error) {
-    console.error('Create event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.patch('/api/events/:id', authenticateUser, requireOrgMembership, validateRequest(updateEventSchema), async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const eventId = req.params.id;
-    const updates = req.body;
-    const pool = await getOrgPool(orgId);
-    
-    // Check if event exists and user has permission
-    const eventCheck = await pool.query(
-      'SELECT created_by FROM events WHERE id = $1',
-      [eventId]
-    );
-    
-    if (eventCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-    
-    // Only creator can update visibility
-    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
-      const eventCreatorEmail = eventCheck.rows[0].created_by?.toLowerCase();
-      const normalizedUserEmail = userEmail.toLowerCase();
-      
-      if (eventCreatorEmail !== normalizedUserEmail) {
-        return res.status(403).json({ error: 'Only the event creator can update visibility settings' });
-      }
-    }
-    
-    const setClauses: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
-    
-    // Map camelCase to snake_case for database
-    const fieldMap: { [key: string]: string } = {
-      title: 'title',
-      description: 'description',
-      location: 'location',
-      allDay: 'all_day',
-    };
-    
-    // Handle visibility separately
-    if (updates.visibility !== undefined) {
-      const validVisibility = ['all_members', 'specific_members'];
-      const eventVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
-      setClauses.push(`visibility = $${paramIndex}`);
-      values.push(eventVisibility);
-      paramIndex++;
-      
-      // Handle visibleToMembers
-      if (eventVisibility === 'specific_members') {
-        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
-          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
-          setClauses.push(`visible_to_members = $${paramIndex}`);
-          values.push(JSON.stringify(visibleToMembersArray));
-          paramIndex++;
-        } else {
-          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-        }
-      } else {
-        setClauses.push(`visible_to_members = $${paramIndex}`);
-        values.push(JSON.stringify([]));
-        paramIndex++;
-      }
-    }
-    
-    // Handle dates
-    if (updates.startDate !== undefined || updates.endDate !== undefined) {
-      let startDate = updates.startDate;
-      let endDate = updates.endDate;
-      
-      // If only one date is provided, fetch the other from database
-      if (startDate === undefined || endDate === undefined) {
-        const currentEvent = await pool.query(
-          'SELECT start_date, end_date, all_day FROM events WHERE id = $1',
-          [eventId]
-        );
-        if (currentEvent.rows.length > 0) {
-          if (startDate === undefined) {
-            startDate = currentEvent.rows[0].start_date.toISOString();
-          }
-          if (endDate === undefined) {
-            endDate = currentEvent.rows[0].end_date.toISOString();
-          }
-        }
-      }
-      
-      const startDateParsed = new Date(startDate);
-      const endDateParsed = new Date(endDate);
-      
-      if (isNaN(startDateParsed.getTime()) || isNaN(endDateParsed.getTime())) {
-        return res.status(400).json({ error: 'Invalid date format' });
-      }
-      
-      const allDay = updates.allDay !== undefined ? updates.allDay : (await pool.query('SELECT all_day FROM events WHERE id = $1', [eventId])).rows[0]?.all_day || false;
-      
-      if (allDay) {
-        startDateParsed.setHours(0, 0, 0, 0);
-        endDateParsed.setHours(23, 59, 59, 999);
-      }
-      
-      if (endDateParsed < startDateParsed) {
-        return res.status(400).json({ error: 'End date must be after start date' });
-      }
-      
-      setClauses.push(`start_date = $${paramIndex}`);
-      values.push(startDateParsed);
-      paramIndex++;
-      
-      setClauses.push(`end_date = $${paramIndex}`);
-      values.push(endDateParsed);
-      paramIndex++;
-    }
-    
-    // Handle attendees
-    if (updates.attendees !== undefined) {
-      if (Array.isArray(updates.attendees)) {
-        const attendeesArray = updates.attendees.map((email: string) => email.toLowerCase());
-        setClauses.push(`attendees = $${paramIndex}`);
-        values.push(JSON.stringify(attendeesArray));
-        paramIndex++;
-      } else {
-        return res.status(400).json({ error: 'attendees must be an array' });
-      }
-    }
-    
-    // Handle other fields
-    Object.entries(updates).forEach(([key, value]) => {
-      if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && key !== 'startDate' && key !== 'endDate' && key !== 'attendees' && fieldMap[key]) {
-        const dbField = fieldMap[key];
-        setClauses.push(`${dbField} = $${paramIndex}`);
-        values.push(value);
-        paramIndex++;
-      }
-    });
-    
-    if (setClauses.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
-    }
-    
-    setClauses.push(`updated_at = NOW()`);
-    values.push(eventId);
-    
-    await pool.query(`
-      UPDATE events 
-      SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex}
-    `, values);
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Update event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.delete('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const eventId = req.params.id;
-    const pool = await getOrgPool(orgId);
-    
-    // Check if user is the creator
-    const eventCheck = await pool.query(
-      'SELECT created_by FROM events WHERE id = $1',
-      [eventId]
-    );
-    
-    if (eventCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-    
-    const eventCreatorEmail = eventCheck.rows[0].created_by?.toLowerCase();
-    const normalizedUserEmail = userEmail.toLowerCase();
-    
-    if (eventCreatorEmail !== normalizedUserEmail) {
-      return res.status(403).json({ error: 'Only the event creator can delete the event' });
-    }
-    
-    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Delete event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-// ============================================================================
 // MESSAGES ENDPOINTS (Firestore Only)
 // ============================================================================
 
@@ -6070,7 +5707,7 @@ async function getApiKeyFromSecretManager(): Promise<string> {
 
   try {
     const projectId = serviceAccount.project_id;
-    const secretName = `projects/${projectId}/secrets/api-key/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('api-key')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     const apiKey = version.payload?.data?.toString() || '';
     
@@ -6114,7 +5751,7 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
 
   try {
     const projectId = serviceAccount.project_id;
-    const secretName = `projects/${projectId}/secrets/firebase-config/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('firebase-config')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     
     // Get the raw data - it might be a Buffer or Uint8Array
@@ -6228,7 +5865,7 @@ async function getGA4MeasurementIdFromSecretManager(): Promise<string | null> {
 
   try {
     const projectId = serviceAccount.project_id;
-    const secretName = `projects/${projectId}/secrets/ga4-measurement-id/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('ga4-measurement-id')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     
     // Get the raw data - it might be a Buffer or Uint8Array
@@ -6506,20 +6143,10 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
 
 setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAccount, db, requireOrgOwner);
 
-// ============================================================================
-// CALL ENDPOINTS (Firestore - Optional, can also use Firestore directly)
-// ============================================================================
-
-setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 setupFileEndpoints(app, authenticateUser, storage);
 setupDocumentUploadEndpoints(app, authenticateUser, requireOrgMembership, storage);
 
-// ============================================================================
-// MESSAGE ENDPOINTS (Firestore)
-// ============================================================================
-
-setupMessageEndpoints(app, authenticateUser, db, storage);
 
 // ============================================================================
 // UPDATE ENDPOINTS (Project and Task Progress Updates)
@@ -6539,11 +6166,6 @@ setupQueryEndpoints(app, authenticateUser, requireOrgMembership);
 
 setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
 
-// ============================================================================
-// LIVEKIT ENDPOINTS (LiveKit SFU token generation)
-// ============================================================================
-
-setupLiveKitEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
@@ -7391,10 +7013,6 @@ app.use((req, res, next) => {
 // Create HTTP server (needed for WebSocket support)
 const server = http.createServer(app);
 
-// Set up WebSocket server for LiveKit audio streaming
-setupLiveKitWebSocketServer(server);
-// Initialize audio recorder with Firestore for org-slug lookup
-setFirestoreDb(db);
 
 // Start deployment completion worker
 import { startDeploymentWorker } from './workers/deployment-worker.js';

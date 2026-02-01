@@ -7,6 +7,7 @@ import { PubSub } from '@google-cloud/pubsub';
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { getCredentialPath } from '../utils/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -17,7 +18,7 @@ let callEventsTopic: any = null;
 
 // Get project ID from credentials
 function getProjectId(): string {
-  const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+  const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
   if (existsSync(serviceAccountPath)) {
     const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
     return serviceAccount.project_id;
@@ -29,7 +30,7 @@ function getProjectId(): string {
 function getPubSubClient(): PubSub {
   if (!pubsubClient) {
     const projectId = getProjectId();
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
     if (existsSync(serviceAccountPath)) {
       pubsubClient = new PubSub({
         projectId,

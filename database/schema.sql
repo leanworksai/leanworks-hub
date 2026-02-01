@@ -290,48 +290,6 @@ COMMENT ON COLUMN task_comments.created_at IS 'When this comment was created';
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 
 -- ============================================================================
--- EVENTS TABLES
--- ============================================================================
-
--- Events table
-CREATE TABLE IF NOT EXISTS events (
-  id VARCHAR(50) PRIMARY KEY,
-  title VARCHAR(255) NOT NULL,
-  description TEXT,
-  start_date TIMESTAMP NOT NULL,
-  end_date TIMESTAMP NOT NULL,
-  all_day BOOLEAN DEFAULT false,
-  location VARCHAR(255),
-  attendees JSONB DEFAULT '[]'::jsonb, -- Array of user emails
-  created_by VARCHAR(255) NOT NULL,  -- References user in shared DB (email)
-  visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
-  visible_to_members JSONB DEFAULT '[]'::jsonb,
-  created_at BIGINT,
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON COLUMN events.id IS 'Primary key - Unique event identifier (VARCHAR 50)';
-COMMENT ON COLUMN events.title IS 'Event title/name';
-COMMENT ON COLUMN events.description IS 'Event description or agenda';
-COMMENT ON COLUMN events.start_date IS 'Event start date and time';
-COMMENT ON COLUMN events.end_date IS 'Event end date and time';
-COMMENT ON COLUMN events.all_day IS 'Whether this is an all-day event (true) or has specific times (false)';
-COMMENT ON COLUMN events.location IS 'Event location or meeting link';
-COMMENT ON COLUMN events.attendees IS 'JSONB array of user email strings invited to this event';
-COMMENT ON COLUMN events.created_by IS 'Email address of user who created this event (references global users table in shared database)';
-COMMENT ON COLUMN events.visibility IS 'Access control level: all_members (everyone in org) or specific_members (restricted to visible_to_members list)';
-COMMENT ON COLUMN events.visible_to_members IS 'JSONB array of user email strings who can access this event when visibility=specific_members';
-COMMENT ON COLUMN events.created_at IS 'Event creation timestamp (BIGINT, likely Unix timestamp)';
-COMMENT ON COLUMN events.updated_at IS 'Last modification time (auto-updated by trigger)';
-
-CREATE INDEX IF NOT EXISTS idx_events_start_date ON events(start_date);
-CREATE INDEX IF NOT EXISTS idx_events_end_date ON events(end_date);
-CREATE INDEX IF NOT EXISTS idx_events_created_by ON events(created_by);
-CREATE INDEX IF NOT EXISTS idx_events_visibility ON events(visibility);
-CREATE INDEX IF NOT EXISTS idx_events_visible_to_members ON events USING GIN (visible_to_members);
-CREATE INDEX IF NOT EXISTS idx_events_attendees ON events USING GIN (attendees);
-
--- ============================================================================
 -- UPDATES TABLES
 -- ============================================================================
 
@@ -420,6 +378,12 @@ CREATE TABLE IF NOT EXISTS docs (
   owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
   team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
+  folder_id VARCHAR(50) REFERENCES docs(id) ON DELETE SET NULL,
+  is_folder BOOLEAN DEFAULT false,
+  doc_type VARCHAR(50) DEFAULT 'rich_text' CHECK (doc_type IN ('rich_text', 'pdf', 'docx', 'pptx', 'xlsx', 'csv')),
+  file_metadata JSONB DEFAULT '{}'::jsonb,
+  processing_status VARCHAR(50) DEFAULT 'completed' CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
+  processing_error TEXT,
   tags JSONB DEFAULT '[]'::jsonb,
   metadata JSONB DEFAULT '{}'::jsonb,
   visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
@@ -431,6 +395,10 @@ CREATE TABLE IF NOT EXISTS docs (
 CREATE INDEX IF NOT EXISTS idx_docs_owner ON docs(owner_email);
 CREATE INDEX IF NOT EXISTS idx_docs_project ON docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_docs_team ON docs(team_id);
+CREATE INDEX IF NOT EXISTS idx_docs_folder_id ON docs(folder_id);
+CREATE INDEX IF NOT EXISTS idx_docs_is_folder ON docs(is_folder);
+CREATE INDEX IF NOT EXISTS idx_docs_doc_type ON docs(doc_type);
+CREATE INDEX IF NOT EXISTS idx_docs_processing_status ON docs(processing_status);
 CREATE INDEX IF NOT EXISTS idx_docs_created_at ON docs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_docs_visibility ON docs(visibility);
 CREATE INDEX IF NOT EXISTS idx_docs_visible_to_members ON docs USING GIN (visible_to_members);
@@ -510,9 +478,6 @@ CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks FOR EACH ROW EXECU
 
 DROP TRIGGER IF EXISTS update_docs_updated_at ON docs;
 CREATE TRIGGER update_docs_updated_at BEFORE UPDATE ON docs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_events_updated_at ON events;
-CREATE TRIGGER update_events_updated_at BEFORE UPDATE ON events FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
 -- TRANSCRIPTION TABLES (Voice Call Transcription)

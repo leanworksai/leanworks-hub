@@ -58,23 +58,28 @@ spec:
           value: "postgres"
         - name: DB_REGION
           value: "us-west1"
-        - name: LIVEKIT_URL
-          # Production: Use subdomain with SSL via ingress
-          # The ingress routes livekit.leanworks.ai directly to LiveKit service
-          # This handles TLS termination and WebSocket upgrades
-          value: "wss://livekit.leanworks.ai"
-          # Alternative: Use LoadBalancer IP directly (requires TLS on LiveKit or will fail)
-          # value: "wss://136.117.244.184:7881"
-          # For local development, use:
-          # value: "ws://localhost:7880"
         - name: GOOGLE_CLOUD_PROJECT
           value: "leanworks-474204"
-        - name: PUBSUB_AUDIO_CHUNKS_TOPIC
-          value: "audio-chunks"
-        - name: PUBSUB_CALL_EVENTS_TOPIC
-          value: "call-events"
         - name: AUDIO_STORAGE_BUCKET
-          value: "leanworks-prod"
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: AUDIO_STORAGE_BUCKET
+        - name: DB_INSTANCE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: DB_INSTANCE_NAME
+        - name: FIRESTORE_DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: FIRESTORE_DATABASE_NAME
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: ENVIRONMENT
         livenessProbe:
           httpGet:
             path: /api/health

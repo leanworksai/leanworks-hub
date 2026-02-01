@@ -23,5 +23,5 @@ dist-ssr
 *.sln
 *.sw?
 
-gcp_credential.json
+gcp_credential*
 .env

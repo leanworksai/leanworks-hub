@@ -9,7 +9,6 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { OrgProvider } from "@/contexts/OrgContext";
 import { trackPageView, setNavigationMethod } from "@/lib/analytics";
 import { useTimeOnPage } from "@/hooks/useTimeOnPage";
-import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedDocsProvider } from "@/contexts/SelectedDocsContext";
@@ -19,7 +18,6 @@ import { SelectedTextContextProvider } from "@/contexts/SelectedTextContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { AIChat } from "./components/AIChat";
-import { GlobalCallListener } from "./components/GlobalCallListener";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import VerifyEmail from "./pages/VerifyEmail";
@@ -36,13 +34,11 @@ import TaskDetail from "./pages/TaskDetail";
 import { DocsLayout } from "./components/DocsLayout";
 import DocsPlaceholder from "./pages/DocsPlaceholder";
 import DocDetail from "./pages/DocDetail";
-import Calendar from "./pages/Calendar";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Organizations from "./pages/Organizations";
 import Subscription from "./pages/Subscription";
 import NotFound from "./pages/NotFound";
-import Chats from "./pages/Chats";
 
 const queryClient = new QueryClient();
 
@@ -104,11 +100,6 @@ const AppRoutesContent = () => {
       return `Doc Detail - ${docId}`;
     }
     
-    // Calendar
-    if (pathname === '/calendar') return 'Calendar';
-    
-    // Chats
-    if (pathname === '/chats') return 'Chats';
     
     // Teams (redirected but track for completeness)
     if (pathname === '/teams') return 'Teams';
@@ -220,26 +211,6 @@ const AppRoutesContent = () => {
           <Route path=":docId" element={<DocDetail />} />
         </Route>
         <Route
-          path="/calendar"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Calendar />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/chats"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Chats />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/profile"
           element={
             <ProtectedRoute>
@@ -283,7 +254,6 @@ const AppRoutesContent = () => {
         <Route path="*" element={<NotFound />} />
       </Routes>
       {user && !isHomePage && <AIChat />}
-      {user && <GlobalCallListener />}
     </>
   );
 };
@@ -311,8 +281,7 @@ const App = () => {
       <TooltipProvider>
         <AuthProvider>
           <OrgProvider>
-            <WebRTCProvider>
-              <PageContextProvider>
+            <PageContextProvider>
                 <SelectedTextContextProvider>
                   <SelectionModeProvider>
                     <SelectedProjectsProvider>
@@ -326,8 +295,7 @@ const App = () => {
                     </SelectedProjectsProvider>
                   </SelectionModeProvider>
                 </SelectedTextContextProvider>
-              </PageContextProvider>
-            </WebRTCProvider>
+            </PageContextProvider>
           </OrgProvider>
         </AuthProvider>
       </TooltipProvider>
