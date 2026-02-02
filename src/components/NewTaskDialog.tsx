@@ -783,7 +783,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
                         </Button>
                       </FormControl>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[400px] p-0">
+                    <PopoverContent className="w-[400px] p-0" portalled={false}>
                       <Command>
                         <CommandInput placeholder={selectedProjectId ? "Search project members..." : "Search organization members..."} />
                         <CommandList>

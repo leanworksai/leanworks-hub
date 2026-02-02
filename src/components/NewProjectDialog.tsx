@@ -95,7 +95,6 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
 
   // Convert org members to a format suitable for selection
   const availableMembers = orgMembers
-    .filter(member => member.email.toLowerCase() !== user?.email?.toLowerCase()) // Exclude current user
     .map(member => ({
       email: member.email,
       name: `${member.firstName || ''} ${member.lastName || ''}`.trim() || member.email,
@@ -356,7 +355,7 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
                     </Button>
                   </FormControl>
                 </PopoverTrigger>
-                <PopoverContent className="w-[400px] p-0">
+                <PopoverContent className="w-[400px] p-0" portalled={false}>
                   <Command>
                     <CommandInput placeholder="Search organization members..." />
                     <CommandList>

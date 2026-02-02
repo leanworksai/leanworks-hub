@@ -678,7 +678,7 @@ export default function Teams() {
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-[400px] p-0">
+                <PopoverContent className="w-[400px] p-0" portalled={false}>
                   <Command>
                     <CommandInput placeholder="Search users..." />
                     <CommandList>
@@ -829,7 +829,7 @@ export default function Teams() {
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-[400px] p-0">
+                <PopoverContent className="w-[400px] p-0" portalled={false}>
                   <Command>
                     <CommandInput placeholder="Search users..." />
                     <CommandList>

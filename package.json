@@ -17,6 +17,8 @@
     "db:init": "tsx database/init-schema.ts",
     "db:migrate": "tsx scripts/run-migration-all-orgs.ts",
     "db:migrate:dry-run": "tsx scripts/run-migration-all-orgs.ts --dry-run",
+    "db:sync-users": "tsx scripts/sync-org-users.ts",
+    "db:sync-users:dry-run": "tsx scripts/sync-org-users.ts --dry-run",
     "test:transcription": "tsx scripts/test-transcription.ts"
   },
   "dependencies": {
