@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getDbInstanceName, getCredentialPath } from '../server/utils/env.js';
+import { getDbInstanceName, getCredentialPath, getSecretName } from '../server/utils/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -65,12 +65,7 @@ async function getPostgresPassword(): Promise<string> {
   }
 
   try {
-    // Import isLocalDev at the function level to avoid circular dependencies
-    const { isLocalDev } = await import('../server/utils/env.js');
-    
-    // Use dev-prefixed secret for local development
-    const secretPrefix = isLocalDev() ? 'dev-' : '';
-    const secretName = `projects/${projectId}/secrets/${secretPrefix}postgresdb-password/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     cachedPassword = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');

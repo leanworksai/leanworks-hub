@@ -68,7 +68,7 @@ spec:
       volumes:
       - name: gcp-credentials
         secret:
-          secretName: gcp-credentials
+          secretName: __GCP_SECRET__
 ---
 apiVersion: v1
 kind: Service

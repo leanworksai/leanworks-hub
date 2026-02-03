@@ -28,7 +28,7 @@ spec:
         effect: "NoSchedule"
       containers:
       - name: leanworks-hub
-        image: us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:latest
+        image: __IMAGE__
         imagePullPolicy: Always
         ports:
         - containerPort: 80
@@ -111,7 +111,7 @@ spec:
       volumes:
       - name: gcp-credentials
         secret:
-          secretName: gcp-credentials
+          secretName: __GCP_SECRET__
 
 ---
 apiVersion: v1

@@ -369,9 +369,14 @@ export function ChatMessage({
   theme = "default",
 }: ChatMessageProps) {
   const isAIChatTheme = theme === "ai-chat";
-  const timestamp = message.timestamp instanceof Date 
-    ? message.timestamp 
-    : new Date(message.timestamp);
+  const timestamp = (() => {
+    if (message.timestamp instanceof Date) {
+      return isNaN(message.timestamp.getTime()) ? new Date() : message.timestamp;
+    } else {
+      const parsed = new Date(message.timestamp);
+      return isNaN(parsed.getTime()) ? new Date() : parsed;
+    }
+  })();
   
   const userId = 'userId' in message ? message.userId : undefined;
   const role = 'role' in message ? message.role : (isLean ? 'assistant' : 'user');

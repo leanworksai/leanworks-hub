@@ -52,7 +52,7 @@ import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/sub
 import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
 import { queryTaskProgressUpdatesSchema, queryProjectProgressUpdatesSchema } from './validation/update-schemas.js';
 import { convertJsonToHtml, convertJsonToHtmlWithPositions } from './utils/contentUtils.js';
-import { getStorageBucket, getFirestoreDatabaseName, getSecretName, getCredentialPath } from './utils/env.js';
+import { getStorageBucket, getFirestoreDatabaseName, getSecretName, getCredentialPath, isLocalDev } from './utils/env.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -5677,6 +5677,206 @@ app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) =>
   } catch (error) {
     console.error('Toggle like error:', error);
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ============================================================================
+// CLEAR CHAT HISTORY ENDPOINT (Firestore Only)
+// ============================================================================
+
+// Handler for clear chat history (shared by both endpoints)
+const clearChatHistoryHandler = async (req: any, res: any) => {
+  try {
+    const userEmail = (req as any).userEmail?.toLowerCase();
+    const chatId = decodeURIComponent(req.params.chatId);
+
+    // Only allow AI assistant chats
+    if (!chatId.startsWith('ai-assistant-')) {
+      return res.status(400).json({ error: 'Only AI assistant chats are supported' });
+    }
+
+    // Verify the user owns this chat (AI chats include user email)
+    if (!chatId.endsWith(`-${userEmail}`)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+    const collectionPath = await getOrgCollectionPath('messages', orgId);
+
+    // Delete all messages in the chat
+    const chatQuery = db.collection(collectionPath).where('chatId', '==', chatId);
+    const snapshot = await chatQuery.get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ error: 'Chat not found or already empty' });
+    }
+
+    // Delete messages in batches
+    const batch = db.batch();
+    snapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+    });
+
+    await batch.commit();
+
+    console.log(`✅ Cleared ${snapshot.docs.length} messages from chat: ${chatId}`);
+    res.json({
+      success: true,
+      message: `Cleared ${snapshot.docs.length} messages from chat history`,
+      messagesDeleted: snapshot.docs.length
+    });
+  } catch (error) {
+    console.error('Clear chat history error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+};
+
+// DELETE /api/messages/clear/:chatId - Clear chat history
+app.delete('/api/messages/clear/:chatId', authenticateUser, clearChatHistoryHandler);
+
+// ============================================================================
+// AI CHAT STREAMING ENDPOINT (Proxies to external AI service)
+// ============================================================================
+
+app.post('/api/messages/stream', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const { chatId, message, citedContext, orgId, orgSlug, imageUrls } = req.body;
+
+    // Validate required fields
+    if (!chatId || !message) {
+      return res.status(400).json({ error: 'chatId and message are required' });
+    }
+
+    // Determine the external AI service URL
+    const aiServiceBase = isLocalDev()
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
+      : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+
+    const aiServiceUrl = `${aiServiceBase}/api/ask`;
+
+    // Prepare headers for the AI service request
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // Use Bearer token for production, API key for local testing
+    if (isLocalDev()) {
+      // Local testing: use API key
+      try {
+        const apiKey = await getApiKeyFromSecretManager();
+        headers['X-API-Key'] = apiKey;
+      } catch (error) {
+        console.error('Failed to get API key for streaming, request may fail:', error);
+        // Continue anyway - the AI service might handle auth differently
+      }
+    } else {
+      // Production (GKE): use Bearer token
+      // Get the Bearer token from the incoming request
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        headers['Authorization'] = authHeader;
+      } else {
+        // Fallback to API key if Bearer token not available
+        console.warn(`⚠️ No Bearer token in request, falling back to API key for ${userEmail}`);
+        try {
+          const apiKey = await getApiKeyFromSecretManager();
+          headers['X-API-Key'] = apiKey;
+        } catch (error) {
+          console.error('Failed to get API key, request may fail:', error);
+        }
+      }
+    }
+
+    // Check and increment AI usage BEFORE making the AI call
+    const sharedPool = await getSharedPool();
+    const usageCheck = await checkAndIncrementAiUsage(userEmail, sharedPool, false);
+    if (!usageCheck.allowed) {
+      return res.status(429).json({
+        error: usageCheck.error,
+        retryAfter: usageCheck.retryAfter
+      });
+    }
+
+    // Prepare request payload for the Python ask API
+    const requestPayload: any = {
+      user_id: userEmail,
+      org_slug: orgSlug,
+      session_id: chatId,
+      query: message,
+      stream: true
+    };
+
+    if (citedContext) {
+      requestPayload.cited_context = citedContext;
+    }
+
+    if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+      requestPayload.images = imageUrls;
+    }
+
+    console.log(`🚀 [Streaming] Proxying to ${aiServiceUrl} for user ${userEmail}`);
+
+    // Make streaming request to the Python ask API
+    const aiResponse = await fetch(aiServiceUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestPayload),
+    });
+
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { error: `AI service error: ${aiResponse.status} ${aiResponse.statusText}` };
+      }
+      return res.status(aiResponse.status).json(errorData);
+    }
+
+    // Set up SSE headers for the response
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+      'Connection': 'keep-alive',
+    });
+
+    // Stream the response from the Python ask API to the client
+    const reader = aiResponse.body?.getReader();
+    if (!reader) {
+      return res.status(500).json({ error: 'No response body from AI service' });
+    }
+
+    const decoder = new TextDecoder();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        res.write(chunk);
+      }
+    } catch (error) {
+      console.error('Error streaming response:', error);
+      // Try to send an error event if possible
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`);
+      } catch {
+        // Connection might already be closed
+      }
+    } finally {
+      res.end();
+    }
+
+  } catch (error) {
+    console.error('Error in streaming endpoint:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? (error as Error).stack : undefined
+    });
   }
 });
 

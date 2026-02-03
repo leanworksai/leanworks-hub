@@ -14,6 +14,14 @@ export function isLocalDev(): boolean {
 }
 
 /**
+ * Determines if the application is running in a dev environment (local or dev cluster)
+ * @returns true if ENVIRONMENT=dev, NODE_ENV=development, or no DB_HOST set
+ */
+export function isDevEnvironment(): boolean {
+  return process.env.ENVIRONMENT === 'dev' || process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
+}
+
+/**
  * Gets the appropriate database instance name based on environment
  * @returns 'leanworks-dev' for local dev, otherwise DB_INSTANCE_NAME env var or 'leanworks-prod'
  */
@@ -60,10 +68,10 @@ export function getFirestoreDatabaseName(): string {
 /**
  * Gets the appropriate secret name based on environment
  * @param baseName - The base secret name (e.g., 'postgresdb-password')
- * @returns 'dev-{baseName}' for local dev, otherwise baseName for production
+ * @returns 'dev-{baseName}' for local/dev, otherwise baseName for production
  */
 export function getSecretName(baseName: string): string {
-  if (isLocalDev()) {
+  if (isDevEnvironment()) {
     return `dev-${baseName}`;
   }
   return baseName;

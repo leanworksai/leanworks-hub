@@ -5,7 +5,7 @@
  * Shows upload progress and processing status.
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
@@ -72,6 +72,16 @@ export function DocumentUploadDialog({
     message: '',
   });
   const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      document.body.style.pointerEvents = '';
+    }
+
+    return () => {
+      document.body.style.pointerEvents = '';
+    };
+  }, [open]);
 
   // Reset state when dialog closes
   const handleOpenChange = (newOpen: boolean) => {

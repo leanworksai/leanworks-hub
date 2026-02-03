@@ -558,10 +558,14 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
 
   // Helper function to get date string for a message (in user's timezone)
   const getMessageDateString = (message: Message | ChannelMessage): string => {
-    const timestamp = message.timestamp instanceof Date 
-      ? message.timestamp 
-      : new Date(message.timestamp);
-    
+    let timestamp: Date;
+    if (message.timestamp instanceof Date) {
+      timestamp = isNaN(message.timestamp.getTime()) ? new Date() : message.timestamp;
+    } else {
+      const parsed = new Date(message.timestamp);
+      timestamp = isNaN(parsed.getTime()) ? new Date() : parsed;
+    }
+
     // Get date string in user's timezone
     const dateStr = new Intl.DateTimeFormat('en-US', {
       timeZone: userTimezone,
@@ -569,7 +573,7 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
       month: 'numeric',
       day: 'numeric',
     }).format(timestamp);
-    
+
     return dateStr;
   };
 
@@ -584,9 +588,13 @@ export const ChatMessageList = forwardRef<ChatMessageListRef, ChatMessageListPro
 
     visibleMessages.forEach((message, index) => {
       const messageDate = getMessageDateString(message);
-      const timestamp = message.timestamp instanceof Date 
-        ? message.timestamp 
-        : new Date(message.timestamp);
+      let timestamp: Date;
+      if (message.timestamp instanceof Date) {
+        timestamp = isNaN(message.timestamp.getTime()) ? new Date() : message.timestamp;
+      } else {
+        const parsed = new Date(message.timestamp);
+        timestamp = isNaN(parsed.getTime()) ? new Date() : parsed;
+      }
       
       // Add date separator before first message or when date changed
       if (index === 0 || (lastDate !== null && lastDate !== messageDate)) {

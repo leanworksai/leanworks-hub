@@ -6,10 +6,11 @@ metadata:
     app: leanworks-hub
     environment: dev
   annotations:
-    # Static IP name for dev environment
+    # Static IP for dev environment
     kubernetes.io/ingress.global-static-ip-name: "leanworks-dev-hub-ip"
+    # SSL certificate for HTTPS
     networking.gke.io/managed-certificates: "dev-leanworks-ai-ssl-cert"
-    # HTTPS only - disable HTTP
+    # HTTPS only
     kubernetes.io/ingress.allow-http: "false"
     # Backend config annotation
     kubernetes.io/ingress.backend-config: '{"default": "leanworks-hub-backend-config"}'

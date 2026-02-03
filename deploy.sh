@@ -9,7 +9,15 @@ DB_INSTANCE_NAME="leanworks-${ENVIRONMENT}"
 AUDIO_STORAGE_BUCKET="leanworks-${ENVIRONMENT}"
 FIRESTORE_DATABASE_NAME="leanworks-${ENVIRONMENT}"
 REGION="us-west1"  # Update this to your cluster's region
-GCP_CREDENTIAL_FILE="gcp_credential.json"
+if [ "$ENVIRONMENT" = "dev" ]; then
+    GCP_CREDENTIAL_FILE="gcp_credential_dev.json"
+    CONFIGMAP_FILE="k8s/configmap-dev.yaml"
+    GCP_SECRET_NAME="gcp-credentials-dev"
+else
+    GCP_CREDENTIAL_FILE="gcp_credential.json"
+    CONFIGMAP_FILE="k8s/configmap.yaml"
+    GCP_SECRET_NAME="gcp-credentials"
+fi
 ARTIFACT_REGISTRY_REPO="docker-repo"  # Artifact Registry repository name
 
 # Colors for output
@@ -76,14 +84,14 @@ gcloud container clusters get-credentials "$CLUSTER_NAME" --region="$REGION" --p
 
 # Create Kubernetes secret for GCP credentials (for Cloud SQL Proxy)
 echo -e "${YELLOW}Creating Kubernetes secret for GCP credentials...${NC}"
-if kubectl get secret gcp-credentials -n default &>/dev/null; then
+if kubectl get secret "$GCP_SECRET_NAME" -n default &>/dev/null; then
     echo -e "${YELLOW}Secret already exists, updating...${NC}"
-    kubectl create secret generic gcp-credentials \
+    kubectl create secret generic "$GCP_SECRET_NAME" \
         --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE" \
         --dry-run=client -o yaml | kubectl apply -f -
     echo -e "${GREEN}Secret updated!${NC}"
 else
-    kubectl create secret generic gcp-credentials \
+    kubectl create secret generic "$GCP_SECRET_NAME" \
         --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE"
     echo -e "${GREEN}Secret created!${NC}"
 fi
@@ -103,6 +111,27 @@ if [ -z "$GSA_EMAIL" ]; then
 fi
 
 echo -e "${GREEN}Using GCP service account: ${GSA_EMAIL}${NC}"
+
+# Ensure Kubernetes service account exists and is annotated for Workload Identity
+echo -e "${YELLOW}Ensuring Kubernetes service account exists...${NC}"
+kubectl apply -f k8s/serviceaccount.yaml
+kubectl annotate serviceaccount leanworks-hub-sa \
+    iam.gke.io/gcp-service-account="${GSA_EMAIL}" \
+    --overwrite 1>/dev/null
+echo -e "${GREEN}Kubernetes service account annotated for Workload Identity.${NC}"
+
+# Allow KSA to impersonate GSA (Workload Identity)
+echo -e "${YELLOW}Binding Workload Identity user role...${NC}"
+if ! gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="serviceAccount:${PROJECT_ID}.svc.id.goog[default/leanworks-hub-sa]" \
+    --quiet 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  Could not bind Workload Identity user role automatically.${NC}"
+    echo -e "${YELLOW}   If Workload Identity is enabled, run manually:${NC}"
+    echo -e "   gcloud iam service-accounts add-iam-policy-binding ${GSA_EMAIL} \\"
+    echo -e "     --role=\"roles/iam.workloadIdentityUser\" \\"
+    echo -e "     --member=\"serviceAccount:${PROJECT_ID}.svc.id.goog[default/leanworks-hub-sa]\""
+fi
 
 # Grant Cloud SQL Client role to the service account (if needed)
 echo -e "${YELLOW}Verifying Cloud SQL Client role for ${GSA_EMAIL}...${NC}"
@@ -138,10 +167,38 @@ docker push "$IMAGE_NAME:latest"
 
 # Apply Kubernetes manifests (for initial deployment or config changes)
 echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
+CONFIGMAP_TEMPLATE="${CONFIGMAP_FILE%.yaml}.tmpl.yaml"
+if [ -f "$CONFIGMAP_TEMPLATE" ]; then
+    CONFIGMAP_MANIFEST=$(mktemp)
+    sed -e "s|__PROJECT_ID__|$PROJECT_ID|g" \
+        "$CONFIGMAP_TEMPLATE" > "$CONFIGMAP_MANIFEST"
+    kubectl apply -f "$CONFIGMAP_MANIFEST"
+    rm -f "$CONFIGMAP_MANIFEST"
+else
+    kubectl apply -f "$CONFIGMAP_FILE"
+fi
 kubectl apply -f k8s/backend-config.yaml
-kubectl apply -f k8s/cloud-sql-proxy.yaml
-kubectl apply -f k8s/serviceaccount.yaml
-kubectl apply -f k8s/deployment.yaml
+SQL_PROXY_TEMPLATE="k8s/cloud-sql-proxy.tmpl.yaml"
+if [ -f "$SQL_PROXY_TEMPLATE" ]; then
+    SQL_PROXY_MANIFEST=$(mktemp)
+    sed -e "s|__GCP_SECRET__|$GCP_SECRET_NAME|g" \
+        "$SQL_PROXY_TEMPLATE" > "$SQL_PROXY_MANIFEST"
+    kubectl apply -f "$SQL_PROXY_MANIFEST"
+    rm -f "$SQL_PROXY_MANIFEST"
+else
+    kubectl apply -f k8s/cloud-sql-proxy.yaml
+fi
+DEPLOYMENT_TEMPLATE="k8s/deployment.tmpl.yaml"
+if [ -f "$DEPLOYMENT_TEMPLATE" ]; then
+    DEPLOYMENT_MANIFEST=$(mktemp)
+    sed -e "s|__IMAGE__|$FULL_IMAGE_NAME|g" \
+        -e "s|__GCP_SECRET__|$GCP_SECRET_NAME|g" \
+        "$DEPLOYMENT_TEMPLATE" > "$DEPLOYMENT_MANIFEST"
+    kubectl apply -f "$DEPLOYMENT_MANIFEST"
+    rm -f "$DEPLOYMENT_MANIFEST"
+else
+    kubectl apply -f k8s/deployment.yaml
+fi
 
 # Apply environment-specific ingress and certificates
 if [ "$ENVIRONMENT" = "dev" ]; then
@@ -156,14 +213,16 @@ fi
 echo -e "${YELLOW}Updating Kubernetes deployment with new image tag...${NC}"
 kubectl set image deployment/leanworks-hub leanworks-hub="$FULL_IMAGE_NAME" -n default
 
-# Force a rollout restart to ensure the new image is pulled
-echo -e "${YELLOW}Forcing deployment rollout...${NC}"
+# Force a rollout restart to ensure the new image/config are applied
+echo -e "${YELLOW}Forcing deployment rollouts...${NC}"
 kubectl rollout restart deployment/leanworks-hub
+kubectl rollout restart deployment/cloud-sql-proxy
 
 # Wait for deployments to be ready
 
-echo -e "${YELLOW}Waiting for backend deployment to be ready...${NC}"
+echo -e "${YELLOW}Waiting for deployments to be ready...${NC}"
 kubectl rollout status deployment/leanworks-hub
+kubectl rollout status deployment/cloud-sql-proxy
 
 # Note: LIVEKIT_URL is now handled by ConfigMap in deployment.yaml
 # No manual override needed - ConfigMap provides environment-specific URLs
@@ -195,4 +254,3 @@ fi
 
 echo -e "${GREEN}To get the external IPs manually, run:${NC}"
 echo "kubectl get service leanworks-hub-service"
-

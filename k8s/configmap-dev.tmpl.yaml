@@ -9,7 +9,7 @@ data:
   # Dev environment-specific configuration values
   AUDIO_STORAGE_BUCKET: "leanworks-dev"
   DB_INSTANCE_NAME: "leanworks-dev"
-  DB_INSTANCE_CONNECTION_STRING: "leanworks-474204:us-west1:leanworks-dev"
+  DB_INSTANCE_CONNECTION_STRING: "__PROJECT_ID__:us-west1:leanworks-dev"
   FIRESTORE_DATABASE_NAME: "leanworks-dev"
   CLUSTER_NAME: "leanworks-dev"
   ENVIRONMENT: "dev"

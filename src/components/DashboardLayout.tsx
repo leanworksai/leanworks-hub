@@ -1,6 +1,6 @@
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
-import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown, FileText, FolderKanban, CheckSquare, MessageSquare, Sparkles, CreditCard, Calendar } from "lucide-react";
+import { Bell, Search, X, User, Settings, LogOut, Check, Clock, Users, Building2, ChevronDown, FileText, FolderKanban, CheckSquare, MessageSquare, Sparkles, CreditCard } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Avatar, AvatarFallback } from "./ui/avatar";
@@ -832,10 +832,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                     <DropdownMenuItem onClick={() => navigate('/profile')}>
                       <User className="mr-2 h-4 w-4" />
                       <span>Profile</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => navigate('/calendar')}>
-                      <Calendar className="mr-2 h-4 w-4" />
-                      <span>Calendar</span>
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => navigate('/subscription')}>
                       <CreditCard className="mr-2 h-4 w-4" />

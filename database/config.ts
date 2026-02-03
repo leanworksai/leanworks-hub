@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getDbInstanceName, getDbName, isLocalDev } from '../server/utils/env.js';
+import { getDbInstanceName, getDbName, getCredentialPath, getSecretName, isLocalDev } from '../server/utils/env.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -30,7 +30,7 @@ if (existsSync(envPath)) {
 }
 
 // Read GCP credentials to get project ID
-const serviceAccountPath = join(__dirname, '../gcp_credential_dev.json');
+const serviceAccountPath = join(__dirname, '../', getCredentialPath());
 const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
 
 // Initialize Secret Manager client
@@ -46,12 +46,7 @@ const region = process.env.DB_REGION || 'us-west1';
 // Fetch PostgreSQL password from Secret Manager
 async function getPostgresPassword(): Promise<string> {
   try {
-    // Import isLocalDev at the function level to avoid circular dependencies
-    const { isLocalDev } = await import('../server/utils/env.js');
-    
-    // Use dev-prefixed secret for local development
-    const secretPrefix = isLocalDev() ? 'dev-' : '';
-    const secretName = `projects/${projectId}/secrets/${secretPrefix}postgresdb-password/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     const password = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');
@@ -236,4 +231,3 @@ process.on('SIGINT', closePool);
 
 // Export default (async getter)
 export default getPool;
-

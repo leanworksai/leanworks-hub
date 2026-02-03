@@ -155,13 +155,21 @@ export function AIChat() {
   const saveCachedMessages = useCallback((chatId: string, messages: ChatMessage[]) => {
     const cacheKey = getCacheKey(chatId);
     if (!cacheKey) return;
-    
+
     const lastSync = Date.now();
     try {
       const toCache = {
         messages: messages.map(msg => ({
           ...msg,
-          timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
+          timestamp: (() => {
+            if (msg.timestamp instanceof Date) {
+              return isNaN(msg.timestamp.getTime()) ? new Date().toISOString() : msg.timestamp.toISOString();
+            } else if (msg.timestamp) {
+              const parsed = new Date(msg.timestamp);
+              return isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+            }
+            return new Date().toISOString();
+          })(),
           citedContext: msg.citedContext || null,
         })),
         lastSync,

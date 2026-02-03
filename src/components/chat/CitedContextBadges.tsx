@@ -81,7 +81,7 @@ export function CitedContextBadges({ citedContext, className, theme = "default" 
             const isSelectedTextClickable = !itemType && 'docId' in item && item.docId;
             
             return (
-              <span key={item.id || index}>
+              <span key={`${itemType || 'text'}-${item.id || index}`}>
                 {isClickable ? (
                   <button
                     onClick={(e) => handleItemClick(itemType!, item.id, e)}

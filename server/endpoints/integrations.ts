@@ -7,7 +7,7 @@ import express from 'express';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getOrgPool, getOrgPoolBySlug, getSharedPool, getOrgSlugById } from '../../database/multi-tenant-pool.js';
-import { getSecretName as getEnvironmentSecretName, isLocalDev } from '../utils/env.js';
+import { getSecretName as getEnvironmentSecretName } from '../utils/env.js';
 import crypto from 'crypto';
 import { validateRequest } from '../middleware/validate-request.js';
 import {
@@ -78,8 +78,7 @@ function getSecretName(orgSlug: string, integrationId: string): string {
   const sanitizedIntegrationId = integrationId.toLowerCase().replace(/[^a-z0-9]/g, '');
   const baseName = `integrations-${slugForSecret}-${sanitizedIntegrationId}`;
 
-  // Prepend 'dev-' prefix for local development
-  return isLocalDev() ? `dev-${baseName}` : baseName;
+  return getEnvironmentSecretName(baseName);
 }
 
 // Helper function to save secret to GCP Secret Manager
@@ -512,4 +511,3 @@ export function setupIntegrationEndpoints(
     }
   });
 }
-
