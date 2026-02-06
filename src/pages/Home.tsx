@@ -1005,15 +1005,6 @@ export default function Home() {
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="rounded-lg bg-muted/50 p-4 border border-border">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Brain className="h-4 w-4 text-primary" />
-                      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Live Transcription</span>
-                    </div>
-                    <p className="text-sm font-medium leading-relaxed">
-                      "I'll update the roadmap by EOD and share it with the team. Can you check the latest designs?"
-                    </p>
-                  </div>
                   
                   <div className="rounded-lg bg-muted/50 p-4 border border-border">
                     <div className="flex items-center gap-2 mb-2">

@@ -221,7 +221,6 @@ Business logic and core services:
 
 - **query-service.ts** - AI-powered query and search logic
 - **email.ts** - Email sending (Nodemailer)
-- **pubsub-events.ts** - Google Pub/Sub event handling
 - **data-pipeline.ts** - Data transformation and processing
 
 #### Workers (`server/workers/`)

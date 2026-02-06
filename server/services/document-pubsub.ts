@@ -55,7 +55,7 @@ function getPubSubClient(): PubSub {
 /**
  * Get or create document-processing topic
  */
-async function getDocProcessingTopic() {
+export async function getDocProcessingTopic() {
   if (!docProcessingTopic) {
     const pubsub = getPubSubClient();
     const topicName = process.env.PUBSUB_DOC_PROCESSING_TOPIC || 'document-processing';

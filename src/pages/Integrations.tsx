@@ -94,6 +94,13 @@ const integrations = [
     category: "Project Management",
     logo: "/integration-logos/clickup.svg",
   },
+  {
+    id: "workday",
+    name: "Workday",
+    description: "HRIS and employee data",
+    category: "HR",
+    logo: "/integration-logos/workday.svg",
+  },
 ];
 
 export default function Integrations() {
@@ -156,7 +163,7 @@ export default function Integrations() {
     }
   }, [toast, loadIntegrations]);
 
-  const handleConnect = (integrationId: string) => {
+  const handleConnect = async (integrationId: string) => {
     if (integrationId === "github") {
       // GitHub uses OAuth flow, not a form dialog
       if (!currentOrg?.slug) {
@@ -167,6 +174,30 @@ export default function Integrations() {
         });
         return;
       }
+
+      try {
+        // First check if GitHub app is already installed
+        const result = await integrationsService.checkGitHubInstallation();
+
+        if (result.installation) {
+          // Installation exists, save it directly
+          await integrationsService.saveGitHubInstallation(result.installation.id);
+
+          toast({
+            title: "Success",
+            description: `GitHub connected successfully using existing installation for ${result.installation.account.login}`,
+          });
+
+          // Reload integrations to show connected status
+          loadIntegrations();
+          return;
+        }
+      } catch (error: any) {
+        console.warn('[GitHub Connect] Could not check existing installations, proceeding with normal flow:', error);
+        // Continue with normal flow if check fails
+      }
+
+      // No existing installation found, redirect to GitHub installation
       // GitHub App installation URL with state parameter containing org slug
       // The callback URL should be configured in GitHub App settings as:
       // https://leanworks.ai/api/integrations/github/callback

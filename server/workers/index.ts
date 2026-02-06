@@ -3,12 +3,10 @@
  * Runs as a separate process to handle async processing
  */
 
-import { startWorker } from './transcription-worker.js';
 import { startDocumentProcessingWorker, stopDocumentProcessingWorker } from './document-processing-worker.js';
 
 // Start all workers
 Promise.all([
-  startWorker(),
   startDocumentProcessingWorker()
 ]).catch((error) => {
   console.error('❌ Fatal error starting workers:', error);

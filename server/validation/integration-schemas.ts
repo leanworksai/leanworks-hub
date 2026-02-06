@@ -37,6 +37,14 @@ const clickupIntegrationSchema = z.object({
   apiToken: z.string().min(1, 'API token is required'),
 });
 
+// Workday integration schema
+const workdayIntegrationSchema = z.object({
+  clientId: z.string().min(1, 'Client ID is required'),
+  clientSecret: z.string().min(1, 'Client Secret is required'),
+  tenantId: z.string().min(1, 'Tenant ID is required'),
+  baseUrl: z.string().min(1, 'Base URL is required'),
+});
+
 // Union schema for all integrations
 export const connectIntegrationSchema = z.union([
   slackIntegrationSchema,
@@ -45,6 +53,7 @@ export const connectIntegrationSchema = z.union([
   notionIntegrationSchema,
   linearIntegrationSchema,
   clickupIntegrationSchema,
+  workdayIntegrationSchema,
 ]);
 
 // Export individual schemas for specific use
@@ -55,6 +64,7 @@ export {
   notionIntegrationSchema,
   linearIntegrationSchema,
   clickupIntegrationSchema,
+  workdayIntegrationSchema,
 };
 
 // Export types
@@ -64,3 +74,4 @@ export type OutlookIntegrationInput = z.infer<typeof outlookIntegrationSchema>;
 export type NotionIntegrationInput = z.infer<typeof notionIntegrationSchema>;
 export type LinearIntegrationInput = z.infer<typeof linearIntegrationSchema>;
 export type ClickUpIntegrationInput = z.infer<typeof clickupIntegrationSchema>;
+export type WorkdayIntegrationInput = z.infer<typeof workdayIntegrationSchema>;

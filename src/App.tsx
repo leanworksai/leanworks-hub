@@ -27,6 +27,8 @@ import Teams from "./pages/Teams";
 import TeamDetail from "./pages/TeamDetail";
 import Users from "./pages/Users";
 import Integrations from "./pages/Integrations";
+import Plans from "./pages/Plans";
+import PlanDetail from "./pages/PlanDetail";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
@@ -78,6 +80,13 @@ const AppRoutesContent = () => {
     // Main pages
     if (pathname === '/') return 'Home';
     if (pathname === '/team') return 'Team';
+    
+    // Plans
+    if (pathname === '/plans') return 'Plans';
+    if (pathname.startsWith('/plans/')) {
+      const planId = pathname.split('/plans/')[1];
+      return `Plan Detail - ${planId}`;
+    }
     
     // Projects
     if (pathname === '/projects') return 'Projects';
@@ -153,6 +162,26 @@ const AppRoutesContent = () => {
             <ProtectedRoute>
               <DashboardLayout>
                 <Integrations />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plans"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Plans />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plans/:id"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <PlanDetail />
               </DashboardLayout>
             </ProtectedRoute>
           }

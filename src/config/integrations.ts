@@ -125,5 +125,42 @@ export const integrationConfigs: Record<string, IntegrationConfig> = {
       },
     ],
   },
+  workday: {
+    id: "workday",
+    name: "Workday",
+    title: "Workday",
+    description:
+      "Enter your Workday OAuth credentials to connect your tenant. You can create these in your Workday OAuth client settings.",
+    fields: [
+      {
+        id: "clientId",
+        label: "Client ID",
+        type: "text",
+        placeholder: "Your Workday OAuth client ID",
+        required: true,
+      },
+      {
+        id: "clientSecret",
+        label: "Client Secret",
+        type: "password",
+        placeholder: "Your Workday OAuth client secret",
+        required: true,
+      },
+      {
+        id: "tenantId",
+        label: "Tenant ID",
+        type: "text",
+        placeholder: "Your Workday tenant ID",
+        required: true,
+      },
+      {
+        id: "baseUrl",
+        label: "Base URL",
+        type: "text",
+        placeholder: "https://wd2-impl-services1.workday.com",
+        required: true,
+      },
+    ],
+  },
 };
 

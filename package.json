@@ -4,11 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run dev:proxy\" \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:stripe\"",
+    "dev": "concurrently \"npm run dev:proxy\" \"npm run dev:server\" \"npm run dev:client\" \"npm run dev:stripe\" \"npm run dev:worker\"",
     "dev:client": "vite",
     "dev:server": "NODE_ENV=development tsx --watch server/index.ts",
     "dev:proxy": "node scripts/dev-proxy.js",
     "dev:stripe": "stripe listen --forward-to localhost:3001/api/webhooks/stripe",
+    "dev:worker": "NODE_ENV=development tsx --watch server/workers/index.ts",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
@@ -18,8 +19,7 @@
     "db:migrate": "tsx scripts/run-migration-all-orgs.ts",
     "db:migrate:dry-run": "tsx scripts/run-migration-all-orgs.ts --dry-run",
     "db:sync-users": "tsx scripts/sync-org-users.ts",
-    "db:sync-users:dry-run": "tsx scripts/sync-org-users.ts --dry-run",
-    "test:transcription": "tsx scripts/test-transcription.ts"
+    "db:sync-users:dry-run": "tsx scripts/sync-org-users.ts --dry-run"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -29,6 +29,7 @@
     "@google-cloud/secret-manager": "^6.1.1",
     "@google-cloud/storage": "^7.0.0",
     "@hookform/resolvers": "^3.10.0",
+    "@octokit/app": "^14.1.0",
     "@pdf-lib/fontkit": "^1.1.1",
     "@radix-ui/react-accordion": "^1.2.11",
     "@radix-ui/react-alert-dialog": "^1.1.14",

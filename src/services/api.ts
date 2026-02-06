@@ -520,7 +520,7 @@ export const integrationsService = {
   },
 
   async disconnect(integrationId: string): Promise<void> {
-    const url = import.meta.env.DEV 
+    const url = import.meta.env.DEV
       ? `${API_BASE}/api/integrations/${integrationId}/disconnect`
       : `${API_BASE}/integrations/${integrationId}/disconnect`;
     const response = await authenticatedFetch(url, {
@@ -529,6 +529,44 @@ export const integrationsService = {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: 'Failed to disconnect integration' }));
       throw new Error(error.error || 'Failed to disconnect integration');
+    }
+  },
+
+  // GitHub-specific methods
+  async checkGitHubInstallation(): Promise<{
+    installation: {
+      id: number;
+      account: {
+        login: string;
+        id: number;
+        type: string;
+      };
+      repository_selection: string;
+      permissions: Record<string, string>;
+    } | null;
+  }> {
+    const url = import.meta.env.DEV
+      ? `${API_BASE}/api/integrations/github/check-installation`
+      : `${API_BASE}/integrations/github/check-installation`;
+    const response = await authenticatedFetch(url);
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to check GitHub installation' }));
+      throw new Error(error.error || 'Failed to check GitHub installation');
+    }
+    return response.json();
+  },
+
+  async saveGitHubInstallation(installationId: number): Promise<void> {
+    const url = import.meta.env.DEV
+      ? `${API_BASE}/api/integrations/github/save-installation`
+      : `${API_BASE}/integrations/github/save-installation`;
+    const response = await authenticatedFetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ installationId }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to save GitHub installation' }));
+      throw new Error(error.error || 'Failed to save GitHub installation');
     }
   },
 };
