@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Edit, Calendar, User, Target, TrendingUp, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,16 +12,47 @@ import { BudgetChart } from '@/components/plans/BudgetChart';
 import { ResourceAllocationTimeline } from '@/components/plans/ResourceAllocationTimeline';
 import { AIInsightsCard } from '@/components/plans/AIInsightsCard';
 import { generatePlanInsights } from '@/utils/aiInsightsGenerator';
+import type { PlanInsights } from '@/services/plansAI';
 import { calculateHealthScore, calculateBurnRate } from '@/utils/planCalculations';
 import { cn } from '@/lib/utils';
-import type { Objective } from '@/data/plansData';
+import type { Objective } from '@/types/plans';
+import { useAuth } from '@/contexts/AuthContext';
+import { useOrg } from '@/contexts/OrgContext';
 
 export default function PlanDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: plan, isLoading } = usePlanById(id!);
   const { data: allProjects = [] } = useUserProjects();
+  const { user } = useAuth();
+  const { currentOrg } = useOrg();
+  const [insights, setInsights] = useState<PlanInsights | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
   
+  useEffect(() => {
+    if (!plan || !user?.email || !currentOrg?.slug) {
+      setInsights(null);
+      return;
+    }
+
+    let isCancelled = false;
+    setInsightsLoading(true);
+
+    const loadInsights = async () => {
+      const aiInsights = await generatePlanInsights(user.email || '', currentOrg.slug, plan);
+      if (!isCancelled) {
+        setInsights(aiInsights);
+        setInsightsLoading(false);
+      }
+    };
+
+    loadInsights();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [plan, user?.email, currentOrg?.slug]);
+
   if (isLoading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -38,7 +70,6 @@ export default function PlanDetail() {
     );
   }
   
-  const insights = generatePlanInsights(plan);
   const healthBreakdown = calculateHealthScore(plan);
   const burnRate = calculateBurnRate(plan.spentToDate, plan.startDate, plan.endDate, plan.totalBudget);
   
@@ -148,13 +179,27 @@ export default function PlanDetail() {
       <div className="flex-1 overflow-auto p-6">
         <div className="max-w-7xl mx-auto space-y-6">
           {/* AI Insights */}
-          <AIInsightsCard
-            insights={insights}
-            onAskAI={() => {
-              // Would open AI chat with plan context
-              console.log('Open AI chat with plan context');
-            }}
-          />
+          {insightsLoading ? (
+            <Card>
+              <CardContent className="flex items-center justify-center py-10">
+                <p className="text-sm text-muted-foreground">Generating AI insights...</p>
+              </CardContent>
+            </Card>
+          ) : insights ? (
+            <AIInsightsCard
+              insights={insights}
+              onAskAI={() => {
+                // Would open AI chat with plan context
+                console.log('Open AI chat with plan context');
+              }}
+            />
+          ) : (
+            <Card>
+              <CardContent className="flex items-center justify-center py-10">
+                <p className="text-sm text-muted-foreground">No insights available</p>
+              </CardContent>
+            </Card>
+          )}
           
           {/* Objectives & Key Results */}
           <Card>
@@ -333,7 +378,7 @@ export default function PlanDetail() {
                               {project.status}
                             </Badge>
                             <span className="text-xs text-muted-foreground">
-                              {project.team} members
+                              {project.memberCount} members
                             </span>
                           </div>
                         </div>

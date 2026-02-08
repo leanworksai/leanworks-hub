@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { cn } from '@/lib/utils';
-import type { ResourceAllocation } from '@/data/plansData';
+import type { ResourceAllocation } from '@/types/plans';
 
 interface ResourceAllocationEditorProps {
   allocation: ResourceAllocation;

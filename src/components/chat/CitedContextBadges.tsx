@@ -1,4 +1,4 @@
-import { FolderOpen, CheckSquare, Users, StickyNote, FileText } from "lucide-react";
+import { FolderOpen, CheckSquare, StickyNote, FileText } from "lucide-react";
 import { CitedContext } from "./types";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "react-router-dom";
@@ -20,11 +20,10 @@ export function CitedContextBadges({ citedContext, className, theme = "default" 
   
   const hasProjects = citedContext.projects && citedContext.projects.length > 0;
   const hasTasks = citedContext.tasks && citedContext.tasks.length > 0;
-  const hasTeams = citedContext.teams && citedContext.teams.length > 0;
   const hasDocs = citedContext.docs && citedContext.docs.length > 0;
   const hasSelectedTexts = citedContext.selectedTexts && citedContext.selectedTexts.length > 0;
 
-  if (!hasProjects && !hasTasks && !hasTeams && !hasDocs && !hasSelectedTexts) {
+  if (!hasProjects && !hasTasks && !hasDocs && !hasSelectedTexts) {
     return null;
   }
 
@@ -154,12 +153,6 @@ export function CitedContextBadges({ citedContext, className, theme = "default" 
         citedContext.tasks!,
         isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-emerald-600 dark:text-emerald-400",
         'task'
-      )}
-      {hasTeams && renderSection(
-        <Users className="h-3 w-3" />,
-        "Teams",
-        citedContext.teams!,
-        isAIChatTheme ? "text-purple-600 dark:text-purple-400" : "text-indigo-600 dark:text-indigo-400"
       )}
       {hasDocs && renderSection(
         <StickyNote className="h-3 w-3" />,

@@ -1,39 +1,18 @@
-import { Sparkles, AlertTriangle, Lightbulb, TrendingUp, MessageSquare, ChevronRight, Activity, Zap } from 'lucide-react';
+import { Sparkles, AlertTriangle, Lightbulb, TrendingUp, MessageSquare, Activity, Zap } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import type { AIInsight } from '@/utils/aiInsightsGenerator';
+import type { PlanInsights } from '@/services/plansAI';
 
 interface AIInsightsCardProps {
-  insights: AIInsight[];
+  insights: PlanInsights;
   onAskAI?: () => void;
 }
 
 export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
-  const getIcon = (type: AIInsight['type']) => {
-    switch (type) {
-      case 'summary':
-        return Activity;
-      case 'risk':
-        return AlertTriangle;
-      case 'recommendation':
-        return Lightbulb;
-      case 'prediction':
-        return TrendingUp;
-      default:
-        return Sparkles;
-    }
-  };
-  
   const getSeverityBadge = (severity?: 'low' | 'medium' | 'high') => {
     if (!severity) return null;
-    
-    const variants = {
-      high: 'destructive',
-      medium: 'warning', // We'll style this manually since 'warning' isn't a standard variant
-      low: 'secondary',
-    };
     
     const styles = {
       high: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300 hover:bg-red-100/80",
@@ -47,12 +26,25 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
       </Badge>
     );
   };
-  
-  // Group insights by type
-  const summary = insights.find(i => i.type === 'summary');
-  const risks = insights.filter(i => i.type === 'risk');
-  const recommendations = insights.filter(i => i.type === 'recommendation');
-  const predictions = insights.filter(i => i.type === 'prediction');
+
+  const predictionItems = [
+    {
+      title: 'Budget Trend',
+      description: insights.predictions?.budget_trend?.replace('_', ' ') || 'Unknown',
+    },
+    {
+      title: 'Timeline Trend',
+      description: insights.predictions?.timeline_trend?.replace('_', ' ') || 'Unknown',
+    },
+    {
+      title: 'Estimated Completion',
+      description: insights.predictions?.estimated_completion_date || 'Unknown',
+    },
+    {
+      title: 'Confidence',
+      description: insights.predictions?.confidence_level || 'Unknown',
+    },
+  ];
   
   return (
     <Card className="overflow-hidden border-0 shadow-sm bg-gradient-to-br from-white to-slate-50 dark:from-slate-950 dark:to-slate-900 ring-1 ring-slate-200 dark:ring-slate-800">
@@ -93,20 +85,20 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
           {/* Left Column: Summary & Risks */}
           <div className="p-5 space-y-6">
             {/* Summary Section */}
-            {summary && (
+            {insights.summary && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                   <Activity className="h-4 w-4 text-slate-500" />
                   <h3>Executive Summary</h3>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-                  {summary.description}
+                  {insights.summary}
                 </div>
               </div>
             )}
             
             {/* Risks Section */}
-            {risks.length > 0 && (
+            {insights.risks?.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
@@ -114,13 +106,13 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
                     <h3>Risk Assessment</h3>
                   </div>
                   <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-800/50">
-                    {risks.length} Detected
+                    {insights.risks.length} Detected
                   </Badge>
                 </div>
                 
                 <div className="space-y-3">
-                  {risks.slice(0, 3).map((risk) => (
-                    <div key={risk.id} className="group relative p-3 rounded-lg border border-slate-100 dark:border-slate-800 hover:border-amber-200 dark:hover:border-amber-800/50 hover:bg-amber-50/30 dark:hover:bg-amber-900/10 transition-all duration-200">
+                  {insights.risks.slice(0, 3).map((risk, idx) => (
+                    <div key={`${risk.title}-${idx}`} className="group relative p-3 rounded-lg border border-slate-100 dark:border-slate-800 hover:border-amber-200 dark:hover:border-amber-800/50 hover:bg-amber-50/30 dark:hover:bg-amber-900/10 transition-all duration-200">
                       <div className="flex items-start justify-between gap-3 mb-1">
                         <h4 className="text-sm font-medium text-slate-800 dark:text-slate-200 group-hover:text-amber-700 dark:group-hover:text-amber-400 transition-colors">
                           {risk.title}
@@ -140,7 +132,7 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
           {/* Right Column: Recommendations & Predictions */}
           <div className="p-5 space-y-6 bg-slate-50/30 dark:bg-slate-900/30">
             {/* Recommendations Section */}
-            {recommendations.length > 0 && (
+            {insights.recommendations?.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                   <Zap className="h-4 w-4 text-violet-500" />
@@ -148,8 +140,8 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
                 </div>
                 
                 <div className="space-y-3">
-                  {recommendations.slice(0, 2).map((rec) => (
-                    <div key={rec.id} className="flex gap-3 p-3 rounded-lg bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800 shadow-sm">
+                  {insights.recommendations.slice(0, 2).map((rec, idx) => (
+                    <div key={`${rec.title}-${idx}`} className="flex gap-3 p-3 rounded-lg bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800 shadow-sm">
                       <div className="mt-0.5 p-1.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 shrink-0">
                         <Lightbulb className="h-3.5 w-3.5" />
                       </div>
@@ -168,7 +160,7 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
             )}
             
             {/* Predictions Section */}
-            {predictions.length > 0 && (
+            {predictionItems.length > 0 && (
               <div className="space-y-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                   <TrendingUp className="h-4 w-4 text-emerald-500" />
@@ -176,8 +168,8 @@ export function AIInsightsCard({ insights, onAskAI }: AIInsightsCardProps) {
                 </div>
                 
                 <div className="space-y-2">
-                  {predictions.map((pred) => (
-                    <div key={pred.id} className="flex items-start gap-3 p-3 rounded-lg border border-emerald-100 dark:border-emerald-900/30 bg-emerald-50/30 dark:bg-emerald-900/10">
+                  {predictionItems.map((pred) => (
+                    <div key={pred.title} className="flex items-start gap-3 p-3 rounded-lg border border-emerald-100 dark:border-emerald-900/30 bg-emerald-50/30 dark:bg-emerald-900/10">
                       <div className="mt-0.5">
                         <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
                       </div>

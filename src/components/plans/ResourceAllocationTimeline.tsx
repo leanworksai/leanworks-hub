@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { ResourceAllocation } from '@/data/plansData';
+import type { ResourceAllocation } from '@/types/plans';
 
 interface ResourceAllocationTimelineProps {
   allocations: ResourceAllocation[];

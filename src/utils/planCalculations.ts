@@ -1,6 +1,6 @@
 // Plan Calculations - Health scoring, budget, and resource utilities
 
-import type { Plan, ResourceAllocation } from '@/data/plansData';
+import type { Plan, ResourceAllocation } from '@/types/plans';
 
 export interface HealthScoreBreakdown {
   overall: number;

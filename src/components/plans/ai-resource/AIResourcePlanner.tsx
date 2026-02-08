@@ -5,27 +5,37 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ResourcePlanCard } from './ResourcePlanCard';
 import { generateResourcePlans } from '@/utils/aiResourcePlanner';
 import type { AIResourcePlan } from '@/utils/aiResourcePlanner';
-import type { ResourceAllocation } from '@/data/plansData';
+import type { Plan, ResourceAllocation } from '@/types/plans';
 
 interface AIResourcePlannerProps {
+  userId: string;
+  orgSlug: string;
   planContext: {
+    name: string;
     totalBudget: number;
+    currency?: string;
     startDate: string;
     endDate: string;
     projectIds: string[];
     objectives: any[];
+    budgetCategories?: any[];
   };
   onSelectPlan: (allocations: ResourceAllocation[], strategy: 'cost' | 'time' | 'quality') => void;
   onBack: () => void;
 }
 
-export function AIResourcePlanner({ planContext, onSelectPlan, onBack }: AIResourcePlannerProps) {
+export function AIResourcePlanner({ userId, orgSlug, planContext, onSelectPlan, onBack }: AIResourcePlannerProps) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedPlans, setGeneratedPlans] = useState<AIResourcePlan[] | null>(null);
   const [loadingMessage, setLoadingMessage] = useState('Analyzing team capabilities...');
   const [selectedStrategy, setSelectedStrategy] = useState<'cost' | 'time' | 'quality' | null>(null);
   
   const generatePlans = async () => {
+    if (!userId || !orgSlug) {
+      setGeneratedPlans(null);
+      setIsGenerating(false);
+      return;
+    }
     setIsGenerating(true);
     setLoadingMessage('Analyzing team capabilities...');
     
@@ -39,14 +49,39 @@ export function AIResourcePlanner({ planContext, onSelectPlan, onBack }: AIResou
     await new Promise(resolve => setTimeout(resolve, 600));
     
     // Generate the actual plans
-    const plans = generateResourcePlans(planContext);
+    const plan: Plan = {
+      id: 'new-plan',
+      name: planContext.name,
+      description: '',
+      objectives: planContext.objectives || [],
+      totalBudget: planContext.totalBudget,
+      currency: planContext.currency || 'USD',
+      budgetCategories: planContext.budgetCategories || [],
+      spentToDate: 0,
+      startDate: planContext.startDate,
+      endDate: planContext.endDate,
+      projectIds: planContext.projectIds || [],
+      resourceAllocations: [],
+      milestones: [],
+      status: 'planning',
+      healthScore: 100,
+      healthTrend: 'stable',
+      ownerEmail: userId,
+      ownerName: '',
+      teamSize: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      recentActivity: [],
+    };
+
+    const plans = await generateResourcePlans(userId, orgSlug, plan);
     setGeneratedPlans(plans);
     setIsGenerating(false);
   };
   
   const handleSelectPlan = (plan: AIResourcePlan) => {
     setSelectedStrategy(plan.strategy);
-    onSelectPlan(plan.allocations, plan.strategy);
+    onSelectPlan(plan.allocations as ResourceAllocation[], plan.strategy);
   };
   
   // Auto-generate on mount

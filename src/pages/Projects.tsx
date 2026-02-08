@@ -90,7 +90,7 @@ function ProjectCard({
                   <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground overflow-hidden">
                     <div className="flex items-center gap-1">
                       <Users className="h-3.5 w-3.5" />
-                      <span>{project.team} members</span>
+                      <span>{project.memberCount} members</span>
                     </div>
                     {project.dueDate && (
                       <div className="flex items-center gap-1">

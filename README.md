@@ -1,9 +1,10 @@
 # Leanworks Hub
 
-A comprehensive team collaboration platform built with modern technologies. Leanworks Hub combines task management, document collaboration, and AI-powered assistance into a unified workspace.
+A comprehensive collaboration platform built with modern technologies. Leanworks Hub combines task management, document collaboration, and AI-powered assistance into a unified workspace.
 
 ## Table of Contents
 
+- [Demo Mode](#demo-mode)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
 - [Architecture Overview](#architecture-overview)
@@ -19,6 +20,25 @@ A comprehensive team collaboration platform built with modern technologies. Lean
 - [Getting Started](#getting-started)
 - [Development](#development)
 - [Deployment](#deployment)
+
+## Demo Mode
+
+Try Leanworks Hub instantly without any setup or external dependencies!
+
+```bash
+npm run dev:demo
+```
+
+Open [http://localhost:8081](http://localhost:8081) and you'll automatically be logged in with pre-populated demo data including projects, tasks, plans, and AI agents.
+
+**Demo Mode Features:**
+- ✅ No database, Firebase, or external API setup required
+- ✅ Auto-login as demo@example.com with full feature access
+- ✅ Realistic sample data (5 users, 5 projects, 16 tasks, 3 plans, 5 AI agents)
+- ✅ All CRUD operations work (changes persist during session)
+- ✅ Mock AI responses and integrations
+
+[Learn more about Demo Mode →](./DEMO.md)
 
 ## Tech Stack
 
@@ -108,7 +128,6 @@ Core application pages that define the main user workflows:
 - **Projects.tsx / ProjectDetail.tsx** - Project management and individual project views
 - **Tasks.tsx / TaskDetail.tsx** - Task tracking with detailed task views
 - **DocsCatalog.tsx / DocDetail.tsx** - Document library and collaborative document editing
-- **Teams.tsx / TeamDetail.tsx** - Team management and team-specific views
 - **Integrations.tsx** - Third-party integrations (Slack, GitHub, Linear, Atlassian, etc.)
 - **Organizations.tsx** - Organization settings and management
 - **Settings.tsx** - User and workspace settings
@@ -160,7 +179,6 @@ Custom React hooks for business logic and data management:
 - **useDocs.ts** - Document management
 - **useTasks.ts** - Task management
 - **useProjects.ts** - Project management
-- **useTeams.ts** - Team management
 - **useUsers.ts** - User data and user map
 - **useUpdates.ts** - Update notifications
 
@@ -270,6 +288,7 @@ Kubernetes deployment configuration:
 
 - **deployment.yaml** - Main application deployment
 - **cloud-sql-proxy.yaml** - Cloud SQL proxy for database access
+- **migration-job.yaml** - One-off Job to run database migrations against prod
 - **serviceaccount.yaml** - Kubernetes service account
 - **ingress.yaml** - Ingress routing configuration
 - **backend-config.yaml** - Google Cloud backend configuration
@@ -573,7 +592,7 @@ Frontend handles error
 
 ### Overview
 
-Leanworks Hub implements a comprehensive access management system that controls user permissions across different organizational scopes and resource types. The system supports fine-grained role-based access control (RBAC) with visibility levels for documents, tasks, and team resources.
+Leanworks Hub implements a comprehensive access management system that controls user permissions across different organizational scopes and resource types. The system supports fine-grained role-based access control (RBAC) with visibility levels for documents, tasks, and organization resources.
 
 ### Permission Model
 
@@ -581,16 +600,14 @@ Leanworks Hub implements a comprehensive access management system that controls 
 ```
 Global (App Admin)
   └─ Organization (Admin, Member)
-      └─ Team (Owner, Lead, Member)
-          └─ Project (Owner, Member)
-              └─ Resource (Owner, Editor, Viewer)
+      └─ Project (Owner, Member)
+          └─ Resource (Owner, Editor, Viewer)
 ```
 
 **Resource Types:**
 - Documents (docs)
 - Tasks
 - Projects
-- Teams
 - Chat Conversations
 
 ### Role Hierarchy
@@ -598,11 +615,8 @@ Global (App Admin)
 | Role | Scope | Permissions |
 |------|-------|-------------|
 | **App Admin** | Global | Full system access, org management, user management |
-| **Org Admin** | Organization | Manage teams, users, billing, integrations |
-| **Org Member** | Organization | Create teams, projects, access shared resources |
-| **Team Owner** | Team | Create projects, manage team members, delete team |
-| **Team Lead** | Team | Create projects, manage team members (limited) |
-| **Team Member** | Team | Create and edit own resources, collaborate |
+| **Org Admin** | Organization | Manage users, billing, integrations |
+| **Org Member** | Organization | Create projects, access shared resources |
 | **Project Owner** | Project | Manage project members, configure project settings |
 | **Project Member** | Project | Create and edit tasks, view project resources |
 | **Document Owner** | Document | Full edit rights, sharing control, deletion |
@@ -615,8 +629,6 @@ Global (App Admin)
 ```
 PRIVATE
   └─ Only owner and explicitly shared users
-TEAM
-  └─ All team members
 ORGANIZATION
   └─ All organization members
 PUBLIC
@@ -629,8 +641,6 @@ PRIVATE
   └─ Assigned users only
 PROJECT
   └─ Project members
-TEAM
-  └─ Team members
 ```
 
 ### Authentication & Authorization Flow
@@ -675,17 +685,10 @@ org_members
   ├─ role (admin, member)
   └─ created_at
 
--- Team membership
-team_members
-  ├─ team_id
-  ├─ user_id
-  ├─ role (owner, lead, member)
-  └─ joined_at
-
 -- Document access control
 doc_visibility
   ├─ doc_id
-  ├─ visibility_type (private, team, organization, public)
+  ├─ visibility_type (private, organization, public)
   ├─ owner_id
   └─ shared_with[] (user IDs for private docs)
 
@@ -730,7 +733,7 @@ Components conditionally render based on permissions:
 
 // Conditionally render pages
 {userRole === 'admin' && <AdminPanel />}
-{hasTeamAccess && <TeamResources />}
+{hasProjectAccess && <ProjectResources />}
 ```
 
 ### Multi-tenant Isolation
@@ -754,7 +757,7 @@ WHERE organization_id = $1
     owner_id = $2
     -- User is assignee
     OR assignee_id = $2
-    -- Task is in user's team/project
+    -- Task is in user's project
     OR project_id IN (SELECT project_id FROM user_projects WHERE user_id = $2)
   )
 ```
@@ -794,18 +797,6 @@ DELETE /api/tasks/:id
   └─ Require task owner or project owner role
 ```
 
-**Teams Endpoint:**
-```
-GET /api/teams/:id
-  └─ Require team member role
-  
-POST /api/teams/:id/members
-  └─ Require team owner or lead role
-  
-DELETE /api/teams/:id/members/:userId
-  └─ Require team owner role
-```
-
 ### Invitation & Access Grant System
 
 **Invitation Flow:**
@@ -826,7 +817,7 @@ Grants access to resource
 ```
 
 **Accepted Invitation:**
-- User membership added to team/organization
+- User membership added to organization
 - User receives notifications for relevant channels
 - User can see shared resources immediately
 
@@ -878,7 +869,7 @@ Audit log includes:
 ```
 ✓ User can access own resources
 ✓ User cannot access others' private resources
-✓ User can access team/org resources based on membership
+✓ User can access org resources based on membership
 ✓ Role elevation is prevented
 ✓ Permissions are revoked when membership ends
 ✓ Cross-org data leakage is prevented
@@ -948,9 +939,6 @@ npm run dev:stripe       # Stripe webhook listener
 # Initialize database schema
 npm run db:init
 
-# Sync users from Teams
-npm run sync:users
-
 ```
 
 ### Linting & Building
@@ -993,8 +981,8 @@ RUN apt-get update && apt-get install -y libreoffice && rm -rf /var/lib/apt/list
 ### Docker
 
 ```bash
-# Build Docker image
-docker build -t leanworks-hub .
+# Build Docker image (use --platform linux/amd64 when building on Mac M1/M2 so GKE amd64 nodes can pull it)
+docker build --platform linux/amd64 -t leanworks-hub .
 
 # Run container
 docker run -p 3000:3000 leanworks-hub
@@ -1009,6 +997,75 @@ kubectl apply -f k8s/
 # Scale replicas
 kubectl scale deployment leanworks-hub --replicas=3
 ```
+
+### Database migrations (production)
+
+To run migrations against the prod database (e.g. after adding new tables like AI agents, plans), use the migration Job. It connects to prod via `cloud-sql-proxy-service` and fetches the postgres password from GCP Secret Manager.
+
+```bash
+# Run the migration Job (ensure Cloud SQL Proxy is running)
+kubectl apply -f k8s/migration-job.yaml
+
+# Watch logs
+kubectl logs -f job/db-migration
+
+# Check status
+kubectl get job db-migration
+```
+
+If you see **"no match for platform in manifest"**: you built the image on a different architecture (e.g. Mac M1/M2 = arm64). GKE nodes are linux/amd64. Rebuild with `--platform linux/amd64` and push, then re-run the Job:
+
+```bash
+# Replace TAG with the tag your Job/deployment uses (e.g. 20260207-192131 or latest)
+docker build --platform linux/amd64 -t us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:TAG .
+docker push us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:TAG
+kubectl delete job db-migration
+kubectl apply -f k8s/migration-job.yaml
+kubectl logs -f job/db-migration
+```
+
+If you see **"Cannot find module .../scripts/run-migration-all-orgs.ts"**: the image tag you use does not include the `scripts/` folder. Rebuild and push the **same tag** as the app deployment (so the cluster can pull it), then re-run the Job:
+
+```bash
+# Replace TAG with the same tag as your deployment (e.g. 20260207-192131). Use --platform linux/amd64 on Mac.
+docker build --platform linux/amd64 -t us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:TAG .
+docker push us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:TAG
+kubectl delete job db-migration
+kubectl apply -f k8s/migration-job.yaml
+kubectl logs -f job/db-migration
+```
+
+Before re-running: delete the completed job (`kubectl delete job db-migration`) or use a unique Job name by editing `metadata.name` in `k8s/migration-job.yaml`. The Job auto-deletes 24 hours after completion. Migrations are idempotent (orgs that already have the tables are skipped).
+
+**If you see "image can't be pulled" or "trying and failing to pull image":**
+
+1. **Get the exact error:**  
+   `kubectl describe pod -l job-name=db-migration`  
+   In the **Events** section at the bottom, look for `Failed` / `ErrImagePull` and the message (e.g. `unauthorized`, `not found`, or a permission error).
+
+2. **Confirm the image exists and you're in the right cluster:**  
+   `kubectl config current-context`  
+   From your machine (after `gcloud auth configure-docker us-west1-docker.pkg.dev`):  
+   `docker pull us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:latest`
+
+3. **If the deployment uses imagePullSecrets**, add the same to the Job:  
+   `kubectl get deployment leanworks-hub -o yaml | grep -A2 imagePullSecrets`  
+   If you see a secret name, add that under `spec.template.spec` in `k8s/migration-job.yaml` (see the commented block there).
+
+4. **Grant Artifact Registry read to the GKE node SA** (if Events say permission denied). For registry permission issues, check:
+
+1. **Exact error:** `kubectl describe pod -l job-name=db-migration` and look at Events (e.g. `ErrImagePull` / `ImagePullBackOff`).
+2. **Right cluster:** `kubectl config current-context` and `kubectl cluster-info` — ensure this is the cluster where the app is deployed.
+3. **Artifact Registry access:** The GKE node pool service account needs `roles/artifactregistry.reader` on the repo. If the cluster is in project `leanworks-474204`, grant it:
+   ```bash
+   # Get the node pool SA (often default compute SA)
+   gcloud container clusters describe CLUSTER_NAME --region us-west1 --format="value(nodeConfig.serviceAccount)"
+   # Then grant (use the SA from above):
+   gcloud artifacts repositories add-iam-policy-binding docker-repo \
+     --location=us-west1 \
+     --member="serviceAccount:NODE_SA_EMAIL" \
+     --role="roles/artifactregistry.reader"
+   ```
 
 ### Firebase Hosting
 

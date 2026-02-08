@@ -39,11 +39,10 @@ import { useOrg } from "@/contexts/OrgContext";
 import { usersService } from "@/services/api";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
-import { useJoinRequests, useApproveJoinRequest, useRejectJoinRequest, useInvitations, useAcceptInvitation, useDeclineInvitation, useSystemNotifications, useMarkNotificationRead, useDismissNotification } from "@/hooks/useTeams";
+import { useSystemNotifications, useMarkNotificationRead, useDismissNotification } from "@/hooks/useSystemNotifications";
 import { useProjects } from "@/hooks/useProjects";
 import { useTasks } from "@/hooks/useTasks";
 import { useDocs } from "@/hooks/useDocs";
-import type { TeamJoinRequest, TeamInvitation } from "@/data/teamsData";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -67,40 +66,17 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   const userTimezone = useUserTimezone();
   const { selectedProjects, clearSelection: clearProjects } = useSelectedProjects();
   const { selectedTasks, clearSelection: clearTasks } = useSelectedTasks();
-  const { data: joinRequests = [], isLoading: isLoadingRequests } = useJoinRequests();
-  const { data: invitations = [], isLoading: isLoadingInvitations } = useInvitations();
   const { data: systemNotifications = [], isLoading: isLoadingSystemNotifications } = useSystemNotifications();
   const markNotificationRead = useMarkNotificationRead();
   const dismissNotification = useDismissNotification();
-  const approveRequestMutation = useApproveJoinRequest();
-  const rejectRequestMutation = useRejectJoinRequest();
-  const acceptInvitationMutation = useAcceptInvitation();
-  const declineInvitationMutation = useDeclineInvitation();
-  
+
   // Fetch data for search
   const { data: projects = [] } = useProjects();
   const { data: tasks = [] } = useTasks();
   const { data: docs = [] } = useDocs();
-  
 
-  // Filter requests where current user is the owner (can manage)
-  const manageableRequests = joinRequests.filter(
-    (request: TeamJoinRequest) => 
-      request.ownerEmail?.toLowerCase() === user?.email?.toLowerCase() && 
-      request.status === 'pending'
-  );
-
-  // Filter invitations for the current user
-  const userInvitations = invitations.filter(
-    (invitation: TeamInvitation) => invitation.status === 'pending'
-  );
-
-  // Get total pending notifications count (unified notifications + team invitations + join requests)
-  const pendingRequestsCount = manageableRequests.length;
-  const pendingInvitationsCount = userInvitations.length;
   const unreadNotificationsCount = systemNotifications.filter(n => n.status === 'unread').length;
-  // Total: system notifications + team invitations + join requests
-  const totalNotificationsCount = pendingRequestsCount + pendingInvitationsCount + unreadNotificationsCount;
+  const totalNotificationsCount = unreadNotificationsCount;
 
 
   useEffect(() => {
@@ -181,47 +157,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
   // Format date for notifications (timezone-aware)
   const formatDate = (date: string | Date) => {
     return formatRelativeTime(date, userTimezone);
-  };
-
-  // Handle approve request
-  const handleApproveRequest = async (requestId: string) => {
-    try {
-      await approveRequestMutation.mutateAsync(requestId);
-      toast.success('Join request approved!');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to approve request');
-    }
-  };
-
-  // Handle reject request
-  const handleRejectRequest = async (requestId: string) => {
-    try {
-      await rejectRequestMutation.mutateAsync(requestId);
-      toast.success('Join request rejected');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to reject request');
-    }
-  };
-
-  // Handle accept invitation
-  const handleAcceptInvitation = async (invitationId: string) => {
-    try {
-      await acceptInvitationMutation.mutateAsync(invitationId);
-      toast.success('Invitation accepted! You are now a member of the team.');
-      navigate('/teams');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to accept invitation');
-    }
-  };
-
-  // Handle decline invitation
-  const handleDeclineInvitation = async (invitationId: string) => {
-    try {
-      await declineInvitationMutation.mutateAsync(invitationId);
-      toast.success('Invitation declined');
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to decline invitation');
-    }
   };
 
   // Handle accept org invitation
@@ -489,7 +424,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                       <span>Notifications</span>
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    {isLoadingRequests || isLoadingInvitations || isLoadingSystemNotifications ? (
+                    {isLoadingSystemNotifications ? (
                       <div className="p-4 text-center text-sm text-muted-foreground">
                         Loading notifications...
                       </div>
@@ -684,123 +619,6 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
                           });
                         })()}
 
-                        {/* Team Invitations */}
-                        {userInvitations.map((invitation: TeamInvitation) => (
-                          <div
-                            key={invitation.id}
-                            className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"
-                          >
-                            <div className="flex items-start gap-3 mb-3">
-                              <Avatar className="h-10 w-10 flex-shrink-0">
-                                <AvatarFallback className={`${getAvatarColor(invitation.inviterEmail || invitation.inviterName)} text-xs`}>
-                                  {getUserInitials(invitation.inviterName, invitation.inviterEmail)}
-                                </AvatarFallback>
-                              </Avatar>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <p className="font-semibold text-sm truncate">{invitation.inviterName}</p>
-                                  <Badge variant="outline" className="text-xs flex-shrink-0">
-                                    <Clock className="mr-1 h-3 w-3" />
-                                    Org Invitation
-                                  </Badge>
-                                </div>
-                                <p className="text-xs text-muted-foreground truncate mb-1">
-                                  {invitation.inviterEmail}
-                                </p>
-                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                  <Building2 className="h-3 w-3 flex-shrink-0" />
-                                  <span className="truncate">
-                                    Invited you to join <span className="font-medium text-foreground">{invitation.orgName}</span>
-                                  </span>
-                                </div>
-                                {invitation.createdAt && (
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    {formatDate(invitation.createdAt)}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="flex-1 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                onClick={() => handleDeclineOrgInvitation(invitation.id)}
-                              >
-                                <X className="mr-2 h-3 w-3" />
-                                Decline
-                              </Button>
-                              <Button
-                                size="sm"
-                                className="flex-1 bg-primary hover:bg-primary/90"
-                                onClick={() => handleAcceptOrgInvitation(invitation.id)}
-                              >
-                                <Check className="mr-2 h-3 w-3" />
-                                Accept
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                        
-                        {/* Join Requests (for team owners) */}
-                        {manageableRequests.map((request: TeamJoinRequest) => (
-                          <div
-                            key={request.id}
-                            className="p-4 border-b border-border last:border-b-0 hover:bg-accent/50 transition-colors"
-                          >
-                            <div className="flex items-start gap-3 mb-3">
-                              <Avatar className="h-10 w-10 flex-shrink-0">
-                                <AvatarFallback className={`${getAvatarColor(request.userEmail || request.userName)} text-xs`}>
-                                  {getUserInitials(request.userName, request.userEmail)}
-                                </AvatarFallback>
-                              </Avatar>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <p className="font-semibold text-sm truncate">{request.userName}</p>
-                                  <Badge variant="outline" className="text-xs flex-shrink-0">
-                                    <Clock className="mr-1 h-3 w-3" />
-                                    Request
-                                  </Badge>
-                                </div>
-                                <p className="text-xs text-muted-foreground truncate mb-1">
-                                  {request.userEmail}
-                                </p>
-                                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                                  <Users className="h-3 w-3 flex-shrink-0" />
-                                  <span className="truncate">
-                                    Wants to join <span className="font-medium text-foreground">{request.teamName}</span>
-                                  </span>
-                                </div>
-                                {request.createdAt && (
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    {formatDate(request.createdAt)}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="flex-1 text-destructive hover:text-destructive hover:bg-destructive/10"
-                                onClick={() => handleRejectRequest(request.id)}
-                                disabled={rejectRequestMutation.isPending}
-                              >
-                                <X className="mr-2 h-3 w-3" />
-                                Reject
-                              </Button>
-                              <Button
-                                size="sm"
-                                className="flex-1 bg-primary hover:bg-primary/90"
-                                onClick={() => handleApproveRequest(request.id)}
-                                disabled={approveRequestMutation.isPending}
-                              >
-                                <Check className="mr-2 h-3 w-3" />
-                                Approve
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
                       </div>
                     )}
                   </DropdownMenuContent>

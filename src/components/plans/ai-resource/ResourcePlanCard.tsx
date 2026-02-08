@@ -19,7 +19,7 @@ import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import { ResourceAllocationEditor } from './ResourceAllocationEditor';
 import type { AIResourcePlan } from '@/utils/aiResourcePlanner';
-import type { ResourceAllocation } from '@/data/plansData';
+import type { ResourceAllocation } from '@/types/plans';
 
 interface ResourcePlanCardProps {
   plan: AIResourcePlan;
@@ -129,7 +129,7 @@ export function ResourcePlanCard({ plan, isSelected, onSelect }: ResourcePlanCar
             <div className="flex items-center gap-2">
               <Users className={cn('h-4 w-4', `text-${colorScheme.icon}`)} />
               <div>
-                <p className="text-xs text-muted-foreground">Team Size</p>
+                <p className="text-xs text-muted-foreground">Resource count</p>
                 <p className="text-sm font-bold">{plan.teamSize} people</p>
               </div>
             </div>

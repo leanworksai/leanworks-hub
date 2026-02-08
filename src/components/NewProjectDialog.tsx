@@ -209,7 +209,7 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
         description: data.description,
         detailedDescription: data.description,
         status: "Planning", // Default status for new projects
-        team: projectMembers.length,
+        memberCount: projectMembers.length,
         dueDate: formattedDueDate,
         createdDate: formatDate(now),
         statusColor: getStatusColor("Planning"),

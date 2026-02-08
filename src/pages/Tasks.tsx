@@ -31,6 +31,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { 
@@ -57,6 +63,7 @@ import { useState, useMemo, useCallback } from "react";
 import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
+import { NewAITaskDialog } from "@/components/NewAITaskDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
@@ -112,10 +119,9 @@ const getPriorityColor = (priority: Task["priority"]) => {
   }
 };
 
-// Get team members for a specific task
-// If task has a project, return only project members
-// If task has no project, return all organization users
-const getTeamMembersForTask = (task: Task, projects: any[], users: any[] = []) => {
+// Get members for a specific task (project members or org users)
+// If task has a project, return only project members; otherwise return all organization users
+const getMembersForTask = (task: Task, projects: any[], users: any[] = []) => {
   const memberMap = new Map<string, { id?: string; name: string; avatar: string; role: string }>();
   
   const taskProjectId = task?.projectId;
@@ -184,6 +190,7 @@ export default function Tasks() {
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [filterProject, setFilterProject] = useState<string>("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
+  const [isNewAITaskDialogOpen, setIsNewAITaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover (mobile only)
   const [openDropdowns, setOpenDropdowns] = useState<Record<string, { status?: boolean; priority?: boolean; assignee?: boolean; dueDate?: boolean }>>({});
@@ -366,13 +373,22 @@ export default function Tasks() {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Tasks</h1>
         </div>
-        <Button 
-          className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
-          onClick={() => setIsNewTaskDialogOpen(true)}
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          New Task
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button className="bg-primary hover:bg-primary/90 w-full sm:w-auto">
+              <Plus className="mr-2 h-4 w-4" />
+              New Task
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setIsNewTaskDialogOpen(true)}>
+              New Task for Human
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setIsNewAITaskDialogOpen(true)}>
+              New Task for AI
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Filters */}
@@ -618,7 +634,7 @@ export default function Tasks() {
                                       />
                                       Unassigned
                                     </CommandItem>
-                                    {getTeamMembersForTask(task, projects, users).map((member) => (
+                                    {getMembersForTask(task, projects, users).map((member) => (
                                       <CommandItem
                                         key={member.name}
                                         value={member.name}
@@ -865,6 +881,10 @@ export default function Tasks() {
       <NewTaskDialog 
         open={isNewTaskDialogOpen} 
         onOpenChange={setIsNewTaskDialogOpen} 
+      />
+      <NewAITaskDialog
+        open={isNewAITaskDialogOpen}
+        onOpenChange={setIsNewAITaskDialogOpen}
       />
 
       {/* Limit Visibility Dialog */}

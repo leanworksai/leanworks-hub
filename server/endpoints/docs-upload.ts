@@ -90,15 +90,14 @@ export function setupDocumentUploadEndpoints(
         console.log('📄 Processing document upload...');
         
         const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-        const userEmail = (req as any).user.email?.toLowerCase();
-        const { title, projectId, teamId } = req.body;
+        const userEmail = (req as any).userEmail?.toLowerCase();
+        const { title, projectId } = req.body;
         
         console.log('📄 Upload params:', { 
           orgId, 
           userEmail, 
           title,
           projectId,
-          teamId,
           hasFile: !!req.file 
         });
 
@@ -193,7 +192,7 @@ export function setupDocumentUploadEndpoints(
             '', // Empty content initially, will be filled by processor
             userEmail,
             projectId || null,
-            teamId || null,
+            null, // team_id no longer used
             docType,
             JSON.stringify({
               originalName: req.file.originalname,
@@ -239,7 +238,6 @@ export function setupDocumentUploadEndpoints(
             orgSlug,
             userId: userEmail,
             projectId: projectId || undefined,
-            teamId: teamId || undefined,
             correlationId: uuidv4(),
           });
 
@@ -295,7 +293,7 @@ export function setupDocumentUploadEndpoints(
       try {
         const { docId } = req.params;
         const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-        const userEmail = (req as any).user.email?.toLowerCase();
+        const userEmail = (req as any).userEmail?.toLowerCase();
 
         // Get org slug
         let orgSlug: string;
@@ -384,7 +382,7 @@ export function setupDocumentUploadEndpoints(
       try {
         const { docId } = req.params;
         const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-        const userEmail = (req as any).user.email?.toLowerCase();
+        const userEmail = (req as any).userEmail?.toLowerCase();
 
         // Get org slug
         let orgSlug: string;
@@ -494,7 +492,7 @@ export function setupDocumentUploadEndpoints(
       try {
         const { docId } = req.params;
         const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-        const userEmail = (req as any).user.email?.toLowerCase();
+        const userEmail = (req as any).userEmail?.toLowerCase();
 
         // Get org slug
         let orgSlug: string;
@@ -590,7 +588,7 @@ export function setupDocumentUploadEndpoints(
       try {
         const { docId } = req.params;
         const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-        const userEmail = (req as any).user.email?.toLowerCase();
+        const userEmail = (req as any).userEmail?.toLowerCase();
 
         // Get org slug
         let orgSlug: string;

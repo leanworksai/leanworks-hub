@@ -39,8 +39,12 @@ import { setupDocumentUploadEndpoints } from './endpoints/docs-upload.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
 import { setupUpdateEndpoints } from './endpoints/updates.js';
 import { setupQueryEndpoints } from './endpoints/query.js';
+import { setupPlansEndpoints } from './endpoints/plans.js';
+import { setupAIAgentEndpoints } from './endpoints/ai-agents.js';
+import { setupAIAgentWebhookEndpoints } from './endpoints/ai-agent-webhooks.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
+import { notifyAgentOfAssignment } from './services/ai-agent-service.js';
 import { validateRequest } from './middleware/validate-request.js';
 import { createTaskSchema, updateTaskSchema, fullUpdateTaskSchema } from './validation/task-schemas.js';
 import { createDocSchema, updateDocSchema } from './validation/doc-schemas.js';
@@ -2680,8 +2684,8 @@ app.get('/api/projects', authenticateUser, requireOrgMembership, async (req, res
       // Add default values for missing fields
       project.detailedDescription = project.detailedDescription || project.description || '';
       project.statusColor = project.statusColor || '#3b82f6';
-      // Frontend uses project.team to display member count (members are already transformed above)
-      project.team = Array.isArray(project.members) ? project.members.length : 0;
+      // Frontend uses project.memberCount to display member count (members are already transformed above)
+      project.memberCount = Array.isArray(project.members) ? project.members.length : 0;
       project.summary = project.summary || {
         accomplishment: '',
         decision: '',
@@ -2877,8 +2881,8 @@ app.get('/api/projects/:id', authenticateUser, requireOrgMembership, async (req,
     
     project.detailedDescription = project.detailedDescription || project.description || '';
     project.statusColor = project.statusColor || '#3b82f6';
-    // Frontend uses project.team to display member count (members are already transformed above)
-    project.team = Array.isArray(project.members) ? project.members.length : 0;
+    // Frontend uses project.memberCount to display member count (members are already transformed above)
+    project.memberCount = Array.isArray(project.members) ? project.members.length : 0;
     project.summary = project.summary || {
       accomplishment: '',
       decision: '',
@@ -5273,6 +5277,7 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       assignee: 'assignee_name',
       assigneeName: 'assignee_name',
       assigneeAvatar: 'assignee_avatar',
+      assigneeType: 'assignee_type',
       status: 'status',
       priority: 'priority',
       dueDate: 'due_date',
@@ -5302,7 +5307,45 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       }
     }
     
+    // Handle AI agent assignment
+    let agentAssignmentData:
+      | { type: 'ai_agent'; agentIds: string[] }
+      | { type: 'ai_team'; agentTeamId: string }
+      | null = null;
+    if (updates.assigneeType) {
+      setClauses.push(`assignee_type = $${paramIndex}`);
+      values.push(updates.assigneeType);
+      paramIndex++;
+
+      if (updates.assigneeType === 'ai_agent') {
+        const rawAgentIds: string[] = Array.isArray(updates.agentIds) && updates.agentIds.length > 0
+          ? updates.agentIds.filter((id: unknown): id is string => typeof id === 'string')
+          : updates.agentId
+          ? [String(updates.agentId)]
+          : [];
+        const uniqueAgentIds = Array.from(new Set(rawAgentIds.filter(Boolean)));
+        agentAssignmentData = {
+          type: 'ai_agent',
+          agentIds: uniqueAgentIds,
+        };
+        // Clear human assignee fields
+        setClauses.push(`assignee_id = NULL, assignee_name = NULL, assignee_avatar = NULL`);
+      } else if (updates.assigneeType === 'ai_team' && updates.agentTeamId) {
+        agentAssignmentData = {
+          type: 'ai_team',
+          agentTeamId: updates.agentTeamId,
+        };
+        // Clear human assignee fields
+        setClauses.push(`assignee_id = NULL, assignee_name = NULL, assignee_avatar = NULL`);
+      } else if (updates.assigneeType === 'human') {
+        // Assigning to human - clear AI fields by not setting them
+      }
+    }
+
     Object.entries(updates).forEach(([key, value]) => {
+      if (key === 'agentId' || key === 'agentTeamId' || key === 'agentIds') {
+        return;
+      }
       if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && fieldMap[key]) {
         const dbField = fieldMap[key];
         // Handle tags as JSONB
@@ -5339,6 +5382,112 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       SET ${setClauses.join(', ')}
       WHERE id = $${paramIndex}
     `, values);
+    
+    // If AI agent assignment, create task_ai_assignments record and notify agent
+    if (agentAssignmentData) {
+      try {
+        const now = new Date();
+
+        if (agentAssignmentData.type === 'ai_agent') {
+          let agentIds = agentAssignmentData.agentIds;
+          if (agentIds.length === 0) {
+            const autoAgent = await pool.query(
+              `SELECT id FROM ai_agents WHERE status = 'active' ORDER BY created_at ASC LIMIT 1`
+            );
+            if (autoAgent.rows.length > 0) {
+              agentIds = [autoAgent.rows[0].id];
+            }
+          }
+
+          if (agentIds.length > 0) {
+            const taskDetails = await pool.query(
+              'SELECT id, title, description, priority, due_date FROM tasks WHERE id = $1',
+              [taskId]
+            );
+            const task = taskDetails.rows[0];
+
+            for (const agentId of agentIds) {
+              const assignmentId = `taa_${crypto.randomBytes(8).toString('hex')}`;
+              await pool.query(
+                `INSERT INTO task_ai_assignments 
+                 (id, task_id, agent_id, status, assigned_at, created_at, updated_at)
+                 VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
+                [assignmentId, taskId, agentId, now, now, now]
+              );
+
+              if (task) {
+                try {
+                  await notifyAgentOfAssignment(
+                    orgId,
+                    agentId,
+                    taskId,
+                    assignmentId,
+                    {
+                      id: task.id,
+                      title: task.title,
+                      description: task.description,
+                      priority: task.priority,
+                      dueDate: task.due_date,
+                    }
+                  );
+                } catch (notifyError) {
+                  console.error('[Backend] Error notifying agent:', notifyError);
+                  // Don't fail the request if notification fails
+                }
+              }
+            }
+          }
+        } else if (agentAssignmentData.type === 'ai_team') {
+          const assignmentId = `taa_${crypto.randomBytes(8).toString('hex')}`;
+          await pool.query(
+            `INSERT INTO task_ai_assignments 
+             (id, task_id, agent_team_id, status, assigned_at, created_at, updated_at)
+             VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
+            [assignmentId, taskId, agentAssignmentData.agentTeamId, now, now, now]
+          );
+
+          // Get team members and notify each agent
+          const teamMembers = await pool.query(
+            `SELECT agent_id FROM ai_agent_team_members 
+             WHERE team_id = $1 
+             ORDER BY priority DESC`,
+            [agentAssignmentData.agentTeamId]
+          );
+
+          const taskDetails = await pool.query(
+            'SELECT id, title, description, priority, due_date FROM tasks WHERE id = $1',
+            [taskId]
+          );
+
+          if (taskDetails.rows.length > 0 && teamMembers.rows.length > 0) {
+            const task = taskDetails.rows[0];
+            const firstAgent = teamMembers.rows[0];
+            // Notify the first agent in the team
+            try {
+              await notifyAgentOfAssignment(
+                orgId,
+                firstAgent.agent_id,
+                taskId,
+                assignmentId,
+                {
+                  id: task.id,
+                  title: task.title,
+                  description: task.description,
+                  priority: task.priority,
+                  dueDate: task.due_date,
+                }
+              );
+            } catch (notifyError) {
+              console.error('[Backend] Error notifying agent team:', notifyError);
+              // Don't fail the request if notification fails
+            }
+          }
+        }
+      } catch (error: any) {
+        console.error('[Backend] Error creating AI assignment:', error);
+        // Don't fail the request if assignment creation fails
+      }
+    }
     
     res.json({ success: true });
   } catch (error) {
@@ -5422,13 +5571,10 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
     
     let docs: any[] = [];
     
-    // Extract projectId or teamId for filtering
+    // Extract projectId for filtering (project channels only)
     let projectId: string | null = null;
-    let teamId: string | null = null;
     if (chatId.startsWith('project-')) {
       projectId = chatId.replace('project-', '');
-    } else if (chatId.startsWith('team-')) {
-      teamId = chatId.replace('team-', '');
     }
     
     try {
@@ -5444,11 +5590,6 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       // For project channels, also filter by projectId to ensure we only get messages for this project
       if (projectId) {
         query = query.where('projectId', '==', projectId);
-      }
-      
-      // For team channels, also filter by teamId to ensure we only get messages for this team
-      if (teamId) {
-        query = query.where('teamId', '==', teamId);
       }
       
       // Filter by role if provided
@@ -5470,7 +5611,7 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           .limit(500) // Get more to filter
           .get();
         
-        // Filter by chatId in memory (and userId for AI assistant conversations, projectId/teamId for channels)
+        // Filter by chatId in memory (and userId for AI assistant conversations, projectId for channels)
         docs = Array.from(snapshot.docs).filter(doc => {
           const data = doc.data();
           const matchesChatId = data.chatId === chatId || (!data.chatId && chatId === 'general');
@@ -5483,11 +5624,6 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           // For project channels, also check projectId
           if (projectId) {
             if (!matchesChatId || data.projectId !== projectId) return false;
-          }
-          
-          // For team channels, also check teamId
-          if (teamId) {
-            if (!matchesChatId || data.teamId !== teamId) return false;
           }
           
           // Filter by role if provided
@@ -6347,6 +6483,18 @@ setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 setupFileEndpoints(app, authenticateUser, storage);
 setupDocumentUploadEndpoints(app, authenticateUser, requireOrgMembership, storage);
 
+// ============================================================================
+// PLANS ENDPOINTS
+// ============================================================================
+
+setupPlansEndpoints(app, authenticateUser, requireOrgMembership);
+
+// ============================================================================
+// AI AGENTS ENDPOINTS
+// ============================================================================
+
+setupAIAgentEndpoints(app, authenticateUser, requireOrgMembership, secretManagerClient, serviceAccount);
+setupAIAgentWebhookEndpoints(app, secretManagerClient, serviceAccount);
 
 // ============================================================================
 // UPDATE ENDPOINTS (Project and Task Progress Updates)

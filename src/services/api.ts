@@ -47,6 +47,11 @@ export function getCurrentOrgSlug(): string | null {
 
 // Helper to get auth token for API requests
 export async function getAuthToken(): Promise<string | null> {
+  // In demo mode, return a demo token
+  if (import.meta.env.VITE_DEMO_MODE === 'true') {
+    return 'mock-token-demo';
+  }
+
   // First try to get token from Firebase Auth
   if (auth && auth.currentUser) {
     try {
@@ -198,6 +203,15 @@ export const projectsService = {
 };
 
 // Tasks Service
+type TaskUpdatePayload = Partial<Task> & {
+  assigneeType?: 'human' | 'ai_agent' | 'ai_team';
+  agentId?: string;
+  agentTeamId?: string;
+  agentIds?: string[];
+};
+
+type TaskCreateResponse = { id: string } & Partial<Task>;
+
 export const tasksService = {
   async getAll(): Promise<Task[]> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/tasks` : `${API_BASE}/tasks`;
@@ -221,7 +235,7 @@ export const tasksService = {
     return response.json();
   },
 
-  async create(task: Task): Promise<void> {
+  async create(task: Task): Promise<TaskCreateResponse> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/tasks` : `${API_BASE}/tasks`;
     const response = await authenticatedFetch(url, {
       method: 'POST',
@@ -238,9 +252,10 @@ export const tasksService = {
       }
       throw new Error(errorData.error || 'Failed to create task');
     }
+    return response.json();
   },
 
-  async update(taskId: string, updates: Partial<Task>): Promise<void> {
+  async update(taskId: string, updates: TaskUpdatePayload): Promise<void> {
     const url = import.meta.env.DEV ? `${API_BASE}/api/tasks/${taskId}` : `${API_BASE}/tasks/${taskId}`;
     const response = await authenticatedFetch(url, {
       method: 'PATCH',
@@ -433,7 +448,7 @@ export const usersService = {
 };
 
 
-// Team Invitations Service
+// System Notifications Service
 export const systemNotificationsService = {
   async getNotifications(): Promise<Array<{
     id: string;

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import type { BudgetCategory } from '@/data/plansData';
+import type { BudgetCategory } from '@/types/plans';
 
 interface BudgetChartProps {
   categories: BudgetCategory[];

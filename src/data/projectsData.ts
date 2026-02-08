@@ -39,7 +39,7 @@ export interface Project {
   description: string;
   detailedDescription: string;
   status: string;
-  team: number;
+  memberCount: number;
   dueDate?: string;
   createdDate: string;
   statusColor: string;

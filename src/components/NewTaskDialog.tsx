@@ -23,7 +23,6 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useCreateTask } from "@/hooks/useTasks";
 import { useUserProjects } from "@/hooks/useProjects";
-import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
 import { useAuth } from "@/contexts/AuthContext";
@@ -40,6 +39,7 @@ import { getAuthToken, subscriptionService } from "@/services/api";
 import { cn } from "@/lib/utils";
 import { trackCreate, trackConversion, trackFirstFeatureUse, trackEvent, trackModal } from "@/lib/analytics";
 import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
+import { API_CONFIG } from "@/config/api";
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -92,7 +92,6 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
   const createTask = useCreateTask();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { data: projects = [] } = useUserProjects();
-  const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
   const userMap = useUserMap();
   const { user } = useAuth();
@@ -233,8 +232,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
     setIsGeneratingAI(true);
     try {
       const isLocalDev = import.meta.env.DEV;
-      const API_BASE = isLocalDev ? 'http://0.0.0.0:8082' : '';
-      const apiUrl = `${API_BASE}/api/generate-task`;
+      const apiUrl = `${API_CONFIG.ai}/generate-task`;
 
       // Prepare headers
       const headers: Record<string, string> = {
@@ -249,8 +247,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
 
       if (isLocalDev) {
         try {
-          const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
-          const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
+          const backendApiBase = API_CONFIG.hub;
+          const apiKeyResponse = await fetch(`${backendApiBase}/ask-api-key`, {
             method: 'GET',
             headers: {
               'Authorization': `Bearer ${customToken || ''}`,
@@ -542,11 +540,6 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
         ? data.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0)
         : [];
 
-      // If no project, associate task with user's teams
-      const teams = !project && userTeams.length > 0 
-        ? userTeams.map(team => team.name)
-        : undefined;
-
       // Build API request payload - only send fields that the schema expects
       // The schema validates these specific fields
       const apiPayload = {
@@ -706,8 +699,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Project</FormLabel>
-                  <FormDescription>
-                    Leave empty to create a team-wide task visible to all your team members
+                    <FormDescription>
+                    Leave empty to create a task not linked to a project (visible to org members)
                   </FormDescription>
                   <Select
                     onValueChange={(value) => {
@@ -727,7 +720,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="none">No Project (Team-wide task)</SelectItem>
+                      <SelectItem value="none">No project</SelectItem>
                       {projects.map((project) => {
                         return (
                           <SelectItem key={project.id} value={project.id}>

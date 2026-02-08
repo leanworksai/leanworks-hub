@@ -45,11 +45,6 @@ const baseDocSchema = z.object({
     .max(50, 'Project ID must be 50 characters or less')
     .optional()
     .nullable(),
-  teamId: z
-    .string()
-    .max(50, 'Team ID must be 50 characters or less')
-    .optional()
-    .nullable(),
   folderId: z
     .string()
     .max(50, 'Folder ID must be 50 characters or less')

@@ -7,9 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Slider } from '@/components/ui/slider';
 import { useUsers } from '@/hooks/useUsers';
-import { getUserPerformance, getAvailableUsers } from '@/data/userPerformanceData';
 import { cn } from '@/lib/utils';
-import type { ResourceAllocation } from '@/data/plansData';
+import type { ResourceAllocation } from '@/types/plans';
 
 interface ManualResourcePlanningProps {
   resourceAllocations: ResourceAllocation[];
@@ -29,17 +28,13 @@ export function ManualResourcePlanning({
   const [selectedRole, setSelectedRole] = useState<string>('');
   const [allocationPercentage, setAllocationPercentage] = useState<number>(50);
   
-  const availableUsersData = getAvailableUsers(0);
-  const availableUserEmails = availableUsersData.map(u => u.userEmail);
-  const availableUsers = users.filter(u => availableUserEmails.includes(u.email));
+  const availableUsers = users;
   
   const handleAddResource = () => {
     if (!selectedUserId || !selectedRole) return;
     
     const user = users.find(u => u.email === selectedUserId);
-    const performanceData = getUserPerformance(selectedUserId);
-    
-    if (!user || !performanceData) return;
+    if (!user) return;
     
     const newAllocation: ResourceAllocation = {
       id: `alloc-${Date.now()}-${Math.random()}`,
@@ -52,8 +47,8 @@ export function ManualResourcePlanning({
       allocationPercentage,
       startDate: planStartDate.toISOString().split('T')[0],
       endDate: planEndDate.toISOString().split('T')[0],
-      normalizedHours: performanceData.normalizedHours,
-      hourlyRate: performanceData.hourlyRate,
+      normalizedHours: 40,
+      hourlyRate: 75,
     };
     
     setResourceAllocations([...resourceAllocations, newAllocation]);
@@ -126,7 +121,7 @@ export function ManualResourcePlanning({
         <CardHeader>
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Plus className="h-4 w-4" />
-            Add Team Member
+            Add resource
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -140,18 +135,15 @@ export function ManualResourcePlanning({
                 </SelectTrigger>
                 <SelectContent>
                   {availableUsers.map((user) => {
-                    const perf = getUserPerformance(user.email);
                     const isAlreadyAdded = resourceAllocations.some(a => a.userId === user.email);
                     
                     return (
                       <SelectItem key={user.email} value={user.email} disabled={isAlreadyAdded}>
                         <div className="flex items-center justify-between gap-2">
                           <span>{user.name}</span>
-                          {perf && (
-                            <Badge variant="outline" className="text-xs">
-                              {perf.availability}% available
-                            </Badge>
-                          )}
+                          <Badge variant="outline" className="text-xs">
+                            Available
+                          </Badge>
                         </div>
                       </SelectItem>
                     );
@@ -205,7 +197,7 @@ export function ManualResourcePlanning({
             className="w-full"
           >
             <Plus className="h-4 w-4 mr-1" />
-            Add to Team
+            Add allocation
           </Button>
         </CardContent>
       </Card>
@@ -221,7 +213,7 @@ export function ManualResourcePlanning({
                   Over-allocation Warning
                 </p>
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  The following team members are allocated over 100%:
+                  The following people are allocated over 100%:
                 </p>
                 <ul className="mt-2 space-y-1">
                   {overallocatedUsers.map((user) => (
@@ -236,17 +228,17 @@ export function ManualResourcePlanning({
         </Card>
       )}
       
-      {/* Team Summary */}
+      {/* Resource summary */}
       <Card className="bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-800">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium text-slate-900 dark:text-slate-100">
-            Team Summary
+            Resource summary
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <p className="text-xs text-muted-foreground mb-1">Team Members</p>
+              <p className="text-xs text-muted-foreground mb-1">Allocations</p>
               <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">
                 {totalTeamMembers}
               </p>
@@ -272,7 +264,7 @@ export function ManualResourcePlanning({
         <CardHeader>
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Users className="h-4 w-4" />
-            Team Allocations ({resourceAllocations.length})
+            Allocations ({resourceAllocations.length})
           </CardTitle>
         </CardHeader>
         <CardContent>

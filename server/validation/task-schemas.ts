@@ -13,6 +13,10 @@ const visibilityEnum = z.enum(['all_members', 'specific_members'], {
   errorMap: () => ({ message: 'Visibility must be one of: all_members, specific_members' }),
 });
 
+const assigneeTypeEnum = z.enum(['human', 'ai_agent', 'ai_team'], {
+  errorMap: () => ({ message: 'Assignee type must be one of: human, ai_agent, ai_team' }),
+});
+
 // Email validation
 const emailSchema = z.string().email('Invalid email format').toLowerCase();
 
@@ -98,6 +102,15 @@ export const createTaskSchema = baseTaskSchema
 
 // Task partial update schema - all fields optional
 export const updateTaskSchema = baseTaskSchema
+  .extend({
+    assigneeType: assigneeTypeEnum.optional(),
+    agentId: z.string().max(50, 'Agent ID must be 50 characters or less').optional().nullish(),
+    agentTeamId: z.string().max(50, 'Agent team ID must be 50 characters or less').optional().nullish(),
+    agentIds: z
+      .array(z.string().max(50, 'Agent ID must be 50 characters or less'))
+      .max(50, 'Maximum 50 agents allowed')
+      .optional(),
+  })
   .partial()
   .refine(
     (data) => {
@@ -123,6 +136,13 @@ export const fullUpdateTaskSchema = baseTaskSchema.extend({
     .string()
     .min(1, 'Title is required')
     .max(255, 'Title must be 255 characters or less'),
+  assigneeType: assigneeTypeEnum.optional(),
+  agentId: z.string().max(50, 'Agent ID must be 50 characters or less').optional().nullish(),
+  agentTeamId: z.string().max(50, 'Agent team ID must be 50 characters or less').optional().nullish(),
+  agentIds: z
+    .array(z.string().max(50, 'Agent ID must be 50 characters or less'))
+    .max(50, 'Maximum 50 agents allowed')
+    .optional(),
 });
 
 // Export types for use in the codebase

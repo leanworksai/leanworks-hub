@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { useProjects } from '@/hooks/useProjects';
-import type { Objective, ResourceAllocation } from '@/data/plansData';
+import type { Objective, ResourceAllocation } from '@/types/plans';
 
 interface ReviewStepProps {
   formData: any;
@@ -235,7 +235,7 @@ export function ReviewStep({
             <div className="space-y-4">
               <div className="grid grid-cols-3 gap-4 p-3 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
                 <div>
-                  <p className="text-xs text-muted-foreground mb-1">Team Size</p>
+                  <p className="text-xs text-muted-foreground mb-1">Resource count</p>
                   <p className="text-lg font-bold text-black dark:text-white">
                     {resourceAllocations.length}
                   </p>

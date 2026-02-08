@@ -1,15 +1,24 @@
 /**
  * Run Database Migration on All Org Databases
- * 
+ *
  * This script:
  * 1. Connects to the shared database
  * 2. Lists all organizations
  * 3. Runs the migration on each org database
  * 4. Reports success/failure for each
- * 
+ *
  * Usage:
- *   npm run db:migrate:dry-run  # Dry run (no changes)
- *   npm run db:migrate          # Run migration
+ *   npm run db:migrate -- --dev              # Run against dev (default)
+ *   npm run db:migrate -- --prod             # Run against prod
+ *   npm run db:migrate:dry-run -- --dev      # Dry run, dev
+ *   npm run db:migrate:dry-run -- --prod     # Dry run, prod
+ *
+ * Options:
+ *   --dev, -D    Use dev DB (gcp_credential_dev.json, dev-postgresdb-password, localhost)
+ *   --prod, -P   Use prod DB (gcp_credential.json, postgresdb-password, Cloud SQL or DB_HOST)
+ *   --dry-run, -d  Do not apply migrations, only list what would be done
+ *
+ * For prod: set DB_HOST=localhost when using Cloud SQL Proxy; otherwise uses Unix socket.
  */
 
 import { Pool } from 'pg';
@@ -17,12 +26,21 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getCredentialPath, getSecretName } from '../server/utils/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Check for dry-run flag
+// Parse --dev / --prod (explicit target environment)
+const hasDev = process.argv.includes('--dev') || process.argv.includes('-D');
+const hasProd = process.argv.includes('--prod') || process.argv.includes('-P');
+let TARGET_ENV: 'dev' | 'prod' = 'dev';
+if (hasDev && hasProd) {
+  console.error('❌ Use only one of --dev or --prod.');
+  process.exit(1);
+}
+if (hasProd) TARGET_ENV = 'prod';
+if (hasDev) TARGET_ENV = 'dev';
+
 const DRY_RUN = process.argv.includes('--dry-run') || process.argv.includes('-d');
 
 // Load .env file if it exists (for local development)
@@ -43,35 +61,40 @@ if (existsSync(envPath)) {
   });
 }
 
-// Read GCP credentials
-const serviceAccountPath = join(__dirname, '../', getCredentialPath());
+// Resolve paths and names from --dev / --prod
+const credentialFile = TARGET_ENV === 'dev' ? 'gcp_credential_dev.json' : 'gcp_credential.json';
+const secretNameForPassword = TARGET_ENV === 'dev' ? 'dev-postgresdb-password' : 'postgresdb-password';
+const defaultInstanceName = TARGET_ENV === 'dev' ? 'leanworks-dev' : 'leanworks-prod';
+const dbRegion = process.env.DB_REGION || 'us-west1';
+
+const serviceAccountPath = join(__dirname, '..', credentialFile);
 const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
 const projectId = serviceAccount.project_id;
 
-// Initialize Secret Manager client
 const secretManagerClient = new SecretManagerServiceClient({
   keyFilename: serviceAccountPath,
 });
 
-// Fetch PostgreSQL password from Secret Manager
 async function getPostgresPassword(): Promise<string> {
   try {
-    const secretName = `projects/${projectId}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
-    const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
+    const fullSecretName = `projects/${projectId}/secrets/${secretNameForPassword}/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name: fullSecretName });
     const password = (version.payload?.data?.toString() || '').trim();
-    console.log('✅ PostgreSQL password fetched from Secret Manager');
+    console.log(`✅ PostgreSQL password fetched from Secret Manager (${secretNameForPassword})`);
     return password;
   } catch (error) {
     console.error('❌ Failed to fetch password from Secret Manager:', error);
-    // Fallback to environment variable
     return process.env.DB_PASSWORD || '';
   }
 }
 
-// Database configuration
-const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
-const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:${process.env.DB_INSTANCE_NAME || 'leanworks-prod'}`);
-const dbPort = parseInt(process.env.DB_PORT || '5432');
+// Database connection: DB_HOST overrides; else dev=localhost, prod=Unix socket
+const dbHost =
+  process.env.DB_HOST ||
+  (TARGET_ENV === 'dev'
+    ? 'localhost'
+    : `/cloudsql/${projectId}:${dbRegion}:${process.env.DB_INSTANCE_NAME || defaultInstanceName}`);
+const dbPort = parseInt(process.env.DB_PORT || '5432', 10);
 
 // Read migration SQL files
 const folderMigrationSQL = readFileSync(
@@ -84,8 +107,25 @@ const documentUploadMigrationSQL = readFileSync(
   'utf8'
 );
 
+const plansMigrationSQL = readFileSync(
+  join(__dirname, '../database/migrations/add-plans-tables.sql'),
+  'utf8'
+);
+
+const aiAgentsMigrationSQL = readFileSync(
+  join(__dirname, '../database/migrations/add-ai-agents-tables.sql'),
+  'utf8'
+);
+
 // Combine migrations
-const migrationSQL = folderMigrationSQL + '\n' + documentUploadMigrationSQL;
+const migrationSQL =
+  folderMigrationSQL +
+  '\n' +
+  documentUploadMigrationSQL +
+  '\n' +
+  plansMigrationSQL +
+  '\n' +
+  aiAgentsMigrationSQL;
 
 interface Organization {
   id: string;
@@ -136,13 +176,27 @@ async function getOrganizations(password: string): Promise<Organization[]> {
  */
 async function checkMigrationStatus(pool: Pool): Promise<boolean> {
   try {
-    const result = await pool.query(`
+    const docTypeResult = await pool.query(`
       SELECT column_name
       FROM information_schema.columns
       WHERE table_name = 'docs'
       AND column_name = 'doc_type'
     `);
-    return result.rows.length > 0;
+    const plansTableResult = await pool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_name = 'plans'
+    `);
+    const aiAgentsTableResult = await pool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_name = 'ai_agents'
+    `);
+    return (
+      docTypeResult.rows.length > 0 &&
+      plansTableResult.rows.length > 0 &&
+      aiAgentsTableResult.rows.length > 0
+    );
   } catch (error) {
     return false;
   }
@@ -227,11 +281,17 @@ async function main() {
     console.log('🔍 DRY RUN MODE - No changes will be made\n');
   }
 
-  console.log('🚀 Starting database migration for all organizations...\n');
+  console.log(`🚀 Starting database migration for all organizations (target: ${TARGET_ENV})...\n`);
   console.log('Database Configuration:');
+  console.log(`  Target: ${TARGET_ENV}`);
+  console.log(`  Credentials: ${credentialFile}`);
   console.log(`  Host: ${dbHost}`);
   console.log(`  Port: ${dbHost.startsWith('/') ? 'Unix socket' : dbPort}`);
   console.log(`  User: postgres`);
+  if (TARGET_ENV === 'prod' && dbHost.startsWith('/cloudsql/')) {
+    console.log('\n  💡 To run against prod from your machine, use Cloud SQL Proxy and set:');
+    console.log('     DB_HOST=localhost DB_PORT=5432 npm run db:migrate:prod');
+  }
   console.log('');
 
   try {
@@ -311,8 +371,16 @@ async function main() {
       console.log('\n🎉 All migrations completed successfully!');
       process.exit(0);
     }
-  } catch (error) {
-    console.error('\n❌ Fatal error:', error);
+  } catch (error: any) {
+    console.error('\n❌ Fatal error:', error?.message || error);
+    const addr = error?.address ?? '';
+    if (addr.includes('/cloudsql/') && (error?.code === 'ENOENT' || error?.errno === -2)) {
+      const instance = process.env.DB_INSTANCE_NAME || defaultInstanceName;
+      console.error('\n💡 The Cloud SQL Unix socket only exists inside GCP. To run against prod locally:');
+      console.error(`   1. Start Cloud SQL Proxy: cloud_sql_proxy -instances=${projectId}:${dbRegion}:${instance}=tcp:5432`);
+      console.error('   2. Run: DB_HOST=localhost DB_PORT=5432 npm run db:migrate:prod');
+      console.error('   Or set DB_HOST=localhost and DB_PORT=5432 in .env and run npm run db:migrate:prod');
+    }
     process.exit(1);
   }
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Search, TrendingUp, TrendingDown, Minus, Users, Calendar, DollarSign, Target, Sparkles } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
@@ -17,7 +17,9 @@ import { HealthScoreWidget } from '@/components/plans/HealthScoreWidget';
 import { NewPlanDialog } from '@/components/NewPlanDialog';
 import { generateQuickInsight } from '@/utils/aiInsightsGenerator';
 import { cn } from '@/lib/utils';
-import type { Plan } from '@/data/plansData';
+import type { Plan } from '@/types/plans';
+import { useAuth } from '@/contexts/AuthContext';
+import { useOrg } from '@/contexts/OrgContext';
 
 export default function Plans() {
   const navigate = useNavigate();
@@ -25,8 +27,47 @@ export default function Plans() {
   const [statusFilter, setStatusFilter] = useState<Plan['status'] | 'all'>('all');
   const [sortBy, setSortBy] = useState<'name' | 'health' | 'budget' | 'timeline'>('name');
   const [showNewPlanDialog, setShowNewPlanDialog] = useState(false);
+  const [quickInsights, setQuickInsights] = useState<Record<string, string>>({});
+  
+  const { user } = useAuth();
+  const { currentOrg } = useOrg();
   
   const { plans, isLoading } = useFilteredPlans(searchQuery, statusFilter, sortBy);
+
+  useEffect(() => {
+    if (!user?.email || !currentOrg?.slug) {
+      setQuickInsights({});
+      return;
+    }
+    
+    let isCancelled = false;
+
+    const loadInsights = async () => {
+      const results = await Promise.all(
+        plans.map(async (plan) => ({
+          id: plan.id,
+          insight: await generateQuickInsight(user.email || '', currentOrg.slug, plan),
+        }))
+      );
+
+      if (isCancelled) return;
+
+      const insightsMap = results.reduce((acc, result) => {
+        acc[result.id] = result.insight;
+        return acc;
+      }, {} as Record<string, string>);
+
+      setQuickInsights(insightsMap);
+    };
+
+    if (plans.length > 0) {
+      loadInsights();
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [plans, user?.email, currentOrg?.slug]);
   
   const getStatusBadgeVariant = (status: Plan['status']) => {
     switch (status) {
@@ -170,7 +211,7 @@ export default function Plans() {
             {plans.map((plan) => {
               const budgetUtilization = calculateBudgetUtilization(plan.spentToDate, plan.totalBudget);
               const onTrackProjects = calculateProjectsOnTrack(plan);
-              const quickInsight = generateQuickInsight(plan);
+              const quickInsight = quickInsights[plan.id] || 'Generating insights...';
               
               return (
                 <Card
@@ -246,15 +287,15 @@ export default function Plans() {
                             </div>
                           </div>
                           
-                          {/* Team */}
+                          {/* Resources */}
                           <div className="space-y-1.5">
                             <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                               <Users className="h-3.5 w-3.5" />
-                              <span>Team</span>
+                              <span>Resources</span>
                             </div>
                             <div className="flex items-baseline gap-1.5">
                               <span className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-300">{plan.teamSize}</span>
-                              <span className="text-xs text-muted-foreground">members</span>
+                              <span className="text-xs text-muted-foreground">allocated</span>
                             </div>
                           </div>
                         </div>

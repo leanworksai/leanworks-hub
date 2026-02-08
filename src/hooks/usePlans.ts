@@ -1,36 +1,38 @@
-// Plans Hooks - Mock hooks for Plans CRUD operations
+// Plans Hooks - Real API integration with React Query
 
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { mockPlans, getPlanById, getPlansByStatus, type Plan } from '@/data/plansData';
+import { plansApi } from '@/services/plans';
 import { useToast } from '@/hooks/use-toast';
-
-// Simulate API delay
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+import type { Plan, CreatePlanInput, UpdatePlanInput } from '@/types/plans';
 
 /**
- * Get all plans
+ * Get all plans with optional filters
  */
-export const usePlans = () => {
+export const usePlans = (filters?: {
+  status?: string;
+  search?: string;
+  sortBy?: 'name' | 'health' | 'budget' | 'timeline';
+}) => {
   return useQuery({
-    queryKey: ['plans'],
-    queryFn: async (): Promise<Plan[]> => {
-      await delay(300); // Simulate network delay
-      return mockPlans;
+    queryKey: ['plans', filters],
+    queryFn: async () => {
+      const data = await plansApi.getAll(filters);
+      return data as Plan[];
     },
     staleTime: 1000 * 60 * 5, // 5 minutes
   });
 };
 
 /**
- * Get single plan by ID
+ * Get single plan by ID with all nested data
  */
 export const usePlanById = (planId: string) => {
   return useQuery({
     queryKey: ['plans', planId],
-    queryFn: async (): Promise<Plan | undefined> => {
-      await delay(200);
-      return getPlanById(planId);
+    queryFn: async () => {
+      const data = await plansApi.getById(planId);
+      return data as Plan;
     },
     enabled: !!planId,
     staleTime: 1000 * 60 * 5,
@@ -43,9 +45,9 @@ export const usePlanById = (planId: string) => {
 export const usePlansByStatus = (status: Plan['status']) => {
   return useQuery({
     queryKey: ['plans', 'status', status],
-    queryFn: async (): Promise<Plan[]> => {
-      await delay(300);
-      return getPlansByStatus(status);
+    queryFn: async () => {
+      const data = await plansApi.getAll({ status });
+      return data as Plan[];
     },
     staleTime: 1000 * 60 * 5,
   });
@@ -70,41 +72,9 @@ export const useCreatePlan = () => {
   const { toast } = useToast();
   
   return useMutation({
-    mutationFn: async (newPlan: Partial<Plan>): Promise<Plan> => {
-      await delay(500);
-      
-      // Generate ID
-      const id = `plan-${Date.now()}`;
-      
-      const plan: Plan = {
-        id,
-        name: newPlan.name || 'Untitled Plan',
-        description: newPlan.description || '',
-        objectives: newPlan.objectives || [],
-        totalBudget: newPlan.totalBudget || 0,
-        currency: newPlan.currency || 'USD',
-        budgetCategories: newPlan.budgetCategories || [],
-        spentToDate: 0,
-        startDate: newPlan.startDate || new Date().toISOString(),
-        endDate: newPlan.endDate || new Date().toISOString(),
-        projectIds: [],
-        resourceAllocations: [],
-        milestones: [],
-        status: 'planning',
-        healthScore: 100,
-        healthTrend: 'stable',
-        ownerEmail: newPlan.ownerEmail || '',
-        ownerName: newPlan.ownerName || '',
-        teamSize: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        recentActivity: [],
-      };
-      
-      // In a real app, this would be sent to the server
-      mockPlans.push(plan);
-      
-      return plan;
+    mutationFn: async (newPlan: CreatePlanInput): Promise<Plan> => {
+      const result = await plansApi.create(newPlan);
+      return result;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['plans'] });
@@ -116,7 +86,7 @@ export const useCreatePlan = () => {
     onError: (error) => {
       toast({
         title: 'Error',
-        description: 'Failed to create plan. Please try again.',
+        description: error instanceof Error ? error.message : 'Failed to create plan. Please try again.',
         variant: 'destructive',
       });
     },
@@ -136,37 +106,22 @@ export const useUpdatePlan = () => {
       updates 
     }: { 
       planId: string; 
-      updates: Partial<Plan> 
-    }): Promise<Plan> => {
-      await delay(500);
-      
-      const planIndex = mockPlans.findIndex(p => p.id === planId);
-      if (planIndex === -1) {
-        throw new Error('Plan not found');
-      }
-      
-      const updatedPlan = {
-        ...mockPlans[planIndex],
-        ...updates,
-        updatedAt: new Date().toISOString(),
-      };
-      
-      mockPlans[planIndex] = updatedPlan;
-      
-      return updatedPlan;
+      updates: UpdatePlanInput 
+    }): Promise<{ success: boolean }> => {
+      return plansApi.update(planId, updates);
     },
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['plans'] });
-      queryClient.invalidateQueries({ queryKey: ['plans', data.id] });
+      queryClient.invalidateQueries({ queryKey: ['plans', variables.planId] });
       toast({
         title: 'Plan Updated',
-        description: `${data.name} has been updated successfully.`,
+        description: 'Plan has been updated successfully.',
       });
     },
     onError: (error) => {
       toast({
         title: 'Error',
-        description: 'Failed to update plan. Please try again.',
+        description: error instanceof Error ? error.message : 'Failed to update plan. Please try again.',
         variant: 'destructive',
       });
     },
@@ -182,14 +137,7 @@ export const useDeletePlan = () => {
   
   return useMutation({
     mutationFn: async (planId: string): Promise<void> => {
-      await delay(500);
-      
-      const planIndex = mockPlans.findIndex(p => p.id === planId);
-      if (planIndex === -1) {
-        throw new Error('Plan not found');
-      }
-      
-      mockPlans.splice(planIndex, 1);
+      await plansApi.delete(planId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['plans'] });
@@ -201,7 +149,7 @@ export const useDeletePlan = () => {
     onError: (error) => {
       toast({
         title: 'Error',
-        description: 'Failed to delete plan. Please try again.',
+        description: error instanceof Error ? error.message : 'Failed to delete plan. Please try again.',
         variant: 'destructive',
       });
     },
@@ -216,46 +164,17 @@ export const useFilteredPlans = (
   statusFilter: Plan['status'] | 'all' = 'all',
   sortBy: 'name' | 'health' | 'budget' | 'timeline' = 'name'
 ) => {
-  const { data: plans = [], isLoading } = usePlans();
-  
-  const filteredAndSorted = useMemo(() => {
-    let filtered = [...plans];
-    
-    // Apply search filter
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(plan => 
-        plan.name.toLowerCase().includes(query) ||
-        plan.description.toLowerCase().includes(query)
-      );
-    }
-    
-    // Apply status filter
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(plan => plan.status === statusFilter);
-    }
-    
-    // Apply sorting
-    filtered.sort((a, b) => {
-      switch (sortBy) {
-        case 'name':
-          return a.name.localeCompare(b.name);
-        case 'health':
-          return b.healthScore - a.healthScore;
-        case 'budget':
-          return b.totalBudget - a.totalBudget;
-        case 'timeline':
-          return new Date(a.endDate).getTime() - new Date(b.endDate).getTime();
-        default:
-          return 0;
-      }
-    });
-    
-    return filtered;
-  }, [plans, searchQuery, statusFilter, sortBy]);
+  const filters = {
+    search: searchQuery || undefined,
+    status: statusFilter !== 'all' ? statusFilter : undefined,
+    sortBy: sortBy !== 'name' ? sortBy : undefined,
+  };
+
+  const { data: plans = [], isLoading, error } = usePlans(filters);
   
   return {
-    plans: filteredAndSorted,
+    plans,
     isLoading,
+    error,
   };
 };

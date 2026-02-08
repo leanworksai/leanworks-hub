@@ -42,7 +42,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   };
   
   // Parse Selected Docs
-  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Teams|Text):|$)/i);
+  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Text):|$)/i);
   if (docsMatch) {
     const docs = parseItems(docsMatch[1]).map(item => ({ id: item.id, title: item.name }));
     if (docs.length > 0) {
@@ -51,7 +51,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Projects
-  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Teams|Text):|$)/i);
+  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Text):|$)/i);
   if (projectsMatch) {
     const projects = parseItems(projectsMatch[1]).map(item => ({ id: item.id, name: item.name }));
     if (projects.length > 0) {
@@ -60,7 +60,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Tasks
-  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Teams|Text):|$)/i);
+  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Text):|$)/i);
   if (tasksMatch) {
     const tasks = parseItems(tasksMatch[1]).map(item => ({ id: item.id, title: item.name }));
     if (tasks.length > 0) {
@@ -68,17 +68,8 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
     }
   }
   
-  // Parse Selected Teams
-  const teamsMatch = citedContextText.match(/Selected Teams:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks|Text):|$)/i);
-  if (teamsMatch) {
-    const teams = parseItems(teamsMatch[1]).map(item => ({ id: item.id, name: item.name }));
-    if (teams.length > 0) {
-      citedContext.teams = teams;
-    }
-  }
-  
   // Parse Selected Text
-  const selectedTextMatch = citedContextText.match(/Selected Text:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks|Teams):|$)/i);
+  const selectedTextMatch = citedContextText.match(/Selected Text:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks):|$)/i);
   if (selectedTextMatch) {
     const selectedTexts: Array<{ id: string; text: string; docId?: string }> = [];
     const textContent = selectedTextMatch[1].trim();
@@ -108,7 +99,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
     }
   }
   
-  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.teams || citedContext.selectedTexts;
+  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.selectedTexts;
   
   return {
     citedContext: hasAnyContext ? citedContext : null,
@@ -522,7 +513,6 @@ export function ChatMessage({
             const hasCitedContext = displayCitedContext && (
               (displayCitedContext.projects && displayCitedContext.projects.length > 0) ||
               (displayCitedContext.tasks && displayCitedContext.tasks.length > 0) ||
-              (displayCitedContext.teams && displayCitedContext.teams.length > 0) ||
               (displayCitedContext.docs && displayCitedContext.docs.length > 0) ||
               (displayCitedContext.selectedTexts && displayCitedContext.selectedTexts.length > 0)
             );

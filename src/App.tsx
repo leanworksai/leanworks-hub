@@ -22,11 +22,9 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import VerifyEmail from "./pages/VerifyEmail";
 import Home from "./pages/Home";
-import Team from "./pages/Team";
-import Teams from "./pages/Teams";
-import TeamDetail from "./pages/TeamDetail";
 import Users from "./pages/Users";
 import Integrations from "./pages/Integrations";
+import AIAgentsPage from "./pages/admin/AIAgents";
 import Plans from "./pages/Plans";
 import PlanDetail from "./pages/PlanDetail";
 import Projects from "./pages/Projects";
@@ -49,6 +47,7 @@ const AppRoutesContent = () => {
   const { user } = useAuth();
   const location = useLocation();
   const isHomePage = location.pathname === '/';
+  const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 
   // Track time on page
   useTimeOnPage();
@@ -79,7 +78,6 @@ const AppRoutesContent = () => {
     
     // Main pages
     if (pathname === '/') return 'Home';
-    if (pathname === '/team') return 'Team';
     
     // Plans
     if (pathname === '/plans') return 'Plans';
@@ -109,16 +107,9 @@ const AppRoutesContent = () => {
       return `Doc Detail - ${docId}`;
     }
     
-    
-    // Teams (redirected but track for completeness)
-    if (pathname === '/teams') return 'Teams';
-    if (pathname.startsWith('/teams/')) {
-      const teamId = pathname.split('/teams/')[1];
-      return `Team Detail - ${teamId}`;
-    }
-    
     // Settings & Profile
     if (pathname === '/users') return 'Users';
+    if (pathname === '/ai-team') return 'AI Teammates';
     if (pathname === '/integrations') return 'Integrations';
     if (pathname === '/organizations') return 'Organizations';
     if (pathname === '/profile') return 'Profile';
@@ -131,9 +122,13 @@ const AppRoutesContent = () => {
 
   return (
     <>
+      {isDemoMode && (
+        <div className="w-full bg-yellow-100 border-b border-yellow-400 px-4 py-2 text-center text-sm font-medium text-yellow-800 sticky top-0 z-50">
+          🎭 Demo Mode - No data is saved. Auto-logged in as demo@example.com
+        </div>
+      )}
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/team" element={<Team />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
@@ -152,6 +147,16 @@ const AppRoutesContent = () => {
             <ProtectedRoute>
               <DashboardLayout>
                 <Users />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/ai-team"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <AIAgentsPage />
               </DashboardLayout>
             </ProtectedRoute>
           }

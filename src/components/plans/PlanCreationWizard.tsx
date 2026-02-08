@@ -6,13 +6,14 @@ import { Form } from '@/components/ui/form';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAuth } from '@/contexts/AuthContext';
+import { useOrg } from '@/contexts/OrgContext';
 import { WizardProgress } from './WizardProgress';
 import { BasicInfoStep } from './wizard-steps/BasicInfoStep';
 import { LinkProjectsStep } from './wizard-steps/LinkProjectsStep';
 import { ReviewStep } from './wizard-steps/ReviewStep';
 import { AIResourcePlanner } from './ai-resource/AIResourcePlanner';
 import { ManualResourcePlanning } from './ai-resource/ManualResourcePlanning';
-import type { Objective, ResourceAllocation } from '@/data/plansData';
+import type { Objective, ResourceAllocation } from '@/types/plans';
 
 interface PlanCreationWizardProps {
   onSubmit: (data: any) => void;
@@ -28,6 +29,7 @@ const wizardSteps = [
 
 export function PlanCreationWizard({ onSubmit, onCancel }: PlanCreationWizardProps) {
   const { user } = useAuth();
+  const { currentOrg } = useOrg();
   const [currentStep, setCurrentStep] = useState(1);
   const [objectives, setObjectives] = useState<Partial<Objective>[]>([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
@@ -81,11 +83,12 @@ export function PlanCreationWizard({ onSubmit, onCancel }: PlanCreationWizardPro
       ...data,
       ownerEmail: user?.email || data.ownerEmail,
       totalBudget: typeof data.totalBudget === 'number' ? data.totalBudget : parseFloat(data.totalBudget) || 0,
-      objectives: objectives.filter(o => o.text), // Only include objectives with text
+      objectives: objectives
+        .filter(o => o.text)
+        .map(({ id, ...rest }) => rest), // Strip temp ids for API
       projectIds: selectedProjectIds,
-      resourceAllocations,
+      resourceAllocations: resourceAllocations.map(({ id, planId, userId, ...rest }) => rest),
       status: 'planning' as const,
-      healthScore: 100,
       spentToDate: 0,
     };
     
@@ -158,12 +161,17 @@ export function PlanCreationWizard({ onSubmit, onCancel }: PlanCreationWizardPro
                     
                     <TabsContent value="ai" className="mt-6">
                       <AIResourcePlanner
+                        userId={user?.email || ''}
+                        orgSlug={currentOrg?.slug || ''}
                         planContext={{
+                          name: form.watch('name') || 'Untitled Plan',
                           totalBudget: form.watch('totalBudget') || 0,
+                          currency: form.watch('currency') || 'USD',
                           startDate: form.watch('startDate')?.toISOString().split('T')[0] || '',
                           endDate: form.watch('endDate')?.toISOString().split('T')[0] || '',
                           projectIds: selectedProjectIds,
                           objectives: objectives.filter(o => o.text),
+                          budgetCategories: [],
                         }}
                         onSelectPlan={handleAISelectPlan}
                         onBack={() => setResourcePlanningMode('manual')}

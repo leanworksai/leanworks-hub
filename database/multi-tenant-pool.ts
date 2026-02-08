@@ -564,6 +564,18 @@ export async function queryOrg<T = any>(
   return result.rows;
 }
 
+/**
+ * Execute a write query on an organization's database (alias of queryOrg).
+ * Kept for compatibility with existing endpoint patterns.
+ */
+export async function executeOrg<T = any>(
+  orgId: string,
+  text: string,
+  params?: any[]
+): Promise<T[]> {
+  return queryOrg(orgId, text, params);
+}
+
 // ============================================================================
 // USER/ORG LOOKUP HELPERS
 // ============================================================================

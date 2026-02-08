@@ -57,9 +57,10 @@ COPY package*.json ./
 # Copy built frontend files
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy server code and database module
+# Copy server code, database module, and migration scripts
 COPY server/ ./server/
 COPY database/ ./database/
+COPY scripts/ ./scripts/
 COPY gcp_credential.json ./
 
 # Copy nginx configuration (replace the entire nginx.conf to ensure proper structure)

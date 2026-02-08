@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/popover';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
-import type { Objective } from '@/data/plansData';
+import type { Objective } from '@/types/plans';
 import type { UseFormReturn } from 'react-hook-form';
 
 interface BasicInfoStepProps {

@@ -38,7 +38,7 @@ export function LinkProjectsStep({ selectedProjectIds, setSelectedProjectIds }: 
     ));
   };
   
-  const estimatedTeamSize = selectedProjects.reduce((total, p) => total + (p.teamSize || 0), 0);
+  const estimatedResourceCount = selectedProjects.reduce((total, p) => total + (p.teamSize || 0), 0);
   const estimatedBudget = selectedProjects.reduce((total, p) => total + (p.budgetAllocated || 0), 0);
   
   return (
@@ -174,9 +174,9 @@ export function LinkProjectsStep({ selectedProjectIds, setSelectedProjectIds }: 
                 </p>
               </div>
               <div className="p-3 rounded-lg bg-white dark:bg-slate-950 border shadow-sm">
-                <p className="text-xs text-muted-foreground mb-1">Team Size</p>
+                <p className="text-xs text-muted-foreground mb-1">Resource count</p>
                 <p className="text-lg font-bold text-slate-900 dark:text-slate-100">
-                  {estimatedTeamSize}
+                  {estimatedResourceCount}
                 </p>
               </div>
             </div>

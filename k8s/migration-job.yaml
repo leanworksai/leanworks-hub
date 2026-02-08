@@ -1,0 +1,89 @@
+# Database migration Job - runs scripts/run-migration-all-orgs.ts --prod against
+# the prod Postgres instance via cloud-sql-proxy-service.
+# Before re-running: delete the completed job (kubectl delete job db-migration)
+# or use a unique name (e.g. db-migration-20260207) by editing metadata.name.
+#
+# Image: use the same tag as the app deployment. Build with --platform linux/amd64 when pushing from Mac (see README).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration
+  labels:
+    app: leanworks-hub
+    job: db-migration
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400  # Clean up 24 hours after completion
+  template:
+    metadata:
+      labels:
+        app: leanworks-hub
+        job: db-migration
+    spec:
+      restartPolicy: Never
+      # If your deployment uses imagePullSecrets, uncomment and set the same secret name:
+      # imagePullSecrets:
+      # - name: your-registry-secret
+      tolerations:
+      - key: "node.gke.io/balloon-pod-resize"
+        operator: "Exists"
+        effect: "NoSchedule"
+      containers:
+      - name: migration
+        # Use same tag as app deployment (e.g. 20260207-192131). Build with --platform linux/amd64 when pushing from Mac.
+        image: us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:20260207-192131
+        imagePullPolicy: Always
+        command:
+        - npx
+        - tsx
+        - scripts/run-migration-all-orgs.ts
+        - --prod
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: DB_HOST
+          value: cloud-sql-proxy-service
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_REGION
+          value: "us-west1"
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "leanworks-474204"
+        - name: AUDIO_STORAGE_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: AUDIO_STORAGE_BUCKET
+        - name: DB_INSTANCE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: DB_INSTANCE_NAME
+        - name: FIRESTORE_DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: FIRESTORE_DATABASE_NAME
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: ENVIRONMENT
+        volumeMounts:
+        - name: gcp-credentials
+          mountPath: /app/gcp_credential.json
+          subPath: gcp_credential.json
+          readOnly: true
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: gcp-credentials
+        secret:
+          secretName: gcp-credentials
