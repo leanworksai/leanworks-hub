@@ -31,6 +31,9 @@ export function ResourcePlanCard({ plan, isSelected, onSelect }: ResourcePlanCar
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editedAllocations, setEditedAllocations] = useState<ResourceAllocation[]>(plan.allocations);
+  const durationValue = Number.isFinite(plan.estimatedDurationDays)
+    ? Math.ceil(plan.estimatedDurationDays)
+    : 0;
   
   // Color scheme based on strategy
   const colorScheme = {
@@ -114,7 +117,11 @@ export function ResourcePlanCard({ plan, isSelected, onSelect }: ResourcePlanCar
               <DollarSign className={cn('h-4 w-4', `text-${colorScheme.icon}`)} />
               <div>
                 <p className="text-xs text-muted-foreground">Total Cost</p>
-                <p className="text-sm font-bold">${Math.round(plan.totalCost / 1000)}K</p>
+                <p className="text-sm font-bold">
+                  {plan.totalCost >= 1000
+                    ? `$${Math.round(plan.totalCost / 1000)}K`
+                    : `$${Math.round(plan.totalCost).toLocaleString()}`}
+                </p>
               </div>
             </div>
             
@@ -122,7 +129,7 @@ export function ResourcePlanCard({ plan, isSelected, onSelect }: ResourcePlanCar
               <Clock className={cn('h-4 w-4', `text-${colorScheme.icon}`)} />
               <div>
                 <p className="text-xs text-muted-foreground">Duration</p>
-                <p className="text-sm font-bold">{plan.estimatedDuration} months</p>
+                <p className="text-sm font-bold">{durationValue} days</p>
               </div>
             </div>
             

@@ -25,18 +25,19 @@ export function ResourceAllocationTimeline({
   startDate, 
   endDate 
 }: ResourceAllocationTimelineProps) {
-  // Group allocations by user
+  // Group allocations by user (use userEmail when userId is missing for API compatibility)
   const groupedAllocations = useMemo(() => {
     const grouped = new Map<string, GroupedAllocation>();
     
-    allocations.forEach(alloc => {
-      const existing = grouped.get(alloc.userId);
+    (allocations ?? []).forEach(alloc => {
+      const userKey = alloc.userId ?? alloc.userEmail ?? alloc.id;
+      const existing = grouped.get(userKey);
       if (existing) {
         existing.allocations.push(alloc);
         existing.totalPercentage += alloc.allocationPercentage;
       } else {
-        grouped.set(alloc.userId, {
-          userId: alloc.userId,
+        grouped.set(userKey, {
+          userId: userKey,
           userEmail: alloc.userEmail,
           userName: alloc.userName,
           allocations: [alloc],
@@ -54,13 +55,22 @@ export function ResourceAllocationTimeline({
     return Array.from(grouped.values());
   }, [allocations]);
   
-  const getInitials = (name: string) => {
-    return name
-      .split(' ')
-      .map(n => n[0])
-      .join('')
-      .toUpperCase()
-      .slice(0, 2);
+  const getInitials = (name: string | undefined | null, fallbackEmail?: string) => {
+    if (name && typeof name === 'string') {
+      const initials = name
+        .trim()
+        .split(/\s+/)
+        .map(n => n[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2);
+      if (initials) return initials;
+    }
+    if (fallbackEmail && typeof fallbackEmail === 'string') {
+      const local = fallbackEmail.split('@')[0] || '';
+      return (local.slice(0, 2) || '?').toUpperCase();
+    }
+    return '?';
   };
   
   const getAllocationColor = (percentage: number) => {
@@ -75,9 +85,15 @@ export function ResourceAllocationTimeline({
     return intensity;
   };
   
-  const formatDateRange = (start: string, end: string) => {
+  const formatDateRange = (start: string | undefined | null, end: string | undefined | null) => {
+    if (start == null || end == null || start === '' || end === '') {
+      return '—';
+    }
     const startDate = new Date(start);
     const endDate = new Date(end);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return '—';
+    }
     const formatter = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
     return `${formatter.format(startDate)} - ${formatter.format(endDate)}`;
   };
@@ -123,11 +139,11 @@ export function ResourceAllocationTimeline({
                     <div className="flex items-center gap-2">
                       <Avatar className="h-8 w-8">
                         <AvatarFallback className="text-xs">
-                          {getInitials(group.userName)}
+                          {getInitials(group.userName, group.userEmail)}
                         </AvatarFallback>
                       </Avatar>
                       <div>
-                        <p className="text-sm font-medium">{group.userName}</p>
+                        <p className="text-sm font-medium">{group.userName || group.userEmail || 'Unknown'}</p>
                         <p className="text-xs text-muted-foreground">{group.userEmail}</p>
                       </div>
                     </div>

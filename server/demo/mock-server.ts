@@ -923,17 +923,18 @@ app.post('/api/generate-task', (req, res) => {
 app.post('/api/plans/generate-resource-plan', (req, res) => {
   const { total_budget = 400000, team_members = 5, start_date, end_date } = req.body;
 
-  // Calculate duration in weeks
+  // Calculate duration in days
   const startDate = new Date(start_date || Date.now());
   const endDate = new Date(end_date || Date.now() + 12 * 7 * 24 * 60 * 60 * 1000);
-  const durationWeeks = Math.ceil((endDate.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000));
+  const durationDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
+  const durationWeeks = Math.ceil(durationDays / 7);
 
   const strategies = [
     {
       strategy: 'cost-optimized',
       rationale: 'Minimizes costs while meeting deadlines with conservative resource allocation.',
       total_cost: Math.round(total_budget * 0.75),
-      estimated_duration_weeks: Math.ceil(durationWeeks * 1.3),
+      estimated_duration_days: Math.ceil(durationDays * 1.3),
       team_size: Math.max(3, Math.round(team_members * 0.6)),
       risk_level: 'low',
       resource_allocations: [
@@ -969,7 +970,7 @@ app.post('/api/plans/generate-resource-plan', (req, res) => {
       strategy: 'time-optimized',
       rationale: 'Fastest completion with higher cost and aggressive resource allocation.',
       total_cost: Math.round(total_budget * 1.2),
-      estimated_duration_weeks: Math.ceil(durationWeeks * 0.75),
+      estimated_duration_days: Math.ceil(durationDays * 0.75),
       team_size: Math.max(5, Math.round(team_members * 1.2)),
       risk_level: 'medium',
       resource_allocations: [
@@ -1013,7 +1014,7 @@ app.post('/api/plans/generate-resource-plan', (req, res) => {
       strategy: 'quality-optimized',
       rationale: 'Balanced approach focusing on high-quality deliverables with sustainable pace.',
       total_cost: Math.round(total_budget * 0.95),
-      estimated_duration_weeks: durationWeeks,
+      estimated_duration_days: durationDays,
       team_size: Math.round(team_members),
       risk_level: 'low',
       resource_allocations: [

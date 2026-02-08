@@ -69,6 +69,8 @@ const authConfigSchema = z.object({
   secretName: z.string().optional(),
   tokenType: z.enum(['bearer', 'api_key', 'custom']).optional(),
   customHeaders: z.record(z.string()).optional(),
+  // Developer-provided secret: we sign outbound webhooks with HMAC-SHA256 so the agent can verify requests.
+  webhookSecret: z.string().min(1, 'Webhook secret cannot be empty').max(512).optional(),
 });
 
 // Base AI Agent schema
@@ -90,6 +92,11 @@ const baseAgentSchema = z.object({
     .max(50, 'Maximum 50 capabilities allowed')
     .default([]),
   avatar: z.string().max(10, 'Avatar must be 10 characters or less').optional(),
+  skillMd: z
+    .string()
+    .max(10000, 'SKILL.md content must be 10000 characters or less')
+    .optional()
+    .nullish(),
 });
 
 // Create agent schema
@@ -98,6 +105,10 @@ export const createAgentSchema = baseAgentSchema.extend({
     .string()
     .min(1, 'Agent name is required')
     .max(255, 'Agent name must be 255 characters or less'),
+  skillMd: z
+    .string()
+    .min(1, 'SKILL.md is required — describe when and how Lean should trigger this agent')
+    .max(10000, 'SKILL.md content must be 10000 characters or less'),
 });
 
 // Update agent schema

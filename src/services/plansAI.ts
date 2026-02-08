@@ -43,7 +43,7 @@ export interface ResourcePlanStrategy {
   strategy: 'cost-optimized' | 'time-optimized' | 'quality-optimized';
   rationale: string;
   total_cost: number;
-  estimated_duration_weeks: number;
+  estimated_duration_days: number;
   team_size: number;
   risk_level: 'low' | 'medium' | 'high';
   resource_allocations: Array<{

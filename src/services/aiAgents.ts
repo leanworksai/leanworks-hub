@@ -127,6 +127,84 @@ export const aiAgentService = {
       method: 'DELETE',
     });
   },
+
+  // ============================================================================
+  // AGENT TRIGGERS (Phase 4)
+  // ============================================================================
+
+  // Trigger agent on a task
+  triggerOnTask: async (taskId: string, agentId: string, prompt?: string): Promise<{ triggerId: string }> => {
+    return requestJson(buildUrl(`/tasks/${taskId}/trigger-agent`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, prompt }),
+    });
+  },
+
+  // Trigger agent on a project
+  triggerOnProject: async (projectId: string, agentId: string, prompt?: string): Promise<{ triggerId: string }> => {
+    return requestJson(buildUrl(`/projects/${projectId}/trigger-agent`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, prompt }),
+    });
+  },
+
+  // Trigger agent on a plan
+  triggerOnPlan: async (planId: string, agentId: string, prompt?: string): Promise<{ triggerId: string }> => {
+    return requestJson(buildUrl(`/plans/${planId}/trigger-agent`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentId, prompt }),
+    });
+  },
+
+  // Find compatible agents for an entity type
+  findCompatibleAgents: async (entityType?: string, action?: string): Promise<AIAgent[]> => {
+    const params = new URLSearchParams();
+    if (entityType) params.set('entityType', entityType);
+    if (action) params.set('action', action);
+    return requestJson(buildUrl(`/agents/compatible?${params.toString()}`));
+  },
+
+  // ============================================================================
+  // API KEY MANAGEMENT (Phase 6)
+  // ============================================================================
+
+  // Generate API key for agent
+  generateApiKey: async (agentId: string, label?: string): Promise<{ id: string; key: string; prefix: string }> => {
+    return requestJson(buildUrl(`/ai-agents/${agentId}/api-keys`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label }),
+    });
+  },
+
+  // List API keys for agent
+  listApiKeys: async (agentId: string): Promise<{ id: string; prefix: string; label: string; lastUsedAt: string; isActive: boolean }[]> => {
+    return requestJson(buildUrl(`/ai-agents/${agentId}/api-keys`));
+  },
+
+  // Revoke API key
+  revokeApiKey: async (agentId: string, keyId: string): Promise<{ success: boolean }> => {
+    return requestJson(buildUrl(`/ai-agents/${agentId}/api-keys/${keyId}`), {
+      method: 'DELETE',
+    });
+  },
+
+  // ============================================================================
+  // LEAN ROUTING
+  // ============================================================================
+
+  // Get routing log for a specific agent
+  getRoutingLog: async (agentId: string, limit = 20): Promise<any[]> => {
+    return requestJson(buildUrl(`/lean/routing-log/${agentId}?limit=${limit}`));
+  },
+
+  // Get routing stats
+  getRoutingStats: async (): Promise<any> => {
+    return requestJson(buildUrl('/lean/stats'));
+  },
 };
 
 // Export for convenient usage

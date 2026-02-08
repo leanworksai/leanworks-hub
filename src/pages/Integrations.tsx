@@ -19,11 +19,12 @@ function IntegrationLogo({ logo, name }: { logo?: string; name: string }) {
     const colors: Record<string, string> = {
       'S': 'bg-purple-600',
       'A': 'bg-blue-600',
-      'G': 'bg-gray-800',
+      'G': 'bg-blue-600',
       'O': 'bg-blue-500',
       'N': 'bg-black',
       'L': 'bg-indigo-600',
       'C': 'bg-violet-600',
+      'B': 'bg-amber-600',
     };
     const bgColor = colors[firstLetter] || 'bg-gray-600';
     
@@ -100,6 +101,27 @@ const integrations = [
     description: "HRIS and employee data",
     category: "HR",
     logo: "/integration-logos/workday.svg",
+  },
+  {
+    id: "google_drive",
+    name: "Google Drive",
+    description: "Files and folders in Google Drive (list, search, upload, download)",
+    category: "Cloud & Data",
+    logo: "/integration-logos/google-drive.svg",
+  },
+  {
+    id: "google_cloud_storage",
+    name: "Google Cloud Storage",
+    description: "List, upload, download, and signed URLs for GCS buckets",
+    category: "Cloud & Data",
+    logo: "/integration-logos/google-cloud-storage.svg",
+  },
+  {
+    id: "bigquery",
+    name: "BigQuery",
+    description: "Query datasets and run read-only SQL in BigQuery",
+    category: "Cloud & Data",
+    logo: "/integration-logos/bigquery.svg",
   },
 ];
 
@@ -240,14 +262,27 @@ export default function Integrations() {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Integrations</h1>
+    <div className="h-full flex flex-col animate-fade-in">
+      {/* Header: same layout as Tasks / Plans / Projects */}
+      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="flex h-12 items-center px-4 gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <h1 className="text-lg font-semibold">Integrations</h1>
+            <Badge variant="secondary" className="ml-1.5">
+              {loading ? '—' : integrations.length}
+            </Badge>
+          </div>
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {/* Content */}
+      <div className="flex-1 overflow-auto p-6">
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <p className="text-muted-foreground">Loading integrations...</p>
+          </div>
+        ) : (
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         {integrations.map((integration) => {
           const isConnected = connectedIntegrations.has(integration.id);
           return (
@@ -295,6 +330,8 @@ export default function Integrations() {
             </Card>
           );
         })}
+        </div>
+        )}
       </div>
 
       {/* Render dialog for the currently selected integration */}

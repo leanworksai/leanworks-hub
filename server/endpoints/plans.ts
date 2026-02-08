@@ -20,6 +20,8 @@ import {
   updateMilestoneSchema,
   linkProjectSchema,
 } from '../validation/plan-schemas.js';
+import { emitEvent, EventTypes } from '../services/event-bus.js';
+import { extractMentions } from '../services/mention-service.js';
 
 export const setupPlansEndpoints = (
   app: express.Application,
@@ -43,6 +45,8 @@ export const setupPlansEndpoints = (
     healthTrend: row.health_trend,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    aiQuickInsight: row.ai_quick_insight ?? null,
+    aiInsights: row.ai_insights ?? null,
   });
   // ============================================================================
   // GET /api/plans - Get all plans with optional filters
@@ -128,12 +132,17 @@ export const setupPlansEndpoints = (
         [planId]
       );
 
-      // Get resource allocations
-      const resourceAllocations = await queryOrg(
+      // Get resource allocations (add userId and planId for frontend ResourceAllocation type)
+      const resourceAllocationsRaw = await queryOrg(
         orgId,
         'SELECT id, user_email as userEmail, user_name as userName, allocation_percentage as allocationPercentage, start_date as startDate, end_date as endDate, role, hourly_rate as hourlyRate, normalized_hours as normalizedHours, project_id as projectId FROM plan_resource_allocations WHERE plan_id = $1 ORDER BY created_at',
         [planId]
       );
+      const resourceAllocations = resourceAllocationsRaw.map((r: any) => ({
+        ...r,
+        userId: r.userEmail,
+        planId,
+      }));
 
       // Get milestones
       const milestones = await queryOrg(
@@ -334,6 +343,12 @@ export const setupPlansEndpoints = (
           [eventId, planId, 'project_update', 'Plan created', `Plan "${data.name}" has been created`, userEmail, data.ownerName || '', now]
         );
 
+        // Emit event
+        emitEvent(EventTypes.PLAN_CREATED, 'plan', planId, orgId, 'human', userEmail,
+          { name: data.name, status: data.status || 'planning', totalBudget: data.totalBudget },
+          extractMentions(data.description)
+        ).catch(err => console.error('[Event Bus] Plan created event error:', err));
+
         res.status(201).json({
           id: planId,
           name: data.name,
@@ -437,6 +452,13 @@ export const setupPlansEndpoints = (
           );
         }
 
+        // Emit event
+        const eventType = data.totalBudget !== undefined || data.spentToDate !== undefined
+          ? EventTypes.PLAN_BUDGET_CHANGED : EventTypes.PLAN_UPDATED;
+        emitEvent(eventType, 'plan', planId, orgId, 'human', userEmail,
+          { updatedFields: Object.keys(data) }
+        ).catch(err => console.error('[Event Bus] Plan updated event error:', err));
+
         res.json({ success: true, planId });
       } catch (error) {
         console.error('Update plan error:', error);
@@ -470,6 +492,9 @@ export const setupPlansEndpoints = (
         'DELETE FROM plans WHERE id = $1',
         [planId]
       );
+
+      emitEvent(EventTypes.PLAN_DELETED, 'plan', planId, orgId, 'human', req.userEmail)
+        .catch(err => console.error('[Event Bus] Plan deleted event error:', err));
 
       res.json({ success: true });
     } catch (error) {

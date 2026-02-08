@@ -13,6 +13,9 @@ export interface AIAgent {
   totalTasksCompleted: number;
   averageResponseTimeMs?: number;
   lastTriggeredAt?: string;
+  skillMd?: string;
+  skillSummary?: string;
+  skillVersion?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +68,7 @@ export interface CreateAIAgentInput {
   authConfig?: Record<string, any>;
   capabilities?: string[];
   avatar?: string;
+  skillMd: string;
 }
 
 export interface UpdateAIAgentInput {
@@ -75,6 +79,7 @@ export interface UpdateAIAgentInput {
   capabilities?: string[];
   status?: 'active' | 'inactive' | 'error';
   avatar?: string;
+  skillMd?: string;
 }
 
 export interface CreateAIAgentTeamInput {

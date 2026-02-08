@@ -9,7 +9,7 @@ export interface AIResourcePlan {
   strategy: 'cost' | 'time' | 'quality';
   strategyName: string;
   totalCost: number;
-  estimatedDuration: number; // in weeks
+  estimatedDurationDays: number; // in days
   teamSize: number;
   riskLevel: 'low' | 'medium' | 'high';
   allocations: ResourceAllocation[];
@@ -97,7 +97,7 @@ export const generateResourcePlans = async (
                     : strategy.strategy === 'time-optimized' ? 'Time-Optimized'
                     : 'Quality-Optimized',
         totalCost: strategy.total_cost,
-        estimatedDuration: strategy.estimated_duration_weeks,
+        estimatedDurationDays: strategy.estimated_duration_days,
         teamSize: strategy.team_size,
         riskLevel: strategy.risk_level,
         allocations,

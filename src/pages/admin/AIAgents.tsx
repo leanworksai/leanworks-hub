@@ -3,7 +3,7 @@ import { useAIAgents, useCreateAIAgent, useDeleteAIAgent } from '@/hooks/useAIAg
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Trash2, Eye } from 'lucide-react';
+import { Plus, Trash2, Eye, Key, Webhook, Globe, Server, ArrowLeft } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import {
   Dialog,
@@ -14,18 +14,38 @@ import {
 } from '@/components/ui/dialog';
 import AIAgentForm from '@/components/ai-agents/AIAgentForm';
 
+type AgentTypeOption = 'webhook' | 'api' | 'mcp_server';
+
+const AGENT_TYPE_OPTIONS: { value: AgentTypeOption; label: string; description: string; icon: React.ReactNode }[] = [
+  { value: 'webhook', label: 'Webhook (Push)', description: 'We push events and triggers to your agent\'s URL. Best for real-time integrations.', icon: <Webhook className="h-5 w-5" /> },
+  { value: 'api', label: 'API (Pull)', description: 'We call your API to submit work and poll for status. You control the execution flow.', icon: <Globe className="h-5 w-5" /> },
+  { value: 'mcp_server', label: 'MCP Server', description: 'Model Context Protocol server. For advanced tool-augmented agents.', icon: <Server className="h-5 w-5" /> },
+];
+
 export default function AIAgentsPage() {
   const navigate = useNavigate();
   const [dialogOpen, setDialogOpen] = useState(false);
-  
+  const [dialogStep, setDialogStep] = useState<1 | 2>(1);
+  const [selectedAgentType, setSelectedAgentType] = useState<AgentTypeOption | null>(null);
+
   const { data: agents = [], isLoading } = useAIAgents();
   const createMutation = useCreateAIAgent();
   const deleteMutation = useDeleteAIAgent();
+
+  const handleDialogOpenChange = (open: boolean) => {
+    if (!open) {
+      setDialogStep(1);
+      setSelectedAgentType(null);
+    }
+    setDialogOpen(open);
+  };
 
   const handleCreate = async (formData: any) => {
     try {
       await createMutation.mutateAsync(formData);
       setDialogOpen(false);
+      setDialogStep(1);
+      setSelectedAgentType(null);
     } catch (error) {
       console.error('Failed to create agent:', error);
     }
@@ -55,31 +75,106 @@ export default function AIAgentsPage() {
   };
 
   if (isLoading) {
-    return <div className="p-8 text-center">Loading agents...</div>;
+    return (
+      <div className="h-full flex flex-col animate-fade-in">
+        <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <div className="flex h-12 items-center px-4 gap-3 flex-wrap">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <h1 className="text-lg font-semibold">AI Agents</h1>
+              <Badge variant="secondary" className="ml-1.5">—</Badge>
+            </div>
+          </div>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-6">
+          <p className="text-muted-foreground">Loading agents...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h1 className="text-3xl font-bold">AI Agents</h1>
+    <div className="h-full flex flex-col animate-fade-in">
+      {/* Header: same layout as Tasks / Plans / Projects */}
+      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="flex h-12 items-center px-4 gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <h1 className="text-lg font-semibold">AI Agents</h1>
+            <Badge variant="secondary" className="ml-1.5">
+              {agents.length}
+            </Badge>
+          </div>
+
+          <Button variant="outline" size="sm" onClick={() => navigate('/ai-team/developer-portal')} className="gap-2">
+            <Key className="h-4 w-4" />
+            Developer Portal
+          </Button>
+          <Dialog open={dialogOpen} onOpenChange={handleDialogOpenChange}>
+            <DialogTrigger asChild>
+              <Button className="bg-primary hover:bg-primary/90 gap-2">
+                <Plus className="h-4 w-4" />
+                Add Agent
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-md max-h-[90vh] flex flex-col">
+              <DialogHeader className="shrink-0">
+                <DialogTitle>
+                  {dialogStep === 1 ? 'Create New AI Agent' : `Create New AI Agent — ${AGENT_TYPE_OPTIONS.find(o => o.value === selectedAgentType)?.label ?? selectedAgentType}`}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="overflow-y-auto min-h-0 flex-1 -mx-1 px-1">
+                {dialogStep === 1 ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-muted-foreground">Choose how your agent will integrate with the platform.</p>
+                    <div className="grid gap-2">
+                      {AGENT_TYPE_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            setSelectedAgentType(opt.value);
+                            setDialogStep(2);
+                          }}
+                          className="flex items-start gap-3 rounded-lg border border-input bg-background p-4 text-left transition-colors hover:bg-accent/50 hover:border-primary/50"
+                        >
+                          <div className="rounded-md bg-primary/10 p-2 text-primary shrink-0">
+                            {opt.icon}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium">{opt.label}</div>
+                            <div className="text-sm text-muted-foreground mt-0.5">{opt.description}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="mb-2 -ml-1"
+                      onClick={() => setDialogStep(1)}
+                    >
+                      <ArrowLeft className="h-3.5 w-3.5 mr-1" />
+                      Back
+                    </Button>
+                    <AIAgentForm
+                      key={selectedAgentType ?? 'webhook'}
+                      onSubmit={handleCreate}
+                      isLoading={createMutation.isPending}
+                      initialAgentType={selectedAgentType ?? 'webhook'}
+                    />
+                  </>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button className="gap-2">
-              <Plus className="h-4 w-4" />
-              Add Agent
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>Create New AI Agent</DialogTitle>
-            </DialogHeader>
-            <AIAgentForm onSubmit={handleCreate} isLoading={createMutation.isPending} />
-          </DialogContent>
-        </Dialog>
       </div>
 
+      {/* Content */}
+      <div className="flex-1 overflow-auto p-6">
       {agents.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center">
@@ -172,6 +267,7 @@ export default function AIAgentsPage() {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

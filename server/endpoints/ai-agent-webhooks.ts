@@ -96,19 +96,26 @@ export function setupAIAgentWebhookEndpoints(
           return res.status(400).json({ error: 'X-Org-Id header required' });
         }
 
-        if (!assignmentId) {
-          return res.status(400).json({ error: 'X-Assignment-Id header required' });
+        const triggerId = req.headers['x-trigger-id'] as string;
+
+        if (!assignmentId && !triggerId) {
+          return res.status(400).json({ error: 'X-Assignment-Id or X-Trigger-Id header required' });
         }
 
-        // Update assignment with callback data
         const startTime = Date.now();
-        await handleAgentCallback(orgId, agentId, assignmentId, {
-          status,
-          message,
-          result,
-          logs,
-          metadata,
-        });
+
+        if (triggerId) {
+          // Handle generic trigger callback (Phase 4)
+          const { handleTriggerCallback } = await import('../services/ai-agent-service.js');
+          await handleTriggerCallback(orgId, agentId, triggerId, { status, result, message });
+          console.log(`✅ [AI Agent Webhooks] Trigger callback processed for ${triggerId}`);
+        } else if (assignmentId) {
+          // Handle task assignment callback (existing flow)
+          await handleAgentCallback(orgId, agentId, assignmentId, {
+            status, message, result, logs, metadata,
+          });
+          console.log(`✅ [AI Agent Webhooks] Callback processed for assignment ${assignmentId}`);
+        }
 
         const executionTime = Date.now() - startTime;
         
@@ -116,8 +123,6 @@ export function setupAIAgentWebhookEndpoints(
         if (status === 'completed' || status === 'failed') {
           await updateAgentStats(orgId, agentId, executionTime);
         }
-
-        console.log(`✅ [AI Agent Webhooks] Callback processed for assignment ${assignmentId}`);
 
         res.json({ success: true, message: 'Callback processed' });
       } catch (error: any) {

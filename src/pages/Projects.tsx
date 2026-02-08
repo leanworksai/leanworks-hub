@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Popover,
   PopoverContent,
@@ -32,6 +31,8 @@ import { useDateSelection } from "@/hooks/useDateSelection";
 import { LimitVisibilityDialog } from "@/components/LimitVisibilityDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpdateSummary } from "@/hooks/useUpdateSummaries";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import Tasks from "./Tasks";
 
 const truncateText = (text: string, maxLength: number) => {
   if (text.length <= maxLength) return text;
@@ -181,6 +182,8 @@ export default function Projects() {
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   const [hoveredProject, setHoveredProject] = useState<string | null>(null); // Stores project ID for mobile hover
   const [projectToLimitVisibility, setProjectToLimitVisibility] = useState<{ id: string; project: any } | null>(null);
+  const [viewMode, setViewMode] = useState<"projects" | "tasks">("projects");
+  const [headerPortal, setHeaderPortal] = useState<HTMLElement | null>(null);
 
   const handleCardClick = (projectId: string) => {
     trackView('project', projectId);
@@ -217,8 +220,15 @@ export default function Projects() {
 
   if (isLoading) {
     return (
-      <div className="space-y-6 animate-fade-in">
-        <div className="text-center py-12">
+      <div className="h-full flex flex-col animate-fade-in">
+        <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <div className="flex h-12 items-center px-4 gap-3 flex-wrap">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <h1 className="text-lg font-semibold">Projects</h1>
+            </div>
+          </div>
+        </div>
+        <div className="flex-1 flex items-center justify-center p-6">
           <p className="text-muted-foreground">Loading projects...</p>
         </div>
       </div>
@@ -226,39 +236,60 @@ export default function Projects() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-6 animate-fade-in">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Projects</h1>
-        </div>
-        <Button 
-          className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
-          onClick={() => {
-            trackClick('create_project', '/projects');
-            setIsNewProjectDialogOpen(true);
-          }}
-        >
-          <Plus className="mr-2 h-4 w-4" />
-          New Project
-        </Button>
-      </div>
+    <div className="h-full flex flex-col animate-fade-in">
+      <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "projects" | "tasks")} className="h-full flex flex-col">
+        {/* Header */}
+        <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
+          <div className="flex h-12 items-center px-4 gap-3 flex-wrap justify-between">
+            <div className="flex items-center gap-4">
+              <TabsList className="h-8">
+                <TabsTrigger value="projects" className="px-3">Projects</TabsTrigger>
+                <TabsTrigger value="tasks" className="px-3">Tasks</TabsTrigger>
+              </TabsList>
+            </div>
 
-      <div className="space-y-3">
-        {projects.map((project) => (
-          <ProjectCard
-            key={project.id}
-            project={project}
-            formatDateForDisplay={formatDateForDisplay}
-            handleCardClick={handleCardClick}
-            handleDeleteClick={handleDeleteClick}
-            isProjectSelected={isProjectSelected}
-            toggleProject={toggleProject}
-            navigate={navigate}
-            setProjectToLimitVisibility={setProjectToLimitVisibility}
-            user={user}
-          />
-        ))}
-      </div>
+            <div className="flex items-center gap-2" ref={setHeaderPortal}>
+              {viewMode === 'projects' && (
+                <Button
+                    className="bg-primary hover:bg-primary/90 h-8"
+                    onClick={() => {
+                      trackClick('create_project', '/projects');
+                      setIsNewProjectDialogOpen(true);
+                    }}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    New Project
+                  </Button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Projects List */}
+        <TabsContent value="projects" className="flex-1 overflow-auto p-6 mt-0 border-0 data-[state=inactive]:hidden">
+          <div className="space-y-3">
+          {projects.map((project) => (
+            <ProjectCard
+              key={project.id}
+              project={project}
+              formatDateForDisplay={formatDateForDisplay}
+              handleCardClick={handleCardClick}
+              handleDeleteClick={handleDeleteClick}
+              isProjectSelected={isProjectSelected}
+              toggleProject={toggleProject}
+              navigate={navigate}
+              setProjectToLimitVisibility={setProjectToLimitVisibility}
+              user={user}
+            />
+          ))}
+          </div>
+        </TabsContent>
+
+        {/* Tasks List */}
+        <TabsContent value="tasks" className="flex-1 overflow-hidden mt-0 border-0 data-[state=inactive]:hidden">
+          <Tasks embedded headerPortalRef={headerPortal} />
+        </TabsContent>
+      </Tabs>
 
       <NewProjectDialog 
         open={isNewProjectDialogOpen} 

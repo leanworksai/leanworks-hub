@@ -162,5 +162,60 @@ export const integrationConfigs: Record<string, IntegrationConfig> = {
       },
     ],
   },
+  google_drive: {
+    id: "google_drive",
+    name: "Google Drive",
+    title: "Google Drive",
+    description:
+      "Paste a GCP service account JSON key with Drive API access. Create a service account in Google Cloud Console, enable the Drive API, and download the JSON key. Share Drive folders with the service account email to allow access.",
+    fields: [
+      {
+        id: "serviceAccountJson",
+        label: "Service account JSON",
+        type: "textarea",
+        placeholder: '{"type": "service_account", "project_id": "...", "private_key_id": "...", ...}',
+        required: true,
+      },
+    ],
+  },
+  google_cloud_storage: {
+    id: "google_cloud_storage",
+    name: "Google Cloud Storage",
+    title: "Google Cloud Storage",
+    description:
+      "Paste a GCP service account JSON key with Cloud Storage access. Create a service account in Google Cloud Console, grant Storage Object Viewer/Creator roles as needed, and download the JSON key. Optionally set a bucket name; the agent may use an environment default otherwise.",
+    fields: [
+      {
+        id: "serviceAccountJson",
+        label: "Service account JSON",
+        type: "textarea",
+        placeholder: '{"type": "service_account", "project_id": "...", "private_key_id": "...", ...}',
+        required: true,
+      },
+      {
+        id: "bucketName",
+        label: "Bucket name (optional)",
+        type: "text",
+        placeholder: "my-gcs-bucket",
+        required: false,
+      },
+    ],
+  },
+  bigquery: {
+    id: "bigquery",
+    name: "BigQuery",
+    title: "BigQuery",
+    description:
+      "Paste a GCP service account JSON key with BigQuery Data Viewer/Job User access. Create a service account in Google Cloud Console, enable the BigQuery API, and download the JSON key. Used for read-only queries and listing datasets/tables.",
+    fields: [
+      {
+        id: "serviceAccountJson",
+        label: "Service account JSON",
+        type: "textarea",
+        placeholder: '{"type": "service_account", "project_id": "...", "private_key_id": "...", ...}',
+        required: true,
+      },
+    ],
+  },
 };
 

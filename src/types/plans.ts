@@ -76,6 +76,24 @@ export interface Plan {
   createdAt: string;
   updatedAt: string;
   recentActivity: PlanActivityEvent[];
+  /** AI one-line summary from backend DB (list view) */
+  aiQuickInsight?: string | null;
+  /** Full AI insights from backend DB (detail view) */
+  aiInsights?: PlanStoredInsights | null;
+}
+
+/** AI insights as stored in DB (matches PlanInsights from plansAI) */
+export interface PlanStoredInsights {
+  summary: string;
+  risks: Array<{ title: string; severity: string; description: string; impact: string }>;
+  recommendations: Array<{ title: string; priority: string; description: string; expected_impact: string }>;
+  predictions: {
+    budget_trend: string;
+    timeline_trend: string;
+    estimated_completion_date: string;
+    confidence_level: string;
+  };
+  quick_insight: string;
 }
 
 // API Input Types for Validation

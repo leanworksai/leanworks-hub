@@ -24,13 +24,23 @@ export function NewPlanDialog({ open, onOpenChange }: NewPlanDialogProps) {
       const owner = users.find(u => u.email === data.ownerEmail);
       const ownerName = owner ? `${owner.firstName} ${owner.lastName}` : data.ownerEmail;
       
+      // Server expects YYYY-MM-DD for startDate/endDate (plan-schemas.ts)
+      const startDate =
+        data.startDate instanceof Date
+          ? data.startDate.toISOString().slice(0, 10)
+          : String(data.startDate).slice(0, 10);
+      const endDate =
+        data.endDate instanceof Date
+          ? data.endDate.toISOString().slice(0, 10)
+          : String(data.endDate).slice(0, 10);
+
       await createPlan.mutateAsync({
         name: data.name,
         description: data.description,
         totalBudget: data.totalBudget,
-        currency: data.currency,
-        startDate: data.startDate.toISOString(),
-        endDate: data.endDate.toISOString(),
+        currency: data.currency ?? 'USD',
+        startDate,
+        endDate,
         ownerEmail: data.ownerEmail,
         ownerName,
         objectives: data.objectives || [],
@@ -39,7 +49,7 @@ export function NewPlanDialog({ open, onOpenChange }: NewPlanDialogProps) {
         budgetCategories: [],
         status: data.status,
         healthScore: data.healthScore,
-        spentToDate: data.spentToDate,
+        spentToDate: data.spentToDate ?? 0,
       });
       
       toast({

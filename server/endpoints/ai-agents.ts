@@ -16,6 +16,8 @@ import {
   updateAgentStats,
 } from '../services/ai-agent-service.js';
 import { queryOrg, executeOrg } from '../../database/multi-tenant-pool.js';
+import { generateAgentApiKey, hashApiKey } from '../middleware/agent-auth.js';
+import { parseSkillMd } from '../services/skill-parser.js';
 
 // ============================================================================
 // AI AGENTS ENDPOINTS
@@ -89,6 +91,32 @@ export function setupAIAgentEndpoints(
     }
   }
 
+  // Save developer-provided webhook signing secret (for outbound webhook verification)
+  async function saveWebhookSigningSecret(agentId: string, webhookSecret: string): Promise<void> {
+    const secretName = `ai-agent-${agentId}-webhook-signing-secret`;
+    const parent = `projects/${serviceAccount.project_id}`;
+    const fullSecretName = `${parent}/secrets/${secretName}`;
+
+    try {
+      try {
+        await secretManagerClient.createSecret({
+          parent,
+          secretId: secretName,
+          secret: { replication: { automatic: {} } },
+        });
+      } catch (error: any) {
+        if (error.code !== 6) throw error;
+      }
+      await secretManagerClient.addSecretVersion({
+        parent: fullSecretName,
+        payload: { data: Buffer.from(webhookSecret, 'utf8') },
+      });
+    } catch (error: any) {
+      console.error('[AI Agent Endpoints] Error saving webhook signing secret:', error);
+      throw new Error(`Failed to save webhook signing secret: ${error.message}`);
+    }
+  }
+
   // ============================================================================
   // CREATE AGENT
   // ============================================================================
@@ -102,31 +130,56 @@ export function setupAIAgentEndpoints(
       try {
         const orgId = (req as any).orgId;
         const userEmail = (req as any).userEmail;
-        const { name, description, agentType, config, authConfig, capabilities, avatar } = req.body;
+        const { name, description, agentType, config, authConfig, capabilities, avatar, skillMd } = req.body;
 
         const agentId = `agent_${crypto.randomBytes(8).toString('hex')}`;
         const now = new Date();
 
-        // Generate and save agent secret
+        // Generate and save agent secret (for callback auth)
         const agentSecret = await generateAgentSecret();
         await saveAgentSecret(agentId, orgId, agentSecret);
+
+        // Developer-provided webhook secret: store in Secret Manager only (never in DB)
+        const webhookSecret = authConfig?.webhookSecret;
+        if (webhookSecret && typeof webhookSecret === 'string') {
+          await saveWebhookSigningSecret(agentId, webhookSecret);
+        }
+        const authConfigForDb = authConfig ? { ...authConfig } : {};
+        delete (authConfigForDb as any).webhookSecret;
+
+        // Parse SKILL.md if provided
+        let skillSummary: string | null = null;
+        let skillVersion: string | null = null;
+        let resolvedConfig = config;
+        if (skillMd && typeof skillMd === 'string') {
+          const parsed = parseSkillMd(skillMd);
+          skillSummary = parsed.summary || null;
+          skillVersion = parsed.version;
+          // If frontmatter has webhook_url and config doesn't, use it as a convenience
+          if (parsed.frontmatter.webhook_url && !config?.webhookUrl && agentType === 'webhook') {
+            resolvedConfig = { ...config, webhookUrl: parsed.frontmatter.webhook_url };
+          }
+        }
 
         // Save agent to database
         await executeOrg(
           orgId,
           `INSERT INTO ai_agents 
-           (id, name, description, agent_type, config, auth_config, capabilities, avatar, created_by, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+           (id, name, description, agent_type, config, auth_config, capabilities, avatar, created_by, skill_md, skill_summary, skill_version, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
           [
             agentId,
             name,
             description || null,
             agentType,
-            JSON.stringify(config || {}),
-            JSON.stringify(authConfig || {}),
+            JSON.stringify(resolvedConfig || {}),
+            JSON.stringify(authConfigForDb),
             JSON.stringify(capabilities || []),
             avatar || null,
             userEmail,
+            skillMd || null,
+            skillSummary,
+            skillVersion,
             now,
             now,
           ]
@@ -169,6 +222,7 @@ export function setupAIAgentEndpoints(
           orgId,
           `SELECT id, name, description, agent_type as agentType, status, capabilities, avatar, 
                   total_tasks_completed as totalTasksCompleted, average_response_time_ms as averageResponseTimeMs,
+                  skill_md as skillMd, skill_summary as skillSummary, skill_version as skillVersion,
                   created_at as createdAt, updated_at as updatedAt
            FROM ai_agents
            ORDER BY created_at DESC
@@ -208,6 +262,7 @@ export function setupAIAgentEndpoints(
           `SELECT id, name, description, agent_type as agentType, status, config, auth_config as authConfig, 
                   capabilities, avatar, total_tasks_completed as totalTasksCompleted, 
                   average_response_time_ms as averageResponseTimeMs, last_triggered_at as lastTriggeredAt,
+                  skill_md as skillMd, skill_summary as skillSummary, skill_version as skillVersion,
                   created_at as createdAt, updated_at as updatedAt
            FROM ai_agents
            WHERE id = $1`,
@@ -239,7 +294,7 @@ export function setupAIAgentEndpoints(
       try {
         const orgId = (req as any).orgId;
         const { agentId } = req.params;
-        const { name, description, config, authConfig, capabilities, status, avatar } = req.body;
+        const { name, description, config, authConfig, capabilities, status, avatar, skillMd } = req.body;
 
         // Build update query dynamically
         const updates: string[] = [];
@@ -274,6 +329,23 @@ export function setupAIAgentEndpoints(
           updates.push(`avatar = $${paramCount++}`);
           values.push(avatar);
         }
+        if (skillMd !== undefined) {
+          updates.push(`skill_md = $${paramCount++}`);
+          values.push(skillMd || null);
+          // Re-parse summary and version
+          if (skillMd && typeof skillMd === 'string') {
+            const parsed = parseSkillMd(skillMd);
+            updates.push(`skill_summary = $${paramCount++}`);
+            values.push(parsed.summary || null);
+            updates.push(`skill_version = $${paramCount++}`);
+            values.push(parsed.version);
+          } else {
+            updates.push(`skill_summary = $${paramCount++}`);
+            values.push(null);
+            updates.push(`skill_version = $${paramCount++}`);
+            values.push(null);
+          }
+        }
 
         if (updates.length === 0) {
           return res.status(400).json({ error: 'No fields to update' });
@@ -296,6 +368,7 @@ export function setupAIAgentEndpoints(
           `SELECT id, name, description, agent_type as agentType, status, config, auth_config as authConfig,
                   capabilities, avatar, total_tasks_completed as totalTasksCompleted,
                   average_response_time_ms as averageResponseTimeMs,
+                  skill_md as skillMd, skill_summary as skillSummary, skill_version as skillVersion,
                   created_at as createdAt, updated_at as updatedAt
            FROM ai_agents WHERE id = $1`,
           [agentId]
@@ -842,6 +915,110 @@ export function setupAIAgentEndpoints(
       } catch (error: any) {
         console.error('[AI Agent Endpoints] Error removing agent from team:', error);
         res.status(500).json({ error: error.message || 'Failed to remove agent' });
+      }
+    }
+  );
+
+  // ============================================================================
+  // API KEY MANAGEMENT (Phase 6b)
+  // ============================================================================
+
+  /**
+   * POST /api/ai-agents/:agentId/api-keys — Generate new API key
+   */
+  app.post(
+    '/api/ai-agents/:agentId/api-keys',
+    authenticateUser,
+    requireOrgMembership,
+    async (req: express.Request, res: express.Response) => {
+      try {
+        const orgId = (req as any).orgId;
+        const { agentId } = req.params;
+        const { label } = req.body;
+
+        // Verify agent exists
+        const agents = await queryOrg(orgId, 'SELECT id FROM ai_agents WHERE id = $1', [agentId]);
+        if (agents.length === 0) return res.status(404).json({ error: 'Agent not found' });
+
+        // Generate key
+        const { plaintext, hash, prefix } = generateAgentApiKey();
+        const keyId = `key_${crypto.randomBytes(8).toString('hex')}`;
+
+        // Store in agent_api_keys table
+        await executeOrg(orgId,
+          `INSERT INTO agent_api_keys (id, agent_id, key_hash, key_prefix, label)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [keyId, agentId, hash, prefix, label || null]);
+
+        // Also update the simple api_key_hash column on ai_agents (for backward compat)
+        await executeOrg(orgId,
+          `UPDATE ai_agents SET api_key_hash = $1 WHERE id = $2 AND api_key_hash IS NULL`,
+          [hash, agentId]);
+
+        console.log(`✅ [AI Agent API Key] Generated key for agent ${agentId}: ${prefix}...`);
+
+        // Return plaintext key (shown once only)
+        res.status(201).json({ id: keyId, key: plaintext, prefix });
+      } catch (error: any) {
+        console.error('[AI Agent Endpoints] Error generating API key:', error);
+        res.status(500).json({ error: error.message || 'Failed to generate API key' });
+      }
+    }
+  );
+
+  /**
+   * GET /api/ai-agents/:agentId/api-keys — List API keys (masked)
+   */
+  app.get(
+    '/api/ai-agents/:agentId/api-keys',
+    authenticateUser,
+    requireOrgMembership,
+    async (req: express.Request, res: express.Response) => {
+      try {
+        const orgId = (req as any).orgId;
+        const { agentId } = req.params;
+
+        const keys = await queryOrg(orgId,
+          `SELECT id, key_prefix, label, last_used_at, expires_at, created_at, is_active
+           FROM agent_api_keys WHERE agent_id = $1 ORDER BY created_at DESC`,
+          [agentId]);
+
+        res.json(keys.map((k: any) => ({
+          id: k.id,
+          prefix: k.key_prefix,
+          label: k.label,
+          lastUsedAt: k.last_used_at,
+          expiresAt: k.expires_at,
+          createdAt: k.created_at,
+          isActive: k.is_active,
+        })));
+      } catch (error: any) {
+        console.error('[AI Agent Endpoints] Error listing API keys:', error);
+        res.status(500).json({ error: error.message || 'Failed to list API keys' });
+      }
+    }
+  );
+
+  /**
+   * DELETE /api/ai-agents/:agentId/api-keys/:keyId — Revoke API key
+   */
+  app.delete(
+    '/api/ai-agents/:agentId/api-keys/:keyId',
+    authenticateUser,
+    requireOrgMembership,
+    async (req: express.Request, res: express.Response) => {
+      try {
+        const orgId = (req as any).orgId;
+        const { agentId, keyId } = req.params;
+
+        await executeOrg(orgId,
+          `UPDATE agent_api_keys SET is_active = false WHERE id = $1 AND agent_id = $2`,
+          [keyId, agentId]);
+
+        res.json({ success: true });
+      } catch (error: any) {
+        console.error('[AI Agent Endpoints] Error revoking API key:', error);
+        res.status(500).json({ error: error.message || 'Failed to revoke API key' });
       }
     }
   );

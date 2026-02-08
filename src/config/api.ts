@@ -11,10 +11,10 @@ export const HUB_API_URL = DEMO_MODE
   ? 'http://localhost:3001/api'
   : (import.meta.env.VITE_HUB_API_URL || 'http://localhost:3001/api');
 
-// AI API (leanworks Python service)
+// AI API (leanworks Python service - runs on 8082 per run.py)
 export const AI_API_URL = DEMO_MODE
   ? 'http://localhost:3001/api'  // Demo server handles AI requests too
-  : (import.meta.env.VITE_AI_API_URL || 'http://localhost:8080/api');
+  : (import.meta.env.VITE_AI_API_URL || 'http://localhost:8082/api');
 
 export const AI_API_KEY = import.meta.env.VITE_AI_API_KEY || '';
 

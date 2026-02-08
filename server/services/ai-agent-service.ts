@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 import { queryOrg, executeOrg } from '../../database/multi-tenant-pool.js';
+import { emitEvent, EventTypes } from './event-bus.js';
+import { buildSignedWebhookHeaders } from './webhook-signing.js';
 
 // ============================================================================
 // AI AGENT SERVICE
@@ -81,17 +83,17 @@ async function notifyWebhookAgent(
     timestamp: new Date().toISOString(),
   };
 
+  const body = JSON.stringify(payload);
+  const headers = await buildSignedWebhookHeaders(agent.id, body, config.headers || {});
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     const response = await fetch(webhookUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(config.headers || {}),
-      },
-      body: JSON.stringify(payload),
+      headers,
+      body,
       signal: controller.signal,
     });
 
@@ -234,6 +236,14 @@ export async function handleAgentCallback(
        WHERE id = $4`,
       [status, JSON.stringify(result || {}), JSON.stringify(logs || []), assignmentId]
     );
+
+    // Emit event for agent callback
+    const eventType = status === 'completed' ? EventTypes.AGENT_COMPLETED
+      : status === 'failed' ? EventTypes.AGENT_FAILED
+      : EventTypes.AGENT_PROGRESS;
+    emitEvent(eventType, 'agent', agentId, orgId, 'ai_agent', agentId,
+      { assignmentId, status, message: callbackData.message }
+    ).catch(err => console.error('[Event Bus] Agent callback event error:', err));
 
     // If completed, update task status
     if (status === 'completed') {
@@ -419,6 +429,123 @@ export async function getAgentAssignments(
     console.error('[AI Agent Service] Error fetching agent assignments:', error);
     throw error;
   }
+}
+
+// ============================================================================
+// GENERALIZED TRIGGER (Phase 4)
+// ============================================================================
+
+export interface TriggerParams {
+  type: 'task_assignment' | 'direct_invocation' | 'mention' | 'subscription';
+  entityType: 'task' | 'project' | 'plan';
+  entityId: string;
+  context: Record<string, any>;
+  triggeredBy: string;
+  callbackUrl?: string;
+}
+
+/**
+ * Trigger an agent on any entity type.
+ * Creates a trigger record, notifies the agent, and returns the trigger ID.
+ */
+export async function triggerAgent(
+  orgId: string,
+  agentId: string,
+  params: TriggerParams
+): Promise<string> {
+  const triggerId = `trg_${crypto.randomBytes(8).toString('hex')}`;
+
+  // Get agent details
+  const agents = await queryOrg(orgId, 'SELECT * FROM ai_agents WHERE id = $1', [agentId]);
+  if (agents.length === 0) throw new Error(`Agent not found: ${agentId}`);
+  const agent = agents[0];
+
+  // Create trigger record
+  await executeOrg(orgId,
+    `INSERT INTO agent_triggers (id, agent_id, trigger_type, entity_type, entity_id, triggered_by, prompt, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')`,
+    [triggerId, agentId, params.type, params.entityType, params.entityId, params.triggeredBy, params.context.prompt || null]);
+
+  // Notify the agent
+  const payload = {
+    triggerId,
+    type: params.type,
+    entityType: params.entityType,
+    entityId: params.entityId,
+    context: params.context,
+    callbackUrl: params.callbackUrl,
+    timestamp: new Date().toISOString(),
+  };
+
+  try {
+    if (agent.agent_type === 'webhook') {
+      const config = agent.config as Record<string, any>;
+      const webhookUrl = config.webhookUrl;
+      if (webhookUrl) {
+        const body = JSON.stringify(payload);
+        const headers = await buildSignedWebhookHeaders(agent.id, body, config.headers || {});
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), config.timeout || 300000);
+        await fetch(webhookUrl, {
+          method: 'POST',
+          headers,
+          body,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+      }
+    } else if (agent.agent_type === 'api') {
+      const config = agent.config as Record<string, any>;
+      const submitUrl = `${config.baseUrl}${config.endpoints?.submit || '/submit'}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), config.timeout || 600000);
+      await fetch(submitUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(config.headers || {}) },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+    }
+  } catch (err) {
+    console.error(`[AI Agent Service] Error triggering agent ${agentId}:`, err);
+    // Don't fail — trigger is recorded
+  }
+
+  // Create activity event
+  await createAgentActivity(orgId, agentId, null, null, 'triggered',
+    `Agent triggered on ${params.entityType}: ${params.entityId}`,
+    `Trigger type: ${params.type}, by: ${params.triggeredBy}`);
+
+  // Emit event
+  emitEvent(EventTypes.AGENT_TRIGGERED, 'agent', agentId, orgId,
+    params.triggeredBy.includes('@') ? 'human' : 'ai_agent', params.triggeredBy,
+    { triggerId, entityType: params.entityType, entityId: params.entityId, triggerType: params.type }
+  ).catch(err => console.error('[Event Bus] Agent triggered event error:', err));
+
+  return triggerId;
+}
+
+/**
+ * Handle a trigger callback (from any entity type, not just tasks).
+ */
+export async function handleTriggerCallback(
+  orgId: string,
+  agentId: string,
+  triggerId: string,
+  callbackData: Record<string, any>
+): Promise<void> {
+  const { status, result, message } = callbackData;
+
+  await executeOrg(orgId,
+    `UPDATE agent_triggers SET status = $1, result = $2, completed_at = ${status === 'completed' || status === 'failed' ? 'NOW()' : 'NULL'}
+     WHERE id = $3 AND agent_id = $4`,
+    [status, JSON.stringify(result || {}), triggerId, agentId]);
+
+  // Create activity event
+  const activityType = status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : 'progress_update';
+  await createAgentActivity(orgId, agentId, null, null, activityType,
+    `Trigger ${triggerId} ${status}`, message);
 }
 
 /**

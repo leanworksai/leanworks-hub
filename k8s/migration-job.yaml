@@ -3,7 +3,7 @@
 # Before re-running: delete the completed job (kubectl delete job db-migration)
 # or use a unique name (e.g. db-migration-20260207) by editing metadata.name.
 #
-# Image: use the same tag as the app deployment. Build with --platform linux/amd64 when pushing from Mac (see README).
+# Image: same as app deployment (latest). Deploy the app first, then run this job.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -30,8 +30,8 @@ spec:
         effect: "NoSchedule"
       containers:
       - name: migration
-        # Use same tag as app deployment (e.g. 20260207-192131). Build with --platform linux/amd64 when pushing from Mac.
-        image: us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:20260207-192131
+        # Same image as app deployment - use latest so migrations always run current code after a deploy
+        image: us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:latest
         imagePullPolicy: Always
         command:
         - npx

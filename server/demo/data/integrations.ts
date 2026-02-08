@@ -80,6 +80,30 @@ export const DEMO_INTEGRATIONS: Integration[] = [
     description: 'HR and workforce management',
     features: ['employee-sync', 'payroll-tracking', 'hr-integration'],
   },
+  {
+    id: 'google_drive',
+    name: 'Google Drive',
+    icon: 'https://api.dicebear.com/7.x/icons/svg?seed=gdrive',
+    connected: false,
+    description: 'Files and folders in Google Drive',
+    features: ['list-files', 'search', 'upload', 'download'],
+  },
+  {
+    id: 'google_cloud_storage',
+    name: 'Google Cloud Storage',
+    icon: 'https://api.dicebear.com/7.x/icons/svg?seed=gcs',
+    connected: false,
+    description: 'List, upload, download, and signed URLs for GCS',
+    features: ['list-blobs', 'upload', 'download', 'signed-urls'],
+  },
+  {
+    id: 'bigquery',
+    name: 'BigQuery',
+    icon: 'https://api.dicebear.com/7.x/icons/svg?seed=bigquery',
+    connected: false,
+    description: 'Query datasets and run read-only SQL',
+    features: ['list-datasets', 'list-tables', 'query'],
+  },
 ];
 
 export const getDemoIntegrations = (): Integration[] => {

@@ -503,11 +503,15 @@ CREATE TABLE IF NOT EXISTS plans (
   team_size INTEGER DEFAULT 0,
   health_score INTEGER DEFAULT 100 CHECK (health_score >= 0 AND health_score <= 100),
   health_trend VARCHAR(20) DEFAULT 'stable' CHECK (health_trend IN ('up', 'down', 'stable')),
+  ai_quick_insight TEXT,
+  ai_insights JSONB,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
 COMMENT ON TABLE plans IS 'Strategic plans for organizational initiatives and projects';
+COMMENT ON COLUMN plans.ai_quick_insight IS 'One-line AI summary for list view (from backend)';
+COMMENT ON COLUMN plans.ai_insights IS 'Full AI insights JSON from backend: summary, risks, recommendations, predictions';
 COMMENT ON COLUMN plans.id IS 'Primary key - Unique plan identifier (VARCHAR 50)';
 COMMENT ON COLUMN plans.name IS 'Plan name/title';
 COMMENT ON COLUMN plans.description IS 'Plan description or overview';
@@ -692,6 +696,35 @@ DROP TRIGGER IF EXISTS update_plan_milestones_updated_at ON plan_milestones;
 CREATE TRIGGER update_plan_milestones_updated_at BEFORE UPDATE ON plan_milestones FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
+-- PLATFORM EVENTS TABLE (Unified Event Bus)
+-- ============================================================================
+
+-- Platform events table - stores all events for history, replay, and agent delivery
+CREATE TABLE IF NOT EXISTS platform_events (
+  id VARCHAR(50) PRIMARY KEY,
+  event_type VARCHAR(100) NOT NULL,
+  entity_type VARCHAR(50) NOT NULL,
+  entity_id VARCHAR(50) NOT NULL,
+  actor_type VARCHAR(20) NOT NULL,
+  actor_id VARCHAR(255) NOT NULL,
+  payload JSONB DEFAULT '{}'::jsonb,
+  mentions JSONB DEFAULT '[]'::jsonb,
+  timestamp TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE platform_events IS 'Unified event bus - stores all platform events for history, replay, and agent delivery';
+COMMENT ON COLUMN platform_events.event_type IS 'Dot-notation event type, e.g. task.created, project.commented';
+COMMENT ON COLUMN platform_events.entity_type IS 'Entity type: task, project, plan, discussion, agent';
+COMMENT ON COLUMN platform_events.actor_type IS 'Who triggered the event: human, ai_agent, or system';
+COMMENT ON COLUMN platform_events.mentions IS 'JSONB array of @mentioned user emails or agent IDs extracted from content';
+
+CREATE INDEX IF NOT EXISTS idx_platform_events_entity ON platform_events(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_platform_events_type ON platform_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_platform_events_timestamp ON platform_events(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_platform_events_actor ON platform_events(actor_type, actor_id);
+CREATE INDEX IF NOT EXISTS idx_platform_events_mentions ON platform_events USING GIN (mentions);
+
+-- ============================================================================
 -- AI AGENTS & TEAMS TABLES
 -- ============================================================================
 
@@ -714,6 +747,11 @@ CREATE TABLE IF NOT EXISTS ai_agents (
   last_triggered_at TIMESTAMP,
   total_tasks_completed INTEGER DEFAULT 0,
   average_response_time_ms INTEGER,
+
+  -- SKILL.md (natural language agent description for Lean orchestrator)
+  skill_md TEXT,
+  skill_summary VARCHAR(500),
+  skill_version VARCHAR(20),
   
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
@@ -723,10 +761,14 @@ COMMENT ON TABLE ai_agents IS 'Registry of AI agents available for task assignme
 COMMENT ON COLUMN ai_agents.agent_type IS 'Type: webhook (agent polls/receives webhooks), api (we call their API), mcp_server (MCP protocol)';
 COMMENT ON COLUMN ai_agents.config IS 'Configuration JSON: {webhookUrl, callbackUrl, headers, timeout, etc.}';
 COMMENT ON COLUMN ai_agents.auth_config IS 'References to secrets in Secret Manager: {secretName: "ai-agent-xyz-token"}';
+COMMENT ON COLUMN ai_agents.skill_md IS 'Full SKILL.md content describing when/how to use this agent (natural language)';
+COMMENT ON COLUMN ai_agents.skill_summary IS 'Auto-extracted one-line summary from SKILL.md for lightweight discovery';
+COMMENT ON COLUMN ai_agents.skill_version IS 'Version from SKILL.md frontmatter';
 
 CREATE INDEX IF NOT EXISTS idx_ai_agents_status ON ai_agents(status);
 CREATE INDEX IF NOT EXISTS idx_ai_agents_type ON ai_agents(agent_type);
 CREATE INDEX IF NOT EXISTS idx_ai_agents_created_by ON ai_agents(created_by);
+CREATE INDEX IF NOT EXISTS idx_ai_agents_has_skill ON ai_agents(status) WHERE skill_md IS NOT NULL;
 
 -- AI Agent Teams - Logical grouping of agents
 CREATE TABLE IF NOT EXISTS ai_agent_teams (
@@ -827,3 +869,149 @@ CREATE TRIGGER update_ai_agent_teams_updated_at BEFORE UPDATE ON ai_agent_teams 
 
 DROP TRIGGER IF EXISTS update_task_ai_assignments_updated_at ON task_ai_assignments;
 CREATE TRIGGER update_task_ai_assignments_updated_at BEFORE UPDATE ON task_ai_assignments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- AGENT API KEYS TABLE
+-- ============================================================================
+
+ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS api_key_hash VARCHAR(128);
+CREATE INDEX IF NOT EXISTS idx_ai_agents_api_key_hash ON ai_agents(api_key_hash);
+
+CREATE TABLE IF NOT EXISTS agent_api_keys (
+  id VARCHAR(50) PRIMARY KEY,
+  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
+  key_hash VARCHAR(128) NOT NULL,
+  key_prefix VARCHAR(20) NOT NULL,
+  label VARCHAR(100),
+  last_used_at TIMESTAMP,
+  expires_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  is_active BOOLEAN DEFAULT true
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_api_keys_hash ON agent_api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_agent_api_keys_agent ON agent_api_keys(agent_id);
+
+-- Add author_type and agent_id to comment tables
+ALTER TABLE task_comments
+  ADD COLUMN IF NOT EXISTS author_type VARCHAR(20) DEFAULT 'human',
+  ADD COLUMN IF NOT EXISTS agent_id VARCHAR(50) REFERENCES ai_agents(id) ON DELETE SET NULL;
+
+ALTER TABLE project_comments
+  ADD COLUMN IF NOT EXISTS author_type VARCHAR(20) DEFAULT 'human',
+  ADD COLUMN IF NOT EXISTS agent_id VARCHAR(50) REFERENCES ai_agents(id) ON DELETE SET NULL;
+
+-- ============================================================================
+-- AGENT EVENT SUBSCRIPTIONS TABLE
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS agent_event_subscriptions (
+  id VARCHAR(50) PRIMARY KEY,
+  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
+  event_pattern VARCHAR(200) NOT NULL,
+  filter_criteria JSONB DEFAULT '{}'::jsonb,
+  delivery_method VARCHAR(20) NOT NULL CHECK (delivery_method IN ('webhook', 'sse')),
+  webhook_url VARCHAR(500),
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(agent_id, event_pattern, filter_criteria)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_active ON agent_event_subscriptions(is_active, event_pattern);
+CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_agent ON agent_event_subscriptions(agent_id);
+
+CREATE TABLE IF NOT EXISTS event_delivery_log (
+  id VARCHAR(50) PRIMARY KEY,
+  subscription_id VARCHAR(50) REFERENCES agent_event_subscriptions(id) ON DELETE CASCADE,
+  event_id VARCHAR(50) NOT NULL,
+  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'delivered', 'failed', 'retrying')),
+  attempts INTEGER DEFAULT 0,
+  last_error TEXT,
+  delivered_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_delivery_log_sub ON event_delivery_log(subscription_id);
+
+DROP TRIGGER IF EXISTS update_agent_event_subscriptions_updated_at ON agent_event_subscriptions;
+CREATE TRIGGER update_agent_event_subscriptions_updated_at BEFORE UPDATE ON agent_event_subscriptions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- AGENT TRIGGERS TABLE
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS agent_triggers (
+  id VARCHAR(50) PRIMARY KEY,
+  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
+  trigger_type VARCHAR(50) NOT NULL,
+  entity_type VARCHAR(50) NOT NULL,
+  entity_id VARCHAR(50) NOT NULL,
+  triggered_by VARCHAR(255) NOT NULL,
+  prompt TEXT,
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
+  result JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_triggers_agent ON agent_triggers(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_triggers_entity ON agent_triggers(entity_type, entity_id);
+
+ALTER TABLE task_ai_assignments
+  ADD COLUMN IF NOT EXISTS delegated_by_agent_id VARCHAR(50) REFERENCES ai_agents(id),
+  ADD COLUMN IF NOT EXISTS delegation_context TEXT;
+
+-- ============================================================================
+-- COLLABORATION THREADS TABLES
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS collaboration_threads (
+  id VARCHAR(50) PRIMARY KEY,
+  entity_type VARCHAR(50) NOT NULL,
+  entity_id VARCHAR(50) NOT NULL,
+  title VARCHAR(255),
+  status VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'closed')),
+  created_by_type VARCHAR(20) NOT NULL CHECK (created_by_type IN ('human', 'ai_agent')),
+  created_by_id VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  resolved_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_collab_threads_entity ON collaboration_threads(entity_type, entity_id);
+
+CREATE TABLE IF NOT EXISTS collaboration_messages (
+  id VARCHAR(50) PRIMARY KEY,
+  thread_id VARCHAR(50) NOT NULL REFERENCES collaboration_threads(id) ON DELETE CASCADE,
+  author_type VARCHAR(20) NOT NULL CHECK (author_type IN ('human', 'ai_agent')),
+  author_id VARCHAR(255) NOT NULL,
+  content TEXT NOT NULL,
+  metadata JSONB DEFAULT '{}'::jsonb,
+  mentions JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collab_messages_thread ON collaboration_messages(thread_id);
+
+-- ============================================================================
+-- LEAN ROUTING LOG TABLE
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS lean_routing_log (
+  id VARCHAR(50) PRIMARY KEY,
+  event_id VARCHAR(50),
+  event_type VARCHAR(100) NOT NULL,
+  agent_id VARCHAR(50) NOT NULL,
+  decision VARCHAR(20) NOT NULL CHECK (decision IN ('triggered', 'skipped')),
+  reasoning TEXT,
+  confidence DECIMAL(3,2) CHECK (confidence >= 0 AND confidence <= 1),
+  context_passed JSONB DEFAULT '{}'::jsonb,
+  latency_ms INTEGER,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE lean_routing_log IS 'Log of Lean orchestrator routing decisions for observability';
+
+CREATE INDEX IF NOT EXISTS idx_lean_routing_log_agent ON lean_routing_log(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lean_routing_log_event_type ON lean_routing_log(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lean_routing_log_event_id ON lean_routing_log(event_id);

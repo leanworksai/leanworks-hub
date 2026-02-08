@@ -45,6 +45,43 @@ const workdayIntegrationSchema = z.object({
   baseUrl: z.string().min(1, 'Base URL is required'),
 });
 
+// GCP service account JSON validation helper
+const serviceAccountJsonSchema = z.string().min(1, 'Service account JSON is required').refine(
+  (val) => {
+    try {
+      const parsed = JSON.parse(val);
+      const hasKey = (parsed.private_key ?? parsed.privateKey) != null;
+      const hasEmail = (parsed.client_email ?? (parsed as any).clientEmail) != null;
+      return (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed.type ?? (parsed as any).type) === 'string' &&
+        hasKey &&
+        hasEmail
+      );
+    } catch {
+      return false;
+    }
+  },
+  { message: 'Must be valid GCP service account JSON with type, private_key, and client_email' }
+);
+
+// Google Drive integration schema
+const googleDriveIntegrationSchema = z.object({
+  serviceAccountJson: serviceAccountJsonSchema,
+});
+
+// Google Cloud Storage integration schema
+const googleCloudStorageIntegrationSchema = z.object({
+  serviceAccountJson: serviceAccountJsonSchema,
+  bucketName: z.string().optional(),
+});
+
+// BigQuery integration schema
+const bigqueryIntegrationSchema = z.object({
+  serviceAccountJson: serviceAccountJsonSchema,
+});
+
 // Union schema for all integrations
 export const connectIntegrationSchema = z.union([
   slackIntegrationSchema,
@@ -54,6 +91,9 @@ export const connectIntegrationSchema = z.union([
   linearIntegrationSchema,
   clickupIntegrationSchema,
   workdayIntegrationSchema,
+  googleDriveIntegrationSchema,
+  googleCloudStorageIntegrationSchema,
+  bigqueryIntegrationSchema,
 ]);
 
 // Export individual schemas for specific use
@@ -65,6 +105,9 @@ export {
   linearIntegrationSchema,
   clickupIntegrationSchema,
   workdayIntegrationSchema,
+  googleDriveIntegrationSchema,
+  googleCloudStorageIntegrationSchema,
+  bigqueryIntegrationSchema,
 };
 
 // Export types
@@ -75,3 +118,6 @@ export type NotionIntegrationInput = z.infer<typeof notionIntegrationSchema>;
 export type LinearIntegrationInput = z.infer<typeof linearIntegrationSchema>;
 export type ClickUpIntegrationInput = z.infer<typeof clickupIntegrationSchema>;
 export type WorkdayIntegrationInput = z.infer<typeof workdayIntegrationSchema>;
+export type GoogleDriveIntegrationInput = z.infer<typeof googleDriveIntegrationSchema>;
+export type GoogleCloudStorageIntegrationInput = z.infer<typeof googleCloudStorageIntegrationSchema>;
+export type BigQueryIntegrationInput = z.infer<typeof bigqueryIntegrationSchema>;

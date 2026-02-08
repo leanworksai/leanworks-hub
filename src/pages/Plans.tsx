@@ -1,73 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, TrendingUp, TrendingDown, Minus, Users, Calendar, DollarSign, Target, Sparkles } from 'lucide-react';
+import { Plus, TrendingUp, TrendingDown, Minus, Users, Calendar, DollarSign, Target, Sparkles } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useFilteredPlans } from '@/hooks/usePlans';
 import { HealthScoreWidget } from '@/components/plans/HealthScoreWidget';
 import { NewPlanDialog } from '@/components/NewPlanDialog';
-import { generateQuickInsight } from '@/utils/aiInsightsGenerator';
 import { cn } from '@/lib/utils';
 import type { Plan } from '@/types/plans';
-import { useAuth } from '@/contexts/AuthContext';
-import { useOrg } from '@/contexts/OrgContext';
 
 export default function Plans() {
   const navigate = useNavigate();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<Plan['status'] | 'all'>('all');
-  const [sortBy, setSortBy] = useState<'name' | 'health' | 'budget' | 'timeline'>('name');
   const [showNewPlanDialog, setShowNewPlanDialog] = useState(false);
-  const [quickInsights, setQuickInsights] = useState<Record<string, string>>({});
   
-  const { user } = useAuth();
-  const { currentOrg } = useOrg();
-  
-  const { plans, isLoading } = useFilteredPlans(searchQuery, statusFilter, sortBy);
-
-  useEffect(() => {
-    if (!user?.email || !currentOrg?.slug) {
-      setQuickInsights({});
-      return;
-    }
-    
-    let isCancelled = false;
-
-    const loadInsights = async () => {
-      const results = await Promise.all(
-        plans.map(async (plan) => ({
-          id: plan.id,
-          insight: await generateQuickInsight(user.email || '', currentOrg.slug, plan),
-        }))
-      );
-
-      if (isCancelled) return;
-
-      const insightsMap = results.reduce((acc, result) => {
-        acc[result.id] = result.insight;
-        return acc;
-      }, {} as Record<string, string>);
-
-      setQuickInsights(insightsMap);
-    };
-
-    if (plans.length > 0) {
-      loadInsights();
-    }
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [plans, user?.email, currentOrg?.slug]);
+  const { plans, isLoading } = useFilteredPlans();
   
   const getStatusBadgeVariant = (status: Plan['status']) => {
     switch (status) {
@@ -121,58 +68,21 @@ export default function Plans() {
   
   const calculateProjectsOnTrack = (plan: Plan) => {
     // For now, mock calculation - would integrate with actual project data
-    return Math.floor(plan.projectIds.length * 0.7);
+    const count = plan.projectIds?.length ?? 0;
+    return Math.floor(count * 0.7);
   };
   
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="flex h-16 items-center px-6 gap-4">
-          <div className="flex items-center gap-2 flex-1">
-            <Target className="h-5 w-5 text-muted-foreground" />
-            <h1 className="text-xl font-semibold">Plans</h1>
-            <Badge variant="secondary" className="ml-2">
+        <div className="flex h-12 items-center px-4 gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <h1 className="text-lg font-semibold">Plans</h1>
+            <Badge variant="secondary" className="ml-1.5">
               {plans.length}
             </Badge>
           </div>
-          
-          {/* Search */}
-          <div className="relative w-64">
-            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search plans..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8"
-            />
-          </div>
-          
-          {/* Filters */}
-          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as any)}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="planning">Planning</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="at-risk">At Risk</SelectItem>
-              <SelectItem value="completed">Completed</SelectItem>
-            </SelectContent>
-          </Select>
-          
-          <Select value={sortBy} onValueChange={(value) => setSortBy(value as any)}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="Sort by" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="name">Name</SelectItem>
-              <SelectItem value="health">Health Score</SelectItem>
-              <SelectItem value="budget">Budget</SelectItem>
-              <SelectItem value="timeline">Timeline</SelectItem>
-            </SelectContent>
-          </Select>
           
           {/* New Plan Button */}
           <Button onClick={() => setShowNewPlanDialog(true)}>
@@ -194,24 +104,19 @@ export default function Plans() {
             <div className="text-center space-y-2">
               <p className="text-lg font-semibold">No plans found</p>
               <p className="text-sm text-muted-foreground">
-                {searchQuery || statusFilter !== 'all'
-                  ? 'Try adjusting your filters'
-                  : 'Get started by creating your first plan'}
+                Get started by creating your first plan
               </p>
             </div>
-            {!searchQuery && statusFilter === 'all' && (
-              <Button onClick={() => setShowNewPlanDialog(true)}>
+            <Button onClick={() => setShowNewPlanDialog(true)}>
                 <Plus className="h-4 w-4 mr-2" />
                 Create Plan
               </Button>
-            )}
           </div>
         ) : (
           <div className="space-y-4">
             {plans.map((plan) => {
               const budgetUtilization = calculateBudgetUtilization(plan.spentToDate, plan.totalBudget);
               const onTrackProjects = calculateProjectsOnTrack(plan);
-              const quickInsight = quickInsights[plan.id] || 'Generating insights...';
               
               return (
                 <Card
@@ -283,7 +188,7 @@ export default function Plans() {
                             </div>
                             <div className="flex items-baseline gap-1.5">
                               <span className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-300">{onTrackProjects}</span>
-                              <span className="text-xs text-muted-foreground">/ {plan.projectIds.length} on track</span>
+                              <span className="text-xs text-muted-foreground">/ {plan.projectIds?.length ?? 0} on track</span>
                             </div>
                           </div>
                           
@@ -294,29 +199,31 @@ export default function Plans() {
                               <span>Resources</span>
                             </div>
                             <div className="flex items-baseline gap-1.5">
-                              <span className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-300">{plan.teamSize}</span>
+                              <span className="text-sm font-semibold tabular-nums text-slate-700 dark:text-slate-300">{plan.teamSize ?? 0}</span>
                               <span className="text-xs text-muted-foreground">allocated</span>
                             </div>
                           </div>
                         </div>
                         
-                        {/* AI Insight preview */}
-                        <div className="relative group/insight">
-                          <div className="absolute inset-0 bg-gradient-to-r from-violet-500/10 via-fuchsia-500/10 to-indigo-500/10 rounded-lg opacity-50 group-hover/insight:opacity-100 transition-opacity" />
-                          <div className="relative flex items-start gap-3 p-3 rounded-lg border border-violet-100 dark:border-violet-900/30 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
-                            <div className="mt-0.5 p-1 bg-violet-100 dark:bg-violet-900/50 rounded-md shrink-0">
-                              <Sparkles className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-0.5">
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400">AI Summary</span>
+                        {/* AI Insight preview - only when stored in DB */}
+                        {plan.aiQuickInsight ? (
+                          <div className="relative group/insight">
+                            <div className="absolute inset-0 bg-gradient-to-r from-violet-500/10 via-fuchsia-500/10 to-indigo-500/10 rounded-lg opacity-50 group-hover/insight:opacity-100 transition-opacity" />
+                            <div className="relative flex items-start gap-3 p-3 rounded-lg border border-violet-100 dark:border-violet-900/30 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm">
+                              <div className="mt-0.5 p-1 bg-violet-100 dark:bg-violet-900/50 rounded-md shrink-0">
+                                <Sparkles className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
                               </div>
-                              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed line-clamp-2">
-                                {quickInsight}
-                              </p>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-0.5">
+                                  <span className="text-[10px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400">AI Summary</span>
+                                </div>
+                                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed line-clamp-2">
+                                  {plan.aiQuickInsight}
+                                </p>
+                              </div>
                             </div>
                           </div>
-                        </div>
+                        ) : null}
                       </div>
                       
                       {/* Right: Health score */}

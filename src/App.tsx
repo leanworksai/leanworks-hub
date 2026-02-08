@@ -25,6 +25,7 @@ import Home from "./pages/Home";
 import Users from "./pages/Users";
 import Integrations from "./pages/Integrations";
 import AIAgentsPage from "./pages/admin/AIAgents";
+import AgentDeveloperPortal from "./pages/admin/AgentDeveloperPortal";
 import Plans from "./pages/Plans";
 import PlanDetail from "./pages/PlanDetail";
 import Projects from "./pages/Projects";
@@ -110,6 +111,7 @@ const AppRoutesContent = () => {
     // Settings & Profile
     if (pathname === '/users') return 'Users';
     if (pathname === '/ai-team') return 'AI Teammates';
+    if (pathname === '/ai-team/developer-portal') return 'Agent Developer Portal';
     if (pathname === '/integrations') return 'Integrations';
     if (pathname === '/organizations') return 'Organizations';
     if (pathname === '/profile') return 'Profile';
@@ -157,6 +159,16 @@ const AppRoutesContent = () => {
             <ProtectedRoute>
               <DashboardLayout>
                 <AIAgentsPage />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/ai-team/developer-portal"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <AgentDeveloperPortal />
               </DashboardLayout>
             </ProtectedRoute>
           }

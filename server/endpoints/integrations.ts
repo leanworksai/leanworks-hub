@@ -184,6 +184,9 @@ export function setupIntegrationEndpoints(
         { id: 'linear', name: 'Linear' },
         { id: 'clickup', name: 'ClickUp' },
         { id: 'workday', name: 'Workday' },
+        { id: 'google_drive', name: 'Google Drive' },
+        { id: 'google_cloud_storage', name: 'Google Cloud Storage' },
+        { id: 'bigquery', name: 'BigQuery' },
       ].map(integration => {
         const existing = connectedIntegrations.find((i: any) => i.integration_id === integration.id);
         return {
@@ -218,7 +221,8 @@ export function setupIntegrationEndpoints(
       const pool = await getOrgPool(orgId);
 
       // Validate integration ID
-      if (!['slack', 'atlassian', 'outlook', 'notion', 'linear', 'clickup', 'workday'].includes(integrationId)) {
+      const formBasedIntegrationIds = ['slack', 'atlassian', 'outlook', 'notion', 'linear', 'clickup', 'workday', 'google_drive', 'google_cloud_storage', 'bigquery'];
+      if (!formBasedIntegrationIds.includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 
@@ -296,6 +300,33 @@ export function setupIntegrationEndpoints(
           integrationName = 'Workday';
           break;
 
+        case 'google_drive':
+          if (!body.serviceAccountJson?.trim()) {
+            return res.status(400).json({ error: 'Service account JSON is required' });
+          }
+          credentials = { serviceAccountJson: body.serviceAccountJson.trim() };
+          integrationName = 'Google Drive';
+          break;
+
+        case 'google_cloud_storage':
+          if (!body.serviceAccountJson?.trim()) {
+            return res.status(400).json({ error: 'Service account JSON is required' });
+          }
+          credentials = {
+            serviceAccountJson: body.serviceAccountJson.trim(),
+            ...(body.bucketName?.trim() && { bucketName: body.bucketName.trim() }),
+          };
+          integrationName = 'Google Cloud Storage';
+          break;
+
+        case 'bigquery':
+          if (!body.serviceAccountJson?.trim()) {
+            return res.status(400).json({ error: 'Service account JSON is required' });
+          }
+          credentials = { serviceAccountJson: body.serviceAccountJson.trim() };
+          integrationName = 'BigQuery';
+          break;
+
         default:
           return res.status(400).json({ error: 'Unsupported integration type' });
       }
@@ -349,7 +380,8 @@ export function setupIntegrationEndpoints(
       
       const pool = await getOrgPool(orgId);
 
-      if (!['slack', 'atlassian', 'github', 'outlook', 'notion', 'linear', 'clickup', 'workday'].includes(integrationId)) {
+      const disconnectableIds = ['slack', 'atlassian', 'github', 'outlook', 'notion', 'linear', 'clickup', 'workday', 'google_drive', 'google_cloud_storage', 'bigquery'];
+      if (!disconnectableIds.includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 

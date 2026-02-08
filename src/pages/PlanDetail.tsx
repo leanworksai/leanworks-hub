@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Edit, Calendar, User, Target, TrendingUp, CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,13 +11,12 @@ import { HealthScoreWidget } from '@/components/plans/HealthScoreWidget';
 import { BudgetChart } from '@/components/plans/BudgetChart';
 import { ResourceAllocationTimeline } from '@/components/plans/ResourceAllocationTimeline';
 import { AIInsightsCard } from '@/components/plans/AIInsightsCard';
-import { generatePlanInsights } from '@/utils/aiInsightsGenerator';
-import type { PlanInsights } from '@/services/plansAI';
 import { calculateHealthScore, calculateBurnRate } from '@/utils/planCalculations';
 import { cn } from '@/lib/utils';
 import type { Objective } from '@/types/plans';
 import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
+import { AgentTriggerButton } from '@/components/ai-agents/AgentTriggerButton';
 
 export default function PlanDetail() {
   const { id } = useParams<{ id: string }>();
@@ -26,32 +25,8 @@ export default function PlanDetail() {
   const { data: allProjects = [] } = useUserProjects();
   const { user } = useAuth();
   const { currentOrg } = useOrg();
-  const [insights, setInsights] = useState<PlanInsights | null>(null);
-  const [insightsLoading, setInsightsLoading] = useState(false);
-  
-  useEffect(() => {
-    if (!plan || !user?.email || !currentOrg?.slug) {
-      setInsights(null);
-      return;
-    }
-
-    let isCancelled = false;
-    setInsightsLoading(true);
-
-    const loadInsights = async () => {
-      const aiInsights = await generatePlanInsights(user.email || '', currentOrg.slug, plan);
-      if (!isCancelled) {
-        setInsights(aiInsights);
-        setInsightsLoading(false);
-      }
-    };
-
-    loadInsights();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [plan, user?.email, currentOrg?.slug]);
+  // AI insights come from backend DB (plan.aiInsights), not live API
+  const insights = plan?.aiInsights ?? null;
 
   if (isLoading) {
     return (
@@ -74,7 +49,7 @@ export default function PlanDetail() {
   const burnRate = calculateBurnRate(plan.spentToDate, plan.startDate, plan.endDate, plan.totalBudget);
   
   // Filter projects that belong to this plan
-  const planProjects = allProjects.filter(p => plan.projectIds.includes(p.id));
+  const planProjects = allProjects.filter(p => (plan.projectIds ?? []).includes(p.id));
   
   const getStatusBadgeVariant = (status: typeof plan.status) => {
     switch (status) {
@@ -151,6 +126,8 @@ export default function PlanDetail() {
               showTrend={true}
             />
             
+            <AgentTriggerButton entityType="plan" entityId={plan.id} />
+
             <Button variant="outline" size="sm">
               <Edit className="h-4 w-4 mr-2" />
               Edit Plan
@@ -169,7 +146,7 @@ export default function PlanDetail() {
             </div>
             <div className="flex items-center gap-1">
               <Target className="h-4 w-4" />
-              <span>{plan.projectIds.length} projects</span>
+              <span>{(plan.projectIds ?? []).length} projects</span>
             </div>
           </div>
         </div>
@@ -178,14 +155,8 @@ export default function PlanDetail() {
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
         <div className="max-w-7xl mx-auto space-y-6">
-          {/* AI Insights */}
-          {insightsLoading ? (
-            <Card>
-              <CardContent className="flex items-center justify-center py-10">
-                <p className="text-sm text-muted-foreground">Generating AI insights...</p>
-              </CardContent>
-            </Card>
-          ) : insights ? (
+          {/* AI Insights (from backend DB) - only show when present */}
+          {insights ? (
             <AIInsightsCard
               insights={insights}
               onAskAI={() => {
@@ -193,13 +164,7 @@ export default function PlanDetail() {
                 console.log('Open AI chat with plan context');
               }}
             />
-          ) : (
-            <Card>
-              <CardContent className="flex items-center justify-center py-10">
-                <p className="text-sm text-muted-foreground">No insights available</p>
-              </CardContent>
-            </Card>
-          )}
+          ) : null}
           
           {/* Objectives & Key Results */}
           <Card>
@@ -335,7 +300,7 @@ export default function PlanDetail() {
           
           {/* Resource Allocation */}
           <ResourceAllocationTimeline
-            allocations={plan.resourceAllocations}
+            allocations={plan.resourceAllocations ?? []}
             startDate={plan.startDate}
             endDate={plan.endDate}
           />
@@ -343,7 +308,7 @@ export default function PlanDetail() {
           {/* Linked Projects */}
           <Card>
             <CardHeader>
-              <CardTitle>Linked Projects ({plan.projectIds.length})</CardTitle>
+              <CardTitle>Linked Projects ({(plan.projectIds ?? []).length})</CardTitle>
             </CardHeader>
             <CardContent>
               {planProjects.length === 0 ? (

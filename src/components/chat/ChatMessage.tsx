@@ -164,12 +164,20 @@ function renderMessageContent(
   getUserDisplayName?: (email: string) => string | null
 ): JSX.Element | string {
   // First, process @mentions to create styled spans
-  const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
+  // Supports: @username, @user@domain.com, and @agent:agent-name
+  const mentionRegex = /@(agent:[a-zA-Z0-9_-]+|[a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
   
   // Replace mentions with styled HTML spans
   let processedContent = content.replace(mentionRegex, (match) => {
     const mentionValue = match.substring(1); // Remove @
     let displayName = mentionValue;
+
+    if (mentionValue.startsWith('agent:')) {
+      // Agent mention — style differently
+      displayName = mentionValue.substring(6); // strip "agent:"
+      return `<span class="text-violet-600 dark:text-violet-400 font-semibold">🤖 @${displayName}</span>`;
+    }
+
     if (mentionValue.includes('@') && getUserDisplayName) {
       const userDisplayName = getUserDisplayName(mentionValue);
       if (userDisplayName) {

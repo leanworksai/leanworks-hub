@@ -42,9 +42,15 @@ import { setupQueryEndpoints } from './endpoints/query.js';
 import { setupPlansEndpoints } from './endpoints/plans.js';
 import { setupAIAgentEndpoints } from './endpoints/ai-agents.js';
 import { setupAIAgentWebhookEndpoints } from './endpoints/ai-agent-webhooks.js';
+import { setWebhookSigningSecretFetcher } from './services/webhook-signing.js';
+import { setupAgentAPIv1Endpoints } from './endpoints/agent-api-v1.js';
+import { setupAgentTriggerEndpoints } from './endpoints/agent-triggers.js';
+import { setupLeanRoutingEndpoints } from './endpoints/lean-routing.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
 import { notifyAgentOfAssignment } from './services/ai-agent-service.js';
+import { emitEvent, EventTypes } from './services/event-bus.js';
+import { extractMentions } from './services/mention-service.js';
 import { validateRequest } from './middleware/validate-request.js';
 import { createTaskSchema, updateTaskSchema, fullUpdateTaskSchema } from './validation/task-schemas.js';
 import { createDocSchema, updateDocSchema } from './validation/doc-schemas.js';
@@ -3018,6 +3024,12 @@ app.post('/api/projects', authenticateUser, requireOrgMembership, validateReques
     `, [projectId]);
     const memberCount = parseInt(memberCountResult.rows[0]?.count || '1');
     
+    // Emit event
+    emitEvent(EventTypes.PROJECT_CREATED, 'project', projectId, orgId, 'human', userEmail,
+      { name, status, priority, teamId },
+      extractMentions(description)
+    ).catch(err => console.error('[Event Bus] Project created event error:', err));
+
     // Return response matching frontend Project interface
     res.status(201).json({ 
       id: projectId, 
@@ -3129,6 +3141,10 @@ app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, validateR
       SET ${setClauses.join(', ')}
       WHERE id = $${paramIndex}
     `, values);
+
+    emitEvent(EventTypes.PROJECT_UPDATED, 'project', projectId, orgId, 'human', userEmail,
+      { updatedFields: Object.keys(updates) }
+    ).catch(err => console.error('[Event Bus] Project updated event error:', err));
     
     res.json({ success: true });
   } catch (error) {
@@ -3145,6 +3161,9 @@ app.delete('/api/projects/:id', authenticateUser, requireOrgMembership, async (r
     const pool = await getOrgPool(orgId);
     
     await pool.query('DELETE FROM projects WHERE id = $1', [projectId]);
+
+    emitEvent(EventTypes.PROJECT_DELETED, 'project', projectId, orgId, 'human', userEmail)
+      .catch(err => console.error('[Event Bus] Project deleted event error:', err));
     
     res.json({ success: true });
   } catch (error) {
@@ -3362,6 +3381,12 @@ app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, v
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [commentId, projectId, memberName, memberAvatar, today, comment.trim()]
     );
+
+    // Emit event with mentions extracted from comment
+    emitEvent(EventTypes.PROJECT_COMMENTED, 'project', projectId, orgId, 'human', userEmail,
+      { commentId, comment: comment.trim() },
+      extractMentions(comment)
+    ).catch(err => console.error('[Event Bus] Project commented event error:', err));
     
     res.json({
       success: true,
@@ -3446,6 +3471,12 @@ app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, vali
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [commentId, taskId, memberName, memberAvatar, today, comment.trim()]
     );
+
+    // Emit event with mentions extracted from comment
+    emitEvent(EventTypes.TASK_COMMENTED, 'task', taskId, orgId, 'human', userEmail,
+      { commentId, comment: comment.trim() },
+      extractMentions(comment)
+    ).catch(err => console.error('[Event Bus] Task commented event error:', err));
     
     res.json({
       success: true,
@@ -5101,6 +5132,14 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, validateRequest(c
       JSON.stringify(visibleToMembersArray)
     ]);
     
+    // Emit event to the platform event bus
+    emitEvent(
+      EventTypes.TASK_CREATED,
+      'task', taskId, orgId, 'human', userEmail,
+      { title, status: status || 'todo', projectId, assigneeId, priority: priority || 'medium' },
+      extractMentions(description)
+    ).catch(err => console.error('[Event Bus] Task created event error:', err));
+
     res.status(201).json({ id: taskId, title, description, projectId, assigneeId, status, priority });
   } catch (error) {
     console.error('Create task error:', error);
@@ -5215,6 +5254,14 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, validateReques
       WHERE id = $${paramIndex}
     `, values);
     
+    // Emit event
+    emitEvent(
+      updates.status !== undefined ? EventTypes.TASK_STATUS_CHANGED : EventTypes.TASK_UPDATED,
+      'task', taskId, orgId, 'human', userEmail,
+      { updatedFields: Object.keys(updates), ...updates },
+      extractMentions(updates.description)
+    ).catch(err => console.error('[Event Bus] Task updated event error:', err));
+
     res.json({ success: true });
   } catch (error) {
     console.error('Update task error:', error);
@@ -5488,6 +5535,16 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
         // Don't fail the request if assignment creation fails
       }
     }
+
+    // Emit event
+    const eventType = agentAssignmentData ? EventTypes.TASK_ASSIGNED
+      : updates.status !== undefined ? EventTypes.TASK_STATUS_CHANGED
+      : EventTypes.TASK_UPDATED;
+    emitEvent(
+      eventType, 'task', taskId, orgId, 'human', userEmail,
+      { updatedFields: Object.keys(updates), assigneeType: updates.assigneeType, ...updates },
+      extractMentions(updates.description)
+    ).catch(err => console.error('[Event Bus] Task patch event error:', err));
     
     res.json({ success: true });
   } catch (error) {
@@ -5511,6 +5568,9 @@ app.delete('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req,
     const pool = await getOrgPool(orgId);
     
     await pool.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+
+    emitEvent(EventTypes.TASK_DELETED, 'task', taskId, orgId, 'human', userEmail)
+      .catch(err => console.error('[Event Bus] Task deleted event error:', err));
     
     res.json({ success: true });
   } catch (error) {
@@ -6495,6 +6555,19 @@ setupPlansEndpoints(app, authenticateUser, requireOrgMembership);
 
 setupAIAgentEndpoints(app, authenticateUser, requireOrgMembership, secretManagerClient, serviceAccount);
 setupAIAgentWebhookEndpoints(app, secretManagerClient, serviceAccount);
+// Fetcher for developer-provided webhook signing secret (HMAC outbound webhooks)
+setWebhookSigningSecretFetcher(async (agentId: string) => {
+  try {
+    const name = `projects/${serviceAccount.project_id}/secrets/ai-agent-${agentId}-webhook-signing-secret/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name });
+    return version.payload?.data?.toString() ?? null;
+  } catch {
+    return null;
+  }
+});
+setupAgentAPIv1Endpoints(app);
+setupAgentTriggerEndpoints(app, authenticateUser, requireOrgMembership);
+setupLeanRoutingEndpoints(app, authenticateUser, requireOrgMembership);
 
 // ============================================================================
 // UPDATE ENDPOINTS (Project and Task Progress Updates)

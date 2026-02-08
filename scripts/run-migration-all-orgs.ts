@@ -117,6 +117,16 @@ const aiAgentsMigrationSQL = readFileSync(
   'utf8'
 );
 
+const plansAiSummaryMigrationSQL = readFileSync(
+  join(__dirname, '../database/migrations/add-plans-ai-summary.sql'),
+  'utf8'
+);
+
+const skillMdAndRoutingLogMigrationSQL = readFileSync(
+  join(__dirname, '../database/migrations/add-skill-md-and-routing-log.sql'),
+  'utf8'
+);
+
 // Combine migrations
 const migrationSQL =
   folderMigrationSQL +
@@ -125,7 +135,11 @@ const migrationSQL =
   '\n' +
   plansMigrationSQL +
   '\n' +
-  aiAgentsMigrationSQL;
+  aiAgentsMigrationSQL +
+  '\n' +
+  plansAiSummaryMigrationSQL +
+  '\n' +
+  skillMdAndRoutingLogMigrationSQL;
 
 interface Organization {
   id: string;
@@ -172,7 +186,7 @@ async function getOrganizations(password: string): Promise<Organization[]> {
 }
 
 /**
- * Check if migration has already been run
+ * Check if migration has already been run (including plans AI summary, ai_agents, and skill_md / lean_routing_log)
  */
 async function checkMigrationStatus(pool: Pool): Promise<boolean> {
   try {
@@ -187,15 +201,35 @@ async function checkMigrationStatus(pool: Pool): Promise<boolean> {
       FROM information_schema.tables
       WHERE table_name = 'plans'
     `);
+    const plansAiSummaryResult = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = 'plans'
+      AND column_name = 'ai_quick_insight'
+    `);
     const aiAgentsTableResult = await pool.query(`
       SELECT table_name
       FROM information_schema.tables
       WHERE table_name = 'ai_agents'
     `);
+    const skillMdColumnResult = await pool.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = 'ai_agents'
+      AND column_name = 'skill_md'
+    `);
+    const leanRoutingLogTableResult = await pool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_name = 'lean_routing_log'
+    `);
     return (
       docTypeResult.rows.length > 0 &&
       plansTableResult.rows.length > 0 &&
-      aiAgentsTableResult.rows.length > 0
+      plansAiSummaryResult.rows.length > 0 &&
+      aiAgentsTableResult.rows.length > 0 &&
+      skillMdColumnResult.rows.length > 0 &&
+      leanRoutingLogTableResult.rows.length > 0
     );
   } catch (error) {
     return false;
