@@ -16,7 +16,6 @@ import { cn } from '@/lib/utils';
 import type { Objective } from '@/types/plans';
 import { useAuth } from '@/contexts/AuthContext';
 import { useOrg } from '@/contexts/OrgContext';
-import { AgentTriggerButton } from '@/components/ai-agents/AgentTriggerButton';
 
 export default function PlanDetail() {
   const { id } = useParams<{ id: string }>();
@@ -126,8 +125,6 @@ export default function PlanDetail() {
               showTrend={true}
             />
             
-            <AgentTriggerButton entityType="plan" entityId={plan.id} />
-
             <Button variant="outline" size="sm">
               <Edit className="h-4 w-4 mr-2" />
               Edit Plan

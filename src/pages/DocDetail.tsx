@@ -18,7 +18,6 @@ import { useAutoSave } from "@/hooks/useAutoSave";
 import { useScrollTracking } from "@/hooks/useScrollTracking";
 import { usePageContext } from "@/contexts/PageContext";
 import { useDocDialogs } from "@/hooks/useDocDialogs";
-import { useDocFiles } from "@/hooks/useDocFiles";
 import { useDocForm } from "@/hooks/useDocForm";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -119,17 +118,6 @@ export default memo(function DocDetail() {
       }
     }
   }, [isNew, formState.content, setFormState]);
-  const {
-    files,
-    handleFileUpload,
-    handleRemoveFile,
-    fileToDelete,
-    setFileToDelete,
-  } = useDocFiles({
-    docId: docId || "new",
-    initialFiles: isNew ? [] : (doc?.metadata?.files || []),
-  });
-
   // Clear draft and reset form when creating a new doc to ensure fresh start
   useEffect(() => {
     if (isNew && user?.email) {
@@ -144,10 +132,9 @@ export default memo(function DocDetail() {
     const action = searchParams.get('action');
     if (action && doc && !isNew) {
       // Map action query params to dialog types
-      const actionMap: Record<string, 'share' | 'shareViaEmail' | 'files' | 'delete'> = {
+      const actionMap: Record<string, 'share' | 'shareViaEmail' | 'delete'> = {
         'share': 'share',
         'shareEmail': 'shareViaEmail',
-        'files': 'files',
         'delete': 'delete',
       };
       
@@ -259,7 +246,7 @@ export default memo(function DocDetail() {
     content: formState.content,
     visibility: formState.visibility,
     visibleToMembers: formState.visibleToMembers,
-    files,
+    files: (doc?.metadata?.files || []) as DocFile[],
     enabled: true,
     onSaveSuccess: (savedDocId: string, isManual: boolean) => {
       // Resolve any pending save promises
@@ -481,28 +468,26 @@ export default memo(function DocDetail() {
         uploadedAt: new Date().toISOString(),
       };
 
-      // Add to local files state (this will trigger auto-save to update metadata)
-      // Note: We don't directly update metadata here to avoid race conditions
-      // The auto-save hook will pick up the files change and save it
-      // But we need to update the files state in useDocFiles
-      // For now, we'll update the doc metadata directly since we have the file info
-      const updatedFiles = [...files, newFile];
+      // Add to doc metadata.files so the image is tracked (optional; image is already in content)
+      const currentFiles = (doc?.metadata?.files || []) as DocFile[];
+      const updatedFiles = [...currentFiles, newFile];
 
       try {
         await updateDoc.mutateAsync({
           docId: savedDocId,
           updates: {
             metadata: {
+              ...doc?.metadata,
               files: updatedFiles,
             },
           },
         });
       } catch (error) {
-        console.error("Failed to add image to attachments:", error);
-        // Don't throw - image is already in content, attachment is secondary
+        console.error("Failed to add image to metadata:", error);
+        // Don't throw - image is already in content
       }
     },
-    [files, updateDoc]
+    [doc?.metadata, updateDoc]
   );
 
   // Handler to save document first if needed (for image uploads on new docs)
@@ -550,10 +535,6 @@ export default memo(function DocDetail() {
   );
   const handleShareViaEmail = useCallback(
     () => dialogs.openDialog("shareViaEmail"),
-    [dialogs.openDialog]
-  );
-  const handleAttachedFiles = useCallback(
-    () => dialogs.openDialog("files"),
     [dialogs.openDialog]
   );
   const openDeleteDialog = useCallback(
@@ -664,11 +645,9 @@ export default memo(function DocDetail() {
               onBack={handleBack}
               onShare={handleShare}
               onShareViaEmail={handleShareViaEmail}
-              onAttachedFiles={handleAttachedFiles}
               onDelete={openDeleteDialog}
               onExportPDF={handleExportPDF}
               isOwner={isOwner}
-              filesCount={files.length}
               isNew={isNew}
               doc={doc}
             />
@@ -717,7 +696,6 @@ export default memo(function DocDetail() {
                   }}
                   placeholder="Start writing..."
                   readOnly={false}
-                  onFileUpload={handleFileUpload}
                   onImageAdded={handleImageAdded}
                   docId={docId || undefined}
                   onSaveFirst={handleSaveFirst}
@@ -731,10 +709,6 @@ export default memo(function DocDetail() {
 
       <DocDetailDialogs
         dialogs={dialogs}
-        files={files}
-        fileToDelete={fileToDelete}
-        setFileToDelete={setFileToDelete}
-        handleRemoveFile={handleRemoveFile}
         doc={doc}
         isNew={isNew}
         isOwner={isOwner}

@@ -27,7 +27,6 @@ export function DocItem({
   hasChildren = false,
   level = 0,
 }: DocItemProps) {
-  const filesCount = doc.metadata?.files?.length || 0;
   const isMobile = useIsMobile();
 
   const getDocIcon = () => {
@@ -102,7 +101,6 @@ export function DocItem({
               doc={doc}
               isActive={isActive}
               isOwner={isOwner}
-              filesCount={filesCount}
               onDelete={onDelete}
             />
           </div>
