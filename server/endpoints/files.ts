@@ -10,6 +10,7 @@ import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
 import { generateSignedUrl as generateSignedUrlUtil, extractStoragePath as extractStoragePathUtil } from '../utils/storage.js';
+import { getStorageBucket } from '../utils/env.js';
 
 // File URL expiration time (default: 1 year)
 const FILE_URL_EXPIRATION_DAYS = parseInt(process.env.FILE_URL_EXPIRATION_DAYS || '365', 10);
@@ -98,8 +99,8 @@ export function setupFileEndpoints(
         }
         const storagePath = `orgs/${orgSlugForPath}/doc-files/${docId}/${fileId}`;
 
-        // Use fixed bucket name
-        const bucketName = 'leanworks-prod';
+        // Use bucket name based on environment
+        const bucketName = getStorageBucket();
         
         console.log('📎 Using storage bucket:', bucketName);
         let bucket = storage.bucket(bucketName);

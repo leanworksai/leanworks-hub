@@ -1,0 +1,14 @@
+{
+  "name": "@leanworks/agent-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for building LeanWorks AI agents",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "files": ["dist/", "README.md"],
+  "keywords": ["leanworks", "ai-agent", "sdk"],
+  "license": "MIT"
+}

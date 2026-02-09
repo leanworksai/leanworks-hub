@@ -2,6 +2,7 @@ import { initializeApp, getApps, FirebaseApp, deleteApp } from 'firebase/app';
 import { getAuth, Auth } from 'firebase/auth';
 import { getFirestore, Firestore } from 'firebase/firestore';
 import { initializeAnalytics } from './analytics';
+import { DEMO_MODE } from '../config/api';
 
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
@@ -386,6 +387,14 @@ function checkExistingInvalidApps(): boolean {
 
 // Check immediately on module load (before any initialization)
 const hasInvalidApp = checkExistingInvalidApps();
+
+// Initialize Firebase only if not in demo mode
+if (DEMO_MODE) {
+  console.log('🎭 Demo mode enabled - Firebase initialization skipped');
+  app = null;
+  auth = null;
+  db = null;
+}
 
 // Runtime check to detect if Firebase was initialized with invalid API key
 // This prevents using Firebase Auth when the API key is invalid

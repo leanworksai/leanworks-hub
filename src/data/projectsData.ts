@@ -39,13 +39,15 @@ export interface Project {
   description: string;
   detailedDescription: string;
   status: string;
-  team: number;
+  memberCount: number;
   dueDate?: string;
   createdDate: string;
   statusColor: string;
   ownerEmail?: string; // Email of the project owner/creator
   visibility?: 'all_members' | 'specific_members';
   visibleToMembers?: string[]; // Array of member emails who can view this project
+  planId?: string; // NEW: Link to parent plan (required for new projects)
+  budgetAllocated?: number; // NEW: Project's portion of plan budget
   members: ProjectMember[];
   tasks: Task[];
   progressUpdates: ProgressUpdate[];

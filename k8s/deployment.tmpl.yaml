@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leanworks-hub
+  labels:
+    app: leanworks-hub
+spec:
+  replicas: 2
+  progressDeadlineSeconds: 900  # 15 minutes - increased from default 10 minutes
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1  # Allow 1 extra pod during update
+      maxUnavailable: 0  # Ensure at least 2 pods are always available
+  selector:
+    matchLabels:
+      app: leanworks-hub
+  template:
+    metadata:
+      labels:
+        app: leanworks-hub
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+    spec:
+      tolerations:
+      - key: "node.gke.io/balloon-pod-resize"
+        operator: "Exists"
+        effect: "NoSchedule"
+      containers:
+      - name: leanworks-hub
+        image: __IMAGE__
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            memory: "512Mi"  # Minimum guaranteed memory (doubled from 256Mi)
+            cpu: "200m"      # Increased CPU for image processing
+          limits:
+            memory: "2Gi"    # Increased to 2Gi for:
+                            # - Image uploads (10MB files + Sharp processing = ~30MB per upload)
+                            # - Firestore queries (up to 500 messages in memory when index missing)
+                            # - Multiple database connection pools (one per org)
+                            # - WebSocket connections and Firebase Admin SDK operations
+                            # - Node.js V8 heap and buffer overhead
+            cpu: "1000m"     # Increased CPU for concurrent image processing and database operations
+        # Mount GCP credentials for Secret Manager access
+        volumeMounts:
+        - name: gcp-credentials
+          mountPath: /app/gcp_credential.json
+          subPath: gcp_credential.json
+          readOnly: true
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: DB_HOST
+          value: cloud-sql-proxy-service  # Kubernetes service DNS name
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_REGION
+          value: "us-west1"
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "leanworks-474204"
+        - name: AUDIO_STORAGE_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: AUDIO_STORAGE_BUCKET
+        - name: DB_INSTANCE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: DB_INSTANCE_NAME
+        - name: FIRESTORE_DATABASE_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: FIRESTORE_DATABASE_NAME
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: leanworks-config
+              key: ENVIRONMENT
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /api/health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 60  # Allow up to 10 minutes for startup (60 * 10s)
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: gcp-credentials
+        secret:
+          secretName: __GCP_SECRET__
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: leanworks-hub-service
+  labels:
+    app: leanworks-hub
+  annotations:
+    cloud.google.com/backend-config: '{"default": "leanworks-hub-backend-config"}'
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  selector:
+    app: leanworks-hub

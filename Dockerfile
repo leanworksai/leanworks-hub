@@ -8,7 +8,15 @@ RUN apk add --no-cache \
     python3 \
     make \
     g++ \
-    libc6-compat
+    libc6-compat \
+    pkgconf \
+    cairo-dev \
+    pango-dev \
+    pixman-dev \
+    libpng-dev \
+    jpeg-dev \
+    giflib-dev \
+    freetype-dev
 
 # Copy package files
 COPY package*.json ./
@@ -28,9 +36,17 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install only runtime dependencies (nginx for serving static files)
+# Install only runtime dependencies (nginx for serving static files, LibreOffice for PPTX conversion)
 RUN apk add --no-cache \
-    nginx
+    nginx \
+    libreoffice \
+    cairo \
+    pango \
+    pixman \
+    libpng \
+    jpeg \
+    giflib \
+    freetype
 
 # Copy node_modules from builder stage (native modules already compiled)
 COPY --from=builder /app/node_modules ./node_modules
@@ -41,9 +57,10 @@ COPY package*.json ./
 # Copy built frontend files
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy server code and database module
+# Copy server code, database module, and migration scripts
 COPY server/ ./server/
 COPY database/ ./database/
+COPY scripts/ ./scripts/
 COPY gcp_credential.json ./
 
 # Copy nginx configuration (replace the entire nginx.conf to ensure proper structure)
@@ -76,4 +93,3 @@ RUN echo '#!/bin/sh' > /start.sh && \
     chmod +x /start.sh
 
 CMD ["/start.sh"]
-

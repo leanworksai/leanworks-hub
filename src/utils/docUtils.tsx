@@ -1,5 +1,5 @@
 import React from 'react';
-import { Share2, Mail, Paperclip, Trash2, Download } from 'lucide-react';
+import { Share2, Mail, Trash2, Download } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 /**
@@ -25,11 +25,9 @@ export function formatFileSize(bytes: number): string {
  */
 export function createDocActions(
   isOwner: boolean,
-  filesCount: number,
   handlers: {
     onShare: () => void;
     onShareViaEmail: () => void;
-    onAttachedFiles: () => void;
     onDelete: () => void;
     onExportPDF?: () => void;
   }
@@ -61,12 +59,6 @@ export function createDocActions(
       onClick: handlers.onShareViaEmail,
     });
   }
-
-  actions.push({
-    label: `Attached Files ${filesCount > 0 ? `(${filesCount})` : ''}`,
-    icon: <Paperclip className="h-4 w-4" />,
-    onClick: handlers.onAttachedFiles,
-  });
 
   // Add PDF export option
   if (handlers.onExportPDF) {

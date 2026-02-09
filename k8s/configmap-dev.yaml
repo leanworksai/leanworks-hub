@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: leanworks-config
+  labels:
+    app: leanworks-hub
+    environment: dev
+data:
+  # Dev environment-specific configuration values
+  AUDIO_STORAGE_BUCKET: "leanworks-dev"
+  DB_INSTANCE_NAME: "leanworks-dev"
+  DB_INSTANCE_CONNECTION_STRING: "leanworks-474204:us-west1:leanworks-dev"
+  FIRESTORE_DATABASE_NAME: "leanworks-dev"
+  CLUSTER_NAME: "leanworks-dev"
+  ENVIRONMENT: "dev"
+  # Domain configuration for dev environment
+  APP_DOMAIN: "dev.leanworks.ai"

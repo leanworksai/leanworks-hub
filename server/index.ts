@@ -33,17 +33,24 @@ import {
   closeOrgPool,
 } from '../database/multi-tenant-pool.js';
 import { setupIntegrationEndpoints } from './endpoints/integrations.js';
-import { setupCallEndpoints } from './endpoints/calls.js';
 import { setupImageEndpoints } from './endpoints/images.js';
 import { setupFileEndpoints } from './endpoints/files.js';
+import { setupDocumentUploadEndpoints } from './endpoints/docs-upload.js';
 import { setupTurnEndpoints } from './endpoints/turn.js';
-import { setupLiveKitEndpoints, setupLiveKitWebSocketServer } from './endpoints/livekit.js';
-import { setupMessageEndpoints } from './endpoints/messages.js';
 import { setupUpdateEndpoints } from './endpoints/updates.js';
 import { setupQueryEndpoints } from './endpoints/query.js';
-import { setFirestoreDb } from './services/audio-recorder.js';
+import { setupPlansEndpoints } from './endpoints/plans.js';
+import { setupAIAgentEndpoints } from './endpoints/ai-agents.js';
+import { setupAIAgentWebhookEndpoints } from './endpoints/ai-agent-webhooks.js';
+import { setWebhookSigningSecretFetcher } from './services/webhook-signing.js';
+import { setupAgentAPIv1Endpoints } from './endpoints/agent-api-v1.js';
+import { setupAgentTriggerEndpoints } from './endpoints/agent-triggers.js';
+import { setupLeanRoutingEndpoints } from './endpoints/lean-routing.js';
 import http from 'http';
 import { sendVerificationEmail, sendInvitationEmail, sendDocShareInvitationEmail, sendDocShareNotificationEmail } from './services/email.js';
+import { notifyAgentOfAssignment } from './services/ai-agent-service.js';
+import { emitEvent, EventTypes } from './services/event-bus.js';
+import { extractMentions } from './services/mention-service.js';
 import { validateRequest } from './middleware/validate-request.js';
 import { createTaskSchema, updateTaskSchema, fullUpdateTaskSchema } from './validation/task-schemas.js';
 import { createDocSchema, updateDocSchema } from './validation/doc-schemas.js';
@@ -51,18 +58,18 @@ import { signupSchema, loginSchema, resendVerificationSchema } from './validatio
 import { updateUserProfileSchema } from './validation/user-schemas.js';
 import { createOrgSchema, updateOrgSchema, inviteToOrgSchema } from './validation/org-schemas.js';
 import { createProjectSchema, updateProjectSchema, addProjectMemberSchema, addProjectCommentSchema } from './validation/project-schemas.js';
-import { createEventSchema, updateEventSchema } from './validation/event-schemas.js';
 import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/subscription-schemas.js';
 import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
 import { queryTaskProgressUpdatesSchema, queryProjectProgressUpdatesSchema } from './validation/update-schemas.js';
 import { convertJsonToHtml, convertJsonToHtmlWithPositions } from './utils/contentUtils.js';
+import { getStorageBucket, getFirestoreDatabaseName, getSecretName, getCredentialPath, isLocalDev } from './utils/env.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Read service account credentials
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
+const serviceAccountPath = join(__dirname, '../', getCredentialPath());
 let serviceAccount;
 try {
   serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
@@ -78,7 +85,7 @@ let firebaseApp;
 try {
   if (getApps().length === 0) {
     // Construct storage bucket name (default is {project-id}.appspot.com)
-    const storageBucket = serviceAccount.storage_bucket || `${serviceAccount.project_id}.appspot.com`;
+    const storageBucket = serviceAccount.storage_bucket || getStorageBucket();
     firebaseApp = initializeApp({
       credential: cert(serviceAccount),
       projectId: serviceAccount.project_id,
@@ -95,9 +102,9 @@ try {
   throw error;
 }
 
-// Use named database 'leanworks-prod' - this is the database configured in Firebase
+// Use named database based on environment - this is the database configured in Firebase
 // Note: Client SDK will need to be configured to use the same database
-const db = getFirestore(firebaseApp, 'leanworks-prod');
+const db = getFirestore(firebaseApp, getFirestoreDatabaseName());
 console.log('✅ Firestore database initialized:', db.databaseId);
 const auth = getAuth(firebaseApp);
 const storage = getStorage(firebaseApp);
@@ -139,17 +146,17 @@ async function getStripeSecretsFromSecretManager(): Promise<typeof cachedStripeS
   try {
     // Fetch all Stripe secrets in parallel
     const [secretKeyResult, webhookSecretResult, priceStandardResult, priceProResult] = await Promise.all([
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-secret-key/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-secret-key')}/versions/latest`
       }),
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-webhook-secret/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-webhook-secret')}/versions/latest`
       }),
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-price-standard/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-price-standard')}/versions/latest`
       }),
-      secretManagerClient.accessSecretVersion({ 
-        name: `projects/${projectId}/secrets/stripe-price-pro/versions/latest` 
+      secretManagerClient.accessSecretVersion({
+        name: `projects/${projectId}/secrets/${getSecretName('stripe-price-pro')}/versions/latest`
       }),
     ]);
 
@@ -525,7 +532,14 @@ async function requireOrgMembership(req: express.Request, res: express.Response,
                           req.headers['x-org-id'] as string ||
                           req.params.orgId;
 
+    console.log(`🔒 requireOrgMembership: ${req.method} ${req.path}, userEmail: ${userEmail}, orgIdentifier: ${orgIdentifier}, headers:`, {
+      'x-org-identifier': req.headers['x-org-identifier'],
+      'x-org-id': req.headers['x-org-id'],
+      'x-org-slug': req.headers['x-org-slug']
+    });
+
     if (!orgIdentifier) {
+      console.error(`❌ requireOrgMembership: No orgIdentifier found for ${req.method} ${req.path}`);
       return res.status(400).json({ error: 'Organization identifier is required (X-Org-Identifier or X-Org-Id header, or orgId param)' });
     }
     
@@ -551,8 +565,12 @@ async function requireOrgMembership(req: express.Request, res: express.Response,
     if (!membership.isMember) {
       return res.status(403).json({ error: 'Not a member of this organization' });
     }
-    
+
+    // Get the org slug for database connections
+    const orgSlug = await getOrgSlugById(orgId);
+
     (req as any).orgId = orgId;
+    (req as any).orgSlug = orgSlug;
     (req as any).orgRole = membership.role;
     
     next();
@@ -1834,7 +1852,7 @@ app.delete('/api/orgs/:orgId', authenticateUser, requireOrgOwner, async (req, re
     // 4. Drop the PostgreSQL database
     try {
       // Get password from Secret Manager
-      const passwordSecretName = `projects/${serviceAccount.project_id}/secrets/postgresdb-password/versions/latest`;
+      const passwordSecretName = `projects/${serviceAccount.project_id}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
       const [passwordVersion] = await secretManagerClient.accessSecretVersion({ name: passwordSecretName });
       const password = (passwordVersion.payload?.data?.toString() || '').trim();
       // For local development, use localhost (Cloud SQL Proxy)
@@ -2672,8 +2690,8 @@ app.get('/api/projects', authenticateUser, requireOrgMembership, async (req, res
       // Add default values for missing fields
       project.detailedDescription = project.detailedDescription || project.description || '';
       project.statusColor = project.statusColor || '#3b82f6';
-      // Frontend uses project.team to display member count (members are already transformed above)
-      project.team = Array.isArray(project.members) ? project.members.length : 0;
+      // Frontend uses project.memberCount to display member count (members are already transformed above)
+      project.memberCount = Array.isArray(project.members) ? project.members.length : 0;
       project.summary = project.summary || {
         accomplishment: '',
         decision: '',
@@ -2869,8 +2887,8 @@ app.get('/api/projects/:id', authenticateUser, requireOrgMembership, async (req,
     
     project.detailedDescription = project.detailedDescription || project.description || '';
     project.statusColor = project.statusColor || '#3b82f6';
-    // Frontend uses project.team to display member count (members are already transformed above)
-    project.team = Array.isArray(project.members) ? project.members.length : 0;
+    // Frontend uses project.memberCount to display member count (members are already transformed above)
+    project.memberCount = Array.isArray(project.members) ? project.members.length : 0;
     project.summary = project.summary || {
       accomplishment: '',
       decision: '',
@@ -3006,6 +3024,12 @@ app.post('/api/projects', authenticateUser, requireOrgMembership, validateReques
     `, [projectId]);
     const memberCount = parseInt(memberCountResult.rows[0]?.count || '1');
     
+    // Emit event
+    emitEvent(EventTypes.PROJECT_CREATED, 'project', projectId, orgId, 'human', userEmail,
+      { name, status, priority, teamId },
+      extractMentions(description)
+    ).catch(err => console.error('[Event Bus] Project created event error:', err));
+
     // Return response matching frontend Project interface
     res.status(201).json({ 
       id: projectId, 
@@ -3117,6 +3141,10 @@ app.patch('/api/projects/:id', authenticateUser, requireOrgMembership, validateR
       SET ${setClauses.join(', ')}
       WHERE id = $${paramIndex}
     `, values);
+
+    emitEvent(EventTypes.PROJECT_UPDATED, 'project', projectId, orgId, 'human', userEmail,
+      { updatedFields: Object.keys(updates) }
+    ).catch(err => console.error('[Event Bus] Project updated event error:', err));
     
     res.json({ success: true });
   } catch (error) {
@@ -3133,6 +3161,9 @@ app.delete('/api/projects/:id', authenticateUser, requireOrgMembership, async (r
     const pool = await getOrgPool(orgId);
     
     await pool.query('DELETE FROM projects WHERE id = $1', [projectId]);
+
+    emitEvent(EventTypes.PROJECT_DELETED, 'project', projectId, orgId, 'human', userEmail)
+      .catch(err => console.error('[Event Bus] Project deleted event error:', err));
     
     res.json({ success: true });
   } catch (error) {
@@ -3350,6 +3381,12 @@ app.post('/api/projects/:id/comments', authenticateUser, requireOrgMembership, v
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [commentId, projectId, memberName, memberAvatar, today, comment.trim()]
     );
+
+    // Emit event with mentions extracted from comment
+    emitEvent(EventTypes.PROJECT_COMMENTED, 'project', projectId, orgId, 'human', userEmail,
+      { commentId, comment: comment.trim() },
+      extractMentions(comment)
+    ).catch(err => console.error('[Event Bus] Project commented event error:', err));
     
     res.json({
       success: true,
@@ -3434,6 +3471,12 @@ app.post('/api/tasks/:id/comments', authenticateUser, requireOrgMembership, vali
        VALUES ($1, $2, $3, $4, $5, $6)`,
       [commentId, taskId, memberName, memberAvatar, today, comment.trim()]
     );
+
+    // Emit event with mentions extracted from comment
+    emitEvent(EventTypes.TASK_COMMENTED, 'task', taskId, orgId, 'human', userEmail,
+      { commentId, comment: comment.trim() },
+      extractMentions(comment)
+    ).catch(err => console.error('[Event Bus] Task commented event error:', err));
     
     res.json({
       success: true,
@@ -3480,21 +3523,29 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
     let result;
     try {
       result = await pool.query(`
-        SELECT 
+        SELECT
           id,
           title,
           content,
           owner_email,
           project_id,
           team_id,
+          folder_id,
+          is_folder,
           tags,
           COALESCE(metadata, '{}'::jsonb) as metadata,
           visibility,
           visible_to_members,
           created_at,
-          updated_at
+          updated_at,
+          doc_type,
+          storage_path,
+          file_metadata,
+          processing_status,
+          file_size,
+          mime_type
         FROM docs
-        WHERE 
+        WHERE
           visibility = 'all_members'
           OR owner_email = $1
           OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
@@ -3504,20 +3555,22 @@ app.get('/api/docs', authenticateUser, requireOrgMembership, async (req, res) =>
       // If metadata column doesn't exist, query without it
       if (error.message?.includes('column "metadata" does not exist') || error.message?.includes('column docs.metadata does not exist')) {
         result = await pool.query(`
-          SELECT 
+          SELECT
             id,
             title,
             content,
             owner_email,
             project_id,
             team_id,
+            folder_id,
+            is_folder,
             tags,
             visibility,
             visible_to_members,
             created_at,
             updated_at
           FROM docs
-          WHERE 
+          WHERE
             visibility = 'all_members'
             OR owner_email = $1
             OR (visibility = 'specific_members' AND visible_to_members IS NOT NULL AND visible_to_members @> $2::jsonb)
@@ -3657,19 +3710,27 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
     let result;
     try {
       result = await pool.query(`
-        SELECT 
+        SELECT
           id,
           title,
           content,
           owner_email,
           project_id,
           team_id,
+          folder_id,
+          is_folder,
           tags,
           COALESCE(metadata, '{}'::jsonb) as metadata,
           visibility,
           visible_to_members,
           created_at,
-          updated_at
+          updated_at,
+          doc_type,
+          storage_path,
+          file_metadata,
+          processing_status,
+          file_size,
+          mime_type
         FROM docs
         WHERE id = $1
       `, [docId]);
@@ -3677,13 +3738,15 @@ app.get('/api/docs/:id', authenticateUser, requireOrgMembership, async (req, res
       // If metadata column doesn't exist, query without it
       if (error.message?.includes('column "metadata" does not exist') || error.message?.includes('column docs.metadata does not exist')) {
         result = await pool.query(`
-          SELECT 
+          SELECT
             id,
             title,
             content,
             owner_email,
             project_id,
             team_id,
+            folder_id,
+            is_folder,
             tags,
             visibility,
             visible_to_members,
@@ -3763,7 +3826,7 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
     const orgId = (req as any).orgId;
     const pool = await getOrgPool(orgId);
     
-    const { id, title, content, projectId, teamId, tags, visibility, visibleToMembers, metadata } = req.body;
+    const { id, title, content, projectId, teamId, folderId, isFolder, tags, visibility, visibleToMembers, metadata } = req.body;
     
     // Validation is handled by middleware, so visibility and visibleToMembers are already validated
     const docVisibility = visibility || 'all_members';
@@ -3774,17 +3837,21 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
     const normalizedEmail = userEmail.toLowerCase();
     const docId = id || crypto.randomBytes(16).toString('hex');
     
-    // Handle empty content - use default TipTap empty structure
+    // Handle content based on whether this is a folder or document
     let docContent = content;
-    if (!content || content.trim().length === 0) {
+    if (isFolder) {
+      // Folders have empty content
+      docContent = '{}';
+    } else if (!content || content.trim().length === 0) {
+      // Regular documents get default TipTap empty structure
       docContent = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph' }] });
     }
     
     // Check if metadata column exists, if not, insert without it
     try {
       await pool.query(`
-        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, metadata, visibility, visible_to_members, created_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        INSERT INTO docs (id, title, content, owner_email, project_id, team_id, folder_id, is_folder, tags, metadata, visibility, visible_to_members, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
       `, [
         docId,
         title,
@@ -3792,6 +3859,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
         normalizedEmail,
         projectId || null,
         teamId || null,
+        folderId || null,
+        isFolder || false,
         tags ? JSON.stringify(tags) : '[]',
         metadata ? JSON.stringify(metadata) : '{}',
         docVisibility,
@@ -3801,8 +3870,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
       // If metadata column doesn't exist, insert without it
       if (error.message?.includes('column "metadata" does not exist')) {
         await pool.query(`
-          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, tags, visibility, visible_to_members, created_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+          INSERT INTO docs (id, title, content, owner_email, project_id, team_id, folder_id, is_folder, tags, visibility, visible_to_members, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
         `, [
           docId,
           title,
@@ -3810,6 +3879,8 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
           normalizedEmail,
           projectId || null,
           teamId || null,
+          folderId || null,
+          isFolder || false,
           tags ? JSON.stringify(tags) : '[]',
           docVisibility,
           JSON.stringify(visibleToMembersArray)
@@ -3819,13 +3890,15 @@ app.post('/api/docs', authenticateUser, requireOrgMembership, validateRequest(cr
       }
     }
     
-    res.status(201).json({ 
-      id: docId, 
-      title, 
+    res.status(201).json({
+      id: docId,
+      title,
       content: docContent,
       ownerEmail: normalizedEmail,
       projectId: projectId || null,
       teamId: teamId || null,
+      folderId: folderId || null,
+      isFolder: isFolder || false,
       tags: tags || [],
       visibility: docVisibility,
       visibleToMembers: visibleToMembersArray
@@ -3924,7 +3997,42 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, validateReque
         delete updates.visibleToMembers;
       }
     }
-    
+
+    // Additional validation for folder operations
+    if (updates.folderId !== undefined) {
+      // Check for circular references if moving a folder
+      const currentDocResult = await pool.query(
+        'SELECT is_folder FROM docs WHERE id = $1',
+        [docId]
+      );
+
+      if (currentDocResult.rows.length > 0 && currentDocResult.rows[0].is_folder) {
+        // This is a folder being moved - check for circular references
+        let targetFolderId = updates.folderId;
+        const visitedFolders = new Set([docId]);
+
+        while (targetFolderId) {
+          if (visitedFolders.has(targetFolderId)) {
+            return res.status(400).json({
+              error: 'Cannot move folder: circular reference detected'
+            });
+          }
+
+          visitedFolders.add(targetFolderId);
+          const parentResult = await pool.query(
+            'SELECT folder_id FROM docs WHERE id = $1',
+            [targetFolderId]
+          );
+
+          if (parentResult.rows.length > 0) {
+            targetFolderId = parentResult.rows[0].folder_id;
+          } else {
+            targetFolderId = null;
+          }
+        }
+      }
+    }
+
     const setClauses: string[] = [];
     const values: any[] = [];
     let paramIndex = 1;
@@ -3934,6 +4042,8 @@ app.patch('/api/docs/:id', authenticateUser, requireOrgMembership, validateReque
       content: 'content',
       projectId: 'project_id',
       teamId: 'team_id',
+      folderId: 'folder_id',
+      isFolder: 'is_folder',
       visibility: 'visibility'
     };
     
@@ -5022,6 +5132,14 @@ app.post('/api/tasks', authenticateUser, requireOrgMembership, validateRequest(c
       JSON.stringify(visibleToMembersArray)
     ]);
     
+    // Emit event to the platform event bus
+    emitEvent(
+      EventTypes.TASK_CREATED,
+      'task', taskId, orgId, 'human', userEmail,
+      { title, status: status || 'todo', projectId, assigneeId, priority: priority || 'medium' },
+      extractMentions(description)
+    ).catch(err => console.error('[Event Bus] Task created event error:', err));
+
     res.status(201).json({ id: taskId, title, description, projectId, assigneeId, status, priority });
   } catch (error) {
     console.error('Create task error:', error);
@@ -5136,6 +5254,14 @@ app.put('/api/tasks/:id', authenticateUser, requireOrgMembership, validateReques
       WHERE id = $${paramIndex}
     `, values);
     
+    // Emit event
+    emitEvent(
+      updates.status !== undefined ? EventTypes.TASK_STATUS_CHANGED : EventTypes.TASK_UPDATED,
+      'task', taskId, orgId, 'human', userEmail,
+      { updatedFields: Object.keys(updates), ...updates },
+      extractMentions(updates.description)
+    ).catch(err => console.error('[Event Bus] Task updated event error:', err));
+
     res.json({ success: true });
   } catch (error) {
     console.error('Update task error:', error);
@@ -5198,6 +5324,7 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       assignee: 'assignee_name',
       assigneeName: 'assignee_name',
       assigneeAvatar: 'assignee_avatar',
+      assigneeType: 'assignee_type',
       status: 'status',
       priority: 'priority',
       dueDate: 'due_date',
@@ -5227,7 +5354,45 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       }
     }
     
+    // Handle AI agent assignment
+    let agentAssignmentData:
+      | { type: 'ai_agent'; agentIds: string[] }
+      | { type: 'ai_team'; agentTeamId: string }
+      | null = null;
+    if (updates.assigneeType) {
+      setClauses.push(`assignee_type = $${paramIndex}`);
+      values.push(updates.assigneeType);
+      paramIndex++;
+
+      if (updates.assigneeType === 'ai_agent') {
+        const rawAgentIds: string[] = Array.isArray(updates.agentIds) && updates.agentIds.length > 0
+          ? updates.agentIds.filter((id: unknown): id is string => typeof id === 'string')
+          : updates.agentId
+          ? [String(updates.agentId)]
+          : [];
+        const uniqueAgentIds = Array.from(new Set(rawAgentIds.filter(Boolean)));
+        agentAssignmentData = {
+          type: 'ai_agent',
+          agentIds: uniqueAgentIds,
+        };
+        // Clear human assignee fields
+        setClauses.push(`assignee_id = NULL, assignee_name = NULL, assignee_avatar = NULL`);
+      } else if (updates.assigneeType === 'ai_team' && updates.agentTeamId) {
+        agentAssignmentData = {
+          type: 'ai_team',
+          agentTeamId: updates.agentTeamId,
+        };
+        // Clear human assignee fields
+        setClauses.push(`assignee_id = NULL, assignee_name = NULL, assignee_avatar = NULL`);
+      } else if (updates.assigneeType === 'human') {
+        // Assigning to human - clear AI fields by not setting them
+      }
+    }
+
     Object.entries(updates).forEach(([key, value]) => {
+      if (key === 'agentId' || key === 'agentTeamId' || key === 'agentIds') {
+        return;
+      }
       if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && fieldMap[key]) {
         const dbField = fieldMap[key];
         // Handle tags as JSONB
@@ -5265,6 +5430,122 @@ app.patch('/api/tasks/:id', authenticateUser, requireOrgMembership, validateRequ
       WHERE id = $${paramIndex}
     `, values);
     
+    // If AI agent assignment, create task_ai_assignments record and notify agent
+    if (agentAssignmentData) {
+      try {
+        const now = new Date();
+
+        if (agentAssignmentData.type === 'ai_agent') {
+          let agentIds = agentAssignmentData.agentIds;
+          if (agentIds.length === 0) {
+            const autoAgent = await pool.query(
+              `SELECT id FROM ai_agents WHERE status = 'active' ORDER BY created_at ASC LIMIT 1`
+            );
+            if (autoAgent.rows.length > 0) {
+              agentIds = [autoAgent.rows[0].id];
+            }
+          }
+
+          if (agentIds.length > 0) {
+            const taskDetails = await pool.query(
+              'SELECT id, title, description, priority, due_date FROM tasks WHERE id = $1',
+              [taskId]
+            );
+            const task = taskDetails.rows[0];
+
+            for (const agentId of agentIds) {
+              const assignmentId = `taa_${crypto.randomBytes(8).toString('hex')}`;
+              await pool.query(
+                `INSERT INTO task_ai_assignments 
+                 (id, task_id, agent_id, status, assigned_at, created_at, updated_at)
+                 VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
+                [assignmentId, taskId, agentId, now, now, now]
+              );
+
+              if (task) {
+                try {
+                  await notifyAgentOfAssignment(
+                    orgId,
+                    agentId,
+                    taskId,
+                    assignmentId,
+                    {
+                      id: task.id,
+                      title: task.title,
+                      description: task.description,
+                      priority: task.priority,
+                      dueDate: task.due_date,
+                    }
+                  );
+                } catch (notifyError) {
+                  console.error('[Backend] Error notifying agent:', notifyError);
+                  // Don't fail the request if notification fails
+                }
+              }
+            }
+          }
+        } else if (agentAssignmentData.type === 'ai_team') {
+          const assignmentId = `taa_${crypto.randomBytes(8).toString('hex')}`;
+          await pool.query(
+            `INSERT INTO task_ai_assignments 
+             (id, task_id, agent_team_id, status, assigned_at, created_at, updated_at)
+             VALUES ($1, $2, $3, 'pending', $4, $5, $6)`,
+            [assignmentId, taskId, agentAssignmentData.agentTeamId, now, now, now]
+          );
+
+          // Get team members and notify each agent
+          const teamMembers = await pool.query(
+            `SELECT agent_id FROM ai_agent_team_members 
+             WHERE team_id = $1 
+             ORDER BY priority DESC`,
+            [agentAssignmentData.agentTeamId]
+          );
+
+          const taskDetails = await pool.query(
+            'SELECT id, title, description, priority, due_date FROM tasks WHERE id = $1',
+            [taskId]
+          );
+
+          if (taskDetails.rows.length > 0 && teamMembers.rows.length > 0) {
+            const task = taskDetails.rows[0];
+            const firstAgent = teamMembers.rows[0];
+            // Notify the first agent in the team
+            try {
+              await notifyAgentOfAssignment(
+                orgId,
+                firstAgent.agent_id,
+                taskId,
+                assignmentId,
+                {
+                  id: task.id,
+                  title: task.title,
+                  description: task.description,
+                  priority: task.priority,
+                  dueDate: task.due_date,
+                }
+              );
+            } catch (notifyError) {
+              console.error('[Backend] Error notifying agent team:', notifyError);
+              // Don't fail the request if notification fails
+            }
+          }
+        }
+      } catch (error: any) {
+        console.error('[Backend] Error creating AI assignment:', error);
+        // Don't fail the request if assignment creation fails
+      }
+    }
+
+    // Emit event
+    const eventType = agentAssignmentData ? EventTypes.TASK_ASSIGNED
+      : updates.status !== undefined ? EventTypes.TASK_STATUS_CHANGED
+      : EventTypes.TASK_UPDATED;
+    emitEvent(
+      eventType, 'task', taskId, orgId, 'human', userEmail,
+      { updatedFields: Object.keys(updates), assigneeType: updates.assigneeType, ...updates },
+      extractMentions(updates.description)
+    ).catch(err => console.error('[Event Bus] Task patch event error:', err));
+    
     res.json({ success: true });
   } catch (error) {
     console.error('Update task error:', error);
@@ -5287,424 +5568,13 @@ app.delete('/api/tasks/:id', authenticateUser, requireOrgMembership, async (req,
     const pool = await getOrgPool(orgId);
     
     await pool.query('DELETE FROM tasks WHERE id = $1', [taskId]);
+
+    emitEvent(EventTypes.TASK_DELETED, 'task', taskId, orgId, 'human', userEmail)
+      .catch(err => console.error('[Event Bus] Task deleted event error:', err));
     
     res.json({ success: true });
   } catch (error) {
     console.error('Delete task error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-// ============================================================================
-// EVENTS ENDPOINTS (PostgreSQL)
-// ============================================================================
-
-app.get('/api/events', authenticateUser, requireOrgMembership, async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const pool = await getOrgPool(orgId);
-    
-    // Extract query parameters
-    const filterUserEmail = req.query.userEmail as string | undefined;
-    const startDate = req.query.startDate as string | undefined;
-    const endDate = req.query.endDate as string | undefined;
-    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-    
-    // Build WHERE conditions
-    const whereConditions: string[] = [];
-    const queryParams: any[] = [userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])];
-    let paramIndex = 3;
-    
-    // Base visibility conditions
-    whereConditions.push(`(
-      -- Creator always has access
-      e.created_by = $1
-      -- OR event visibility is 'all_members' (default - visible to all org members)
-      OR (e.visibility = 'all_members' OR e.visibility IS NULL)
-      -- OR event visibility is 'specific_members' and user is in visible_to_members
-      OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $2::jsonb)
-      -- OR user is in attendees
-      OR (e.attendees IS NOT NULL AND e.attendees @> $2::jsonb)
-    )`);
-    
-    // Add filter conditions
-    if (filterUserEmail) {
-      whereConditions.push(`(
-        e.created_by = $${paramIndex}
-        OR (e.attendees IS NOT NULL AND e.attendees @> $${paramIndex + 1}::jsonb)
-      )`);
-      queryParams.push(filterUserEmail.toLowerCase());
-      queryParams.push(JSON.stringify([filterUserEmail.toLowerCase()]));
-      paramIndex += 2;
-    }
-    
-    if (startDate) {
-      whereConditions.push(`e.start_date >= $${paramIndex}::date`);
-      queryParams.push(startDate);
-      paramIndex++;
-    }
-    
-    if (endDate) {
-      whereConditions.push(`e.end_date <= $${paramIndex}::date`);
-      queryParams.push(endDate);
-      paramIndex++;
-    }
-    
-    // Build LIMIT clause
-    const limitClause = limit ? `LIMIT $${paramIndex}` : '';
-    if (limit) {
-      queryParams.push(limit);
-    }
-    
-    const whereClause = whereConditions.join(' AND ');
-    
-    const result = await pool.query(`
-      SELECT 
-        e.id,
-        e.title,
-        e.description,
-        e.start_date,
-        e.end_date,
-        e.all_day,
-        e.location,
-        e.attendees,
-        e.created_by,
-        e.visibility,
-        e.visible_to_members,
-        e.created_at,
-        e.updated_at
-      FROM events e
-      WHERE ${whereClause}
-      ORDER BY e.start_date ASC
-      ${limitClause}
-    `, queryParams);
-    
-    const events = result.rows.map(row => ({
-      id: row.id,
-      title: row.title,
-      description: row.description || '',
-      startDate: row.start_date ? new Date(row.start_date).toISOString() : '',
-      endDate: row.end_date ? new Date(row.end_date).toISOString() : '',
-      allDay: row.all_day || false,
-      location: row.location || undefined,
-      attendees: row.attendees || [],
-      createdBy: row.created_by,
-      visibility: row.visibility || 'all_members',
-      visibleToMembers: row.visible_to_members || [],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
-    }));
-    
-    res.json(events);
-  } catch (error) {
-    console.error('Get events error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.get('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const eventId = req.params.id;
-    const pool = await getOrgPool(orgId);
-    
-    const result = await pool.query(`
-      SELECT 
-        e.id,
-        e.title,
-        e.description,
-        e.start_date,
-        e.end_date,
-        e.all_day,
-        e.location,
-        e.attendees,
-        e.created_by,
-        e.visibility,
-        e.visible_to_members,
-        e.created_at,
-        e.updated_at
-      FROM events e
-      WHERE e.id = $1 AND (
-        -- Creator always has access
-        e.created_by = $2
-        -- OR event visibility is 'all_members' (default - visible to all org members)
-        OR (e.visibility = 'all_members' OR e.visibility IS NULL)
-        -- OR event visibility is 'specific_members' and user is in visible_to_members
-        OR (e.visibility = 'specific_members' AND e.visible_to_members IS NOT NULL AND e.visible_to_members @> $3::jsonb)
-        -- OR user is in attendees
-        OR (e.attendees IS NOT NULL AND e.attendees @> $3::jsonb)
-      )
-    `, [eventId, userEmail.toLowerCase(), JSON.stringify([userEmail.toLowerCase()])]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-    
-    const row = result.rows[0];
-    const event = {
-      id: row.id,
-      title: row.title,
-      description: row.description || '',
-      startDate: row.start_date ? new Date(row.start_date).toISOString() : '',
-      endDate: row.end_date ? new Date(row.end_date).toISOString() : '',
-      allDay: row.all_day || false,
-      location: row.location || undefined,
-      attendees: row.attendees || [],
-      createdBy: row.created_by,
-      visibility: row.visibility || 'all_members',
-      visibleToMembers: row.visible_to_members || [],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : undefined,
-    };
-    
-    res.json(event);
-  } catch (error) {
-    console.error('Get event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.post('/api/events', authenticateUser, requireOrgMembership, validateRequest(createEventSchema), async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const { title, description, startDate, endDate, allDay, location, attendees, visibility, visibleToMembers } = req.body;
-    
-    // Validation handled by middleware
-    const eventVisibility = visibility || 'all_members';
-    const visibleToMembersArray = (eventVisibility === 'specific_members' && visibleToMembers)
-      ? visibleToMembers.map((email: string) => email.toLowerCase())
-      : [];
-    
-    const attendeesArray = attendees ? attendees.map((email: string) => email.toLowerCase()) : [];
-    
-    // Parse dates
-    let startDateParsed = new Date(startDate);
-    let endDateParsed = new Date(endDate);
-    
-    // If allDay is true, set time to start of day
-    if (allDay) {
-      startDateParsed.setHours(0, 0, 0, 0);
-      endDateParsed.setHours(23, 59, 59, 999);
-    }
-    
-    const pool = await getOrgPool(orgId);
-    const eventId = crypto.randomBytes(16).toString('hex');
-    
-    await pool.query(`
-      INSERT INTO events (
-        id, title, description, start_date, end_date, all_day, location, 
-        attendees, created_by, visibility, visible_to_members, created_at
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-    `, [
-      eventId,
-      title,
-      description || null,
-      startDateParsed,
-      endDateParsed,
-      allDay || false,
-      location || null,
-      JSON.stringify(attendeesArray),
-      userEmail.toLowerCase(),
-      eventVisibility,
-      JSON.stringify(visibleToMembersArray),
-      Date.now(),
-    ]);
-    
-    res.status(201).json({ id: eventId, title, startDate, endDate });
-  } catch (error) {
-    console.error('Create event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.patch('/api/events/:id', authenticateUser, requireOrgMembership, validateRequest(updateEventSchema), async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const eventId = req.params.id;
-    const updates = req.body;
-    const pool = await getOrgPool(orgId);
-    
-    // Check if event exists and user has permission
-    const eventCheck = await pool.query(
-      'SELECT created_by FROM events WHERE id = $1',
-      [eventId]
-    );
-    
-    if (eventCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-    
-    // Only creator can update visibility
-    if (updates.visibility !== undefined || updates.visibleToMembers !== undefined) {
-      const eventCreatorEmail = eventCheck.rows[0].created_by?.toLowerCase();
-      const normalizedUserEmail = userEmail.toLowerCase();
-      
-      if (eventCreatorEmail !== normalizedUserEmail) {
-        return res.status(403).json({ error: 'Only the event creator can update visibility settings' });
-      }
-    }
-    
-    const setClauses: string[] = [];
-    const values: any[] = [];
-    let paramIndex = 1;
-    
-    // Map camelCase to snake_case for database
-    const fieldMap: { [key: string]: string } = {
-      title: 'title',
-      description: 'description',
-      location: 'location',
-      allDay: 'all_day',
-    };
-    
-    // Handle visibility separately
-    if (updates.visibility !== undefined) {
-      const validVisibility = ['all_members', 'specific_members'];
-      const eventVisibility = validVisibility.includes(updates.visibility) ? updates.visibility : 'all_members';
-      setClauses.push(`visibility = $${paramIndex}`);
-      values.push(eventVisibility);
-      paramIndex++;
-      
-      // Handle visibleToMembers
-      if (eventVisibility === 'specific_members') {
-        if (Array.isArray(updates.visibleToMembers) && updates.visibleToMembers.length > 0) {
-          const visibleToMembersArray = updates.visibleToMembers.map((email: string) => email.toLowerCase());
-          setClauses.push(`visible_to_members = $${paramIndex}`);
-          values.push(JSON.stringify(visibleToMembersArray));
-          paramIndex++;
-        } else {
-          return res.status(400).json({ error: 'visibleToMembers must be a non-empty array when visibility is specific_members' });
-        }
-      } else {
-        setClauses.push(`visible_to_members = $${paramIndex}`);
-        values.push(JSON.stringify([]));
-        paramIndex++;
-      }
-    }
-    
-    // Handle dates
-    if (updates.startDate !== undefined || updates.endDate !== undefined) {
-      let startDate = updates.startDate;
-      let endDate = updates.endDate;
-      
-      // If only one date is provided, fetch the other from database
-      if (startDate === undefined || endDate === undefined) {
-        const currentEvent = await pool.query(
-          'SELECT start_date, end_date, all_day FROM events WHERE id = $1',
-          [eventId]
-        );
-        if (currentEvent.rows.length > 0) {
-          if (startDate === undefined) {
-            startDate = currentEvent.rows[0].start_date.toISOString();
-          }
-          if (endDate === undefined) {
-            endDate = currentEvent.rows[0].end_date.toISOString();
-          }
-        }
-      }
-      
-      const startDateParsed = new Date(startDate);
-      const endDateParsed = new Date(endDate);
-      
-      if (isNaN(startDateParsed.getTime()) || isNaN(endDateParsed.getTime())) {
-        return res.status(400).json({ error: 'Invalid date format' });
-      }
-      
-      const allDay = updates.allDay !== undefined ? updates.allDay : (await pool.query('SELECT all_day FROM events WHERE id = $1', [eventId])).rows[0]?.all_day || false;
-      
-      if (allDay) {
-        startDateParsed.setHours(0, 0, 0, 0);
-        endDateParsed.setHours(23, 59, 59, 999);
-      }
-      
-      if (endDateParsed < startDateParsed) {
-        return res.status(400).json({ error: 'End date must be after start date' });
-      }
-      
-      setClauses.push(`start_date = $${paramIndex}`);
-      values.push(startDateParsed);
-      paramIndex++;
-      
-      setClauses.push(`end_date = $${paramIndex}`);
-      values.push(endDateParsed);
-      paramIndex++;
-    }
-    
-    // Handle attendees
-    if (updates.attendees !== undefined) {
-      if (Array.isArray(updates.attendees)) {
-        const attendeesArray = updates.attendees.map((email: string) => email.toLowerCase());
-        setClauses.push(`attendees = $${paramIndex}`);
-        values.push(JSON.stringify(attendeesArray));
-        paramIndex++;
-      } else {
-        return res.status(400).json({ error: 'attendees must be an array' });
-      }
-    }
-    
-    // Handle other fields
-    Object.entries(updates).forEach(([key, value]) => {
-      if (key !== 'id' && key !== 'visibility' && key !== 'visibleToMembers' && key !== 'startDate' && key !== 'endDate' && key !== 'attendees' && fieldMap[key]) {
-        const dbField = fieldMap[key];
-        setClauses.push(`${dbField} = $${paramIndex}`);
-        values.push(value);
-        paramIndex++;
-      }
-    });
-    
-    if (setClauses.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
-    }
-    
-    setClauses.push(`updated_at = NOW()`);
-    values.push(eventId);
-    
-    await pool.query(`
-      UPDATE events 
-      SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex}
-    `, values);
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Update event error:', error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-app.delete('/api/events/:id', authenticateUser, requireOrgMembership, async (req, res) => {
-  try {
-    const userEmail = (req as any).userEmail;
-    const orgId = (req as any).orgId;
-    const eventId = req.params.id;
-    const pool = await getOrgPool(orgId);
-    
-    // Check if user is the creator
-    const eventCheck = await pool.query(
-      'SELECT created_by FROM events WHERE id = $1',
-      [eventId]
-    );
-    
-    if (eventCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-    
-    const eventCreatorEmail = eventCheck.rows[0].created_by?.toLowerCase();
-    const normalizedUserEmail = userEmail.toLowerCase();
-    
-    if (eventCreatorEmail !== normalizedUserEmail) {
-      return res.status(403).json({ error: 'Only the event creator can delete the event' });
-    }
-    
-    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Delete event error:', error);
     res.status(500).json({ error: (error as Error).message });
   }
 });
@@ -5761,13 +5631,10 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
     
     let docs: any[] = [];
     
-    // Extract projectId or teamId for filtering
+    // Extract projectId for filtering (project channels only)
     let projectId: string | null = null;
-    let teamId: string | null = null;
     if (chatId.startsWith('project-')) {
       projectId = chatId.replace('project-', '');
-    } else if (chatId.startsWith('team-')) {
-      teamId = chatId.replace('team-', '');
     }
     
     try {
@@ -5783,11 +5650,6 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
       // For project channels, also filter by projectId to ensure we only get messages for this project
       if (projectId) {
         query = query.where('projectId', '==', projectId);
-      }
-      
-      // For team channels, also filter by teamId to ensure we only get messages for this team
-      if (teamId) {
-        query = query.where('teamId', '==', teamId);
       }
       
       // Filter by role if provided
@@ -5809,7 +5671,7 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           .limit(500) // Get more to filter
           .get();
         
-        // Filter by chatId in memory (and userId for AI assistant conversations, projectId/teamId for channels)
+        // Filter by chatId in memory (and userId for AI assistant conversations, projectId for channels)
         docs = Array.from(snapshot.docs).filter(doc => {
           const data = doc.data();
           const matchesChatId = data.chatId === chatId || (!data.chatId && chatId === 'general');
@@ -5822,11 +5684,6 @@ app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
           // For project channels, also check projectId
           if (projectId) {
             if (!matchesChatId || data.projectId !== projectId) return false;
-          }
-          
-          // For team channels, also check teamId
-          if (teamId) {
-            if (!matchesChatId || data.teamId !== teamId) return false;
           }
           
           // Filter by role if provided
@@ -6020,6 +5877,218 @@ app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) =>
 });
 
 // ============================================================================
+// CLEAR CHAT HISTORY ENDPOINT (Firestore Only)
+// ============================================================================
+
+// Handler for clear chat history (shared by both endpoints)
+const clearChatHistoryHandler = async (req: any, res: any) => {
+  try {
+    const userEmail = (req as any).userEmail?.toLowerCase();
+    const chatId = decodeURIComponent(req.params.chatId);
+
+    // Only allow AI assistant chats
+    if (!chatId.startsWith('ai-assistant-')) {
+      return res.status(400).json({ error: 'Only AI assistant chats are supported' });
+    }
+
+    // Verify the user owns this chat (AI chats include user email)
+    if (!chatId.endsWith(`-${userEmail}`)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+    const collectionPath = await getOrgCollectionPath('messages', orgId);
+
+    // Delete all messages in the chat
+    const chatQuery = db.collection(collectionPath).where('chatId', '==', chatId);
+    const snapshot = await chatQuery.get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ error: 'Chat not found or already empty' });
+    }
+
+    // Delete messages in batches
+    const batch = db.batch();
+    snapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+    });
+
+    await batch.commit();
+
+    console.log(`✅ Cleared ${snapshot.docs.length} messages from chat: ${chatId}`);
+    res.json({
+      success: true,
+      message: `Cleared ${snapshot.docs.length} messages from chat history`,
+      messagesDeleted: snapshot.docs.length
+    });
+  } catch (error) {
+    console.error('Clear chat history error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+};
+
+// DELETE /api/messages/clear/:chatId - Clear chat history
+app.delete('/api/messages/clear/:chatId', authenticateUser, clearChatHistoryHandler);
+
+// ============================================================================
+// AI CHAT STREAMING ENDPOINT (Proxies to external AI service)
+// ============================================================================
+
+app.post('/api/messages/stream', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = (req as any).userEmail;
+    const { chatId, message, citedContext, orgId, orgSlug, imageUrls } = req.body;
+
+    // Validate required fields
+    if (!chatId || !message) {
+      return res.status(400).json({ error: 'chatId and message are required' });
+    }
+
+    // Determine the external AI service URL
+    const aiServiceBase = isLocalDev()
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
+      : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+
+    const aiServiceUrl = `${aiServiceBase}/api/ask`;
+
+    // Prepare headers for the AI service request
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // Use Bearer token for production, API key for local testing
+    if (isLocalDev()) {
+      // Local testing: use API key
+      try {
+        const apiKey = await getApiKeyFromSecretManager();
+        headers['X-API-Key'] = apiKey;
+      } catch (error) {
+        console.error('Failed to get API key for streaming, request may fail:', error);
+        // Continue anyway - the AI service might handle auth differently
+      }
+    } else {
+      // Production (GKE): use Bearer token
+      // Get the Bearer token from the incoming request
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        headers['Authorization'] = authHeader;
+      } else {
+        // Fallback to API key if Bearer token not available
+        console.warn(`⚠️ No Bearer token in request, falling back to API key for ${userEmail}`);
+        try {
+          const apiKey = await getApiKeyFromSecretManager();
+          headers['X-API-Key'] = apiKey;
+        } catch (error) {
+          console.error('Failed to get API key, request may fail:', error);
+        }
+      }
+    }
+
+    // Check and increment AI usage BEFORE making the AI call
+    const sharedPool = await getSharedPool();
+    const usageCheck = await checkAndIncrementAiUsage(userEmail, sharedPool, false);
+    if (!usageCheck.allowed) {
+      return res.status(429).json({
+        error: usageCheck.error,
+        retryAfter: usageCheck.retryAfter
+      });
+    }
+
+    // Prepare request payload for the Python ask API
+    const requestPayload: any = {
+      user_id: userEmail,
+      org_slug: orgSlug,
+      session_id: chatId,
+      query: message,
+      stream: true
+    };
+
+    if (citedContext) {
+      requestPayload.cited_context = citedContext;
+    }
+
+    if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+      requestPayload.images = imageUrls;
+    }
+
+    console.log(`🚀 [Streaming] Proxying to ${aiServiceUrl} for user ${userEmail}`);
+
+    const abortController = new AbortController();
+    req.on('close', () => {
+      if (!abortController.signal.aborted) {
+        abortController.abort();
+      }
+    });
+
+    // Make streaming request to the Python ask API
+    const aiResponse = await fetch(aiServiceUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestPayload),
+      signal: abortController.signal,
+    });
+
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { error: `AI service error: ${aiResponse.status} ${aiResponse.statusText}` };
+      }
+      return res.status(aiResponse.status).json(errorData);
+    }
+
+    // Set up SSE headers for the response
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+      'Connection': 'keep-alive',
+    });
+
+    // Stream the response from the Python ask API to the client
+    const reader = aiResponse.body?.getReader();
+    if (!reader) {
+      return res.status(500).json({ error: 'No response body from AI service' });
+    }
+
+    const decoder = new TextDecoder();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        res.write(chunk);
+      }
+    } catch (error) {
+      if (req.aborted || res.writableEnded) {
+        // Client disconnected; avoid noisy logs and writes
+      } else {
+        console.error('Error streaming response:', error);
+        // Try to send an error event if possible
+        try {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`);
+        } catch {
+          // Connection might already be closed
+        }
+      }
+    } finally {
+      res.end();
+    }
+
+  } catch (error) {
+    console.error('Error in streaming endpoint:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? (error as Error).stack : undefined
+    });
+  }
+});
+
+// ============================================================================
 // ASK API KEY ENDPOINT (Secret Manager)
 // ============================================================================
 
@@ -6046,7 +6115,7 @@ async function getApiKeyFromSecretManager(): Promise<string> {
 
   try {
     const projectId = serviceAccount.project_id;
-    const secretName = `projects/${projectId}/secrets/api-key/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('api-key')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     const apiKey = version.payload?.data?.toString() || '';
     
@@ -6090,7 +6159,7 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
 
   try {
     const projectId = serviceAccount.project_id;
-    const secretName = `projects/${projectId}/secrets/firebase-config/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('firebase-config')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     
     // Get the raw data - it might be a Buffer or Uint8Array
@@ -6204,7 +6273,7 @@ async function getGA4MeasurementIdFromSecretManager(): Promise<string | null> {
 
   try {
     const projectId = serviceAccount.project_id;
-    const secretName = `projects/${projectId}/secrets/ga4-measurement-id/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/${getSecretName('ga4-measurement-id')}/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     
     // Get the raw data - it might be a Buffer or Uint8Array
@@ -6482,19 +6551,35 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
 
 setupIntegrationEndpoints(app, authenticateUser, secretManagerClient, serviceAccount, db, requireOrgOwner);
 
-// ============================================================================
-// CALL ENDPOINTS (Firestore - Optional, can also use Firestore directly)
-// ============================================================================
-
-setupCallEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 setupImageEndpoints(app, authenticateUser, storage, firebaseApp);
 setupFileEndpoints(app, authenticateUser, storage);
+setupDocumentUploadEndpoints(app, authenticateUser, requireOrgMembership, storage);
 
 // ============================================================================
-// MESSAGE ENDPOINTS (Firestore)
+// PLANS ENDPOINTS
 // ============================================================================
 
-setupMessageEndpoints(app, authenticateUser, db, storage);
+setupPlansEndpoints(app, authenticateUser, requireOrgMembership);
+
+// ============================================================================
+// AI AGENTS ENDPOINTS
+// ============================================================================
+
+setupAIAgentEndpoints(app, authenticateUser, requireOrgMembership, secretManagerClient, serviceAccount);
+setupAIAgentWebhookEndpoints(app, secretManagerClient, serviceAccount);
+// Fetcher for developer-provided webhook signing secret (HMAC outbound webhooks)
+setWebhookSigningSecretFetcher(async (agentId: string) => {
+  try {
+    const name = `projects/${serviceAccount.project_id}/secrets/ai-agent-${agentId}-webhook-signing-secret/versions/latest`;
+    const [version] = await secretManagerClient.accessSecretVersion({ name });
+    return version.payload?.data?.toString() ?? null;
+  } catch {
+    return null;
+  }
+});
+setupAgentAPIv1Endpoints(app);
+setupAgentTriggerEndpoints(app, authenticateUser, requireOrgMembership);
+setupLeanRoutingEndpoints(app, authenticateUser, requireOrgMembership);
 
 // ============================================================================
 // UPDATE ENDPOINTS (Project and Task Progress Updates)
@@ -6514,11 +6599,6 @@ setupQueryEndpoints(app, authenticateUser, requireOrgMembership);
 
 setupTurnEndpoints(app, authenticateUser, secretManagerClient, serviceAccount.project_id);
 
-// ============================================================================
-// LIVEKIT ENDPOINTS (LiveKit SFU token generation)
-// ============================================================================
-
-setupLiveKitEndpoints(app, authenticateUser, db, secretManagerClient, serviceAccount.project_id);
 
 // ============================================================================
 // UPDATE SUMMARIES ENDPOINTS (PostgreSQL)
@@ -7366,10 +7446,6 @@ app.use((req, res, next) => {
 // Create HTTP server (needed for WebSocket support)
 const server = http.createServer(app);
 
-// Set up WebSocket server for LiveKit audio streaming
-setupLiveKitWebSocketServer(server);
-// Initialize audio recorder with Firestore for org-slug lookup
-setFirestoreDb(db);
 
 // Start deployment completion worker
 import { startDeploymentWorker } from './workers/deployment-worker.js';

@@ -21,42 +21,6 @@ const audioLogStream = createWriteStream(join(logsDir, 'audio-pipeline.log'), { 
 const errorLogStream = createWriteStream(join(logsDir, 'error.log'), { flags: 'w' });
 const combinedLogStream = createWriteStream(join(logsDir, 'combined.log'), { flags: 'w' });
 
-// Custom transform stream for transcription.log - only writes chunk number and transcript text
-// Pino writes JSON strings, so we parse them and format to simplified output
-const transcriptionLogFile = createWriteStream(join(logsDir, 'transcription.log'), { flags: 'w' });
-
-const transcriptionLogTransform = new Transform({
-  objectMode: false, // Pino writes strings (JSON), not objects
-  transform(chunk: Buffer, encoding, callback) {
-    try {
-      const logLine = chunk.toString().trim();
-      if (logLine) {
-        const logObj = JSON.parse(logLine);
-        // Only process transcription_completed events with transcript
-        if (
-          logObj.component === 'transcription' &&
-          logObj.event === 'transcription_completed' &&
-          typeof logObj.chunkIndex === 'number' &&
-          typeof logObj.transcript === 'string' &&
-          logObj.transcript.trim().length > 0
-        ) {
-          // Write simplified format: "Chunk X: transcript text"
-          const simplified = `Chunk ${logObj.chunkIndex}: ${logObj.transcript}\n`;
-          this.push(simplified);
-        }
-      }
-      callback();
-    } catch (error) {
-      // If JSON parsing fails, skip this line silently
-      callback();
-    }
-  },
-});
-
-// Pipe transform to file
-transcriptionLogTransform.pipe(transcriptionLogFile);
-
-const transcriptionLogStream = transcriptionLogTransform;
 
 // Base logger configuration
 // NOTE: Cannot use 'transport' option with multistream - they are mutually exclusive
@@ -79,21 +43,6 @@ const baseLogger = pino({
     level: 'debug',
     filter: (log: any) => log.component === 'audio-pipeline',
   },
-  // Write transcription logs to transcription.log (simplified format: chunk number and transcript only)
-  // The transform stream will format the output to only include chunk number and transcript text
-  {
-    stream: transcriptionLogStream,
-    level: 'info',
-    filter: (log: any) => {
-      // Only include transcription_completed events that have transcript text
-      const hasComponent = log.component === 'transcription';
-      const hasEvent = log.event === 'transcription_completed';
-      const hasTranscript = typeof log.transcript === 'string' && log.transcript.trim().length > 0;
-      const hasChunkIndex = typeof log.chunkIndex === 'number';
-      
-      return hasComponent && hasEvent && hasTranscript && hasChunkIndex;
-    },
-  },
   // Log to console (raw JSON - can be piped through pino-pretty if needed)
   { stream: process.stdout },
 ]));
@@ -103,9 +52,6 @@ export const logger = baseLogger;
 
 // Audio pipeline specific logger
 export const audioLogger = baseLogger.child({ component: 'audio-pipeline' });
-
-// Transcription specific logger
-export const transcriptionLogger = baseLogger.child({ component: 'transcription' });
 
 // Helper function for audio chunk validation logging
 export function logAudioChunk(

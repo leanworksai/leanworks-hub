@@ -12,88 +12,18 @@ service cloud.firestore {
     return request.auth != null && getUserEmail() != null;
   }
   
-  // Helper to check if user is caller or callee
-  // Note: Emails in Firestore are stored in lowercase
-  // The auth token email should also be lowercase (set by server during login)
-  // If there's a case mismatch, the comparison will fail
-  // This is a limitation of Firestore rules - we can't do case-insensitive comparison
-  function isCallParticipant() {
-    let userEmail = getUserEmail();
-    // For group calls, allow any authenticated user
-    // The chatId matching in queries ensures correct access (only channel members can query)
-    // For 1:1 calls, check if user is caller or callee
-    return userEmail != null && (
-      resource.data.isGroupCall == true ||
-      resource.data.callerEmail == userEmail ||
-      resource.data.calleeEmail == userEmail
-    );
-  }
   
   // Rules for default database
   match /databases/(default)/documents {
     // Organization-scoped collections
     match /orgs/{orgSlug} {
-      // Messages collection
+
+      // Messages collection - only for AI assistant chats
       match /messages/{messageId} {
-        allow read: if request.auth != null;
-        allow write: if request.auth != null;
+        allow read: if request.auth != null && resource.data.chatId.startsWith('ai-assistant-');
+        allow write: if request.auth != null && request.resource.data.chatId.startsWith('ai-assistant-');
       }
-      
-      // Calls collection
-      match /calls/{callId} {
-        // Allow reading if user is authenticated with email and is either caller or callee
-        // For group calls, allow reading if user is authenticated (chatId matching ensures correct access)
-        // This ensures queries filtering by calleeEmail only return documents
-        // where the user is a participant in the call
-        // Note: Queries filtering by chatId require the query to also filter by callerEmail or calleeEmail
-        // for Firestore to validate them properly
-        // For group calls, queries filter by chatId which all channel members share
-        allow read: if isAuthenticatedWithEmail() && isCallParticipant();
-        
-        // Allow creating calls if user is authenticated with email and is the caller
-        allow create: if isAuthenticatedWithEmail() && 
-          request.resource.data.callerEmail == getUserEmail();
-        
-        // Allow updating if user is authenticated with email and is caller or callee
-        allow update: if isAuthenticatedWithEmail() && isCallParticipant();
-        
-        // Allow deleting if user is authenticated with email and is caller or callee
-        allow delete: if isAuthenticatedWithEmail() && isCallParticipant();
-      }
-      
-      // Allow listing calls (for queries) if user is authenticated with email
-      // Note: The actual read permission is enforced at the document level above
-      match /calls {
-        allow list: if isAuthenticatedWithEmail();
-      }
-      
-      // Call Invitations collection (for group calls)
-      match /callInvitations/{invitationId} {
-        // Allow reading if user is authenticated with email and is the participant
-        allow read: if isAuthenticatedWithEmail() && 
-          resource.data.participantEmail == getUserEmail();
-        
-        // Allow creating invitations if user is authenticated with email and is the caller
-        allow create: if isAuthenticatedWithEmail() && 
-          request.resource.data.callerEmail == getUserEmail();
-        
-        // Allow updating if user is authenticated with email and is the participant
-        allow update: if isAuthenticatedWithEmail() && 
-          resource.data.participantEmail == getUserEmail();
-        
-        // Allow deleting if user is authenticated with email and is the participant or caller
-        allow delete: if isAuthenticatedWithEmail() && (
-          resource.data.participantEmail == getUserEmail() ||
-          resource.data.callerEmail == getUserEmail()
-        );
-      }
-      
-      // Allow listing call invitations (for queries) if user is authenticated with email
-      // Note: The actual read permission is enforced at the document level above
-      match /callInvitations {
-        allow list: if isAuthenticatedWithEmail();
-      }
-      
+
       // Updates collection
       match /updates/{updateId} {
         allow read: if request.auth != null;
@@ -106,95 +36,19 @@ service cloud.firestore {
   match /databases/leanworks-prod/documents {
     // Organization-scoped collections
     match /orgs/{orgSlug} {
-      // Messages collection
+
+      // Messages collection - only for AI assistant chats
       match /messages/{messageId} {
-        allow read: if request.auth != null;
-        allow write: if request.auth != null;
+        allow read: if request.auth != null && resource.data.chatId.startsWith('ai-assistant-');
+        allow write: if request.auth != null && request.resource.data.chatId.startsWith('ai-assistant-');
       }
-      
-      // Calls collection
-      match /calls/{callId} {
-        // Allow reading if user is authenticated with email and is either caller or callee
-        // For group calls, allow reading if user is authenticated (chatId matching ensures correct access)
-        // This ensures queries filtering by calleeEmail only return documents
-        // where the user is a participant in the call
-        // Note: Queries filtering by chatId require the query to also filter by callerEmail or calleeEmail
-        // for Firestore to validate them properly
-        // For group calls, queries filter by chatId which all channel members share
-        allow read: if isAuthenticatedWithEmail() && isCallParticipant();
-        
-        // Allow creating calls if user is authenticated with email and is the caller
-        allow create: if isAuthenticatedWithEmail() && 
-          request.resource.data.callerEmail == getUserEmail();
-        
-        // Allow updating if user is authenticated with email and is caller or callee
-        allow update: if isAuthenticatedWithEmail() && isCallParticipant();
-        
-        // Allow deleting if user is authenticated with email and is caller or callee
-        allow delete: if isAuthenticatedWithEmail() && isCallParticipant();
-      }
-      
-      // Allow listing calls (for queries) if user is authenticated with email
-      // Note: The actual read permission is enforced at the document level above
-      match /calls {
-        allow list: if isAuthenticatedWithEmail();
-      }
-      
-      // Call Invitations collection (for group calls)
-      match /callInvitations/{invitationId} {
-        // Allow reading if user is authenticated with email and is the participant
-        allow read: if isAuthenticatedWithEmail() && 
-          resource.data.participantEmail == getUserEmail();
-        
-        // Allow creating invitations if user is authenticated with email and is the caller
-        allow create: if isAuthenticatedWithEmail() && 
-          request.resource.data.callerEmail == getUserEmail();
-        
-        // Allow updating if user is authenticated with email and is the participant
-        allow update: if isAuthenticatedWithEmail() && 
-          resource.data.participantEmail == getUserEmail();
-        
-        // Allow deleting if user is authenticated with email and is the participant or caller
-        allow delete: if isAuthenticatedWithEmail() && (
-          resource.data.participantEmail == getUserEmail() ||
-          resource.data.callerEmail == getUserEmail()
-        );
-      }
-      
-      // Allow listing call invitations (for queries) if user is authenticated with email
-      // Note: The actual read permission is enforced at the document level above
-      match /callInvitations {
-        allow list: if isAuthenticatedWithEmail();
-      }
-      
+
       // Updates collection
       match /updates/{updateId} {
         allow read: if request.auth != null;
         allow write: if request.auth != null;
       }
       
-      // Read Receipts collection
-      match /read_receipts/{receiptId} {
-        // Allow read if authenticated and userId matches
-        allow read: if isAuthenticatedWithEmail() && 
-          resource.data.userId == getUserEmail();
-        
-        // Allow write if authenticated and userId matches
-        allow create: if isAuthenticatedWithEmail() && 
-          request.resource.data.userId == getUserEmail();
-        
-        allow update: if isAuthenticatedWithEmail() && 
-          resource.data.userId == getUserEmail() &&
-          request.resource.data.userId == getUserEmail();
-        
-        allow delete: if isAuthenticatedWithEmail() && 
-          resource.data.userId == getUserEmail();
-      }
-      
-      // Allow listing read receipts (for queries) if user is authenticated with email
-      match /read_receipts {
-        allow list: if isAuthenticatedWithEmail();
-      }
     }
   }
 }

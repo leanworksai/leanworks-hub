@@ -12,19 +12,18 @@ import { messagesService, imageUploadService, subscriptionService, type ChatMess
 import { getAIAssistantChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { useOrg } from "@/contexts/OrgContext";
 import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
-import { useOrg } from "@/contexts/OrgContext";
-import { usePageContext } from "@/contexts/PageContext";
-import { useSelectedTextContext } from "@/contexts/SelectedTextContext";
+import { useContextDisplay } from "@/hooks/useContextDisplay";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
 import { buildCitedContext } from "@/lib/citedContext";
 import { useAIChat } from "@/hooks/useAIChat";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { getUserDisplayName, getUserInitials } from "@/lib/utils";
-import { trackAIChat, trackError, trackMessageLike, trackImageUpload, trackImageRemove, trackContextRemove, trackDraftResponse, trackFirstFeatureUse } from "@/lib/analytics";
+import { trackAIChat, trackError, trackMessageLike, trackImageUpload, trackImageRemove, trackDraftResponse, trackFirstFeatureUse } from "@/lib/analytics";
 import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
 import type { Message, LikedByUser } from "@/components/chat/types";
 import { useStreamingChat } from "@/hooks/useStreamingChat";
@@ -40,11 +39,13 @@ export function AIChat() {
   const { isOpen, setIsOpen, chatId } = useAIChat();
   const isMobile = useIsMobile();
   const location = useLocation();
-  const { selectedProjects, toggleProject, clearSelection: clearSelectedProjects } = useSelectedProjects();
-  const { selectedTasks, toggleTask, clearSelection: clearSelectedTasks } = useSelectedTasks();
-  const { selectedDocs, toggleDoc, clearSelection: clearSelectedDocs } = useSelectedDocs();
-  const { contextType, contextRef, clearContext } = usePageContext();
-  const { selectedTextPosition, clearSelectedText } = useSelectedTextContext();
+  // Keep clearSelection functions for bulk clear after streaming
+  const { clearSelection: clearSelectedProjects } = useSelectedProjects();
+  const { clearSelection: clearSelectedTasks } = useSelectedTasks();
+  const { clearSelection: clearSelectedDocs } = useSelectedDocs();
+
+  // Use the unified context display hook for everything else
+  const contextDisplay = useContextDisplay();
 
   // State declarations - must come before hooks that use them
   const [messages, setMessages] = useState<Message[]>([]);
@@ -155,13 +156,21 @@ export function AIChat() {
   const saveCachedMessages = useCallback((chatId: string, messages: ChatMessage[]) => {
     const cacheKey = getCacheKey(chatId);
     if (!cacheKey) return;
-    
+
     const lastSync = Date.now();
     try {
       const toCache = {
         messages: messages.map(msg => ({
           ...msg,
-          timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : msg.timestamp,
+          timestamp: (() => {
+            if (msg.timestamp instanceof Date) {
+              return isNaN(msg.timestamp.getTime()) ? new Date().toISOString() : msg.timestamp.toISOString();
+            } else if (msg.timestamp) {
+              const parsed = new Date(msg.timestamp);
+              return isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString();
+            }
+            return new Date().toISOString();
+          })(),
           citedContext: msg.citedContext || null,
         })),
         lastSync,
@@ -403,11 +412,11 @@ export function AIChat() {
     if (import.meta.env.DEV) {
       console.log('🚀 [AIChat] handleSend called:', {
         messageContent: messageContent.substring(0, 50),
-        hasSelectedTextPosition: !!selectedTextPosition,
-        selectedTextPosition,
-        selectedProjects: selectedProjects.length,
-        selectedTasks: selectedTasks.length,
-        selectedDocs: selectedDocs.length,
+        hasSelectedTextPosition: !!contextDisplay.selectedTextPosition,
+        selectedTextPosition: contextDisplay.selectedTextPosition,
+        selectedProjects: contextDisplay.selectedProjects.length,
+        selectedTasks: contextDisplay.selectedTasks.length,
+        selectedDocs: contextDisplay.selectedDocs.length,
       });
     }
     
@@ -468,26 +477,26 @@ export function AIChat() {
     // Debug: Log selectedTextPosition when message is being sent (dev only)
     if (import.meta.env.DEV) {
       console.log('📝 [AIChat] selectedTextPosition at message send:', {
-        selectedTextPosition,
-        hasSelectedTextPosition: !!selectedTextPosition,
-        hasText: !!selectedTextPosition?.text,
-        textLength: selectedTextPosition?.text?.length,
-        textPreview: selectedTextPosition?.text?.substring(0, 100),
+        selectedTextPosition: contextDisplay.selectedTextPosition,
+        hasSelectedTextPosition: !!contextDisplay.selectedTextPosition,
+        hasText: !!contextDisplay.selectedTextPosition?.text,
+        textLength: contextDisplay.selectedTextPosition?.text?.length,
+        textPreview: contextDisplay.selectedTextPosition?.text?.substring(0, 100),
       });
     }
     
     
     // Filter out items that are already in implicit context to avoid duplicates
     // Keep current doc in cited context so selected text + doc are not treated as duplicates.
-    let filteredProjects = selectedProjects;
-    let filteredTasks = selectedTasks;
-    let filteredDocs = selectedDocs;
-    
-    if (contextRef && contextType) {
-      if (contextType === 'project') {
-        filteredProjects = selectedProjects.filter(p => p.id !== contextRef.id);
-      } else if (contextType === 'task') {
-        filteredTasks = selectedTasks.filter(t => t.id !== contextRef.id);
+    let filteredProjects = contextDisplay.selectedProjects;
+    let filteredTasks = contextDisplay.selectedTasks;
+    let filteredDocs = contextDisplay.selectedDocs;
+
+    if (contextDisplay.contextRef && contextDisplay.contextType) {
+      if (contextDisplay.contextType === 'project') {
+        filteredProjects = contextDisplay.selectedProjects.filter(p => p.id !== contextDisplay.contextRef!.id);
+      } else if (contextDisplay.contextType === 'task') {
+        filteredTasks = contextDisplay.selectedTasks.filter(t => t.id !== contextDisplay.contextRef!.id);
       }
     }
 
@@ -495,9 +504,9 @@ export function AIChat() {
       selectedProjects: filteredProjects,
       selectedTasks: filteredTasks,
       selectedDocs: filteredDocs,
-      selectedTextPosition,
-      contextType,
-      contextRef,
+      selectedTextPosition: contextDisplay.selectedTextPosition,
+      contextType: contextDisplay.contextType,
+      contextRef: contextDisplay.contextRef,
       includeImplicitDoc: true,
     });
 
@@ -567,20 +576,20 @@ export function AIChat() {
       setIsLoading(true);
       
       // Capture selectedTextPosition early to avoid any timing issues
-      const currentSelectedTextPosition = selectedTextPosition;
-      const hadSelections = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0 || !!currentSelectedTextPosition;
+      const currentSelectedTextPosition = contextDisplay.selectedTextPosition;
+      const hadSelections = contextDisplay.selectedProjects.length > 0 || contextDisplay.selectedTasks.length > 0 || contextDisplay.selectedDocs.length > 0 || !!currentSelectedTextPosition;
 
       try {
         // Filter out items that are already in implicit context to avoid duplicates
-        let filteredProjectsForAPI = selectedProjects;
-        let filteredTasksForAPI = selectedTasks;
-        let filteredDocsForAPI = selectedDocs;
-        
-        if (contextRef && contextType) {
-          if (contextType === 'project') {
-            filteredProjectsForAPI = selectedProjects.filter(p => p.id !== contextRef.id);
-          } else if (contextType === 'task') {
-            filteredTasksForAPI = selectedTasks.filter(t => t.id !== contextRef.id);
+        let filteredProjectsForAPI = contextDisplay.selectedProjects;
+        let filteredTasksForAPI = contextDisplay.selectedTasks;
+        let filteredDocsForAPI = contextDisplay.selectedDocs;
+
+        if (contextDisplay.contextRef && contextDisplay.contextType) {
+          if (contextDisplay.contextType === 'project') {
+            filteredProjectsForAPI = contextDisplay.selectedProjects.filter(p => p.id !== contextDisplay.contextRef!.id);
+          } else if (contextDisplay.contextType === 'task') {
+            filteredTasksForAPI = contextDisplay.selectedTasks.filter(t => t.id !== contextDisplay.contextRef!.id);
           }
         }
 
@@ -589,8 +598,8 @@ export function AIChat() {
           selectedTasks: filteredTasksForAPI,
           selectedDocs: filteredDocsForAPI,
           selectedTextPosition: currentSelectedTextPosition,
-          contextType,
-          contextRef,
+          contextType: contextDisplay.contextType,
+          contextRef: contextDisplay.contextRef,
           includeImplicitDoc: true,
         });
         
@@ -634,7 +643,7 @@ export function AIChat() {
           clearSelectedProjects();
           clearSelectedTasks();
           clearSelectedDocs();
-          if (selectedTextPosition) {
+          if (currentSelectedTextPosition) {
             clearSelectedText();
           }
         }
@@ -669,7 +678,7 @@ export function AIChat() {
       setMessages((prev) => prev.filter(msg => msg.id !== userMessage.id));
       setIsSendingMessage(false);
     }
-  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, selectedProjects, selectedTasks, selectedDocs, selectedTextPosition, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, startStreaming, resetStreamingState, saveCachedMessages, contextType, contextRef, clearSelectedText, currentOrg]);
+  }, [user, chatId, isSendingMessage, selectedImages, imagePreviewUrls, contextDisplay.selectedProjects, contextDisplay.selectedTasks, contextDisplay.selectedDocs, contextDisplay.selectedTextPosition, currentUserDisplayInfo, hasCredits, creditsLimit, toast, clearSelectedProjects, clearSelectedTasks, clearSelectedDocs, startStreaming, resetStreamingState, saveCachedMessages, contextDisplay.contextType, contextDisplay.contextRef, contextDisplay.onRemoveSelectedText, currentOrg]);
 
   // Handle image selection
   const handleImageSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1095,39 +1104,16 @@ export function AIChat() {
           imagePreviewUrls={imagePreviewUrls}
           onImageSelect={handleImageSelect}
           onImageRemove={handleImageRemove}
-          selectedProjects={selectedProjects}
-          selectedTasks={selectedTasks}
-          selectedDocs={selectedDocs}
-          onRemoveImplicitContext={() => {
-            trackContextRemove('implicit-context', contextRef?.id || '');
-            clearContext();
-          }}
-          selectedText={selectedTextPosition ? {
-            id: `selected-text-${selectedTextPosition.docId}-${selectedTextPosition.startOffset}`,
-            // Show preview in UI (truncate to 100 chars), but full text is sent to API via selectedTextPosition
-            text: selectedTextPosition.text 
-              ? (selectedTextPosition.text.length > 100 
-                  ? selectedTextPosition.text.substring(0, 100) + '...' 
-                  : selectedTextPosition.text)
-              : "Text selection from document",
-            docId: selectedTextPosition.docId,
-          } : null}
-          onRemoveSelectedText={() => {
-            trackContextRemove('selected-text', selectedTextPosition?.docId || '');
-            clearSelectedText();
-          }}
-          onRemoveProject={(project) => {
-            trackContextRemove('project', project.id);
-            toggleProject(project);
-          }}
-          onRemoveTask={(task) => {
-            trackContextRemove('task', task.id);
-            toggleTask(task);
-          }}
-          onRemoveDoc={(doc) => {
-            trackContextRemove('doc', doc.id);
-            toggleDoc(doc);
-          }}
+          selectedProjects={contextDisplay.selectedProjects}
+          selectedTasks={contextDisplay.selectedTasks}
+          selectedDocs={contextDisplay.selectedDocs}
+          onRemoveImplicitContext={contextDisplay.onRemoveImplicitContext}
+          selectedText={contextDisplay.selectedText}
+          onRemoveSelectedText={contextDisplay.onRemoveSelectedText}
+          onRemoveProject={contextDisplay.onRemoveProject}
+          onRemoveTask={contextDisplay.onRemoveTask}
+          onRemoveDoc={contextDisplay.onRemoveDoc}
+          implicitContext={contextDisplay.implicitContextString}
           placeholder="Ask lean anything..."
           hideContext={false}
           theme="purple"

@@ -9,7 +9,6 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { OrgProvider } from "@/contexts/OrgContext";
 import { trackPageView, setNavigationMethod } from "@/lib/analytics";
 import { useTimeOnPage } from "@/hooks/useTimeOnPage";
-import { WebRTCProvider } from "@/contexts/WebRTCContext";
 import { SelectedProjectsProvider } from "@/contexts/SelectedProjectsContext";
 import { SelectedTasksProvider } from "@/contexts/SelectedTasksContext";
 import { SelectedDocsProvider } from "@/contexts/SelectedDocsContext";
@@ -19,16 +18,16 @@ import { SelectedTextContextProvider } from "@/contexts/SelectedTextContext";
 import { DashboardLayout } from "./components/DashboardLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { AIChat } from "./components/AIChat";
-import { GlobalCallListener } from "./components/GlobalCallListener";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import VerifyEmail from "./pages/VerifyEmail";
 import Home from "./pages/Home";
-import Team from "./pages/Team";
-import Teams from "./pages/Teams";
-import TeamDetail from "./pages/TeamDetail";
 import Users from "./pages/Users";
 import Integrations from "./pages/Integrations";
+import AIAgentsPage from "./pages/admin/AIAgents";
+import AgentDeveloperPortal from "./pages/admin/AgentDeveloperPortal";
+import Plans from "./pages/Plans";
+import PlanDetail from "./pages/PlanDetail";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
@@ -36,13 +35,10 @@ import TaskDetail from "./pages/TaskDetail";
 import { DocsLayout } from "./components/DocsLayout";
 import DocsPlaceholder from "./pages/DocsPlaceholder";
 import DocDetail from "./pages/DocDetail";
-import Calendar from "./pages/Calendar";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Organizations from "./pages/Organizations";
-import Subscription from "./pages/Subscription";
 import NotFound from "./pages/NotFound";
-import Chats from "./pages/Chats";
 
 const queryClient = new QueryClient();
 
@@ -51,6 +47,7 @@ const AppRoutesContent = () => {
   const { user } = useAuth();
   const location = useLocation();
   const isHomePage = location.pathname === '/';
+  const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 
   // Track time on page
   useTimeOnPage();
@@ -81,7 +78,13 @@ const AppRoutesContent = () => {
     
     // Main pages
     if (pathname === '/') return 'Home';
-    if (pathname === '/team') return 'Team';
+    
+    // Plans
+    if (pathname === '/plans') return 'Plans';
+    if (pathname.startsWith('/plans/')) {
+      const planId = pathname.split('/plans/')[1];
+      return `Plan Detail - ${planId}`;
+    }
     
     // Projects
     if (pathname === '/projects') return 'Projects';
@@ -104,26 +107,14 @@ const AppRoutesContent = () => {
       return `Doc Detail - ${docId}`;
     }
     
-    // Calendar
-    if (pathname === '/calendar') return 'Calendar';
-    
-    // Chats
-    if (pathname === '/chats') return 'Chats';
-    
-    // Teams (redirected but track for completeness)
-    if (pathname === '/teams') return 'Teams';
-    if (pathname.startsWith('/teams/')) {
-      const teamId = pathname.split('/teams/')[1];
-      return `Team Detail - ${teamId}`;
-    }
-    
     // Settings & Profile
     if (pathname === '/users') return 'Users';
+    if (pathname === '/ai-team') return 'AI Teammates';
+    if (pathname === '/ai-team/developer-portal') return 'Agent Developer Portal';
     if (pathname === '/integrations') return 'Integrations';
     if (pathname === '/organizations') return 'Organizations';
     if (pathname === '/profile') return 'Profile';
     if (pathname === '/settings') return 'Settings';
-    if (pathname === '/subscription') return 'Subscription';
     
     // 404 page
     return 'Not Found';
@@ -131,9 +122,13 @@ const AppRoutesContent = () => {
 
   return (
     <>
+      {isDemoMode && (
+        <div className="w-full bg-yellow-100 border-b border-yellow-400 px-4 py-2 text-center text-sm font-medium text-yellow-800 sticky top-0 z-50">
+          🎭 Demo Mode - No data is saved. Auto-logged in as demo@example.com
+        </div>
+      )}
       <Routes>
         <Route path="/" element={<Home />} />
-        <Route path="/team" element={<Team />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
@@ -157,11 +152,51 @@ const AppRoutesContent = () => {
           }
         />
         <Route
+          path="/ai-team"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <AIAgentsPage />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/ai-team/developer-portal"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <AgentDeveloperPortal />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/integrations"
           element={
             <ProtectedRoute>
               <DashboardLayout>
                 <Integrations />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plans"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <Plans />
+              </DashboardLayout>
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/plans/:id"
+          element={
+            <ProtectedRoute>
+              <DashboardLayout>
+                <PlanDetail />
               </DashboardLayout>
             </ProtectedRoute>
           }
@@ -220,26 +255,6 @@ const AppRoutesContent = () => {
           <Route path=":docId" element={<DocDetail />} />
         </Route>
         <Route
-          path="/calendar"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Calendar />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/chats"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Chats />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
           path="/profile"
           element={
             <ProtectedRoute>
@@ -269,21 +284,10 @@ const AppRoutesContent = () => {
             </ProtectedRoute>
           }
         />
-        <Route
-          path="/subscription"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Subscription />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
         {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
         <Route path="*" element={<NotFound />} />
       </Routes>
       {user && !isHomePage && <AIChat />}
-      {user && <GlobalCallListener />}
     </>
   );
 };
@@ -311,8 +315,7 @@ const App = () => {
       <TooltipProvider>
         <AuthProvider>
           <OrgProvider>
-            <WebRTCProvider>
-              <PageContextProvider>
+            <PageContextProvider>
                 <SelectedTextContextProvider>
                   <SelectionModeProvider>
                     <SelectedProjectsProvider>
@@ -326,8 +329,7 @@ const App = () => {
                     </SelectedProjectsProvider>
                   </SelectionModeProvider>
                 </SelectedTextContextProvider>
-              </PageContextProvider>
-            </WebRTCProvider>
+            </PageContextProvider>
           </OrgProvider>
         </AuthProvider>
       </TooltipProvider>

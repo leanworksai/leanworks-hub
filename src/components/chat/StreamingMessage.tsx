@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { ToolExecutionIndicator } from "./ToolExecutionIndicator";
 import type { StreamingState } from "@/hooks/useStreamingChat";
 import { marked } from "marked";
+import { AlertCircle } from "lucide-react";
 
 // Configure marked for safe HTML output
 marked.setOptions({
@@ -51,10 +52,22 @@ export function StreamingMessage({ streamingState, theme = "default" }: Streamin
   const renderContent = () => {
     if (!streamingState.content) return null;
 
-    const shouldParseMarkdown = hasMarkdownFormatting(streamingState.content);
+    // Clean content for display (remove truncation message from main content)
+    const isTruncated = streamingState.content.includes('[Response truncated due to token limit');
+    let displayContent = streamingState.content;
+    
+    if (isTruncated) {
+      // Remove the truncation message from main content
+      displayContent = streamingState.content.replace(
+        /\n\n\[Response truncated due to token limit\..*?\]/,
+        ''
+      ).trim();
+    }
+
+    const shouldParseMarkdown = hasMarkdownFormatting(displayContent);
 
     if (shouldParseMarkdown) {
-      const htmlContent = marked.parse(streamingState.content, { async: false }) as string;
+      const htmlContent = marked.parse(displayContent, { async: false }) as string;
       
       return (
         <div 
@@ -85,7 +98,7 @@ export function StreamingMessage({ streamingState, theme = "default" }: Streamin
         )}
         style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
       >
-        {streamingState.content}
+        {displayContent}
       </div>
     );
   };
@@ -145,6 +158,32 @@ export function StreamingMessage({ streamingState, theme = "default" }: Streamin
           )}
           style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
         >
+          {/* Document drafting progress */}
+          {streamingState.docProgress && (
+            <div className="flex items-center gap-3 px-4 py-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800 mb-3">
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-600 dark:border-blue-400 border-t-transparent flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-blue-900 dark:text-blue-100 text-sm">
+                  {streamingState.docProgress.message}
+                </div>
+                {streamingState.docProgress.total && streamingState.docProgress.current && (
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between text-xs text-blue-700 dark:text-blue-300 mb-1">
+                      <span>Section {streamingState.docProgress.current} of {streamingState.docProgress.total}</span>
+                      <span>{Math.round((streamingState.docProgress.current / streamingState.docProgress.total) * 100)}%</span>
+                    </div>
+                    <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-2">
+                      <div
+                        className="bg-blue-600 dark:bg-blue-400 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${(streamingState.docProgress.current / streamingState.docProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Tool executions */}
           {streamingState.toolExecutions.length > 0 && (
             <div className="space-y-2 mb-3">
@@ -160,6 +199,19 @@ export function StreamingMessage({ streamingState, theme = "default" }: Streamin
 
           {/* Text content */}
           {renderContent()}
+
+          {/* Truncation indicator */}
+          {streamingState.content && streamingState.content.includes('[Response truncated due to token limit') && (
+            <div className={cn(
+              "mt-3 p-2.5 border rounded-lg flex items-center gap-2 text-xs",
+              isAIChatTheme
+                ? "bg-amber-50/80 border-amber-200/60 text-amber-900"
+                : "bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-100"
+            )}>
+              <AlertCircle className="h-4 w-4 flex-shrink-0" />
+              <span className="font-medium">Response was truncated. Reply with "continue" or "keep going" to resume.</span>
+            </div>
+          )}
 
           {/* Cursor animation while streaming */}
           {streamingState.isStreaming && streamingState.content && (

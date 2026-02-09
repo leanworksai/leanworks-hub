@@ -22,6 +22,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { useCreateProject } from "@/hooks/useProjects";
+import { usePlans } from "@/hooks/usePlans";
 import { useUsers } from "@/hooks/useUsers";
 import { useAuth } from "@/contexts/AuthContext";
 import type { Project, ProjectMember } from "@/data/projectsData";
@@ -82,6 +83,7 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
   type FormData = {
     name: string;
     description: string;
+    planId: string;
     dueDate: string;
   };
 
@@ -89,13 +91,15 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
     defaultValues: {
       name: "",
       description: "",
+      planId: "",
       dueDate: "",
     },
   });
+  
+  const { data: plans = [] } = usePlans();
 
   // Convert org members to a format suitable for selection
   const availableMembers = orgMembers
-    .filter(member => member.email.toLowerCase() !== user?.email?.toLowerCase()) // Exclude current user
     .map(member => ({
       email: member.email,
       name: `${member.firstName || ''} ${member.lastName || ''}`.trim() || member.email,
@@ -186,6 +190,16 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
         }
       }
 
+      // Validate plan selection
+      if (!data.planId) {
+        form.setError("planId", {
+          type: "required",
+          message: "Plan selection is required"
+        });
+        setIsSubmitting(false);
+        return;
+      }
+
       // Get selected project members
       const projectMembers = getSelectedProjectMembers();
 
@@ -195,10 +209,11 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
         description: data.description,
         detailedDescription: data.description,
         status: "Planning", // Default status for new projects
-        team: projectMembers.length,
+        memberCount: projectMembers.length,
         dueDate: formattedDueDate,
         createdDate: formatDate(now),
         statusColor: getStatusColor("Planning"),
+        planId: data.planId, // NEW: Link to parent plan
         members: projectMembers,
         tasks: [],
         progressUpdates: [],
@@ -302,6 +317,41 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
               )}
             />
 
+            <FormField
+              control={form.control}
+              name="planId"
+              rules={{ required: "Plan selection is required" }}
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Plan *</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a plan" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {plans.length === 0 ? (
+                        <div className="p-2 text-sm text-muted-foreground">
+                          No plans available. Create a plan first.
+                        </div>
+                      ) : (
+                        plans.map((plan) => (
+                          <SelectItem key={plan.id} value={plan.id}>
+                            {plan.name}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    Every project must belong to a plan
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
             <FormItem>
               <FormLabel>Project Members</FormLabel>
               <FormDescription>
@@ -356,7 +406,7 @@ function NewProjectDialogComponent({ open, onOpenChange }: NewProjectDialogProps
                     </Button>
                   </FormControl>
                 </PopoverTrigger>
-                <PopoverContent className="w-[400px] p-0">
+                <PopoverContent className="w-[400px] p-0" portalled={false}>
                   <Command>
                     <CommandInput placeholder="Search organization members..." />
                     <CommandList>
