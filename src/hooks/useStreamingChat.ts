@@ -5,6 +5,7 @@ import { useCallback, useRef, useState } from 'react';
  */
 export type StreamEvent =
   | { type: 'tool_start'; tool_name: string; display_name: string; description: string }
+  | { type: 'bash_command'; command: string }
   | { type: 'tool_end'; tool_name: string; summary: string }
   | { type: 'text_delta'; text: string }
   | { type: 'done'; data_sources?: string[] }
@@ -20,6 +21,8 @@ export interface ToolExecution {
   status: 'running' | 'completed';
   startTime: number;
   endTime?: number;
+  /** For bash tool: the command being executed (from bash_command event) */
+  command?: string;
 }
 
 export interface StreamingState {
@@ -177,6 +180,24 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
                     },
                   ];
                   break;
+
+                case 'bash_command': {
+                  // Attach command to the most recent running bash tool
+                  const lastRunningBashFromEnd = [...prev.toolExecutions]
+                    .reverse()
+                    .findIndex(tool =>
+                      tool.status === 'running' &&
+                      (tool.name === 'bash' || tool.displayName.toLowerCase().includes('bash'))
+                    );
+
+                  if (lastRunningBashFromEnd !== -1) {
+                    const targetIndex = prev.toolExecutions.length - 1 - lastRunningBashFromEnd;
+                    newState.toolExecutions = prev.toolExecutions.map((tool, idx) =>
+                      idx === targetIndex ? { ...tool, command: event.command } : tool
+                    );
+                  }
+                  break;
+                }
 
                 case 'tool_end':
                   console.log('✅ Tool completed:', event.tool_name);

@@ -65,15 +65,21 @@ export function ToolExecutionIndicator({ tool, theme = "default" }: ToolExecutio
           )}
         </div>
         
-        {/* Description */}
-        {isRunning && (
+        {/* Description or bash command */}
+        {(isRunning || tool.command) && (
           <p className={cn(
             "text-xs break-words",
             isAIChatTheme
               ? "text-purple-700"
               : "text-blue-700"
           )}>
-            {tool.description}
+            {(tool.name === 'bash' || tool.displayName.toLowerCase().includes('bash')) && tool.command ? (
+              <code className="block mt-1 p-2 rounded bg-black/5 dark:bg-white/10 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap break-all">
+                {tool.command}
+              </code>
+            ) : (
+              tool.description
+            )}
           </p>
         )}
       </div>

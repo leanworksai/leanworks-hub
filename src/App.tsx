@@ -38,7 +38,6 @@ import DocDetail from "./pages/DocDetail";
 import Profile from "./pages/Profile";
 import Settings from "./pages/Settings";
 import Organizations from "./pages/Organizations";
-import Subscription from "./pages/Subscription";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -116,7 +115,6 @@ const AppRoutesContent = () => {
     if (pathname === '/organizations') return 'Organizations';
     if (pathname === '/profile') return 'Profile';
     if (pathname === '/settings') return 'Settings';
-    if (pathname === '/subscription') return 'Subscription';
     
     // 404 page
     return 'Not Found';
@@ -282,16 +280,6 @@ const AppRoutesContent = () => {
             <ProtectedRoute>
               <DashboardLayout>
                 <Organizations />
-              </DashboardLayout>
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/subscription"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout>
-                <Subscription />
               </DashboardLayout>
             </ProtectedRoute>
           }

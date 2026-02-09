@@ -6013,11 +6013,19 @@ app.post('/api/messages/stream', authenticateUser, async (req, res) => {
 
     console.log(`🚀 [Streaming] Proxying to ${aiServiceUrl} for user ${userEmail}`);
 
+    const abortController = new AbortController();
+    req.on('close', () => {
+      if (!abortController.signal.aborted) {
+        abortController.abort();
+      }
+    });
+
     // Make streaming request to the Python ask API
     const aiResponse = await fetch(aiServiceUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(requestPayload),
+      signal: abortController.signal,
     });
 
     if (!aiResponse.ok) {
@@ -6056,12 +6064,16 @@ app.post('/api/messages/stream', authenticateUser, async (req, res) => {
         res.write(chunk);
       }
     } catch (error) {
-      console.error('Error streaming response:', error);
-      // Try to send an error event if possible
-      try {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`);
-      } catch {
-        // Connection might already be closed
+      if (req.aborted || res.writableEnded) {
+        // Client disconnected; avoid noisy logs and writes
+      } else {
+        console.error('Error streaming response:', error);
+        // Try to send an error event if possible
+        try {
+          res.write(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`);
+        } catch {
+          // Connection might already be closed
+        }
       }
     } finally {
       res.end();
