@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 
-type DialogType = 'share' | 'shareViaEmail' | 'delete' | null;
+type DialogType = 'share' | 'shareViaEmail' | 'files' | 'delete' | null;
 
 interface UseDocDialogsReturn {
   openDialog: (type: DialogType) => void;
@@ -8,6 +8,7 @@ interface UseDocDialogsReturn {
   isOpen: (type: DialogType) => boolean;
   shareDialogOpen: boolean;
   shareViaEmailDialogOpen: boolean;
+  filesDialogOpen: boolean;
   deleteDialogOpen: boolean;
 }
 
@@ -36,6 +37,7 @@ export function useDocDialogs(): UseDocDialogsReturn {
     isOpen,
     shareDialogOpen: openDialogType === 'share',
     shareViaEmailDialogOpen: openDialogType === 'shareViaEmail',
+    filesDialogOpen: openDialogType === 'files',
     deleteDialogOpen: openDialogType === 'delete',
   };
 }

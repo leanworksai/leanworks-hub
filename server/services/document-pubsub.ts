@@ -7,8 +7,8 @@
 
 import { PubSub } from '@google-cloud/pubsub';
 import { DocumentType } from './document-processor.js';
-import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 import { JobQueueError } from '../utils/document-errors.js';
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 
 // Initialize client (lazy initialization)
 let pubsubClient: PubSub | null = null;
@@ -28,7 +28,7 @@ function getPubSubClient(): PubSub {
 /**
  * Get or create document-processing topic
  */
-export async function getDocProcessingTopic() {
+async function getDocProcessingTopic() {
   if (!docProcessingTopic) {
     const pubsub = getPubSubClient();
     const topicName = process.env.PUBSUB_DOC_PROCESSING_TOPIC || 'document-processing';

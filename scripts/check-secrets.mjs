@@ -62,14 +62,13 @@ for (const file of files) {
 
   const lines = content.split('\n');
   lines.forEach((line, index) => {
-    if (/process\.env|import\.meta\.env|secretManager|placeholder|example|malformed|LEGACY_/i.test(line)) return;
-
     const assignment = line.match(
-      /(?:api[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password|credential)\s*(?::|=)\s*['"]([^'"]{20,})['"]/i,
+      /['"]?(?:api[_-]?key|client[_-]?secret|access[_-]?token|auth[_-]?token|password|credential)['"]?\s*(?::|=)\s*['"]([^'"]{20,})['"]/i,
     );
     const encodedLiteral = line.match(/['"]([A-Za-z0-9+/]{40,}={0,2})['"]/);
     const candidate = assignment?.[1] || encodedLiteral?.[1];
     if (!candidate || safeValues.has(candidate)) return;
+    if (/placeholder|example|malformed/i.test(candidate)) return;
     if (entropy(candidate) >= 3.5) {
       findings.push(`${file}:${index + 1}: high-entropy hard-coded credential`);
     }

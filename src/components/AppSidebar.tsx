@@ -1,4 +1,4 @@
-import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X, Target } from "lucide-react";
+import { Users, Puzzle, FolderKanban, CheckSquare, StickyNote, Building2, ChevronDown, Settings, Check, FolderOpen, X, Calendar, MessageSquare } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   Sidebar,
@@ -23,28 +23,35 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useOrg } from "@/contexts/OrgContext";
-import { useContextDisplay } from "@/hooks/useContextDisplay";
+import { useSelectedProjects } from "@/contexts/SelectedProjectsContext";
+import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
+import { useSelectedDocs } from "@/contexts/SelectedDocsContext";
+import { usePageContext } from "@/contexts/PageContext";
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ContextBadges } from "@/components/ContextBadges";
 import { Badge } from "@/components/ui/badge";
 import { trackSidebarNavigation, trackOrgSwitch, trackAIChat, trackContextSelect } from "@/lib/analytics";
+import { useTeamChats } from "@/hooks/useTeamChats";
 
 const menuItems = [
-  { title: "Plans", url: "/plans", icon: Target },
   { title: "Projects", url: "/projects", icon: FolderKanban },
+  { title: "Tasks", url: "/tasks", icon: CheckSquare },
   { title: "Docs", url: "/docs", icon: StickyNote },
-  { title: "AI Teammates", url: "/ai-team", icon: Users },
+  { title: "Chats", url: "/chats", icon: MessageSquare },
   { title: "Integrations", url: "/integrations", icon: Puzzle },
 ];
 
 export function AppSidebar() {
   const { open, isMobile, setOpenMobile, toggleSidebar } = useSidebar();
   const { currentOrg, organizations, switchOrg } = useOrg();
-  // Use the unified context display hook
-  const contextDisplay = useContextDisplay();
+  const { selectedProjects, toggleProject } = useSelectedProjects();
+  const { selectedTasks, toggleTask } = useSelectedTasks();
+  const { selectedDocs, toggleDoc } = useSelectedDocs();
+  const { contextType, contextRef, clearContext } = usePageContext();
+  const { totalUnreadCount } = useTeamChats();
   const navigate = useNavigate();
-
+  
   // Close mobile sidebar when a navigation item is clicked
   const handleNavClick = (itemName?: string, url?: string) => {
     if (isMobile) {
@@ -64,7 +71,12 @@ export function AppSidebar() {
     handleNavClick('Docs', '/docs');
   };
 
-  const hasAnyContext = contextDisplay.hasAnyContext;
+  const hasSelectedContexts = selectedProjects.length > 0 || selectedTasks.length > 0 || selectedDocs.length > 0;
+  const hasImplicitContext = contextRef && contextType;
+  const implicitContextString = hasImplicitContext 
+    ? `Current ${contextType}: ${contextRef.title} (ID: ${contextRef.id})` 
+    : undefined;
+  const hasAnyContext = hasSelectedContexts || hasImplicitContext;
 
   return (
     <Sidebar collapsible="offcanvas">
@@ -171,6 +183,9 @@ export function AppSidebar() {
                     >
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
+                      {item.title === "Chats" && totalUnreadCount > 0 && (
+                        <span className="ml-auto h-2 w-2 rounded-full bg-red-500" />
+                      )}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -207,17 +222,15 @@ export function AppSidebar() {
           <ScrollArea className="h-[200px]">
             <div className="p-2 space-y-2">
               <ContextBadges
-                projects={contextDisplay.selectedProjects}
-                tasks={contextDisplay.selectedTasks}
-                docs={contextDisplay.selectedDocs}
-                onRemoveProject={contextDisplay.onRemoveProject}
-                onRemoveTask={contextDisplay.onRemoveTask}
-                onRemoveDoc={contextDisplay.onRemoveDoc}
+                projects={selectedProjects}
+                tasks={selectedTasks}
+                docs={selectedDocs}
+                onRemoveProject={toggleProject}
+                onRemoveTask={toggleTask}
+                onRemoveDoc={toggleDoc}
                 variant="sidebar"
-                implicitContext={contextDisplay.implicitContextString}
-                onRemoveImplicitContext={contextDisplay.onRemoveImplicitContext}
-                selectedText={contextDisplay.selectedText}
-                onRemoveSelectedText={contextDisplay.onRemoveSelectedText}
+                implicitContext={implicitContextString}
+                onRemoveImplicitContext={clearContext}
               />
             </div>
           </ScrollArea>

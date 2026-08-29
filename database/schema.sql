@@ -1,6 +1,6 @@
 -- Leanworks Hub Per-Organization PostgreSQL Schema
 -- Database: org_{slug} (one database per organization)
--- Contains: users, teams, projects, tasks, updates, integrations, notes
+-- Contains: users, teams, projects, tasks, updates, integrations, notes, transcription_sessions
 -- NOTE: Global user accounts are in the shared database (shared)
 
 -- Enable UUID extension
@@ -290,6 +290,48 @@ COMMENT ON COLUMN task_comments.created_at IS 'When this comment was created';
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 
 -- ============================================================================
+-- EVENTS TABLES
+-- ============================================================================
+
+-- Events table
+CREATE TABLE IF NOT EXISTS events (
+  id VARCHAR(50) PRIMARY KEY,
+  title VARCHAR(255) NOT NULL,
+  description TEXT,
+  start_date TIMESTAMP NOT NULL,
+  end_date TIMESTAMP NOT NULL,
+  all_day BOOLEAN DEFAULT false,
+  location VARCHAR(255),
+  attendees JSONB DEFAULT '[]'::jsonb, -- Array of user emails
+  created_by VARCHAR(255) NOT NULL,  -- References user in shared DB (email)
+  visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
+  visible_to_members JSONB DEFAULT '[]'::jsonb,
+  created_at BIGINT,
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+COMMENT ON COLUMN events.id IS 'Primary key - Unique event identifier (VARCHAR 50)';
+COMMENT ON COLUMN events.title IS 'Event title/name';
+COMMENT ON COLUMN events.description IS 'Event description or agenda';
+COMMENT ON COLUMN events.start_date IS 'Event start date and time';
+COMMENT ON COLUMN events.end_date IS 'Event end date and time';
+COMMENT ON COLUMN events.all_day IS 'Whether this is an all-day event (true) or has specific times (false)';
+COMMENT ON COLUMN events.location IS 'Event location or meeting link';
+COMMENT ON COLUMN events.attendees IS 'JSONB array of user email strings invited to this event';
+COMMENT ON COLUMN events.created_by IS 'Email address of user who created this event (references global users table in shared database)';
+COMMENT ON COLUMN events.visibility IS 'Access control level: all_members (everyone in org) or specific_members (restricted to visible_to_members list)';
+COMMENT ON COLUMN events.visible_to_members IS 'JSONB array of user email strings who can access this event when visibility=specific_members';
+COMMENT ON COLUMN events.created_at IS 'Event creation timestamp (BIGINT, likely Unix timestamp)';
+COMMENT ON COLUMN events.updated_at IS 'Last modification time (auto-updated by trigger)';
+
+CREATE INDEX IF NOT EXISTS idx_events_start_date ON events(start_date);
+CREATE INDEX IF NOT EXISTS idx_events_end_date ON events(end_date);
+CREATE INDEX IF NOT EXISTS idx_events_created_by ON events(created_by);
+CREATE INDEX IF NOT EXISTS idx_events_visibility ON events(visibility);
+CREATE INDEX IF NOT EXISTS idx_events_visible_to_members ON events USING GIN (visible_to_members);
+CREATE INDEX IF NOT EXISTS idx_events_attendees ON events USING GIN (attendees);
+
+-- ============================================================================
 -- UPDATES TABLES
 -- ============================================================================
 
@@ -378,12 +420,6 @@ CREATE TABLE IF NOT EXISTS docs (
   owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
   project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
   team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
-  folder_id VARCHAR(50) REFERENCES docs(id) ON DELETE SET NULL,
-  is_folder BOOLEAN DEFAULT false,
-  doc_type VARCHAR(50) DEFAULT 'rich_text' CHECK (doc_type IN ('rich_text', 'pdf', 'docx', 'pptx', 'xlsx', 'csv')),
-  file_metadata JSONB DEFAULT '{}'::jsonb,
-  processing_status VARCHAR(50) DEFAULT 'completed' CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed')),
-  processing_error TEXT,
   tags JSONB DEFAULT '[]'::jsonb,
   metadata JSONB DEFAULT '{}'::jsonb,
   visibility VARCHAR(20) DEFAULT 'all_members' CHECK (visibility IN ('all_members', 'specific_members')),
@@ -395,10 +431,6 @@ CREATE TABLE IF NOT EXISTS docs (
 CREATE INDEX IF NOT EXISTS idx_docs_owner ON docs(owner_email);
 CREATE INDEX IF NOT EXISTS idx_docs_project ON docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_docs_team ON docs(team_id);
-CREATE INDEX IF NOT EXISTS idx_docs_folder_id ON docs(folder_id);
-CREATE INDEX IF NOT EXISTS idx_docs_is_folder ON docs(is_folder);
-CREATE INDEX IF NOT EXISTS idx_docs_doc_type ON docs(doc_type);
-CREATE INDEX IF NOT EXISTS idx_docs_processing_status ON docs(processing_status);
 CREATE INDEX IF NOT EXISTS idx_docs_created_at ON docs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_docs_visibility ON docs(visibility);
 CREATE INDEX IF NOT EXISTS idx_docs_visible_to_members ON docs USING GIN (visible_to_members);
@@ -479,190 +511,65 @@ CREATE TRIGGER update_tasks_updated_at BEFORE UPDATE ON tasks FOR EACH ROW EXECU
 DROP TRIGGER IF EXISTS update_docs_updated_at ON docs;
 CREATE TRIGGER update_docs_updated_at BEFORE UPDATE ON docs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
--- ============================================================================
--- COMMENTS
--- ============================================================================
+DROP TRIGGER IF EXISTS update_events_updated_at ON events;
+CREATE TRIGGER update_events_updated_at BEFORE UPDATE ON events FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- ============================================================================
--- PLANS TABLES
+-- TRANSCRIPTION TABLES (Voice Call Transcription)
 -- ============================================================================
 
--- Plans table (strategic plans for initiatives and projects)
-CREATE TABLE IF NOT EXISTS plans (
-  id VARCHAR(50) PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  status VARCHAR(50) DEFAULT 'planning' CHECK (status IN ('planning', 'active', 'at-risk', 'completed')),
-  start_date DATE NOT NULL,
-  end_date DATE NOT NULL,
-  total_budget DECIMAL(15,2) NOT NULL,
-  currency VARCHAR(3) DEFAULT 'USD',
-  spent_to_date DECIMAL(15,2) DEFAULT 0,
-  owner_email VARCHAR(255) NOT NULL,  -- References user in shared DB
-  owner_name VARCHAR(255),
-  team_size INTEGER DEFAULT 0,
-  health_score INTEGER DEFAULT 100 CHECK (health_score >= 0 AND health_score <= 100),
-  health_trend VARCHAR(20) DEFAULT 'stable' CHECK (health_trend IN ('up', 'down', 'stable')),
-  ai_quick_insight TEXT,
-  ai_insights JSONB,
+-- Transcription sessions table
+-- Stores session metadata and final transcripts for voice calls
+CREATE TABLE IF NOT EXISTS transcription_sessions (
+  call_id VARCHAR(255) PRIMARY KEY,
+  room_name VARCHAR(255) NOT NULL,
+  participants JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'processing', 'completed', 'failed')),
+  started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMP,
+  transcripts JSONB DEFAULT '{}'::jsonb, -- {participantEmail: [transcript strings]}
+  error_message TEXT,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE plans IS 'Strategic plans for organizational initiatives and projects';
-COMMENT ON COLUMN plans.ai_quick_insight IS 'One-line AI summary for list view (from backend)';
-COMMENT ON COLUMN plans.ai_insights IS 'Full AI insights JSON from backend: summary, risks, recommendations, predictions';
-COMMENT ON COLUMN plans.id IS 'Primary key - Unique plan identifier (VARCHAR 50)';
-COMMENT ON COLUMN plans.name IS 'Plan name/title';
-COMMENT ON COLUMN plans.description IS 'Plan description or overview';
-COMMENT ON COLUMN plans.status IS 'Plan status: planning, active, at-risk, or completed';
-COMMENT ON COLUMN plans.start_date IS 'Plan start date';
-COMMENT ON COLUMN plans.end_date IS 'Plan end date';
-COMMENT ON COLUMN plans.total_budget IS 'Total budget allocated for the plan';
-COMMENT ON COLUMN plans.currency IS 'Currency code (default: USD)';
-COMMENT ON COLUMN plans.spent_to_date IS 'Amount spent so far';
-COMMENT ON COLUMN plans.owner_email IS 'Email of plan owner (references global users table in shared database)';
-COMMENT ON COLUMN plans.owner_name IS 'Name of plan owner (denormalized for performance)';
-COMMENT ON COLUMN plans.team_size IS 'Number of team members assigned to this plan';
-COMMENT ON COLUMN plans.health_score IS 'Overall health score (0-100)';
-COMMENT ON COLUMN plans.health_trend IS 'Health trend: up, down, or stable';
-COMMENT ON COLUMN plans.created_at IS 'When this plan was created';
-COMMENT ON COLUMN plans.updated_at IS 'Last modification time (auto-updated by trigger)';
+CREATE INDEX IF NOT EXISTS idx_transcription_sessions_status ON transcription_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_transcription_sessions_room_name ON transcription_sessions(room_name);
+CREATE INDEX IF NOT EXISTS idx_transcription_sessions_started_at ON transcription_sessions(started_at);
 
-CREATE INDEX IF NOT EXISTS idx_plans_owner ON plans(owner_email);
-CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
-CREATE INDEX IF NOT EXISTS idx_plans_start_date ON plans(start_date);
-CREATE INDEX IF NOT EXISTS idx_plans_end_date ON plans(end_date);
-CREATE INDEX IF NOT EXISTS idx_plans_created_at ON plans(created_at DESC);
-
--- Plan objectives table
-CREATE TABLE IF NOT EXISTS plan_objectives (
-  id VARCHAR(50) PRIMARY KEY,
-  plan_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-  text VARCHAR(255) NOT NULL,
-  target_value DECIMAL(15,2) NOT NULL,
-  current_value DECIMAL(15,2) DEFAULT 0,
-  unit VARCHAR(50) NOT NULL CHECK (unit IN ('percentage', 'count', 'currency')),
-  due_date DATE,
-  status VARCHAR(50) DEFAULT 'on-track' CHECK (status IN ('on-track', 'at-risk', 'completed')),
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE plan_objectives IS 'Measurable objectives for plans';
-COMMENT ON COLUMN plan_objectives.plan_id IS 'References plans.id (CASCADE delete when plan is deleted)';
-COMMENT ON COLUMN plan_objectives.text IS 'Objective description';
-COMMENT ON COLUMN plan_objectives.unit IS 'Unit of measurement: percentage, count, or currency';
-COMMENT ON COLUMN plan_objectives.status IS 'Objective status: on-track, at-risk, or completed';
-
-CREATE INDEX IF NOT EXISTS idx_plan_objectives_plan ON plan_objectives(plan_id);
-CREATE INDEX IF NOT EXISTS idx_plan_objectives_status ON plan_objectives(status);
-
--- Plan budget categories table
-CREATE TABLE IF NOT EXISTS plan_budget_categories (
-  id VARCHAR(50) PRIMARY KEY,
-  plan_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-  name VARCHAR(255) NOT NULL,
-  allocated_amount DECIMAL(15,2) NOT NULL,
-  spent_amount DECIMAL(15,2) DEFAULT 0,
-  project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE plan_budget_categories IS 'Budget categories and allocations within plans';
-COMMENT ON COLUMN plan_budget_categories.plan_id IS 'References plans.id (CASCADE delete when plan is deleted)';
-COMMENT ON COLUMN plan_budget_categories.allocated_amount IS 'Allocated budget amount';
-COMMENT ON COLUMN plan_budget_categories.spent_amount IS 'Amount spent in this category';
-COMMENT ON COLUMN plan_budget_categories.project_id IS 'Optional reference to a specific project (SET NULL if project deleted)';
-
-CREATE INDEX IF NOT EXISTS idx_plan_budget_categories_plan ON plan_budget_categories(plan_id);
-CREATE INDEX IF NOT EXISTS idx_plan_budget_categories_project ON plan_budget_categories(project_id);
-
--- Plan resource allocations table
-CREATE TABLE IF NOT EXISTS plan_resource_allocations (
-  id VARCHAR(50) PRIMARY KEY,
-  plan_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-  user_email VARCHAR(255) NOT NULL,  -- References user in shared DB
-  user_name VARCHAR(255),
-  allocation_percentage INTEGER CHECK (allocation_percentage >= 0 AND allocation_percentage <= 100),
-  start_date DATE NOT NULL,
-  end_date DATE NOT NULL,
-  role VARCHAR(255),
-  hourly_rate DECIMAL(10,2),
-  normalized_hours DECIMAL(8,2),
-  project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE plan_resource_allocations IS 'Resource (user) allocations to plans';
-COMMENT ON COLUMN plan_resource_allocations.plan_id IS 'References plans.id (CASCADE delete when plan is deleted)';
-COMMENT ON COLUMN plan_resource_allocations.user_email IS 'Email of allocated user (references global users table in shared database)';
-COMMENT ON COLUMN plan_resource_allocations.allocation_percentage IS 'Percentage of time allocated (0-100)';
-COMMENT ON COLUMN plan_resource_allocations.hourly_rate IS 'Hourly rate for cost calculations';
-COMMENT ON COLUMN plan_resource_allocations.normalized_hours IS 'Calculated hours from past contribution';
-COMMENT ON COLUMN plan_resource_allocations.project_id IS 'Optional reference to specific project within plan';
-
-CREATE INDEX IF NOT EXISTS idx_plan_resource_allocations_plan ON plan_resource_allocations(plan_id);
-CREATE INDEX IF NOT EXISTS idx_plan_resource_allocations_user ON plan_resource_allocations(user_email);
-CREATE INDEX IF NOT EXISTS idx_plan_resource_allocations_project ON plan_resource_allocations(project_id);
-
--- Plan milestones table
-CREATE TABLE IF NOT EXISTS plan_milestones (
-  id VARCHAR(50) PRIMARY KEY,
-  plan_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-  name VARCHAR(255) NOT NULL,
-  due_date DATE NOT NULL,
-  status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'completed', 'at-risk')),
-  description TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE plan_milestones IS 'Key milestones and deliverables in plans';
-COMMENT ON COLUMN plan_milestones.plan_id IS 'References plans.id (CASCADE delete when plan is deleted)';
-COMMENT ON COLUMN plan_milestones.status IS 'Milestone status: pending, completed, or at-risk';
-
-CREATE INDEX IF NOT EXISTS idx_plan_milestones_plan ON plan_milestones(plan_id);
-CREATE INDEX IF NOT EXISTS idx_plan_milestones_due_date ON plan_milestones(due_date);
-CREATE INDEX IF NOT EXISTS idx_plan_milestones_status ON plan_milestones(status);
-
--- Plan activity events table
-CREATE TABLE IF NOT EXISTS plan_activity_events (
-  id VARCHAR(50) PRIMARY KEY,
-  plan_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-  type VARCHAR(50) NOT NULL CHECK (type IN ('project_update', 'budget_change', 'milestone', 'resource_change')),
-  title VARCHAR(255) NOT NULL,
-  description TEXT,
-  user_id VARCHAR(255),  -- References user in shared DB
-  user_name VARCHAR(255),
-  timestamp TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-COMMENT ON TABLE plan_activity_events IS 'Activity feed for plan changes and updates';
-COMMENT ON COLUMN plan_activity_events.plan_id IS 'References plans.id (CASCADE delete when plan is deleted)';
-COMMENT ON COLUMN plan_activity_events.type IS 'Type of activity: project_update, budget_change, milestone, or resource_change';
-COMMENT ON COLUMN plan_activity_events.user_id IS 'Email of user who triggered the activity';
-
-CREATE INDEX IF NOT EXISTS idx_plan_activity_events_plan ON plan_activity_events(plan_id);
-CREATE INDEX IF NOT EXISTS idx_plan_activity_events_timestamp ON plan_activity_events(timestamp DESC);
-
--- Plan projects join table (many-to-many)
-CREATE TABLE IF NOT EXISTS plan_projects (
+-- Transcription chunks table
+-- Tracks individual audio chunks that have been processed
+CREATE TABLE IF NOT EXISTS transcription_chunks (
   id SERIAL PRIMARY KEY,
-  plan_id VARCHAR(50) NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-  project_id VARCHAR(50) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  linked_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  UNIQUE(plan_id, project_id)
+  call_id VARCHAR(255) NOT NULL,
+  participant_email VARCHAR(255) NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  storage_url VARCHAR(500), -- GCS URL where audio chunk is stored
+  processed_at TIMESTAMP,
+  transcript TEXT,
+  error_message TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  FOREIGN KEY (call_id) REFERENCES transcription_sessions(call_id) ON DELETE CASCADE
 );
 
-COMMENT ON TABLE plan_projects IS 'Many-to-many relationship between plans and projects';
-COMMENT ON COLUMN plan_projects.plan_id IS 'References plans.id (CASCADE delete when plan is deleted)';
-COMMENT ON COLUMN plan_projects.project_id IS 'References projects.id (CASCADE delete when project is deleted)';
+CREATE INDEX IF NOT EXISTS idx_transcription_chunks_call_id ON transcription_chunks(call_id);
+CREATE INDEX IF NOT EXISTS idx_transcription_chunks_participant ON transcription_chunks(call_id, participant_email);
+CREATE INDEX IF NOT EXISTS idx_transcription_chunks_processed ON transcription_chunks(processed_at);
 
-CREATE INDEX IF NOT EXISTS idx_plan_projects_plan ON plan_projects(plan_id);
-CREATE INDEX IF NOT EXISTS idx_plan_projects_project ON plan_projects(project_id);
+-- Add updated_at trigger for transcription_sessions
+CREATE OR REPLACE FUNCTION update_transcription_sessions_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS transcription_sessions_updated_at ON transcription_sessions;
+CREATE TRIGGER transcription_sessions_updated_at
+  BEFORE UPDATE ON transcription_sessions
+  FOR EACH ROW
+  EXECUTE FUNCTION update_transcription_sessions_updated_at();
 
 -- ============================================================================
 -- COMMENTS
@@ -674,344 +581,5 @@ COMMENT ON TABLE projects IS 'Projects within this organization';
 COMMENT ON TABLE tasks IS 'Tasks within this organization';
 COMMENT ON TABLE docs IS 'Docs within this organization';
 COMMENT ON TABLE integrations IS 'Third-party integrations for this organization';
-COMMENT ON TABLE plans IS 'Strategic plans for organizational initiatives';
-
--- ============================================================================
--- TRIGGERS FOR PLANS TABLES
--- ============================================================================
-
-DROP TRIGGER IF EXISTS update_plans_updated_at ON plans;
-CREATE TRIGGER update_plans_updated_at BEFORE UPDATE ON plans FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_plan_objectives_updated_at ON plan_objectives;
-CREATE TRIGGER update_plan_objectives_updated_at BEFORE UPDATE ON plan_objectives FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_plan_budget_categories_updated_at ON plan_budget_categories;
-CREATE TRIGGER update_plan_budget_categories_updated_at BEFORE UPDATE ON plan_budget_categories FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_plan_resource_allocations_updated_at ON plan_resource_allocations;
-CREATE TRIGGER update_plan_resource_allocations_updated_at BEFORE UPDATE ON plan_resource_allocations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_plan_milestones_updated_at ON plan_milestones;
-CREATE TRIGGER update_plan_milestones_updated_at BEFORE UPDATE ON plan_milestones FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- ============================================================================
--- PLATFORM EVENTS TABLE (Unified Event Bus)
--- ============================================================================
-
--- Platform events table - stores all events for history, replay, and agent delivery
-CREATE TABLE IF NOT EXISTS platform_events (
-  id VARCHAR(50) PRIMARY KEY,
-  event_type VARCHAR(100) NOT NULL,
-  entity_type VARCHAR(50) NOT NULL,
-  entity_id VARCHAR(50) NOT NULL,
-  actor_type VARCHAR(20) NOT NULL,
-  actor_id VARCHAR(255) NOT NULL,
-  payload JSONB DEFAULT '{}'::jsonb,
-  mentions JSONB DEFAULT '[]'::jsonb,
-  timestamp TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-COMMENT ON TABLE platform_events IS 'Unified event bus - stores all platform events for history, replay, and agent delivery';
-COMMENT ON COLUMN platform_events.event_type IS 'Dot-notation event type, e.g. task.created, project.commented';
-COMMENT ON COLUMN platform_events.entity_type IS 'Entity type: task, project, plan, discussion, agent';
-COMMENT ON COLUMN platform_events.actor_type IS 'Who triggered the event: human, ai_agent, or system';
-COMMENT ON COLUMN platform_events.mentions IS 'JSONB array of @mentioned user emails or agent IDs extracted from content';
-
-CREATE INDEX IF NOT EXISTS idx_platform_events_entity ON platform_events(entity_type, entity_id);
-CREATE INDEX IF NOT EXISTS idx_platform_events_type ON platform_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_platform_events_timestamp ON platform_events(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_platform_events_actor ON platform_events(actor_type, actor_id);
-CREATE INDEX IF NOT EXISTS idx_platform_events_mentions ON platform_events USING GIN (mentions);
-
--- ============================================================================
--- AI AGENTS & TEAMS TABLES
--- ============================================================================
-
--- AI Agents table - Registry of available AI agents
-CREATE TABLE IF NOT EXISTS ai_agents (
-  id VARCHAR(50) PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  agent_type VARCHAR(50) NOT NULL CHECK (agent_type IN ('webhook', 'api', 'mcp_server')),
-  status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'error')),
-  
-  -- Configuration
-  config JSONB NOT NULL DEFAULT '{}'::jsonb,
-  auth_config JSONB DEFAULT '{}'::jsonb,
-  capabilities JSONB DEFAULT '[]'::jsonb,
-  
-  -- Metadata
-  avatar VARCHAR(10),
-  created_by VARCHAR(255) NOT NULL,
-  last_triggered_at TIMESTAMP,
-  total_tasks_completed INTEGER DEFAULT 0,
-  average_response_time_ms INTEGER,
-
-  -- SKILL.md (natural language agent description for Lean orchestrator)
-  skill_md TEXT,
-  skill_summary VARCHAR(500),
-  skill_version VARCHAR(20),
-  
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE ai_agents IS 'Registry of AI agents available for task assignment';
-COMMENT ON COLUMN ai_agents.agent_type IS 'Type: webhook (agent polls/receives webhooks), api (we call their API), mcp_server (MCP protocol)';
-COMMENT ON COLUMN ai_agents.config IS 'Configuration JSON: {webhookUrl, callbackUrl, headers, timeout, etc.}';
-COMMENT ON COLUMN ai_agents.auth_config IS 'References to secrets in Secret Manager: {secretName: "ai-agent-xyz-token"}';
-COMMENT ON COLUMN ai_agents.skill_md IS 'Full SKILL.md content describing when/how to use this agent (natural language)';
-COMMENT ON COLUMN ai_agents.skill_summary IS 'Auto-extracted one-line summary from SKILL.md for lightweight discovery';
-COMMENT ON COLUMN ai_agents.skill_version IS 'Version from SKILL.md frontmatter';
-
-CREATE INDEX IF NOT EXISTS idx_ai_agents_status ON ai_agents(status);
-CREATE INDEX IF NOT EXISTS idx_ai_agents_type ON ai_agents(agent_type);
-CREATE INDEX IF NOT EXISTS idx_ai_agents_created_by ON ai_agents(created_by);
-CREATE INDEX IF NOT EXISTS idx_ai_agents_has_skill ON ai_agents(status) WHERE skill_md IS NOT NULL;
-
--- AI Agent Teams - Logical grouping of agents
-CREATE TABLE IF NOT EXISTS ai_agent_teams (
-  id VARCHAR(50) PRIMARY KEY,
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  team_id VARCHAR(50) REFERENCES teams(id) ON DELETE SET NULL,
-  project_id VARCHAR(50) REFERENCES projects(id) ON DELETE SET NULL,
-  avatar VARCHAR(10),
-  created_by VARCHAR(255) NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE ai_agent_teams IS 'Logical grouping of AI agents for project/task assignment';
-
-CREATE INDEX IF NOT EXISTS idx_ai_agent_teams_team ON ai_agent_teams(team_id);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_teams_project ON ai_agent_teams(project_id);
-
--- AI Agent Team Members - Many-to-many relationship
-CREATE TABLE IF NOT EXISTS ai_agent_team_members (
-  id SERIAL PRIMARY KEY,
-  team_id VARCHAR(50) NOT NULL REFERENCES ai_agent_teams(id) ON DELETE CASCADE,
-  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
-  role VARCHAR(100),
-  priority INTEGER DEFAULT 0,
-  added_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(team_id, agent_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_agent_team_members_team ON ai_agent_team_members(team_id);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_team_members_agent ON ai_agent_team_members(agent_id);
-
--- Task AI Agent Assignments - Track which agents are assigned to tasks
-CREATE TABLE IF NOT EXISTS task_ai_assignments (
-  id VARCHAR(50) PRIMARY KEY,
-  task_id VARCHAR(50) NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  agent_id VARCHAR(50) REFERENCES ai_agents(id) ON DELETE CASCADE,
-  agent_team_id VARCHAR(50) REFERENCES ai_agent_teams(id) ON DELETE CASCADE,
-  
-  status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed', 'cancelled')),
-  assigned_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  started_at TIMESTAMP,
-  completed_at TIMESTAMP,
-  
-  result JSONB DEFAULT '{}'::jsonb,
-  error_message TEXT,
-  execution_logs JSONB DEFAULT '[]'::jsonb,
-  
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
-);
-
-COMMENT ON TABLE task_ai_assignments IS 'Tracks AI agent assignments to tasks';
-COMMENT ON COLUMN task_ai_assignments.result IS 'JSON result from agent execution';
-
-CREATE INDEX IF NOT EXISTS idx_task_ai_assignments_task ON task_ai_assignments(task_id);
-CREATE INDEX IF NOT EXISTS idx_task_ai_assignments_agent ON task_ai_assignments(agent_id);
-CREATE INDEX IF NOT EXISTS idx_task_ai_assignments_team ON task_ai_assignments(agent_team_id);
-CREATE INDEX IF NOT EXISTS idx_task_ai_assignments_status ON task_ai_assignments(status);
-
--- AI Agent Activity - Activity feed for agent actions
-CREATE TABLE IF NOT EXISTS ai_agent_activity (
-  id VARCHAR(50) PRIMARY KEY,
-  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
-  task_id VARCHAR(50) REFERENCES tasks(id) ON DELETE CASCADE,
-  assignment_id VARCHAR(50) REFERENCES task_ai_assignments(id) ON DELETE CASCADE,
-  
-  activity_type VARCHAR(50) NOT NULL CHECK (activity_type IN ('assigned', 'started', 'progress_update', 'completed', 'failed', 'comment')),
-  title VARCHAR(255) NOT NULL,
-  description TEXT,
-  metadata JSONB DEFAULT '{}'::jsonb,
-  
-  timestamp TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-COMMENT ON TABLE ai_agent_activity IS 'Activity feed for AI agent actions and updates';
-
-CREATE INDEX IF NOT EXISTS idx_ai_agent_activity_agent ON ai_agent_activity(agent_id);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_activity_task ON ai_agent_activity(task_id);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_activity_assignment ON ai_agent_activity(assignment_id);
-CREATE INDEX IF NOT EXISTS idx_ai_agent_activity_timestamp ON ai_agent_activity(timestamp DESC);
-
--- Extend tasks table with assignee_type column
-ALTER TABLE tasks 
-ADD COLUMN IF NOT EXISTS assignee_type VARCHAR(20) DEFAULT 'human' CHECK (assignee_type IN ('human', 'ai_agent', 'ai_team'));
-
-COMMENT ON COLUMN tasks.assignee_type IS 'Type of assignee: human (regular user), ai_agent (single AI agent), ai_team (team of AI agents)';
-
-CREATE INDEX IF NOT EXISTS idx_tasks_assignee_type ON tasks(assignee_type);
-
--- Add triggers for updated_at
-DROP TRIGGER IF EXISTS update_ai_agents_updated_at ON ai_agents;
-CREATE TRIGGER update_ai_agents_updated_at BEFORE UPDATE ON ai_agents FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_ai_agent_teams_updated_at ON ai_agent_teams;
-CREATE TRIGGER update_ai_agent_teams_updated_at BEFORE UPDATE ON ai_agent_teams FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-DROP TRIGGER IF EXISTS update_task_ai_assignments_updated_at ON task_ai_assignments;
-CREATE TRIGGER update_task_ai_assignments_updated_at BEFORE UPDATE ON task_ai_assignments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- ============================================================================
--- AGENT API KEYS TABLE
--- ============================================================================
-
-ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS api_key_hash VARCHAR(128);
-CREATE INDEX IF NOT EXISTS idx_ai_agents_api_key_hash ON ai_agents(api_key_hash);
-
-CREATE TABLE IF NOT EXISTS agent_api_keys (
-  id VARCHAR(50) PRIMARY KEY,
-  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
-  key_hash VARCHAR(128) NOT NULL,
-  key_prefix VARCHAR(20) NOT NULL,
-  label VARCHAR(100),
-  last_used_at TIMESTAMP,
-  expires_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  is_active BOOLEAN DEFAULT true
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_api_keys_hash ON agent_api_keys(key_hash);
-CREATE INDEX IF NOT EXISTS idx_agent_api_keys_agent ON agent_api_keys(agent_id);
-
--- Add author_type and agent_id to comment tables
-ALTER TABLE task_comments
-  ADD COLUMN IF NOT EXISTS author_type VARCHAR(20) DEFAULT 'human',
-  ADD COLUMN IF NOT EXISTS agent_id VARCHAR(50) REFERENCES ai_agents(id) ON DELETE SET NULL;
-
-ALTER TABLE project_comments
-  ADD COLUMN IF NOT EXISTS author_type VARCHAR(20) DEFAULT 'human',
-  ADD COLUMN IF NOT EXISTS agent_id VARCHAR(50) REFERENCES ai_agents(id) ON DELETE SET NULL;
-
--- ============================================================================
--- AGENT EVENT SUBSCRIPTIONS TABLE
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS agent_event_subscriptions (
-  id VARCHAR(50) PRIMARY KEY,
-  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
-  event_pattern VARCHAR(200) NOT NULL,
-  filter_criteria JSONB DEFAULT '{}'::jsonb,
-  delivery_method VARCHAR(20) NOT NULL CHECK (delivery_method IN ('webhook', 'sse')),
-  webhook_url VARCHAR(500),
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(agent_id, event_pattern, filter_criteria)
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_active ON agent_event_subscriptions(is_active, event_pattern);
-CREATE INDEX IF NOT EXISTS idx_agent_subscriptions_agent ON agent_event_subscriptions(agent_id);
-
-CREATE TABLE IF NOT EXISTS event_delivery_log (
-  id VARCHAR(50) PRIMARY KEY,
-  subscription_id VARCHAR(50) REFERENCES agent_event_subscriptions(id) ON DELETE CASCADE,
-  event_id VARCHAR(50) NOT NULL,
-  status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'delivered', 'failed', 'retrying')),
-  attempts INTEGER DEFAULT 0,
-  last_error TEXT,
-  delivered_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_event_delivery_log_sub ON event_delivery_log(subscription_id);
-
-DROP TRIGGER IF EXISTS update_agent_event_subscriptions_updated_at ON agent_event_subscriptions;
-CREATE TRIGGER update_agent_event_subscriptions_updated_at BEFORE UPDATE ON agent_event_subscriptions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- ============================================================================
--- AGENT TRIGGERS TABLE
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS agent_triggers (
-  id VARCHAR(50) PRIMARY KEY,
-  agent_id VARCHAR(50) NOT NULL REFERENCES ai_agents(id) ON DELETE CASCADE,
-  trigger_type VARCHAR(50) NOT NULL,
-  entity_type VARCHAR(50) NOT NULL,
-  entity_id VARCHAR(50) NOT NULL,
-  triggered_by VARCHAR(255) NOT NULL,
-  prompt TEXT,
-  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
-  result JSONB DEFAULT '{}'::jsonb,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  completed_at TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_triggers_agent ON agent_triggers(agent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_triggers_entity ON agent_triggers(entity_type, entity_id);
-
-ALTER TABLE task_ai_assignments
-  ADD COLUMN IF NOT EXISTS delegated_by_agent_id VARCHAR(50) REFERENCES ai_agents(id),
-  ADD COLUMN IF NOT EXISTS delegation_context TEXT;
-
--- ============================================================================
--- COLLABORATION THREADS TABLES
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS collaboration_threads (
-  id VARCHAR(50) PRIMARY KEY,
-  entity_type VARCHAR(50) NOT NULL,
-  entity_id VARCHAR(50) NOT NULL,
-  title VARCHAR(255),
-  status VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'closed')),
-  created_by_type VARCHAR(20) NOT NULL CHECK (created_by_type IN ('human', 'ai_agent')),
-  created_by_id VARCHAR(255) NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  resolved_at TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_collab_threads_entity ON collaboration_threads(entity_type, entity_id);
-
-CREATE TABLE IF NOT EXISTS collaboration_messages (
-  id VARCHAR(50) PRIMARY KEY,
-  thread_id VARCHAR(50) NOT NULL REFERENCES collaboration_threads(id) ON DELETE CASCADE,
-  author_type VARCHAR(20) NOT NULL CHECK (author_type IN ('human', 'ai_agent')),
-  author_id VARCHAR(255) NOT NULL,
-  content TEXT NOT NULL,
-  metadata JSONB DEFAULT '{}'::jsonb,
-  mentions JSONB DEFAULT '[]'::jsonb,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_collab_messages_thread ON collaboration_messages(thread_id);
-
--- ============================================================================
--- LEAN ROUTING LOG TABLE
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS lean_routing_log (
-  id VARCHAR(50) PRIMARY KEY,
-  event_id VARCHAR(50),
-  event_type VARCHAR(100) NOT NULL,
-  agent_id VARCHAR(50) NOT NULL,
-  decision VARCHAR(20) NOT NULL CHECK (decision IN ('triggered', 'skipped')),
-  reasoning TEXT,
-  confidence DECIMAL(3,2) CHECK (confidence >= 0 AND confidence <= 1),
-  context_passed JSONB DEFAULT '{}'::jsonb,
-  latency_ms INTEGER,
-  created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-COMMENT ON TABLE lean_routing_log IS 'Log of Lean orchestrator routing decisions for observability';
-
-CREATE INDEX IF NOT EXISTS idx_lean_routing_log_agent ON lean_routing_log(agent_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_lean_routing_log_event_type ON lean_routing_log(event_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_lean_routing_log_event_id ON lean_routing_log(event_id);
+COMMENT ON TABLE transcription_sessions IS 'Voice call transcription sessions for this organization';
+COMMENT ON TABLE transcription_chunks IS 'Individual audio chunks processed for transcription';

@@ -126,7 +126,7 @@ export class ExcelProcessor extends BaseDocumentProcessor {
         sheets = [{
           sheetName: 'Sheet1',
           rowCount: csvData.length,
-          columnCount: csvData.length > 0 ? csvData.reduce((max, row) => Math.max(max, row.length), 0) : 0,
+          columnCount: csvData.length > 0 ? Math.max(...csvData.map(row => row.length)) : 0,
           data: csvData,
           preview: csvData.slice(0, this.MAX_PREVIEW_ROWS).map(row =>
             row.slice(0, this.MAX_PREVIEW_COLS)
@@ -273,7 +273,7 @@ export class ExcelProcessor extends BaseDocumentProcessor {
 
       // Get dimensions
       const rowCount = data.length;
-      const columnCount = data.length > 0 ? data.reduce((max, row) => Math.max(max, row.length), 0) : 0;
+      const columnCount = data.length > 0 ? Math.max(...data.map(row => row.length)) : 0;
 
       // Create preview (first N rows and columns)
       const preview = data

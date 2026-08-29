@@ -1,0 +1,263 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit-server
+  labels:
+    app: livekit-server
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1  # Allow old pod to terminate even if new one is initializing
+  selector:
+    matchLabels:
+      app: livekit-server
+  template:
+    metadata:
+      labels:
+        app: livekit-server
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+    spec:
+      serviceAccountName: leanworks-hub-sa  # Use same service account with Secret Manager access
+      terminationGracePeriodSeconds: 120  # Give time for WebRTC connections to close gracefully
+      containers:
+      - name: livekit-server
+        image: livekit/livekit-server:latest
+        imagePullPolicy: Always
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Checking config file..."
+          test -s /etc/livekit/livekit.yaml || { echo "Config file doesn't exist"; exit 1; }
+          echo "Starting LiveKit server..."
+          exec /livekit-server --config /etc/livekit/livekit.yaml
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                echo "Gracefully shutting down LiveKit server..."
+                # Wait to allow existing WebRTC connections to drain
+                # Kubernetes will send SIGTERM after this hook completes
+                sleep 15
+        ports:
+        - containerPort: 7880
+          name: http
+        - containerPort: 7881
+          name: https
+        - containerPort: 50000
+          name: rtc-udp
+          protocol: UDP
+        - containerPort: 50000
+          name: rtc-tcp
+          protocol: TCP
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 7880
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 7880
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: livekit-config
+          mountPath: /etc/livekit
+      # Use an init container to fetch secrets from GCP Secret Manager and generate config
+      initContainers:
+      - name: secret-fetcher
+        image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+        command: ['sh', '-c']
+        args:
+        - |
+          set -e
+          echo "📥 Fetching LiveKit credentials from GCP Secret Manager..."
+          echo "🔑 Authenticating with GKE Workload Identity..."
+          gcloud auth print-access-token >/dev/null || {
+            echo "❌ Error: Workload Identity authentication failed"
+            exit 1
+          }
+          
+          # Set project
+          gcloud config set project leanworks-474204 || {
+            echo "❌ Error: Failed to set project"
+            exit 1
+          }
+          echo "✅ Project set to leanworks-474204"
+          
+          # Fetch API Key from Secret Manager
+          echo "🔍 Fetching livekit-api-key..."
+          API_KEY=$(gcloud secrets versions access latest --secret=livekit-api-key --project=leanworks-474204 2>&1) || {
+            echo "❌ Error: Failed to fetch livekit-api-key"
+            exit 1
+          }
+          if [ -z "$API_KEY" ]; then
+            echo "❌ Error: API key is empty"
+            exit 1
+          fi
+          echo "✅ API key fetched"
+          
+          # Fetch API Secret from Secret Manager
+          echo "🔍 Fetching livekit-api-secret..."
+          API_SECRET=$(gcloud secrets versions access latest --secret=livekit-api-secret --project=leanworks-474204 2>&1) || {
+            echo "❌ Error: Failed to fetch livekit-api-secret"
+            exit 1
+          }
+          if [ -z "$API_SECRET" ]; then
+            echo "❌ Error: API secret is empty"
+            exit 1
+          fi
+          echo "✅ API secret fetched"
+          
+          # Generate LiveKit config file
+          mkdir -p /etc/livekit
+          # Get webhook URL from environment or use default
+          # Note: Remove backslash to allow variable expansion
+          WEBHOOK_URL="${WEBHOOK_URL:-https://api.leanworks.ai/api/livekit/webhook}"
+          
+          echo "🔗 Using webhook URL: ${WEBHOOK_URL}"
+          
+          cat > /etc/livekit/livekit.yaml <<EOF
+          port: 7880
+          bind_addresses:
+            - "0.0.0.0"
+          rtc:
+            tcp_port: 50000
+            port_range_start: 50000
+            port_range_end: 60000
+            use_external_ip: true
+          keys:
+            ${API_KEY}: ${API_SECRET}
+          development: false
+          log_level: info
+          webhook:
+            api_key: ${API_KEY}
+            urls:
+              - ${WEBHOOK_URL}
+          EOF
+          
+          echo "✅ LiveKit config generated at /etc/livekit/livekit.yaml"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        volumeMounts:
+        - name: livekit-config
+          mountPath: /etc/livekit
+        env:
+        - name: WEBHOOK_URL
+          value: "https://api.leanworks.ai/api/livekit/webhook"
+      volumes:
+      - name: livekit-config
+        emptyDir: {}
+
+---
+# TCP Service for HTTP/WebSocket (signaling)
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-service
+  labels:
+    app: livekit-server
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 7880
+    targetPort: 7880
+    protocol: TCP
+    name: http
+  - port: 7881
+    targetPort: 7881
+    protocol: TCP
+    name: https
+  selector:
+    app: livekit-server
+  sessionAffinity: ClientIP
+
+---
+# UDP Service for RTC media (WebRTC)
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-service-udp
+  labels:
+    app: livekit-server
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 50000
+    targetPort: 50000
+    protocol: UDP
+    name: rtc-udp
+  selector:
+    app: livekit-server
+  sessionAffinity: ClientIP
+
+---
+# TCP Service for RTC media (fallback)
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit-service-rtc-tcp
+  labels:
+    app: livekit-server
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 50000
+    targetPort: 50000
+    protocol: TCP
+    name: rtc-tcp
+  selector:
+    app: livekit-server
+  sessionAffinity: ClientIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: livekit-config
+data:
+  config.yaml: |
+    port: 7880
+    bind_addresses:
+      - "0.0.0.0"
+    rtc:
+      tcp_port: 50000
+      port_range_start: 50000
+      port_range_end: 60000
+      use_external_ip: true
+    # Keys will be provided via environment variables (LIVEKIT_KEY and LIVEKIT_SECRET)
+    # The keys section can be empty if using env vars
+    keys: {}
+    development: false
+    log_level: info
+
+---
+# Note: LiveKit credentials are now fetched directly from GCP Secret Manager
+# via the init container. No Kubernetes Secret is needed.
+# The secrets are stored in GCP Secret Manager:
+#   - livekit-api-key
+#   - livekit-api-secret

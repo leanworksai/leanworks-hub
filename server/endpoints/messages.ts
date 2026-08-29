@@ -1,0 +1,991 @@
+/**
+ * Messages Endpoints - FIRESTORE ONLY
+ * All messaging and notifications are stored exclusively in Firestore
+ * This ensures true real-time capabilities without sync complexity
+ */
+
+import express from 'express';
+import { userQueries } from '../../database/queries.js';
+import { getOrgPool, getSharedPool } from '../../database/multi-tenant-pool.js';
+import { getOrgCollectionPath } from '../utils/org-paths.js';
+import { validateRequest } from '../middleware/validate-request.js';
+import { createMessageSchema } from '../validation/message-schemas.js';
+
+/**
+ * Check if a user has access to a project (checks visibility settings)
+ */
+async function isProjectMember(orgId: string, userEmail: string, projectId: string): Promise<boolean> {
+  try {
+    const pool = await getOrgPool(orgId);
+    const normalizedEmail = userEmail.toLowerCase();
+    const result = await pool.query(
+      `SELECT 
+         p.visibility,
+         p.visible_to_members,
+         p.owner_email
+       FROM projects p
+       WHERE p.id = $1`,
+      [projectId]
+    );
+    
+    if (result.rows.length === 0) {
+      return false;
+    }
+    
+    const project = result.rows[0];
+    const visibility = project.visibility || 'all_members';
+    const isOwner = project.owner_email.toLowerCase() === normalizedEmail;
+    
+    // Owner always has access
+    if (isOwner) {
+      return true;
+    }
+    
+    // If visibility is 'all_members', all org members have access
+    if (visibility === 'all_members') {
+      return true;
+    }
+    
+    // If visibility is 'specific_members', check if user is in visible_to_members
+    if (visibility === 'specific_members') {
+      const visibleToMembers = Array.isArray(project.visible_to_members) 
+        ? project.visible_to_members 
+        : (project.visible_to_members ? JSON.parse(project.visible_to_members) : []);
+      return visibleToMembers.includes(normalizedEmail);
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error checking project access:', error);
+    return false;
+  }
+}
+
+
+/**
+ * Check if user is on free plan
+ */
+async function isFreePlanUser(userEmail: string): Promise<boolean> {
+  try {
+    const sharedPool = await getSharedPool();
+    const result = await sharedPool.query(
+      'SELECT subscription_plan FROM users WHERE email = $1',
+      [userEmail.toLowerCase()]
+    );
+    
+    if (result.rows.length === 0) {
+      return true; // Default to free if user not found
+    }
+    
+    return result.rows[0].subscription_plan === 'free';
+  } catch (error) {
+    console.error('Error checking user plan:', error);
+    return true; // Default to free on error
+  }
+}
+
+/**
+ * Check if message contains @lean mention
+ */
+function containsLeanMention(content: string): boolean {
+  const mentionRegex = /@lean\b/i;
+  return mentionRegex.test(content);
+}
+
+export function setupMessageEndpoints(
+  app: express.Application,
+  authenticateUser: express.RequestHandler,
+  requireOrgMembership: express.RequestHandler,
+  getAIServiceHeaders: (req: express.Request) => Promise<Record<string, string>>,
+  db: FirebaseFirestore.Firestore,
+  storage?: any // Firebase Admin Storage instance (optional, for refreshing image URLs)
+) {
+  
+  // GET messages by chat ID - Read from Firestore
+  app.get('/api/messages/:chatId', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const chatId = req.params.chatId;
+      const afterTimestamp = req.query.afterTimestamp 
+        ? new Date(req.query.afterTimestamp as string) 
+        : undefined;
+      
+      // Check authorization for project channels
+      if (chatId.startsWith('project-') && orgId) {
+        const projectId = chatId.replace('project-', '');
+        const isMember = await isProjectMember(orgId, userEmail, projectId);
+        if (!isMember) {
+          return res.status(403).json({ error: 'Access denied: You must be a project member or owner to view messages' });
+        }
+      }
+      
+      
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
+      let query = db.collection(messagesPath).where('chatId', '==', chatId);
+      
+      // For AI assistant conversations, ensure privacy by filtering by userId
+      // This provides an additional security layer even if chatId is somehow compromised
+      if (chatId.startsWith('ai-assistant-')) {
+        if (userEmail && !chatId.endsWith(`-${userEmail}`)) {
+          // User is trying to access another user's AI conversation - deny access
+          return res.status(403).json({ error: 'Access denied' });
+        }
+        // Also filter by userId for additional security
+        query = query.where('userId', '==', userEmail);
+      }
+      
+      // For project channels, also filter by projectId to ensure we only get messages for this project
+      if (chatId.startsWith('project-')) {
+        const projectId = chatId.replace('project-', '');
+        query = query.where('projectId', '==', projectId);
+      }
+      
+      
+      if (afterTimestamp) {
+        query = query.where('timestamp', '>', afterTimestamp);
+      }
+      
+      // Try to order by timestamp, fallback if index doesn't exist
+      let snapshot;
+      try {
+        snapshot = await query.orderBy('timestamp', 'asc').get();
+      } catch (error: any) {
+        // If index error, fetch without orderBy and sort in memory
+        if (error.code === 9 || error.message?.includes('index')) {
+          snapshot = await query.get();
+          // Sort in memory
+          const docs = snapshot.docs.sort((a, b) => {
+            const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
+            const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
+            return aTime - bTime; // Ascending order (oldest first)
+          });
+          snapshot = { docs, empty: docs.length === 0 } as any;
+        } else {
+          throw error;
+        }
+      }
+      
+      const messages = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
+          imageUrls: data.imageUrls || null,
+          likes: Array.isArray(data.likes) ? data.likes : [],
+        };
+      });
+      
+      res.json(messages);
+    } catch (error) {
+      console.error('Get messages error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // POST new message - Write to Firestore only
+  app.post('/api/messages', authenticateUser, validateRequest(createMessageSchema), async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const { chatId, role, content, memberName, memberAvatar, projectId, citedContext, imageUrls } = req.body;
+
+      // Validation handled by middleware
+
+      // Check authorization for project channels
+      // Check both chatId (if it's a project channel) and projectId (if provided)
+      let actualProjectId: string | null = null;
+      
+      if (chatId.startsWith('project-')) {
+        actualProjectId = chatId.replace('project-', '');
+      } else if (projectId) {
+        actualProjectId = projectId;
+      }
+      
+      if (actualProjectId && orgId) {
+        const isMember = await isProjectMember(orgId, userEmail, actualProjectId);
+        if (!isMember) {
+          return res.status(403).json({ error: 'Access denied: You must be a project member or owner to post messages' });
+        }
+      }
+      
+      // Check if this is a project channel message
+      const isProjectChannel = actualProjectId !== null;
+
+      // Note: @lean mentions are now credit-based, not plan-based
+      // Credits are checked and consumed when AI response is generated
+
+      // Get user info if not provided
+      let finalMemberName = memberName || 'You';
+      let finalMemberAvatar = memberAvatar || 'U';
+      
+      if ((!memberName || !memberAvatar) && orgId) {
+        const userData = await userQueries.getByEmail(orgId, userEmail);
+        if (userData) {
+          const firstName = userData.first_name || '';
+          const lastName = userData.last_name || '';
+          finalMemberName = `${firstName} ${lastName}`.trim() || userEmail;
+          finalMemberAvatar = userData.avatar || `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase() 
+            || userEmail.charAt(0).toUpperCase();
+        }
+      }
+
+      // Ensure projectId is set when posting to a project channel
+      const finalProjectId = projectId || (chatId.startsWith('project-') ? chatId.replace('project-', '') : null);
+
+      const messageData: any = {
+        chatId,
+        role: role || 'user',
+        content,
+        timestamp: new Date(),
+        userId: userEmail.toLowerCase(),
+        projectId: finalProjectId,
+        memberName: finalMemberName,
+        memberAvatar: finalMemberAvatar,
+        likes: [], // Initialize likes as empty array for new messages
+      };
+
+      // Add citedContext if provided (includes all context merged into same structures)
+      if (citedContext) {
+        messageData.citedContext = citedContext;
+      }
+
+      // Add imageUrls if provided
+      if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+        messageData.imageUrls = imageUrls;
+      }
+
+      // Write to Firestore only - single source of truth for messages
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
+      const docRef = await db.collection(messagesPath).add(messageData);
+      
+      res.json({
+        success: true,
+        messageId: docRef.id,
+        message: {
+          id: docRef.id,
+          ...messageData,
+          timestamp: messageData.timestamp.toISOString(),
+          imageUrls: messageData.imageUrls || null,
+          likes: messageData.likes || [],
+        },
+      });
+    } catch (error) {
+      console.error('Create message error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // PATCH toggle like on a message
+  app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const messageId = req.params.messageId;
+      
+      // Use org slug for Firestore path (sanitized name instead of ID)
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
+      const messageRef = db.collection(messagesPath).doc(messageId);
+      const messageDoc = await messageRef.get();
+      
+      if (!messageDoc.exists) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+      
+      const messageData = messageDoc.data();
+      const likes = messageData?.likes || [];
+      const userEmailLower = userEmail.toLowerCase();
+      
+      // Toggle like: remove if exists, add if not
+      const updatedLikes = likes.includes(userEmailLower)
+        ? likes.filter((email: string) => email !== userEmailLower)
+        : [...likes, userEmailLower];
+      
+      await messageRef.update({ likes: updatedLikes });
+      
+      res.json({
+        success: true,
+        likes: updatedLikes,
+        liked: updatedLikes.includes(userEmailLower),
+      });
+    } catch (error) {
+      console.error('Toggle like error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // GET recent conversations - Returns list of conversations with last message info
+  app.get('/api/conversations/recent', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Use org slug for Firestore path
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
+
+      // Get all messages for this user (they can see messages where they're the sender or in channels they have access to)
+      // We'll group by chatId and get the most recent message for each
+      const messagesRef = db.collection(messagesPath);
+      
+      // For AI assistant, filter by userId
+      // For DMs, filter by userId (user is participant)
+      // For channels, we'll need to check access separately
+      
+      // Get messages where user is the sender (covers DMs and AI assistant)
+      const userMessagesQuery = messagesRef
+        .where('userId', '==', userEmail)
+        .orderBy('timestamp', 'desc')
+        .limit(500); // Get more to group by chatId
+      
+      let userMessagesSnapshot;
+      try {
+        userMessagesSnapshot = await userMessagesQuery.get();
+      } catch (error: any) {
+        // If index error, fetch without orderBy
+        if (error.code === 9 || error.message?.includes('index')) {
+          const snapshot = await messagesRef.where('userId', '==', userEmail).limit(500).get();
+          const docs = snapshot.docs.sort((a, b) => {
+            const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
+            const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
+            return bTime - aTime; // Descending
+          });
+          userMessagesSnapshot = { docs, empty: docs.length === 0 } as any;
+        } else {
+          throw error;
+        }
+      }
+
+      // Group messages by chatId and get the most recent one for each
+      const conversationsMap = new Map<string, any>();
+      
+      userMessagesSnapshot.docs.forEach((doc: any) => {
+        const data = doc.data();
+        const chatId = data.chatId;
+        if (!chatId) return;
+        
+        const timestamp = data.timestamp?.toDate?.()?.getTime() || 
+                         (typeof data.timestamp === 'number' ? data.timestamp : 0);
+        
+        if (!conversationsMap.has(chatId)) {
+          conversationsMap.set(chatId, {
+            chatId,
+            lastMessage: data.content || '',
+            lastMessageTimestamp: timestamp,
+            lastMessageRole: data.role || 'user',
+            lastMessageUserId: data.userId || null,
+          });
+        } else {
+          const existing = conversationsMap.get(chatId)!;
+          if (timestamp > existing.lastMessageTimestamp) {
+            existing.lastMessage = data.content || '';
+            existing.lastMessageTimestamp = timestamp;
+            existing.lastMessageRole = data.role || 'user';
+            existing.lastMessageUserId = data.userId || null;
+          }
+        }
+      });
+
+      // Also get messages in DMs where user is the recipient (other user sent)
+      // For DMs, chatId format is dm-{email1}-{email2} where emails are sorted alphabetically
+      // We need to get all messages and filter for DMs where the user is a participant
+      const allMessagesQuery = messagesRef
+        .orderBy('timestamp', 'desc')
+        .limit(1000); // Get more to filter DMs
+      
+      let allMessagesSnapshot;
+      try {
+        allMessagesSnapshot = await allMessagesQuery.get();
+      } catch (error: any) {
+        if (error.code === 9 || error.message?.includes('index')) {
+          const snapshot = await messagesRef.limit(1000).get();
+          const docs = snapshot.docs.sort((a, b) => {
+            const aTime = a.data().timestamp?.toDate?.()?.getTime() || 0;
+            const bTime = b.data().timestamp?.toDate?.()?.getTime() || 0;
+            return bTime - aTime;
+          });
+          allMessagesSnapshot = { docs, empty: docs.length === 0 } as any;
+        } else {
+          throw error;
+        }
+      }
+
+      // Process DM messages where user is recipient
+      // DM format: dm-{email1}-{email2} where emails are sorted alphabetically
+      // We check if the chatId contains the user's email (normalized, without @)
+      const userEmailNormalized = userEmail.replace('@', '').replace(/\./g, '');
+      
+      allMessagesSnapshot.docs.forEach((doc: any) => {
+        const data = doc.data();
+        const chatId = data.chatId;
+        if (!chatId || !chatId.startsWith('dm-')) return;
+        
+        // Skip if we already have this conversation (user was the sender)
+        if (conversationsMap.has(chatId)) return;
+        
+        // Check if this DM involves the current user
+        // The chatId format is dm-{email1}-{email2} where emails are sorted
+        // We normalize both the chatId and userEmail to compare
+        const chatIdNormalized = chatId.toLowerCase().replace(/[@\.-]/g, '');
+        if (!chatIdNormalized.includes(userEmailNormalized)) {
+          return; // User is not a participant in this DM
+        }
+        
+        const timestamp = data.timestamp?.toDate?.()?.getTime() || 
+                         (typeof data.timestamp === 'number' ? data.timestamp : 0);
+        
+        conversationsMap.set(chatId, {
+          chatId,
+          lastMessage: data.content || '',
+          lastMessageTimestamp: timestamp,
+          lastMessageRole: data.role || 'user',
+          lastMessageUserId: data.userId || null,
+        });
+      });
+
+      // Filter conversations to only include those the user has access to
+      const filteredConversations: any[] = [];
+      
+      for (const conv of conversationsMap.values()) {
+        const chatId = conv.chatId;
+        
+        // AI assistant conversations - user always has access (already filtered by userId)
+        if (chatId.startsWith('ai-assistant-')) {
+          // Verify it's the user's own AI assistant conversation
+          if (chatId.endsWith(`-${userEmail}`)) {
+            filteredConversations.push(conv);
+          }
+          continue;
+        }
+        
+        // Project channels - check if user has access
+        if (chatId.startsWith('project-') && orgId) {
+          const projectId = chatId.replace('project-', '');
+          const hasAccess = await isProjectMember(orgId, userEmail, projectId);
+          if (hasAccess) {
+            filteredConversations.push(conv);
+          }
+          continue;
+        }
+        
+        
+        // Direct messages - verify the other user is in the same org
+        if (chatId.startsWith('dm-') && orgId) {
+          try {
+            // Extract the other user's email from the DM chatId
+            // Format: dm-{email1}-{email2} where emails are sorted
+            const dmPart = chatId.replace('dm-', '');
+            
+            // Try to extract emails - look for @ symbols
+            const atIndices: number[] = [];
+            for (let i = 0; i < dmPart.length; i++) {
+              if (dmPart[i] === '@') {
+                atIndices.push(i);
+              }
+            }
+            
+            if (atIndices.length >= 2) {
+              // Find the split point (hyphen between domains)
+              const firstDomainEnd = dmPart.indexOf('-', atIndices[0]);
+              if (firstDomainEnd > atIndices[0]) {
+                const email1 = dmPart.substring(0, firstDomainEnd);
+                const email2 = dmPart.substring(firstDomainEnd + 1);
+                const otherUserEmail = email1.toLowerCase() === userEmail 
+                  ? email2.toLowerCase() 
+                  : email1.toLowerCase();
+                
+                // Check if the other user is in the same org
+                const pool = await getOrgPool(orgId);
+                const userCheck = await pool.query(
+                  `SELECT 1 FROM users WHERE email = $1`,
+                  [otherUserEmail]
+                );
+                
+                if (userCheck.rows.length > 0) {
+                  filteredConversations.push(conv);
+                }
+              }
+            } else {
+              // Fallback: if we can't parse, check if any org member's email appears in the chatId
+              const pool = await getOrgPool(orgId);
+              const orgMembers = await pool.query(
+                `SELECT email FROM users WHERE email != $1`,
+                [userEmail]
+              );
+              
+              const memberEmails = orgMembers.rows.map((row: any) => row.email.toLowerCase());
+              const chatIdLower = chatId.toLowerCase();
+              const hasOrgMember = memberEmails.some((email: string) => 
+                chatIdLower.includes(email.replace('@', '').replace(/\./g, ''))
+              );
+              
+              if (hasOrgMember) {
+                filteredConversations.push(conv);
+              }
+            }
+          } catch (error) {
+            console.error('Error checking DM access:', error);
+            // Skip this conversation if we can't verify access
+          }
+          continue;
+        }
+        
+        // Unknown conversation type - skip it for safety
+      }
+
+      // Sort by last message timestamp and limit
+      const conversations = filteredConversations
+        .sort((a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp)
+        .slice(0, limit)
+        .map(conv => ({
+          ...conv,
+          lastMessageTimestamp: new Date(conv.lastMessageTimestamp).toISOString(),
+        }));
+
+      res.json(conversations);
+    } catch (error) {
+      console.error('Get recent conversations error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // PATCH /api/chats/:chatId/read - Mark a chat as read
+  app.patch('/api/chats/:chatId/read', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const chatId = req.params.chatId;
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Get org slug for Firestore path
+      const readReceiptsPath = await getOrgCollectionPath('read_receipts', orgId);
+
+      // Sanitize document ID: replace @ and . with - in userId and chatId
+      const sanitizedUserId = userEmail.replace(/[@.]/g, '-');
+      const sanitizedChatId = chatId.replace(/[@.]/g, '-');
+      const docId = `${sanitizedUserId}_${sanitizedChatId}`;
+
+      const now = Date.now();
+      const readReceiptRef = db.collection(readReceiptsPath).doc(docId);
+
+      // Use set with merge to create or update
+      await readReceiptRef.set({
+        userId: userEmail,
+        chatId: chatId,
+        lastReadTimestamp: now,
+        updatedAt: new Date(),
+      }, { merge: true });
+
+      res.json({ success: true, lastReadTimestamp: now });
+    } catch (error) {
+      console.error('Mark chat as read error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // GET /api/chats/read-receipts - Get all read receipts for the current user
+  app.get('/api/chats/read-receipts', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // Get org slug for Firestore path
+      const readReceiptsPath = await getOrgCollectionPath('read_receipts', orgId);
+
+      // Query all read receipts for this user
+      const snapshot = await db.collection(readReceiptsPath)
+        .where('userId', '==', userEmail)
+        .get();
+
+      const readReceipts = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          chatId: data.chatId,
+          lastReadTimestamp: data.lastReadTimestamp || 0,
+        };
+      });
+
+      res.json(readReceipts);
+    } catch (error) {
+      console.error('Get read receipts error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // POST /api/chats/read-receipts/batch - Get read receipts for specific chats
+  app.post('/api/chats/read-receipts/batch', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const { chatIds } = req.body;
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      if (!Array.isArray(chatIds)) {
+        return res.status(400).json({ error: 'chatIds must be an array' });
+      }
+
+      // Get org slug for Firestore path
+      const readReceiptsPath = await getOrgCollectionPath('read_receipts', orgId);
+
+      // Build document IDs for the requested chats
+      const sanitizedUserId = userEmail.replace(/[@.]/g, '-');
+      const docIds = chatIds.map((chatId: string) => {
+        const sanitizedChatId = chatId.replace(/[@.]/g, '-');
+        return `${sanitizedUserId}_${sanitizedChatId}`;
+      });
+
+      // Fetch documents in batches (Firestore limit is 10 for 'in' queries)
+      const BATCH_SIZE = 10;
+      const readReceiptsMap: Record<string, number> = {};
+
+      for (let i = 0; i < docIds.length; i += BATCH_SIZE) {
+        const batch = docIds.slice(i, i + BATCH_SIZE);
+        const snapshot = await db.collection(readReceiptsPath)
+          .where(db.FieldPath.documentId(), 'in', batch)
+          .get();
+
+        snapshot.docs.forEach(doc => {
+          const data = doc.data();
+          if (data.chatId) {
+            readReceiptsMap[data.chatId] = data.lastReadTimestamp || 0;
+          }
+        });
+      }
+
+      res.json(readReceiptsMap);
+    } catch (error) {
+      console.error('Get read receipts batch error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // DELETE /api/messages/:chatId - Delete all messages for a chat (clear chat history)
+  app.delete('/api/messages/:chatId', authenticateUser, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
+      const userEmail = (req as any).user.email?.toLowerCase();
+      const chatId = req.params.chatId;
+
+      if (!userEmail) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      // For AI assistant conversations, ensure user can only clear their own chat
+      if (chatId.startsWith('ai-assistant-')) {
+        if (!chatId.endsWith(`-${userEmail}`)) {
+          return res.status(403).json({ error: 'Access denied: You can only clear your own AI chat history' });
+        }
+      }
+
+      // Use org slug for Firestore path
+      const messagesPath = await getOrgCollectionPath('messages', orgId);
+
+      // Query all messages for this chatId
+      let query = db.collection(messagesPath).where('chatId', '==', chatId);
+      
+      // For AI assistant conversations, also filter by userId for additional security
+      if (chatId.startsWith('ai-assistant-')) {
+        query = query.where('userId', '==', userEmail);
+      }
+
+      const snapshot = await query.get();
+      
+      // Delete all messages in batches (Firestore batch limit is 500)
+      const BATCH_SIZE = 500;
+      const docs = snapshot.docs;
+      let deletedCount = 0;
+
+      for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+        const batch = docs.slice(i, i + BATCH_SIZE);
+        const writeBatch = db.batch();
+        
+        batch.forEach((doc) => {
+          writeBatch.delete(doc.ref);
+        });
+        
+        await writeBatch.commit();
+        deletedCount += batch.length;
+      }
+
+      res.json({ 
+        success: true, 
+        deletedCount,
+        message: `Successfully cleared ${deletedCount} message(s) from chat history` 
+      });
+    } catch (error) {
+      console.error('Clear chat history error:', error);
+      res.status(500).json({ error: (error as Error).message });
+    }
+  });
+
+  // POST /api/messages/stream - Stream AI response using SSE
+  app.post('/api/messages/stream', authenticateUser, requireOrgMembership, async (req, res) => {
+    try {
+      const orgId = (req as any).orgId;
+      const orgSlug = (req as any).orgSlug;
+      const userEmail = (req as any).userEmail;
+      const { chatId, message, citedContext, imageUrls } = req.body;
+
+      if (!userEmail || !chatId || !message) {
+        return res.status(400).json({ error: 'Missing required fields: chatId, message' });
+      }
+
+      console.log('🌊 [Streaming] Request received:', {
+        userEmail,
+        orgId,
+        orgSlug,
+        chatId,
+        messageLength: message?.length || 0,
+        imageCount: imageUrls?.length || 0,
+        hasOrgId: !!orgId,
+        hasOrgSlug: !!orgSlug,
+        authHeader: req.headers.authorization ? 'present' : 'missing',
+      });
+
+      if (!orgId) {
+        console.error('❌ [Streaming] Missing orgId - cannot authenticate with Ask API');
+        return res.status(400).json({ error: 'Missing organization context' });
+      }
+
+      if (!orgSlug) {
+        console.error('❌ [Streaming] Missing orgSlug - Ask API requires org_slug');
+        return res.status(400).json({ error: 'Missing organization slug' });
+      }
+
+      // Set SSE headers and 200 status
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+
+      // Determine the AI service URL - auto-detect environment
+      // In production (GKE), use the Kubernetes service DNS name
+      // In development, use the local AI service or environment variable
+      const isLocalDev = process.env.NODE_ENV !== 'production';
+      let aiServiceBase: string;
+      
+      if (isLocalDev) {
+        aiServiceBase = process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082';
+      } else {
+        // Production: Use Kubernetes service DNS name (can be overridden with env var)
+        aiServiceBase = process.env.AI_SERVICE_URL || 'http://ask-api:80';
+      }
+      
+      const aiServiceUrl = `${aiServiceBase}/api/ask`;
+
+      const headers = await getAIServiceHeaders(req);
+
+      // Build request body for leanworks API
+      // Transform cited_context the same way the non-streaming API does
+      let cited_context: any = undefined;
+
+      if (citedContext) {
+        const contextObj: any = {};
+        
+        if (citedContext.projects && citedContext.projects.length > 0) {
+          contextObj.projects = citedContext.projects.map((project: any) => ({
+            id: project.id,
+            name: project.name,
+            ...(project.description && { description: project.description }),
+            ...(project.status && { status: project.status }),
+          }));
+        }
+
+        if (citedContext.tasks && citedContext.tasks.length > 0) {
+          contextObj.tasks = citedContext.tasks.map((task: any) => ({
+            id: task.id,
+            title: task.title,
+            ...(task.description && { description: task.description }),
+            ...(task.status && { status: task.status }),
+            ...(task.priority && { priority: task.priority }),
+          }));
+        }
+
+        if (citedContext.docs && citedContext.docs.length > 0) {
+          contextObj.docs = citedContext.docs.map((doc: any) => ({
+            id: doc.id,
+            title: doc.title,
+          }));
+        }
+
+        // Add selected text to cited_context as structured object
+        const selectedTextPos = citedContext.selectedTextPosition as any;
+        const selectedTextFromList = citedContext.selectedTexts && citedContext.selectedTexts.length > 0
+          ? citedContext.selectedTexts[0]
+          : null;
+        const selectedTextValue = selectedTextPos?.text || selectedTextFromList?.text;
+
+        if (selectedTextPos && selectedTextValue && selectedTextPos.docId) {
+          contextObj.selectedText = {
+            text: selectedTextValue,
+            docId: selectedTextPos.docId,
+            from: selectedTextPos.from ?? selectedTextPos.startOffset ?? 0,
+            to: selectedTextPos.to ?? selectedTextPos.endOffset ?? 0,
+            blockType: selectedTextPos.blockType || 'paragraph',
+            blockPos: selectedTextPos.blockPos ?? 0,
+            blockOffset: selectedTextPos.blockOffset ?? 0,
+          };
+        }
+
+        if (Object.keys(contextObj).length > 0) {
+          cited_context = contextObj;
+        }
+
+        console.log('📋 [Streaming] Transformed cited_context:', {
+          hasProjects: !!contextObj.projects?.length,
+          hasTasks: !!contextObj.tasks?.length,
+          hasDocs: !!contextObj.docs?.length,
+          hasSelectedText: !!contextObj.selectedText,
+        });
+      }
+
+      // Build request body for leanworks API
+      // Note: Ask API expects user_id and org_slug in the body for context
+      const requestBody: any = {
+        user_id: userEmail,
+        org_slug: orgSlug,
+        query: message,
+        session_id: chatId,
+        stream: true,
+        cited_context: cited_context,
+      };
+
+      // Add image URLs if provided (for vision support)
+      if (imageUrls && Array.isArray(imageUrls) && imageUrls.length > 0) {
+        requestBody.images = imageUrls.map(url => ({ type: 'url', url }));
+        console.log('🖼️ [Streaming] Added image URLs to request:', {
+          imageCount: imageUrls.length,
+          imageUrls: imageUrls.map((url: string) => url.substring(0, 80) + '...'),
+        });
+      }
+
+      console.log('🌊 [Streaming] Calling leanworks API:', {
+        url: aiServiceUrl,
+        user: userEmail,
+        orgId: orgId,
+        orgSlug: orgSlug,
+        chatId,
+        environment: isLocalDev ? 'local' : 'production',
+        hasServiceAuthentication: true,
+        requestBody: {
+          user_id: requestBody.user_id,
+          org_slug: requestBody.org_slug,
+          query: requestBody.query,
+          session_id: requestBody.session_id,
+          stream: requestBody.stream,
+          cited_context: requestBody.cited_context,
+          images: requestBody.images ? `${requestBody.images.length} image(s)` : 'none',
+        },
+      });
+
+      // Make streaming request to leanworks API
+      console.log('🔌 [Streaming] About to fetch from:', aiServiceUrl);
+      let response;
+      try {
+        response = await fetch(aiServiceUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(requestBody),
+        });
+        console.log('✅ [Streaming] Fetch completed, status:', response.status);
+      } catch (fetchError) {
+        console.error('❌ [Streaming] Fetch failed:', fetchError);
+        res.write(`data: ${JSON.stringify({ type: 'error', error: `Failed to connect to AI service: ${(fetchError as Error).message}` })}\n\n`);
+        res.end();
+        return;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ [Streaming] AI service error:', {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText,
+        });
+        res.write(`data: ${JSON.stringify({ type: 'error', error: `AI service error: ${response.status} - ${errorText}` })}\n\n`);
+        res.end();
+        return;
+      }
+
+      // Forward the SSE stream from leanworks to frontend
+      console.log('✅ [Streaming] Connected to leanworks API, forwarding events...');
+
+      // Handle connection close
+      req.on('close', () => {
+        console.log('🔌 [Streaming] Client disconnected');
+      });
+
+      // Stream the response
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) {
+              console.log('✅ [Streaming] Stream complete');
+              res.end();
+              break;
+            }
+
+            // Decode and forward the chunk
+            const chunk = decoder.decode(value, { stream: true });
+            res.write(chunk);
+            
+            // Log events for debugging
+            if (chunk.includes('data: ')) {
+              const lines = chunk.split('\n');
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const event = JSON.parse(line.substring(6));
+                    console.log('📨 [Streaming] Event:', event.type, event.tool_name || event.text?.substring(0, 50) || '');
+                  } catch (e) {
+                    // Ignore parse errors for logging
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error streaming response:', error);
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({ type: 'error', error: 'Stream interrupted' })}\n\n`);
+            res.end();
+          }
+        }
+      } else {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: 'No response body' })}\n\n`);
+        res.end();
+      }
+    } catch (error) {
+      console.error('Streaming endpoint error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: (error as Error).message });
+      } else if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: (error as Error).message })}\n\n`);
+        res.end();
+      }
+    }
+  });
+}

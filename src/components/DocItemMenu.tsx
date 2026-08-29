@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { MoreVertical, Share2, Mail, Trash2, Plus, X } from "lucide-react";
+import { MoreVertical, Share2, Mail, Paperclip, Trash2, Plus, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import {
   DropdownMenu,
@@ -15,6 +15,7 @@ interface DocItemMenuProps {
   doc: Doc;
   isActive: boolean;
   isOwner: boolean;
+  filesCount: number;
   onDelete: (e: React.MouseEvent) => void;
 }
 
@@ -22,6 +23,7 @@ export function DocItemMenu({
   doc,
   isActive,
   isOwner,
+  filesCount,
   onDelete,
 }: DocItemMenuProps) {
   const navigate = useNavigate();
@@ -72,6 +74,10 @@ export function DocItemMenu({
             Share
           </DropdownMenuItem>
         )}
+        <DropdownMenuItem onClick={() => navigate(`/docs/${doc.id}?action=files`)}>
+          <Paperclip className="mr-2 h-4 w-4" />
+          Attached Files {filesCount > 0 && `(${filesCount})`}
+        </DropdownMenuItem>
         {isOwner && (
           <DropdownMenuItem
             onClick={onDelete}

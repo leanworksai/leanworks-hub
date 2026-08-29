@@ -6,15 +6,12 @@
  */
 
 import { Message } from '@google-cloud/pubsub';
-import { applicationDefault, initializeApp, getApps } from 'firebase-admin/app';
+import { initializeApp, applicationDefault, getApps } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
 import { getOrgPoolBySlug } from '../../database/multi-tenant-pool';
-import { getStorageBucket, isDevEnvironment } from '../utils/env.js';
-import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 import {
   getDocumentProcessingPubSubClient,
   getDocumentProcessingSubscriptionName,
-  getDocProcessingTopic,
   DocumentProcessingJob,
   publishDocumentProcessingStatus,
 } from '../services/document-pubsub.js';
@@ -25,6 +22,7 @@ import {
   MaxRetriesExceededError,
   isDocumentProcessingError,
 } from '../utils/document-errors.js';
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 
 /**
  * Initialize Firebase Admin SDK
@@ -32,11 +30,12 @@ import {
 function initializeFirebaseAdmin(): void {
   if (getApps().length === 0) {
     const { projectId } = getGoogleCloudConfig();
+    const storageBucket = process.env.AUDIO_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || 'leanworks-prod';
     try {
       initializeApp({
         credential: applicationDefault(),
         projectId,
-        storageBucket: getStorageBucket(),
+        storageBucket,
       });
       console.log('✅ Firebase Admin SDK initialized for document processing worker');
     } catch (error) {
@@ -349,22 +348,10 @@ export async function startDocumentProcessingWorker(): Promise<void> {
     const subscriptionName = getDocumentProcessingSubscriptionName();
     const subscription = pubsub.subscription(subscriptionName);
 
-    // Check if subscription exists, create if not (in dev environments)
+    // Check if subscription exists
     const [exists] = await subscription.exists();
     if (!exists) {
-      if (isDevEnvironment()) {
-        console.warn(`⚠️ Pub/Sub subscription ${subscriptionName} does not exist. Creating...`);
-
-        const topic = await getDocProcessingTopic();
-        await topic.createSubscription(subscriptionName, {
-          ackDeadlineSeconds: ACK_DEADLINE,
-          messageRetentionDuration: { seconds: 604800 }, // 7 days
-          maxDeliveryAttempts: 5,
-        });
-        console.log(`✅ Pub/Sub subscription ${subscriptionName} created`);
-      } else {
-        throw new Error(`Subscription ${subscriptionName} does not exist. Please run setup script.`);
-      }
+      throw new Error(`Subscription ${subscriptionName} does not exist. Please run setup script.`);
     }
 
     // Configure subscription

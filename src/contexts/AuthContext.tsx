@@ -115,7 +115,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // In demo mode, auto-login the demo user
         if (DEMO_MODE) {
           console.log('🎭 Demo mode: Auto-logging in demo user');
-          
+
           const mockUser = {
             uid: 'demo-user-id',
             email: 'demo@example.com',
@@ -157,11 +157,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             sendPasswordResetEmail: async () => {},
             delete: async () => {},
           } as unknown as User;
-          
+
           setUser(mockUser);
           setAuthReady(true);
           setLoading(false);
-          
+
           console.log('✅ Demo mode: User authenticated');
           return;
         }

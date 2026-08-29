@@ -16,10 +16,6 @@ spec:
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
     spec:
-      tolerations:
-      - key: "node.gke.io/balloon-pod-resize"
-        operator: "Exists"
-        effect: "NoSchedule"
       serviceAccountName: leanworks-hub-sa
       containers:
       - name: cloud-sql-proxy
@@ -27,13 +23,7 @@ spec:
         args:
         - "--address=0.0.0.0"
         - "--port=5432"
-        - "$(DB_INSTANCE_CONNECTION_STRING)"
-        env:
-        - name: DB_INSTANCE_CONNECTION_STRING
-          valueFrom:
-            configMapKeyRef:
-              name: leanworks-config
-              key: DB_INSTANCE_CONNECTION_STRING
+        - "leanworks-474204:us-west1:leanworks-prod"
         ports:
         - containerPort: 5432
           name: postgres

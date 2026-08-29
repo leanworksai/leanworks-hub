@@ -7,7 +7,6 @@ import express from 'express';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getOrgPool, getOrgPoolBySlug, getSharedPool, getOrgSlugById } from '../../database/multi-tenant-pool.js';
-import { getSecretName as getEnvironmentSecretName } from '../utils/env.js';
 import crypto from 'crypto';
 import { validateRequest } from '../middleware/validate-request.js';
 import {
@@ -76,9 +75,7 @@ function getSecretName(orgSlug: string, integrationId: string): string {
   // Convert underscores to hyphens for consistency with existing secret naming
   const slugForSecret = orgSlug.replace(/_/g, '-');
   const sanitizedIntegrationId = integrationId.toLowerCase().replace(/[^a-z0-9]/g, '');
-  const baseName = `integrations-${slugForSecret}-${sanitizedIntegrationId}`;
-
-  return getEnvironmentSecretName(baseName);
+  return `integrations-${slugForSecret}-${sanitizedIntegrationId}`;
 }
 
 // Helper function to save secret to GCP Secret Manager
@@ -183,10 +180,6 @@ export function setupIntegrationEndpoints(
         { id: 'notion', name: 'Notion' },
         { id: 'linear', name: 'Linear' },
         { id: 'clickup', name: 'ClickUp' },
-        { id: 'workday', name: 'Workday' },
-        { id: 'google_drive', name: 'Google Drive' },
-        { id: 'google_cloud_storage', name: 'Google Cloud Storage' },
-        { id: 'bigquery', name: 'BigQuery' },
       ].map(integration => {
         const existing = connectedIntegrations.find((i: any) => i.integration_id === integration.id);
         return {
@@ -221,8 +214,7 @@ export function setupIntegrationEndpoints(
       const pool = await getOrgPool(orgId);
 
       // Validate integration ID
-      const formBasedIntegrationIds = ['slack', 'atlassian', 'outlook', 'notion', 'linear', 'clickup', 'workday', 'google_drive', 'google_cloud_storage', 'bigquery'];
-      if (!formBasedIntegrationIds.includes(integrationId)) {
+      if (!['slack', 'atlassian', 'outlook', 'notion', 'linear', 'clickup'].includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 
@@ -286,46 +278,6 @@ export function setupIntegrationEndpoints(
           credentials = { apiToken: body.apiToken };
           integrationName = 'ClickUp';
           break;
-        
-        case 'workday':
-          if (!body.clientId || !body.clientSecret || !body.tenantId || !body.baseUrl) {
-            return res.status(400).json({ error: 'Client ID, Client Secret, Tenant ID, and Base URL are required' });
-          }
-          credentials = {
-            clientId: body.clientId,
-            clientSecret: body.clientSecret,
-            tenantId: body.tenantId,
-            baseUrl: body.baseUrl,
-          };
-          integrationName = 'Workday';
-          break;
-
-        case 'google_drive':
-          if (!body.serviceAccountJson?.trim()) {
-            return res.status(400).json({ error: 'Service account JSON is required' });
-          }
-          credentials = { serviceAccountJson: body.serviceAccountJson.trim() };
-          integrationName = 'Google Drive';
-          break;
-
-        case 'google_cloud_storage':
-          if (!body.serviceAccountJson?.trim()) {
-            return res.status(400).json({ error: 'Service account JSON is required' });
-          }
-          credentials = {
-            serviceAccountJson: body.serviceAccountJson.trim(),
-            ...(body.bucketName?.trim() && { bucketName: body.bucketName.trim() }),
-          };
-          integrationName = 'Google Cloud Storage';
-          break;
-
-        case 'bigquery':
-          if (!body.serviceAccountJson?.trim()) {
-            return res.status(400).json({ error: 'Service account JSON is required' });
-          }
-          credentials = { serviceAccountJson: body.serviceAccountJson.trim() };
-          integrationName = 'BigQuery';
-          break;
 
         default:
           return res.status(400).json({ error: 'Unsupported integration type' });
@@ -380,8 +332,7 @@ export function setupIntegrationEndpoints(
       
       const pool = await getOrgPool(orgId);
 
-      const disconnectableIds = ['slack', 'atlassian', 'github', 'outlook', 'notion', 'linear', 'clickup', 'workday', 'google_drive', 'google_cloud_storage', 'bigquery'];
-      if (!disconnectableIds.includes(integrationId)) {
+      if (!['slack', 'atlassian', 'github', 'outlook', 'notion', 'linear', 'clickup'].includes(integrationId)) {
         return res.status(400).json({ error: 'Invalid integration ID' });
       }
 
@@ -492,123 +443,6 @@ export function setupIntegrationEndpoints(
     }
   });
 
-  // Check if GitHub app is already installed
-  app.get('/api/integrations/github/check-installation', authenticateUser, requireOrgOwner, async (req, res) => {
-    try {
-      const userEmail = (req as any).userEmail;
-      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-
-      if (!orgId) {
-        return res.status(400).json({ error: 'Organization ID is required' });
-      }
-
-      // Import GitHub app utilities
-      const { listInstallations } = await import('../utils/github-app.js');
-
-      try {
-        const installations = await listInstallations(secretManagerClient, projectId);
-
-        if (installations.length === 0) {
-          return res.json({ installation: null, message: 'No GitHub app installations found' });
-        }
-
-        // For now, return the first installation
-        // In the future, we could match by account name or let user choose
-        const installation = installations[0];
-
-        res.json({
-          installation: {
-            id: installation.id,
-            account: installation.account,
-            repository_selection: installation.repository_selection,
-            permissions: installation.permissions,
-          }
-        });
-      } catch (error: any) {
-        console.error('[GitHub Check Installation] Error:', error);
-        // If GitHub API fails, return null to allow fallback to normal flow
-        res.json({ installation: null, error: 'Unable to check GitHub installations' });
-      }
-    } catch (error) {
-      console.error('Check GitHub installation error:', error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
-  // Save existing GitHub installation (when found via check-installation)
-  app.post('/api/integrations/github/save-installation', authenticateUser, requireOrgOwner, async (req, res) => {
-    try {
-      const userEmail = (req as any).userEmail;
-      const orgId = (req as any).orgId || req.headers['x-org-id'] as string;
-      const { installationId } = req.body;
-
-      if (!orgId) {
-        return res.status(400).json({ error: 'Organization ID is required' });
-      }
-
-      if (!installationId) {
-        return res.status(400).json({ error: 'Installation ID is required' });
-      }
-
-      const parsedInstallationId = parseInt(installationId, 10);
-      if (isNaN(parsedInstallationId)) {
-        return res.status(400).json({ error: 'Invalid installation ID' });
-      }
-
-      // Get org slug
-      const orgSlug = await getOrgSlugById(orgId);
-
-      // Get org pool
-      const pool = await getOrgPoolBySlug(orgSlug);
-
-      // Store mapping in PostgreSQL using org pool
-      await pool.query(
-        `INSERT INTO github_installations (installation_id, setup_action, created_at)
-         VALUES ($1, $2, NOW())
-         ON CONFLICT (installation_id) DO UPDATE SET
-           setup_action = EXCLUDED.setup_action,
-           updated_at = NOW()`,
-        [parsedInstallationId, 'auto']
-      );
-
-      // Save basic installation data to Secret Manager using org slug
-      const secretName = getSecretName(orgSlug, 'github');
-      const basicInstallationData = {
-        installationId: parsedInstallationId,
-        orgSlug,
-        connectedAt: new Date().toISOString(),
-      };
-
-      await saveSecret(secretManagerClient, projectId, secretName, JSON.stringify(basicInstallationData));
-
-      // Update PostgreSQL integration record using org pool
-      await pool.query(
-        `INSERT INTO integrations (
-          integration_id, integration_name, connected,
-          secret_name, installation_id, connected_at
-        ) VALUES ($1, $2, $3, $4, $5, NOW())
-        ON CONFLICT (integration_id) DO UPDATE SET
-          integration_name = EXCLUDED.integration_name,
-          connected = EXCLUDED.connected,
-          secret_name = EXCLUDED.secret_name,
-          installation_id = EXCLUDED.installation_id,
-          updated_at = NOW()`,
-        [
-          'github',
-          'GitHub',
-          true,
-          secretName,
-          parsedInstallationId
-        ]
-      );
-
-      res.json({ success: true, message: 'GitHub installation saved successfully' });
-    } catch (error) {
-      console.error('Save GitHub installation error:', error);
-      res.status(500).json({ error: (error as Error).message });
-    }
-  });
-
   // GitHub Webhook endpoint (keep existing implementation)
   app.post('/api/integrations/github/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
     try {
@@ -674,3 +508,4 @@ export function setupIntegrationEndpoints(
     }
   });
 }
+

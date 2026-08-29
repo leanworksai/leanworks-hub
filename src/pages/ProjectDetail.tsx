@@ -36,7 +36,6 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { cn } from "@/lib/utils";
 import { TaskTooltip } from "@/components/TaskTooltip";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
-import { NewAITaskDialog } from "@/components/NewAITaskDialog";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateStringInTimezone } from "@/lib/dateTimeUtils";
 import { useAllUpdateSummaries } from "@/hooks/useUpdateSummaries";
@@ -118,7 +117,6 @@ export default function ProjectDetail() {
   const [memberPopoverOpen, setMemberPopoverOpen] = useState(false);
   const [memberToRemove, setMemberToRemove] = useState<{ email: string; name: string } | null>(null);
   const [showNewTaskDialog, setShowNewTaskDialog] = useState(false);
-  const [showNewAITaskDialog, setShowNewAITaskDialog] = useState(false);
   const [showLimitVisibilityDialog, setShowLimitVisibilityDialog] = useState(false);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [editedProject, setEditedProject] = useState<any>(null);
@@ -140,7 +138,6 @@ export default function ProjectDetail() {
   const userTimezone = useUserTimezone();
   const { data: allSummaries = [] } = useAllUpdateSummaries(projectId || '');
   const { setContext, clearContext } = usePageContext();
-  const tasks = project?.tasks ?? [];
   
   // Track scroll depth for engagement
   useScrollTracking(true);
@@ -734,7 +731,7 @@ export default function ProjectDetail() {
                   <CardTitle className="text-xl">Tasks</CardTitle>
                   <div className="flex items-center gap-2">
                     <span className="text-sm text-muted-foreground">
-                      {tasks.filter(t => t.status === "completed").length} / {tasks.length} completed
+                      {project.tasks.filter(t => t.status === "completed").length} / {project.tasks.length} completed
                     </span>
                     <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200 data-[state=open]:rotate-180" />
                   </div>
@@ -742,7 +739,7 @@ export default function ProjectDetail() {
                 <div className="w-full bg-secondary rounded-full h-2 relative">
                   <div 
                     className="bg-primary h-2 rounded-full transition-all"
-                    style={{ width: `${tasks.length === 0 ? 0 : (tasks.filter(t => t.status === "completed").length / tasks.length) * 100}%` }}
+                    style={{ width: `${(project.tasks.filter(t => t.status === "completed").length / project.tasks.length) * 100}%` }}
                   />
                 </div>
               </div>
@@ -751,35 +748,24 @@ export default function ProjectDetail() {
           <CollapsibleContent>
             <CardContent>
               <div className="mb-4">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full sm:w-auto"
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Create New Task
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => setShowNewTaskDialog(true)}>
-                      New Task for Human
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setShowNewAITaskDialog(true)}>
-                      New Task for AI
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowNewTaskDialog(true)}
+                  className="w-full sm:w-auto"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create New Task
+                </Button>
               </div>
-              {tasks.length === 0 ? (
+              {project.tasks.length === 0 ? (
                 <div className="text-center py-8 text-sm text-muted-foreground">
                   No tasks yet
                 </div>
               ) : (
                 <>
                   <div className="space-y-3">
-                    {tasks.slice(taskPageIndex * 5, (taskPageIndex + 1) * 5).map((task) => (
+                    {project.tasks.slice(taskPageIndex * 5, (taskPageIndex + 1) * 5).map((task) => (
                       <div 
                         key={task.id} 
                         className="flex items-start gap-3 p-3 rounded-lg bg-background/50 border border-border cursor-pointer hover:bg-background/70 transition-colors"
@@ -805,10 +791,10 @@ export default function ProjectDetail() {
                       </div>
                     ))}
                   </div>
-                  {tasks.length > 5 && (
+                  {project.tasks.length > 5 && (
                     <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
                       <div className="text-sm text-muted-foreground">
-                        Showing {taskPageIndex * 5 + 1}-{Math.min((taskPageIndex + 1) * 5, tasks.length)} of {tasks.length} tasks
+                        Showing {taskPageIndex * 5 + 1}-{Math.min((taskPageIndex + 1) * 5, project.tasks.length)} of {project.tasks.length} tasks
                       </div>
                       <div className="flex items-center gap-2">
                         <Button
@@ -824,7 +810,7 @@ export default function ProjectDetail() {
                           variant="outline"
                           size="icon"
                           onClick={() => setTaskPageIndex(prev => prev + 1)}
-                          disabled={(taskPageIndex + 1) * 5 >= tasks.length}
+                          disabled={(taskPageIndex + 1) * 5 >= project.tasks.length}
                           className="h-8 w-8"
                         >
                           <ChevronRight className="h-4 w-4" />
@@ -1115,11 +1101,6 @@ export default function ProjectDetail() {
       <NewTaskDialog 
         open={showNewTaskDialog} 
         onOpenChange={setShowNewTaskDialog}
-        initialProjectId={project.id}
-      />
-      <NewAITaskDialog
-        open={showNewAITaskDialog}
-        onOpenChange={setShowNewAITaskDialog}
         initialProjectId={project.id}
       />
 

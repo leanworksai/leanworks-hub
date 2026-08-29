@@ -23,6 +23,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useCreateTask } from "@/hooks/useTasks";
 import { useUserProjects } from "@/hooks/useProjects";
+import { useUserTeams } from "@/hooks/useTeams";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
 import { useAuth } from "@/contexts/AuthContext";
@@ -39,7 +40,6 @@ import { authenticatedFetch, subscriptionService } from "@/services/api";
 import { cn } from "@/lib/utils";
 import { trackCreate, trackConversion, trackFirstFeatureUse, trackEvent, trackModal } from "@/lib/analytics";
 import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
-import { API_CONFIG } from "@/config/api";
 
 interface NewTaskDialogProps {
   open: boolean;
@@ -92,6 +92,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
   const createTask = useCreateTask();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { data: projects = [] } = useUserProjects();
+  const { data: userTeams = [] } = useUserTeams();
   const { data: users = [] } = useUsers();
   const userMap = useUserMap();
   const { user } = useAuth();
@@ -231,7 +232,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
 
     setIsGeneratingAI(true);
     try {
-      const apiUrl = `${API_CONFIG.hub}/generate-task`;
+      const apiBase = import.meta.env.DEV ? 'http://localhost:3001/api' : '/api';
+      const apiUrl = `${apiBase}/generate-task`;
 
       // Get current form values to pass as context
       const currentFormData = form.getValues();
@@ -496,6 +498,11 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
         ? data.tags.split(",").map((tag) => tag.trim()).filter((tag) => tag.length > 0)
         : [];
 
+      // If no project, associate task with user's teams
+      const teams = !project && userTeams.length > 0 
+        ? userTeams.map(team => team.name)
+        : undefined;
+
       // Build API request payload - only send fields that the schema expects
       // The schema validates these specific fields
       const apiPayload = {
@@ -655,8 +662,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Project</FormLabel>
-                    <FormDescription>
-                    Leave empty to create a task not linked to a project (visible to org members)
+                  <FormDescription>
+                    Leave empty to create a team-wide task visible to all your team members
                   </FormDescription>
                   <Select
                     onValueChange={(value) => {
@@ -676,7 +683,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="none">No project</SelectItem>
+                      <SelectItem value="none">No Project (Team-wide task)</SelectItem>
                       {projects.map((project) => {
                         return (
                           <SelectItem key={project.id} value={project.id}>
@@ -732,7 +739,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
                         </Button>
                       </FormControl>
                     </PopoverTrigger>
-                    <PopoverContent className="w-[400px] p-0" portalled={false}>
+                    <PopoverContent className="w-[400px] p-0">
                       <Command>
                         <CommandInput placeholder={selectedProjectId ? "Search project members..." : "Search organization members..."} />
                         <CommandList>

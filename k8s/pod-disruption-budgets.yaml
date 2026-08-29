@@ -13,6 +13,18 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
+  name: transcription-worker-pdb
+  labels:
+    app: transcription-worker
+spec:
+  minAvailable: 1  # Ensure at least 1 worker is always available
+  selector:
+    matchLabels:
+      app: transcription-worker
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
   name: cloud-sql-proxy-pdb
   labels:
     app: cloud-sql-proxy

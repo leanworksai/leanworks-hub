@@ -3,7 +3,7 @@
  */
 
 import { Pool } from 'pg';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
@@ -14,7 +14,7 @@ const __dirname = dirname(__filename);
 
 // Load .env file if it exists (for local development)
 const envPath = join(__dirname, '../.env');
-if (envPath) {
+if (existsSync(envPath)) {
   const envFile = readFileSync(envPath, 'utf8');
   envFile.split('\n').forEach(line => {
     const trimmedLine = line.trim();
@@ -54,7 +54,7 @@ async function getPostgresPassword(): Promise<string> {
 
 // Database configuration
 const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
-const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:${process.env.DB_INSTANCE_NAME || 'leanworks-prod'}`);
+const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:leanworks-prod`);
 const dbPort = parseInt(process.env.DB_PORT || '5432');
 
 // Get org slug from command line arguments

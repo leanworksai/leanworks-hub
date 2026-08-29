@@ -20,6 +20,7 @@ interface ConversationListProps {
   userEmail: string;
   allTeamMembers: Array<{ id: string; name: string; email?: string; avatar?: string }>;
   projects: Array<{ id: string; name: string }>;
+  teams: Array<{ id: string; name: string }>;
   onSelectConversation: (chatId: string, selectedMember: string) => void;
   className?: string;
 }
@@ -28,6 +29,7 @@ export function ConversationList({
   userEmail,
   allTeamMembers,
   projects,
+  teams,
   onSelectConversation,
   className,
 }: ConversationListProps) {
@@ -74,9 +76,10 @@ export function ConversationList({
     }
 
     if (isTeamChannelId(chatId)) {
-      const channelId = chatId.replace('team-', '');
+      const teamId = chatId.replace('team-', '');
+      const team = teams.find(t => t.name.toLowerCase().replace(/\s+/g, '-') === teamId);
       return {
-        name: channelId || 'Channel',
+        name: team?.name || teamId,
         avatar: "👥",
         icon: Users,
         selectedMember: chatId,
