@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getGoogleCloudConfig } from '../server/utils/google-cloud.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,22 +26,12 @@ if (existsSync(envPath)) {
   });
 }
 
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
-let serviceAccount;
-try {
-  serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-  console.log('✅ Loaded GCP credentials for database from:', serviceAccountPath);
-} catch (error) {
-  console.error('❌ Failed to load GCP credentials from:', serviceAccountPath);
-  console.error('Error:', error);
-  throw error;
-}
+const { projectId } = getGoogleCloudConfig(join(__dirname, '..'));
 
 const secretManagerClient = new SecretManagerServiceClient({
-  keyFilename: serviceAccountPath,
+  projectId,
 });
 
-const projectId = serviceAccount.project_id;
 const instanceName = 'leanworks-prod';
 const region = process.env.DB_REGION || 'us-west1';
 

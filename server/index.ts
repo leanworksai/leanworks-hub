@@ -1,11 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import Stripe from 'stripe';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { applicationDefault, initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { getStorage } from 'firebase-admin/storage';
-import { readFileSync, existsSync } from 'fs';
+import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcrypt';
@@ -57,32 +57,26 @@ import { checkoutSchema, portalSchema, switchPlanSchema } from './validation/sub
 import { demoRequestSchema, docShareSchema, addTaskCommentSchema } from './validation/misc-schemas.js';
 import { queryTaskProgressUpdatesSchema, queryProjectProgressUpdatesSchema } from './validation/update-schemas.js';
 import { convertJsonToHtml, convertJsonToHtmlWithPositions } from './utils/contentUtils.js';
+import { getGoogleCloudConfig } from './utils/google-cloud.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Read service account credentials
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
-let serviceAccount;
-try {
-  serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-  console.log('✅ Loaded GCP credentials from:', serviceAccountPath);
-} catch (error) {
-  console.error('❌ Failed to load GCP credentials from:', serviceAccountPath);
-  console.error('Error:', error);
-  process.exit(1);
-}
+// Google client libraries use Application Default Credentials. In GKE this
+// resolves through Workload Identity; local development should use gcloud ADC.
+const { projectId } = getGoogleCloudConfig(join(__dirname, '..'));
+const serviceAccount = { project_id: projectId };
 
 // Initialize Firebase Admin SDK (for auth and messages only)
 let firebaseApp;
 try {
   if (getApps().length === 0) {
     // Construct storage bucket name (default is {project-id}.appspot.com)
-    const storageBucket = serviceAccount.storage_bucket || 'leanworks-prod';
+    const storageBucket = process.env.AUDIO_STORAGE_BUCKET || process.env.FIREBASE_STORAGE_BUCKET || 'leanworks-prod';
     firebaseApp = initializeApp({
-      credential: cert(serviceAccount),
-      projectId: serviceAccount.project_id,
+      credential: applicationDefault(),
+      projectId,
       storageBucket: storageBucket,
     });
     console.log('✅ Firebase Admin SDK initialized');
@@ -106,8 +100,7 @@ console.log('✅ Firestore, Auth, and Storage initialized');
 
 // Initialize Secret Manager client
 const secretManagerClient = new SecretManagerServiceClient({
-  credentials: serviceAccount,
-  projectId: serviceAccount.project_id,
+  projectId,
 });
 
 // ============================================================================
@@ -309,59 +302,7 @@ const NO_TOKEN_LOG_INTERVAL = 60000; // Log once per minute per endpoint
 async function authenticateUser(req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
     const authHeader = req.headers.authorization;
-    const apiKey = req.headers['x-api-key'] as string | undefined;
-    
-    // Check for API key authentication first
-    if (apiKey) {
-      try {
-        const validApiKey = await getApiKeyFromSecretManager();
-        if (apiKey === validApiKey) {
-          // API key is valid - allow request to proceed
-          // Extract user email from X-User-Email header if provided (for API key auth)
-          const userEmail = req.headers['x-user-email'] as string | undefined;
-          if (userEmail) {
-            (req as any).userEmail = userEmail.toLowerCase();
-          }
-          (req as any).authenticatedViaApiKey = true;
-          
-          // If org context is provided, validate membership (same as Bearer token flow)
-          const orgIdentifier = req.headers['x-org-identifier'] as string ||
-                               req.headers['x-org-id'] as string | undefined;
-          if (orgIdentifier && userEmail) {
-            try {
-              const orgId = await resolveOrgId(orgIdentifier);
-              const membership = await checkOrgMembership(orgId, userEmail.toLowerCase());
-              if (membership.isMember) {
-                (req as any).orgId = orgId;
-                (req as any).orgRole = membership.role;
-              }
-            } catch (error: any) {
-              // Log error but continue without org context if slug conversion fails
-              if (process.env.NODE_ENV === 'development') {
-                console.warn('⚠️ [Backend] authenticateUser: Failed to resolve org context for API key auth', {
-                  error: error.message,
-                  orgIdentifier,
-                });
-              }
-            }
-          }
-          
-          next();
-          return;
-        } else {
-          return res.status(401).json({ error: 'Invalid API key' });
-        }
-      } catch (error: any) {
-        console.error('❌ [Backend] authenticateUser: API key validation failed', {
-          error: error.message,
-          method: req.method,
-          path: req.path,
-        });
-        return res.status(401).json({ error: 'Invalid API key' });
-      }
-    }
-    
-    // Fall back to Bearer token authentication
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       // Rate limit logging to prevent spam from polling/retry mechanisms
       // Only log in development mode to reduce production noise
@@ -372,75 +313,28 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
       if (process.env.NODE_ENV === 'development' && now - lastLogTime > NO_TOKEN_LOG_INTERVAL) {
         console.warn('⚠️ [Backend] authenticateUser: No token provided', {
           hasAuthHeader: !!authHeader,
-          authHeader: authHeader?.substring(0, 50),
           method: req.method,
           path: req.path,
         });
         noTokenLogCache.set(endpointKey, now);
       }
       
-      return res.status(401).json({ error: 'No token or API key provided' });
+      return res.status(401).json({ error: 'Authentication token required' });
     }
 
     const token = authHeader.substring(7);
-    let userEmail: string | undefined;
-    
-    // Try to verify as ID token first (normal flow when Firebase Auth works)
-    try {
-      const decodedToken = await retryFirebaseOperation(
-        () => auth.verifyIdToken(token),
-        3, // max retries
-        100 // base delay in ms
-      );
-      (req as any).user = decodedToken;
-      userEmail = decodedToken.email;
-      (req as any).userEmail = userEmail;
-    } catch (idTokenError: any) {
-      // If ID token verification fails, try to verify as custom token
-      // by decoding and checking the UID
-      if (idTokenError.code === 'auth/argument-error' && idTokenError.message?.includes('custom token')) {
-        try {
-          // Decode the JWT without verification first to get the UID
-          const parts = token.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-            
-            // If it has a uid, it's likely a custom token
-            if (payload.uid) {
-              // Verify the user exists and get their info with retry
-              const userRecord = await retryFirebaseOperation(
-                () => auth.getUser(payload.uid),
-                3,
-                100
-              );
-              
-              // Create a decoded token-like object
-              const decodedToken = {
-                uid: userRecord.uid,
-                email: userRecord.email,
-                email_verified: userRecord.emailVerified,
-              };
-              
-              (req as any).user = decodedToken;
-              userEmail = userRecord.email;
-              (req as any).userEmail = userEmail;
-            }
-          }
-        } catch (customTokenError: any) {
-          // If custom token handling fails, log and throw original error
-          console.error('❌ [Backend] authenticateUser: Custom token handling failed', {
-            error: customTokenError.message,
-            code: customTokenError.code,
-            isNetworkError: isNetworkError(customTokenError),
-            stack: customTokenError.stack,
-          });
-          throw idTokenError;
-        }
-      } else {
-      // If we get here, both methods failed or it's not a custom token error
-      throw idTokenError;
+    const decodedToken = await retryFirebaseOperation(
+      () => auth.verifyIdToken(token),
+      3,
+      100,
+    );
+    const userEmail = decodedToken.email?.toLowerCase();
+    if (!userEmail) {
+      return res.status(401).json({ error: 'Authentication token is missing an email claim' });
     }
-    }
+
+    (req as any).user = decodedToken;
+    (req as any).userEmail = userEmail;
     
     // Get org context from header (if provided)
     const orgIdentifier = req.headers['x-org-identifier'] as string ||
@@ -485,7 +379,7 @@ async function authenticateUser(req: express.Request, res: express.Response, nex
     const statusCode = isNetworkError(error) ? 503 : 401;
     const errorMessage = isNetworkError(error) 
       ? 'Authentication service temporarily unavailable. Please try again.' 
-      : 'Invalid token';
+      : 'Invalid or expired authentication token';
     
     res.status(statusCode).json({ error: errorMessage });
   }
@@ -526,11 +420,7 @@ async function requireOrgMembership(req: express.Request, res: express.Response,
                           req.headers['x-org-id'] as string ||
                           req.params.orgId;
 
-    console.log(`🔒 requireOrgMembership: ${req.method} ${req.path}, userEmail: ${userEmail}, orgIdentifier: ${orgIdentifier}, headers:`, {
-      'x-org-identifier': req.headers['x-org-identifier'],
-      'x-org-id': req.headers['x-org-id'],
-      'x-org-slug': req.headers['x-org-slug']
-    });
+    console.log(`🔒 requireOrgMembership: ${req.method} ${req.path}, userEmail: ${userEmail}, orgIdentifier: ${orgIdentifier}`);
 
     if (!orgIdentifier) {
       console.error(`❌ requireOrgMembership: No orgIdentifier found for ${req.method} ${req.path}`);
@@ -588,7 +478,10 @@ async function requireOrgOwner(req: express.Request, res: express.Response, next
     console.log(`[requireOrgOwner] Checking ownership - headerOrgId: ${headerOrgId}, paramOrgId: ${paramOrgId}, final orgIdentifier: ${orgIdentifier}, userEmail: ${userEmail}`);
     
     if (!orgIdentifier) {
-      console.error(`[requireOrgOwner] Missing orgId - headers:`, req.headers, `params:`, req.params);
+      console.error('[requireOrgOwner] Missing organization identifier', {
+        method: req.method,
+        path: req.path,
+      });
       return res.status(400).json({ error: 'Organization ID is required' });
     }
     
@@ -6044,7 +5937,7 @@ app.patch('/api/messages/:messageId/like', authenticateUser, async (req, res) =>
 });
 
 // ============================================================================
-// ASK API KEY ENDPOINT (Secret Manager)
+// INTERNAL ASK API CREDENTIAL (Secret Manager)
 // ============================================================================
 
 // Cache for API key to avoid repeated Secret Manager calls
@@ -6084,23 +5977,69 @@ async function getApiKeyFromSecretManager(): Promise<string> {
     }
   } catch (error) {
     console.error('❌ Failed to fetch API key from Secret Manager:', error);
-    // Fallback to environment variable for local development
-    const fallbackKey = process.env.ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-    console.log('⚠️ Using fallback API key from environment variable');
-    return fallbackKey;
+    const localKey = process.env.NODE_ENV !== 'production' ? process.env.ASK_API_KEY?.trim() : undefined;
+    if (localKey) {
+      console.warn('⚠️ Using server-side ASK_API_KEY for local development');
+      return localKey;
+    }
+    throw new Error('AI service API key is unavailable');
   }
 }
 
-// Endpoint to get API key for local development
-app.get('/api/ask-api-key', authenticateUser, async (req, res) => {
-  try {
-    const apiKey = await getApiKeyFromSecretManager();
-    res.json({ apiKey });
-  } catch (error) {
-    console.error('Error fetching API key:', error);
-    res.status(500).json({ error: 'Failed to fetch API key' });
+async function getAIServiceHeaders(req: express.Request): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  if (process.env.NODE_ENV !== 'production') {
+    headers['X-API-Key'] = await getApiKeyFromSecretManager();
+    return headers;
   }
-});
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    throw new Error('Authentication token required for AI service');
+  }
+  headers.Authorization = authHeader;
+  return headers;
+}
+
+async function proxyAIJsonRequest(
+  req: express.Request,
+  res: express.Response,
+  endpoint: string,
+): Promise<void> {
+  try {
+    const aiServiceBase = process.env.NODE_ENV !== 'production'
+      ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
+      : process.env.AI_SERVICE_URL || 'http://ask-api:80';
+    const headers = await getAIServiceHeaders(req);
+    const requestBody = {
+      ...req.body,
+      user_id: (req as any).userEmail,
+      org_slug: (req as any).orgSlug,
+    };
+    const aiResponse = await fetch(`${aiServiceBase}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    const responseText = await aiResponse.text();
+
+    res.status(aiResponse.status);
+    if (aiResponse.headers.get('content-type')?.includes('application/json')) {
+      res.json(responseText ? JSON.parse(responseText) : {});
+    } else {
+      res.type('text/plain').send(responseText);
+    }
+  } catch (error) {
+    console.error(`AI proxy request failed for ${endpoint}:`, error);
+    res.status(502).json({ error: 'AI service is unavailable' });
+  }
+}
+
+// Browser clients call authenticated same-origin routes; service credentials
+// are added only on the server and are never returned to the browser.
+app.post('/api/messages/generate-response', authenticateUser, requireOrgMembership, (req, res) =>
+  proxyAIJsonRequest(req, res, '/api/messages/generate-response'));
 
 // ============================================================================
 // FIREBASE CONFIG ENDPOINT (Secret Manager)
@@ -6145,8 +6084,6 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
     } catch (parseError: any) {
       console.error('❌ JSON parse error:', parseError.message);
       console.error('Raw config string length:', configString.length);
-      console.error('First 200 chars:', configString.substring(0, 200));
-      console.error('Last 200 chars:', configString.substring(Math.max(0, configString.length - 200)));
       throw new Error(`Failed to parse Firebase config JSON: ${parseError.message}`);
     }
     
@@ -6164,8 +6101,7 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
   } catch (error: any) {
     console.error('❌ Failed to fetch Firebase config from Secret Manager:', error);
     
-    // Fallback to environment variables or construct from service account
-    console.warn('⚠️ Attempting fallback: using service account project ID to construct Firebase config');
+    console.warn('⚠️ Attempting Firebase config fallback from environment variables');
     const projectId = serviceAccount.project_id;
     
     // Try to get from environment variables first
@@ -6185,19 +6121,7 @@ async function getFirebaseConfigFromSecretManager(): Promise<any> {
       return fallbackConfig;
     }
     
-    // Last resort: construct minimal config (may not work for all features)
-    console.warn('⚠️ Using minimal Firebase config - some features may not work');
-    const minimalConfig = {
-      apiKey: 'AIzaSyDummyKeyForDevelopmentOnly',
-      authDomain: `${projectId}.firebaseapp.com`,
-      projectId: projectId,
-      storageBucket: `${projectId}.appspot.com`,
-      messagingSenderId: '123456789',
-      appId: `1:123456789:web:${projectId}`,
-    };
-    cachedFirebaseConfig = minimalConfig;
-    firebaseConfigCacheTime = Date.now();
-    return minimalConfig;
+    throw new Error('Firebase configuration is unavailable');
   }
 }
 
@@ -6395,52 +6319,23 @@ async function checkAndIncrementAiUsage(
   };
 }
 
-app.post('/api/generate-task', authenticateUser, async (req, res) => {
+app.post('/api/generate-task', authenticateUser, requireOrgMembership, async (req, res) => {
   try {
     const userEmail = (req as any).userEmail;
-    const requestBody = req.body;
-    const orgId = req.headers['x-org-id'] as string | undefined;
+    const requestBody = {
+      ...req.body,
+      user_id: userEmail,
+      org_slug: (req as any).orgSlug,
+    };
     
     // Determine the external AI service URL
-    const isLocalDev = process.env.NODE_ENV !== 'production';
-    const aiServiceBase = isLocalDev 
+    const aiServiceBase = process.env.NODE_ENV !== 'production'
       ? process.env.AI_SERVICE_URL || 'http://0.0.0.0:8082'
       : process.env.AI_SERVICE_URL || 'http://ask-api:80';
     
     const aiServiceUrl = `${aiServiceBase}/api/generate-task`;
     
-    // Prepare headers for the AI service request
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    
-    // Use Bearer token for production, API key for local testing
-    if (isLocalDev) {
-      // Local testing: use API key
-      try {
-        const apiKey = await getApiKeyFromSecretManager();
-        headers['X-API-Key'] = apiKey;
-      } catch (error) {
-        console.error('Failed to get API key, request may fail:', error);
-        // Continue anyway - the AI service might handle auth differently
-      }
-    } else {
-      // Production (GKE): use Bearer token
-      // Get the Bearer token from the incoming request
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        headers['Authorization'] = authHeader;
-      } else {
-        // Fallback to API key if Bearer token not available
-        console.warn(`⚠️ No Bearer token in request, falling back to API key for ${userEmail}`);
-        try {
-          const apiKey = await getApiKeyFromSecretManager();
-          headers['X-API-Key'] = apiKey;
-        } catch (error) {
-          console.error('Failed to get API key, request may fail:', error);
-        }
-      }
-    }
+    const headers = await getAIServiceHeaders(req);
     
     // Check and increment AI usage BEFORE making the AI call
     const sharedPool = await getSharedPool();
@@ -6453,21 +6348,6 @@ app.post('/api/generate-task', authenticateUser, async (req, res) => {
         usage: usageCheck.usage,
         remaining: usageCheck.remaining,
       });
-    }
-    
-    // Ensure user_id is set
-    if (!requestBody.user_id) {
-      requestBody.user_id = userEmail.toLowerCase();
-    }
-    
-    // Ensure org_slug is set from org context if not provided
-    if (!requestBody.org_slug && orgId) {
-      try {
-        const orgSlug = await getOrgSlugById(orgId);
-        requestBody.org_slug = orgSlug;
-      } catch (error) {
-        console.error('Failed to get org slug for generate-task:', error);
-      }
     }
     
     // Proxy the request to the AI service
@@ -6519,7 +6399,7 @@ setupDocumentUploadEndpoints(app, authenticateUser, requireOrgMembership, storag
 // MESSAGE ENDPOINTS (Firestore)
 // ============================================================================
 
-setupMessageEndpoints(app, authenticateUser, db, storage);
+setupMessageEndpoints(app, authenticateUser, requireOrgMembership, getAIServiceHeaders, db, storage);
 
 // ============================================================================
 // UPDATE ENDPOINTS (Project and Task Progress Updates)
@@ -7407,5 +7287,3 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Health check available at http://0.0.0.0:${PORT}/api/health`);
   console.log(`✅ WebSocket server available at ws://0.0.0.0:${PORT}/api/livekit/audio-ws`);
 });
-
-

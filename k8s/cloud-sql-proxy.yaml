@@ -23,7 +23,6 @@ spec:
         args:
         - "--address=0.0.0.0"
         - "--port=5432"
-        - "--credentials-file=/secrets/gcp_credential.json"
         - "leanworks-474204:us-west1:leanworks-prod"
         ports:
         - containerPort: 5432
@@ -35,10 +34,6 @@ spec:
           limits:
             memory: "256Mi"
             cpu: "200m"
-        volumeMounts:
-        - name: gcp-credentials
-          mountPath: /secrets
-          readOnly: true
         livenessProbe:
           tcpSocket:
             port: 5432
@@ -55,10 +50,6 @@ spec:
           failureThreshold: 3
         securityContext:
           runAsNonRoot: true
-      volumes:
-      - name: gcp-credentials
-        secret:
-          secretName: gcp-credentials
 ---
 apiVersion: v1
 kind: Service
@@ -75,4 +66,3 @@ spec:
     name: postgres
   selector:
     app: cloud-sql-proxy
-

@@ -5,7 +5,6 @@ set -e
 # Configuration
 CLUSTER_NAME="leanworks-prod"
 REGION="us-west1"  # Update this to your cluster's region
-GCP_CREDENTIAL_FILE="gcp_credential.json"
 ARTIFACT_REGISTRY_REPO="docker-repo"  # Artifact Registry repository name
 
 # Colors for output
@@ -16,33 +15,23 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}Starting deployment to GKE...${NC}"
 
-# Check if GCP credentials file exists
-if [ ! -f "$GCP_CREDENTIAL_FILE" ]; then
-    echo -e "${RED}Error: $GCP_CREDENTIAL_FILE not found!${NC}"
+# Use the explicitly selected project or the active gcloud project. The
+# operator authenticates with gcloud; workloads authenticate with Workload Identity.
+PROJECT_ID="${GCP_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
+if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "(unset)" ]; then
+    echo -e "${RED}Error: Set GCP_PROJECT_ID or select a project with gcloud config set project.${NC}"
     exit 1
 fi
-
-# Read project ID from credentials file
-if command -v jq &> /dev/null; then
-    PROJECT_ID=$(jq -r '.project_id' "$GCP_CREDENTIAL_FILE")
-elif command -v python3 &> /dev/null; then
-    PROJECT_ID=$(python3 -c "import json, sys; print(json.load(open('$GCP_CREDENTIAL_FILE'))['project_id'])")
-else
-    # Fallback: use grep and sed (less robust but works without additional tools)
-    PROJECT_ID=$(grep -o '"project_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$GCP_CREDENTIAL_FILE" | sed 's/.*"project_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-fi
-
-if [ -z "$PROJECT_ID" ]; then
-    echo -e "${RED}Error: Could not extract project_id from $GCP_CREDENTIAL_FILE${NC}"
-    exit 1
-fi
+GSA_EMAIL="${GCP_SERVICE_ACCOUNT_EMAIL:-deployment@${PROJECT_ID}.iam.gserviceaccount.com}"
 
 IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/leanworks-hub"
 
-# Set up GCP authentication
-echo -e "${YELLOW}Setting up GCP authentication...${NC}"
-export GOOGLE_APPLICATION_CREDENTIALS="$GCP_CREDENTIAL_FILE"
-gcloud auth activate-service-account --key-file="$GCP_CREDENTIAL_FILE"
+# Verify the operator already has an authenticated gcloud session.
+echo -e "${YELLOW}Checking GCP authentication...${NC}"
+if ! gcloud auth print-access-token >/dev/null 2>&1; then
+    echo -e "${RED}Error: No active gcloud session. Run gcloud auth login first.${NC}"
+    exit 1
+fi
 
 # Set the project
 echo -e "${YELLOW}Setting GCP project to ${PROJECT_ID}...${NC}"
@@ -70,35 +59,21 @@ fi
 echo -e "${YELLOW}Getting GKE cluster credentials...${NC}"
 gcloud container clusters get-credentials "$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID"
 
-# Create Kubernetes secret for GCP credentials (for Cloud SQL Proxy)
-echo -e "${YELLOW}Creating Kubernetes secret for GCP credentials...${NC}"
-if kubectl get secret gcp-credentials -n default &>/dev/null; then
-    echo -e "${YELLOW}Secret already exists, updating...${NC}"
-    kubectl create secret generic gcp-credentials \
-        --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE" \
-        --dry-run=client -o yaml | kubectl apply -f -
-    echo -e "${GREEN}Secret updated!${NC}"
-else
-    kubectl create secret generic gcp-credentials \
-        --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE"
-    echo -e "${GREEN}Secret created!${NC}"
-fi
-
-# Extract service account email for verification
-if command -v jq &> /dev/null; then
-    GSA_EMAIL=$(jq -r '.client_email' "$GCP_CREDENTIAL_FILE")
-elif command -v python3 &> /dev/null; then
-    GSA_EMAIL=$(python3 -c "import json, sys; print(json.load(open('$GCP_CREDENTIAL_FILE'))['client_email'])")
-else
-    GSA_EMAIL=$(grep -o '"client_email"[[:space:]]*:[[:space:]]*"[^"]*"' "$GCP_CREDENTIAL_FILE" | sed 's/.*"client_email"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-fi
-
-if [ -z "$GSA_EMAIL" ]; then
-    echo -e "${RED}Error: Could not extract client_email from $GCP_CREDENTIAL_FILE${NC}"
-    exit 1
-fi
-
 echo -e "${GREEN}Using GCP service account: ${GSA_EMAIL}${NC}"
+
+# Configure the Kubernetes service account for GKE Workload Identity.
+echo -e "${YELLOW}Configuring Workload Identity...${NC}"
+kubectl apply -f k8s/serviceaccount.yaml
+kubectl annotate serviceaccount leanworks-hub-sa \
+    iam.gke.io/gcp-service-account="${GSA_EMAIL}" \
+    --overwrite 1>/dev/null
+if ! gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="serviceAccount:${PROJECT_ID}.svc.id.goog[default/leanworks-hub-sa]" \
+    --quiet 2>/dev/null; then
+    echo -e "${YELLOW}⚠️  Could not bind the Workload Identity user role automatically.${NC}"
+    echo -e "${YELLOW}   Verify that the GSA exists and the current account can update its IAM policy.${NC}"
+fi
 
 # Grant Cloud SQL Client role to the service account (if needed)
 echo -e "${YELLOW}Verifying Cloud SQL Client role for ${GSA_EMAIL}...${NC}"
@@ -136,7 +111,6 @@ docker push "$IMAGE_NAME:latest"
 echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/backend-config.yaml
 kubectl apply -f k8s/cloud-sql-proxy.yaml
-kubectl apply -f k8s/serviceaccount.yaml
 kubectl apply -f k8s/livekit-deployment.yaml
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/ingress.yaml
@@ -198,4 +172,3 @@ kubectl get service livekit-service livekit-service-udp livekit-service-rtc-tcp 
 echo -e "${GREEN}To get the external IPs, run:${NC}"
 echo "kubectl get service leanworks-hub-service"
 echo "kubectl get service livekit-service"
-

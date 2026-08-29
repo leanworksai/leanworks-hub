@@ -6,15 +6,10 @@
 
 import { Storage } from '@google-cloud/storage';
 import { PubSub } from '@google-cloud/pubsub';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { Firestore } from 'firebase-admin/firestore';
 import { Writable } from 'stream';
 import { audioLogger } from '../utils/logger.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 
 // Byte order configuration
 // LiveKit always sends PCM16 audio in little-endian format (per documentation)
@@ -523,20 +518,10 @@ export function createWavHeader(pcmDataSize: number, sampleRate: number = 16000)
   return wavHeader;
 }
 
-// Get project ID from credentials
-function getProjectId(): string {
-  const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-  if (existsSync(serviceAccountPath)) {
-    const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-    return serviceAccount.project_id;
-  }
-  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '';
-}
-
 // Initialize Cloud Storage client
 function getStorageClient(): Storage {
   if (!storageClient) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    const { projectId } = getGoogleCloudConfig();
     const retryOptions = {
       autoRetry: true,
       maxRetries: 8, // Increased from 5 to 8 for better stability
@@ -545,17 +530,7 @@ function getStorageClient(): Storage {
       maxRetryDelay: 120000, // Max 2 minutes between retries (increased for stability)
     };
     
-    if (existsSync(serviceAccountPath)) {
-      storageClient = new Storage({
-        keyFilename: serviceAccountPath,
-        retryOptions,
-      });
-    } else {
-      // Use default credentials (for GKE with Workload Identity)
-      storageClient = new Storage({
-        retryOptions,
-      });
-    }
+    storageClient = new Storage({ projectId, retryOptions });
   }
   return storageClient;
 }
@@ -563,17 +538,8 @@ function getStorageClient(): Storage {
 // Initialize Pub/Sub client
 function getPubSubClient(): PubSub {
   if (!pubsubClient) {
-    const projectId = getProjectId();
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      pubsubClient = new PubSub({
-        projectId,
-        keyFilename: serviceAccountPath,
-      });
-    } else {
-      // Use default credentials (for GKE with Workload Identity)
-      pubsubClient = new PubSub({ projectId });
-    }
+    const { projectId } = getGoogleCloudConfig();
+    pubsubClient = new PubSub({ projectId });
   }
   return pubsubClient;
 }

@@ -31,8 +31,7 @@ spec:
         args:
         - |
           echo "Checking config file..."
-          ls -la /etc/livekit/ || echo "Directory doesn't exist"
-          cat /etc/livekit/livekit.yaml || echo "Config file doesn't exist"
+          test -s /etc/livekit/livekit.yaml || { echo "Config file doesn't exist"; exit 1; }
           echo "Starting LiveKit server..."
           exec /livekit-server --config /etc/livekit/livekit.yaml
         lifecycle:
@@ -92,34 +91,11 @@ spec:
         - |
           set -e
           echo "📥 Fetching LiveKit credentials from GCP Secret Manager..."
-          echo "🔑 Using credentials from: ${GOOGLE_APPLICATION_CREDENTIALS}"
-          
-          # Verify credentials file exists
-          if [ ! -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]; then
-            echo "❌ Error: Credentials file not found at ${GOOGLE_APPLICATION_CREDENTIALS}"
-            exit 1
-          fi
-          echo "✅ Credentials file found"
-          
-          # Activate service account from mounted credentials file
-          gcloud auth activate-service-account --key-file="${GOOGLE_APPLICATION_CREDENTIALS}" || {
-            echo "❌ Error: Failed to activate service account from ${GOOGLE_APPLICATION_CREDENTIALS}"
+          echo "🔑 Authenticating with GKE Workload Identity..."
+          gcloud auth print-access-token >/dev/null || {
+            echo "❌ Error: Workload Identity authentication failed"
             exit 1
           }
-          echo "✅ Service account activated"
-          
-          # Verify which service account is being used
-          ACTIVE_ACCOUNT=$(gcloud auth list --filter=status:ACTIVE --format="value(account)" 2>&1)
-          if [ -z "$ACTIVE_ACCOUNT" ]; then
-            echo "❌ Error: No active service account found"
-            exit 1
-          fi
-          echo "✅ Using service account: ${ACTIVE_ACCOUNT}"
-          
-          # Verify it's the deployment service account
-          if [[ ! "$ACTIVE_ACCOUNT" == *"deployment@leanworks-474204.iam.gserviceaccount.com"* ]]; then
-            echo "⚠️  Warning: Active account (${ACTIVE_ACCOUNT}) doesn't match expected deployment account"
-          fi
           
           # Set project
           gcloud config set project leanworks-474204 || {
@@ -132,27 +108,25 @@ spec:
           echo "🔍 Fetching livekit-api-key..."
           API_KEY=$(gcloud secrets versions access latest --secret=livekit-api-key --project=leanworks-474204 2>&1) || {
             echo "❌ Error: Failed to fetch livekit-api-key"
-            echo "Error output: $API_KEY"
             exit 1
           }
           if [ -z "$API_KEY" ]; then
             echo "❌ Error: API key is empty"
             exit 1
           fi
-          echo "✅ API key fetched (length: ${#API_KEY})"
+          echo "✅ API key fetched"
           
           # Fetch API Secret from Secret Manager
           echo "🔍 Fetching livekit-api-secret..."
           API_SECRET=$(gcloud secrets versions access latest --secret=livekit-api-secret --project=leanworks-474204 2>&1) || {
             echo "❌ Error: Failed to fetch livekit-api-secret"
-            echo "Error output: $API_SECRET"
             exit 1
           }
           if [ -z "$API_SECRET" ]; then
             echo "❌ Error: API secret is empty"
             exit 1
           fi
-          echo "✅ API secret fetched (length: ${#API_SECRET})"
+          echo "✅ API secret fetched"
           
           # Generate LiveKit config file
           mkdir -p /etc/livekit
@@ -182,7 +156,6 @@ spec:
           EOF
           
           echo "✅ LiveKit config generated at /etc/livekit/livekit.yaml"
-          cat /etc/livekit/livekit.yaml | sed 's/: .*$/: ***/'  # Show config with secrets masked
         resources:
           requests:
             memory: "128Mi"
@@ -193,22 +166,12 @@ spec:
         volumeMounts:
         - name: livekit-config
           mountPath: /etc/livekit
-        # Mount GCP credentials for Secret Manager access
-        - name: gcp-credentials
-          mountPath: /secrets/gcp_credential.json
-          subPath: gcp_credential.json
-          readOnly: true
         env:
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: /secrets/gcp_credential.json
         - name: WEBHOOK_URL
           value: "https://api.leanworks.ai/api/livekit/webhook"
       volumes:
       - name: livekit-config
         emptyDir: {}
-      - name: gcp-credentials
-        secret:
-          secretName: gcp-credentials
 
 ---
 # TCP Service for HTTP/WebSocket (signaling)
@@ -298,4 +261,3 @@ data:
 # The secrets are stored in GCP Secret Manager:
 #   - livekit-api-key
 #   - livekit-api-secret
-

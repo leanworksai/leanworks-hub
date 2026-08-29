@@ -31,12 +31,6 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "1000m"
-        # Mount GCP credentials for Secret Manager and Pub/Sub access
-        volumeMounts:
-        - name: gcp-credentials
-          mountPath: /app/gcp_credential.json
-          subPath: gcp_credential.json
-          readOnly: true
         env:
         - name: DB_HOST
           value: cloud-sql-proxy-service
@@ -79,8 +73,3 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
-      volumes:
-      - name: gcp-credentials
-        secret:
-          secretName: gcp-credentials
-

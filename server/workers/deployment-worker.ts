@@ -5,41 +5,17 @@
  */
 
 import { PubSub } from '@google-cloud/pubsub';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { getSharedPool } from '../../database/multi-tenant-pool.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 
 // Initialize Pub/Sub client
 let pubsubClient: PubSub | null = null;
 
-// Get project ID from credentials
-function getProjectId(): string {
-  const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-  if (existsSync(serviceAccountPath)) {
-    const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-    return serviceAccount.project_id;
-  }
-  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '';
-}
-
 // Initialize Pub/Sub client
 function getPubSubClient(): PubSub {
   if (!pubsubClient) {
-    const projectId = getProjectId();
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      pubsubClient = new PubSub({
-        projectId,
-        keyFilename: serviceAccountPath,
-      });
-    } else {
-      // Use default credentials (for GKE with Workload Identity)
-      pubsubClient = new PubSub({ projectId });
-    }
+    const { projectId } = getGoogleCloudConfig();
+    pubsubClient = new PubSub({ projectId });
   }
   return pubsubClient;
 }
@@ -169,4 +145,3 @@ export async function startDeploymentWorker(): Promise<void> {
 
   console.log('✅ Deployment completion worker started and listening for messages');
 }
-

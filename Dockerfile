@@ -44,7 +44,6 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy server code and database module
 COPY server/ ./server/
 COPY database/ ./database/
-COPY gcp_credential.json ./
 
 # Copy nginx configuration (replace the entire nginx.conf to ensure proper structure)
 COPY nginx-full.conf /etc/nginx/nginx.conf
@@ -76,4 +75,3 @@ RUN echo '#!/bin/sh' > /start.sh && \
     chmod +x /start.sh
 
 CMD ["/start.sh"]
-

@@ -8,11 +8,8 @@ import { Storage } from '@google-cloud/storage';
 import { createWavHeader } from '../services/audio-recorder.js';
 import { audioLogger } from './logger.js';
 import { readFileSync, existsSync, mkdirSync, createWriteStream, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { join } from 'path';
+import { getGoogleCloudConfig } from './google-cloud.js';
 
 // Local debug audio directory
 const DEBUG_AUDIO_DIR = join(process.cwd(), 'logs', 'debug-audio');
@@ -54,7 +51,7 @@ const TARGET_SIZE_16KHZ = DEBUG_DURATION_SECONDS * BYTES_PER_SECOND_16KHZ; // 1,
 
 function getStorageClient(): Storage {
   if (!storageClient) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
+    const { projectId } = getGoogleCloudConfig();
     const retryOptions = {
       autoRetry: true,
       maxRetries: 8,
@@ -63,17 +60,7 @@ function getStorageClient(): Storage {
       maxRetryDelay: 120000, // Max 2 minutes between retries
     };
     
-    if (existsSync(serviceAccountPath)) {
-      storageClient = new Storage({
-        keyFilename: serviceAccountPath,
-        retryOptions,
-      });
-    } else {
-      // Use default credentials (for GKE with Workload Identity)
-      storageClient = new Storage({
-        retryOptions,
-      });
-    }
+    storageClient = new Storage({ projectId, retryOptions });
   }
   return storageClient;
 }
@@ -532,4 +519,3 @@ export function analyzeAudio(
     frequencyContent,
   };
 }
-

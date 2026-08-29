@@ -23,5 +23,12 @@ dist-ssr
 *.sln
 *.sw?
 
-gcp_credential.json
-.env
+# Local configuration and credential material
+.env*
+!.env.example
+gcp_credential*
+*service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx

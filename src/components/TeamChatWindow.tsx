@@ -10,7 +10,7 @@ import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
 import { useUserProjects } from "@/hooks/useProjects";
 import { useUserTeams } from "@/hooks/useTeams";
-import { messagesService, imageUploadService, subscriptionService, getAuthToken, type ChatMessage } from "@/services/api";
+import { messagesService, imageUploadService, subscriptionService, type ChatMessage } from "@/services/api";
 import { useChatId, getDirectMessageChatId } from "@/hooks/useChatId";
 import { ChatMessageList } from "@/components/chat/ChatMessageList";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -334,13 +334,6 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
       throw new Error('User must be authenticated to use AI assistant');
     }
 
-    const isLocalDev = import.meta.env.DEV;
-    // Get authentication token (with fallback to localStorage)
-    const customToken = await getAuthToken();
-    if (!isLocalDev && !customToken) {
-      throw new Error('Authentication token not found. Please sign in again.');
-    }
-
     // Build context from channel and selected items
     let citedContext = "";
     const contextParts: string[] = [];
@@ -400,91 +393,21 @@ export function TeamChatWindow({ open, onOpenChange, chatId, selectedMember }: T
       citedContext = contextParts.join("\n");
     }
 
-    // Determine API base URL and authentication method
-    const API_BASE = isLocalDev ? 'http://0.0.0.0:8082' : '';
-    const apiUrl = `${API_BASE}/api/ask`;
-
-    // Prepare headers
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    if (isLocalDev) {
-      try {
-        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
-        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${customToken || ''}`,
-          },
-        });
-
-        if (!apiKeyResponse.ok) {
-          throw new Error('Failed to fetch API key from backend');
-        }
-
-        const apiKeyData = await apiKeyResponse.json();
-        headers['X-API-Key'] = apiKeyData.apiKey;
-      } catch (error) {
-        if (import.meta.env.DEV) {
-          console.error('Failed to fetch API key from backend:', error);
-        }
-        const fallbackKey = import.meta.env.VITE_ASK_API_KEY;
-        if (fallbackKey) {
-          headers['X-API-Key'] = fallbackKey;
-        } else {
-          throw new Error('API key not available');
-        }
-      }
-    } else {
-      headers['Authorization'] = `Bearer ${customToken}`;
-    }
-
     try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          user_id: user.email.toLowerCase(),
-          org_slug: currentOrg?.slug || currentOrg?.name || '',
-          query: query,
-          session_id: chatId,
-          cited_context: citedContext || undefined,
-        }),
+      const data = await messagesService.generateResponse({
+        chatId,
+        message: query,
+        citedContext: citedContext || undefined,
       });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: `Server error: ${response.status} ${response.statusText}` }));
-        throw new Error(errorData.error || `API request failed: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      // Handle different possible response formats
-      if (typeof data === 'string') {
-        return data;
-      } else if (data.content) {
-        return data.content;
-      } else if (data.response) {
-        return data.response;
-      } else if (data.text) {
-        return data.text;
-      } else {
-        console.warn('Unexpected API response format:', data);
-        return JSON.stringify(data);
-      }
+      return data.content || data.response;
     } catch (error) {
-      console.error('Error calling ask API:', error);
+      console.error('Error generating channel AI response:', error);
       if (error instanceof Error) {
         throw error;
       }
       throw new Error('Failed to generate response. Please try again.');
     }
-  }, [user?.email, currentOrg, selectedProjects, selectedTasks, selectedDocs]);
+  }, [user?.email, selectedProjects, selectedTasks, selectedDocs]);
 
   // Handle sending messages
   const handleSend = useCallback(async (messageContent: string, imageUrls: string[] = []) => {

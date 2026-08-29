@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getGoogleCloudConfig } from '../server/utils/google-cloud.js';
 
 // Get __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
@@ -28,17 +29,14 @@ if (existsSync(envPath)) {
   console.log('✅ Loaded .env file for local development');
 }
 
-// Read GCP credentials to get project ID
-const serviceAccountPath = join(__dirname, '../gcp_credential.json');
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+const { projectId } = getGoogleCloudConfig(join(__dirname, '..'));
 
 // Initialize Secret Manager client
 const secretManagerClient = new SecretManagerServiceClient({
-  keyFilename: serviceAccountPath,
+  projectId,
 });
 
 // PostgreSQL connection configuration for Cloud SQL
-const projectId = serviceAccount.project_id; // leanworks-474204
 const instanceName = 'leanworks-prod';
 const region = process.env.DB_REGION || 'us-west1';
 
@@ -231,4 +229,3 @@ process.on('SIGINT', closePool);
 
 // Export default (async getter)
 export default getPool;
-

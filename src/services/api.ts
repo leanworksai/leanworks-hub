@@ -5,8 +5,7 @@ import { normalizeDocContentForSave } from '@/lib/tiptapContent';
 import type { Event } from '@/data/eventsData';
 import { auth, db } from '@/lib/firebase-client';
 
-// Use proxy API in development (uses gcp_credential.json via Admin SDK)
-// In production, use relative path so nginx can proxy to the backend server
+// Use the local backend in development and the same-origin proxy in production.
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 
 // Storage key for current org
@@ -48,7 +47,6 @@ export function getCurrentOrgSlug(): string | null {
 
 // Helper to get auth token for API requests
 export async function getAuthToken(): Promise<string | null> {
-  // First try to get token from Firebase Auth
   if (auth && auth.currentUser) {
     try {
       const idToken = await auth.currentUser.getIdToken();
@@ -56,29 +54,6 @@ export async function getAuthToken(): Promise<string | null> {
     } catch (error) {
       console.warn('⚠️ Failed to get token from Firebase Auth:', error);
     }
-  } else {
-  }
-  
-  // Fallback: try to get stored custom token from window (set by auth context)
-  try {
-    const storedToken = (window as any).__customToken;
-    if (storedToken) {
-      return storedToken;
-    }
-  } catch (error) {
-    // Ignore
-  }
-  
-  // Final fallback: try to get from localStorage (for persistence)
-  try {
-    const cachedToken = localStorage.getItem('leanworks_custom_token');
-    if (cachedToken) {
-      // Also restore it to window for consistency
-      (window as any).__customToken = cachedToken;
-      return cachedToken;
-    }
-  } catch (error) {
-    // Ignore localStorage errors
   }
   
   console.warn('⚠️ No auth token available for API request');
@@ -690,56 +665,12 @@ export const messagesService = {
       throw new Error('Organization context is required');
     }
 
-    // Determine the external AI service URL
-    const isLocalDev = import.meta.env.DEV;
-    // In production, use relative URL (will be proxied through ingress with HTTPS)
-    // In local dev, use the direct service URL
-    const aiServiceBase = isLocalDev 
-      ? import.meta.env.VITE_AI_SERVICE_URL || 'http://0.0.0.0:8082'
-      : import.meta.env.VITE_AI_SERVICE_URL || ''; // Use relative URL in production for HTTPS
-    
-    const aiServiceUrl = `${aiServiceBase}/api/messages/generate-response`;
-
-    // Prepare headers
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    // Use Bearer token for production, API key for local testing
-    if (isLocalDev) {
-      // Local testing: use API key
-      try {
-        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
-        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${await getAuthToken() || ''}`,
-          },
-        });
-
-        if (apiKeyResponse.ok) {
-          const apiKeyData = await apiKeyResponse.json();
-          headers['X-API-Key'] = apiKeyData.apiKey;
-        } else {
-          // Fallback to env var
-          const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-          headers['X-API-Key'] = fallbackKey;
-        }
-      } catch (error) {
-        console.error('Failed to fetch API key from backend, using fallback:', error);
-        const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-        headers['X-API-Key'] = fallbackKey;
-      }
-    } else {
-      // Production: use Bearer token
-      const token = await getAuthToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-    }
+    const aiServiceUrl = import.meta.env.DEV
+      ? `${API_BASE}/api/messages/generate-response`
+      : `${API_BASE}/messages/generate-response`;
 
     // Build cited_context as structured dictionary
-    let cited_context: {
+    type CitedContextPayload = {
       projects?: any[];
       tasks?: any[];
       docs?: any[];
@@ -752,7 +683,8 @@ export const messagesService = {
         blockPos: number;
         blockOffset: number;
       };
-    } | undefined = undefined;
+    };
+    let cited_context: CitedContextPayload | string | undefined;
     
     // Debug: Log what we received (dev only)
     if (import.meta.env.DEV) {
@@ -766,15 +698,10 @@ export const messagesService = {
     
     if (params.citedContext) {
       if (typeof params.citedContext === 'string') {
-        // Legacy string format - convert to structured format if possible
-        // For now, we'll skip this and let backend handle legacy format
-        // In the future, we could parse the string format here
-        if (import.meta.env.DEV) {
-          console.warn('⚠️ [API] Received cited_context as string (legacy format), skipping structured conversion');
-        }
+        cited_context = params.citedContext;
       } else {
         // Build structured context object from selected items
-        const contextObj: typeof cited_context = {};
+        const contextObj: CitedContextPayload = {};
         
         if (params.citedContext.projects && params.citedContext.projects.length > 0) {
           contextObj.projects = params.citedContext.projects.map((project: any) => ({
@@ -898,7 +825,7 @@ export const messagesService = {
       console.log('📤 Ask API Request Payload:', JSON.stringify(requestPayload, null, 2));
       console.log('📤 Ask API URL:', aiServiceUrl);
       console.log('📋 Cited Context (string):', cited_context || '(none)');
-      if (cited_context?.selectedText?.text) {
+      if (typeof cited_context === 'object' && cited_context.selectedText?.text) {
         console.log('📝 Selected Text:', cited_context.selectedText.text.substring(0, 100) + (cited_context.selectedText.text.length > 100 ? '...' : ''));
       }
       if (params.citedContext) {
@@ -911,9 +838,8 @@ export const messagesService = {
       }
     }
 
-    const response = await fetch(aiServiceUrl, {
+    const response = await authenticatedFetch(aiServiceUrl, {
       method: 'POST',
-      headers,
       body: JSON.stringify(requestPayload),
     });
 

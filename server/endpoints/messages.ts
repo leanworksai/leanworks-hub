@@ -95,6 +95,8 @@ function containsLeanMention(content: string): boolean {
 export function setupMessageEndpoints(
   app: express.Application,
   authenticateUser: express.RequestHandler,
+  requireOrgMembership: express.RequestHandler,
+  getAIServiceHeaders: (req: express.Request) => Promise<Record<string, string>>,
   db: FirebaseFirestore.Firestore,
   storage?: any // Firebase Admin Storage instance (optional, for refreshing image URLs)
 ) {
@@ -734,11 +736,11 @@ export function setupMessageEndpoints(
   });
 
   // POST /api/messages/stream - Stream AI response using SSE
-  app.post('/api/messages/stream', authenticateUser, async (req, res) => {
+  app.post('/api/messages/stream', authenticateUser, requireOrgMembership, async (req, res) => {
     try {
-      const orgId = (req as any).orgId || req.headers['x-org-id'] || req.body.orgId;
-      const orgSlug = req.body.orgSlug;
-      const userEmail = (req as any).user.email?.toLowerCase();
+      const orgId = (req as any).orgId;
+      const orgSlug = (req as any).orgSlug;
+      const userEmail = (req as any).userEmail;
       const { chatId, message, citedContext, imageUrls } = req.body;
 
       if (!userEmail || !chatId || !message) {
@@ -789,45 +791,7 @@ export function setupMessageEndpoints(
       
       const aiServiceUrl = `${aiServiceBase}/api/ask`;
 
-      // Prepare headers for AI service
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-
-      // Use Bearer token for production, API key for local testing
-      if (isLocalDev) {
-        // Local development: use API key via Secret Manager
-        try {
-          const apiKeyUrl = `http://localhost:3001/api/ask-api-key`;
-          const apiKeyResponse = await fetch(apiKeyUrl, {
-            method: 'GET',
-            headers: {
-              'Authorization': req.headers['authorization'] || '',
-            },
-          });
-
-          if (apiKeyResponse.ok) {
-            const apiKeyData = await apiKeyResponse.json();
-            if (apiKeyData.apiKey) {
-              headers['X-API-Key'] = apiKeyData.apiKey;
-              console.log('🔑 [Streaming] Got API key from secret manager');
-            }
-          } else {
-            console.warn('⚠️ [Streaming] Failed to get API key from secret manager:', apiKeyResponse.status);
-          }
-        } catch (error) {
-          console.error('Failed to fetch API key from secret manager:', error);
-        }
-      } else {
-        // Production (GKE): use Bearer token from incoming request
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-          headers['Authorization'] = authHeader;
-          console.log('🔐 [Streaming] Using Bearer token for production');
-        } else {
-          console.warn('⚠️ [Streaming] No Bearer token in request for production');
-        }
-      }
+      const headers = await getAIServiceHeaders(req);
 
       // Build request body for leanworks API
       // Transform cited_context the same way the non-streaming API does
@@ -920,8 +884,7 @@ export function setupMessageEndpoints(
         orgSlug: orgSlug,
         chatId,
         environment: isLocalDev ? 'local' : 'production',
-        authMethod: isLocalDev ? 'X-API-Key' : 'Bearer Token',
-        hasAuth: !!headers['X-API-Key'] || !!headers['Authorization'],
+        hasServiceAuthentication: true,
         requestBody: {
           user_id: requestBody.user_id,
           org_slug: requestBody.org_slug,
@@ -931,14 +894,7 @@ export function setupMessageEndpoints(
           cited_context: requestBody.cited_context,
           images: requestBody.images ? `${requestBody.images.length} image(s)` : 'none',
         },
-        headers: {
-          'Content-Type': headers['Content-Type'],
-          'X-API-Key': headers['X-API-Key'] ? `***${headers['X-API-Key'].slice(-10)}` : 'none',
-          'Authorization': headers['Authorization'] ? 'Bearer ***' : 'none',
-        },
       });
-      
-      console.log('📤 [Streaming] Full Request Body:', JSON.stringify(requestBody, null, 2));
 
       // Make streaming request to leanworks API
       console.log('🔌 [Streaming] About to fetch from:', aiServiceUrl);
@@ -963,8 +919,6 @@ export function setupMessageEndpoints(
           status: response.status,
           statusText: response.statusText,
           error: errorText,
-          headers: Object.fromEntries(response.headers),
-          sentHeaders: headers,
         });
         res.write(`data: ${JSON.stringify({ type: 'error', error: `AI service error: ${response.status} - ${errorText}` })}\n\n`);
         res.end();
@@ -1035,4 +989,3 @@ export function setupMessageEndpoints(
     }
   });
 }
-

@@ -7,19 +7,12 @@ import { PubSub } from '@google-cloud/pubsub';
 import { Storage } from '@google-cloud/storage';
 import { AssemblyAI } from 'assemblyai';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 // Note: Readable stream import removed - no longer using streaming API
 import { getOrgPoolBySlug, getUserInfoBatch } from '../../database/multi-tenant-pool.js';
 import crypto from 'crypto';
 import { resample48kHzTo16kHz } from '../services/audio-processor.js';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
 import { transcriptionLogger } from '../utils/logger.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 
 // Initialize clients
 let pubsubClient: PubSub | null = null;
@@ -225,85 +218,22 @@ async function ensure16kHz(audioBuffer: Buffer, email?: string): Promise<Buffer>
 
 // Get project ID
 function getProjectId(): string {
-  const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-  if (existsSync(serviceAccountPath)) {
-    const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-    return serviceAccount.project_id;
-  }
-  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '';
-}
-
-// Initialize Firebase Admin SDK for Bearer token generation
-function initializeFirebaseAdmin() {
-  if (getApps().length === 0) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-      initializeApp({
-        credential: cert(serviceAccount),
-        projectId: serviceAccount.project_id,
-      });
-      console.log('✅ Firebase Admin SDK initialized for transcription worker');
-    } else {
-      console.warn('⚠️ GCP credentials not found, Firebase Admin SDK not initialized');
-    }
-  }
-}
-
-// Get Bearer token (custom token) for user email
-// In production, we create a custom token that can be verified by the API
-async function getBearerTokenForUser(userEmail: string): Promise<string | null> {
-  try {
-    initializeFirebaseAdmin();
-    const auth = getAuth();
-    
-    // Try to get the user by email first
-    let uid: string;
-    try {
-      const userRecord = await auth.getUserByEmail(userEmail.toLowerCase());
-      uid = userRecord.uid;
-    } catch (error: any) {
-      // If user doesn't exist, use email as UID for custom token
-      // The API middleware will handle verification
-      uid = userEmail.toLowerCase();
-    }
-    
-    // Create a custom token for the user
-    const customToken = await auth.createCustomToken(uid);
-    return customToken;
-  } catch (error: any) {
-    console.error(`❌ Failed to create Bearer token for ${userEmail}:`, error);
-    return null;
-  }
+  return getGoogleCloudConfig().projectId;
 }
 
 // Initialize clients
 function getPubSubClient(): PubSub {
   if (!pubsubClient) {
     const projectId = getProjectId();
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      pubsubClient = new PubSub({
-        projectId,
-        keyFilename: serviceAccountPath,
-      });
-    } else {
-      pubsubClient = new PubSub({ projectId });
-    }
+    pubsubClient = new PubSub({ projectId });
   }
   return pubsubClient;
 }
 
 function getStorageClient(): Storage {
   if (!storageClient) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      storageClient = new Storage({
-        keyFilename: serviceAccountPath,
-      });
-    } else {
-      storageClient = new Storage();
-    }
+    const projectId = getProjectId();
+    storageClient = new Storage({ projectId });
   }
   return storageClient;
 }
@@ -315,14 +245,7 @@ async function getAssemblyAIClient(): Promise<AssemblyAI> {
 
   const projectId = getProjectId();
   if (!secretManagerClient) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      secretManagerClient = new SecretManagerServiceClient({
-        keyFilename: serviceAccountPath,
-      });
-    } else {
-      secretManagerClient = new SecretManagerServiceClient();
-    }
+    secretManagerClient = new SecretManagerServiceClient({ projectId });
   }
 
   // Get API key from Secret Manager
@@ -1405,14 +1328,7 @@ async function processAudioChunk(message: any): Promise<void> {
 async function getApiKeyFromSecretManager(): Promise<string> {
   const projectId = getProjectId();
   if (!secretManagerClient) {
-    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
-    if (existsSync(serviceAccountPath)) {
-      secretManagerClient = new SecretManagerServiceClient({
-        keyFilename: serviceAccountPath,
-      });
-    } else {
-      secretManagerClient = new SecretManagerServiceClient();
-    }
+    secretManagerClient = new SecretManagerServiceClient({ projectId });
   }
 
   try {
@@ -1427,10 +1343,12 @@ async function getApiKeyFromSecretManager(): Promise<string> {
     }
   } catch (error) {
     console.error('❌ Failed to fetch API key from Secret Manager:', error);
-    // Fallback to environment variable for local development
-    const fallbackKey = process.env.ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-    console.log('⚠️ Using fallback API key from environment variable');
-    return fallbackKey;
+    const localKey = process.env.NODE_ENV !== 'production' ? process.env.ASK_API_KEY?.trim() : undefined;
+    if (localKey) {
+      console.warn('⚠️ Using server-side ASK_API_KEY for local development');
+      return localKey;
+    }
+    throw new Error('AI service API key is unavailable');
   }
 }
 
@@ -1457,27 +1375,12 @@ async function generateMeetingDocSummary(
       org_slug: orgSlug,
     };
     
-    // Prepare headers - use Bearer token for production, API key for local testing
+    // This worker is a trusted backend caller; use the server-side API key and
+    // never mint or forward a user custom token.
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-API-Key': await getApiKeyFromSecretManager(),
     };
-    
-    if (isLocalDev) {
-      // Local testing: use API key
-      const apiKey = await getApiKeyFromSecretManager();
-      headers['X-API-Key'] = apiKey;
-    } else {
-      // Production (GKE): use Bearer token
-      const bearerToken = await getBearerTokenForUser(userEmail);
-      if (bearerToken) {
-        headers['Authorization'] = `Bearer ${bearerToken}`;
-      } else {
-        // Fallback to API key if Bearer token generation fails
-        console.warn(`⚠️ Failed to generate Bearer token, falling back to API key for ${userEmail}`);
-        const apiKey = await getApiKeyFromSecretManager();
-        headers['X-API-Key'] = apiKey;
-      }
-    }
     
     // Make API call with timeout (30 seconds)
     console.log(`📡 Calling doc summary API: ${apiUrl} (GKE: ${!isLocalDev ? 'yes' : 'no'})`);
@@ -2155,4 +2058,3 @@ export async function startWorker(): Promise<void> {
 
   console.log('✅ Transcription worker started and listening for messages');
 }
-

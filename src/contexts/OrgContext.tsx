@@ -80,15 +80,6 @@ interface OrgContextType {
 
 const OrgContext = createContext<OrgContextType | undefined>(undefined);
 
-// Helper to get stored token (fallback for synchronous use)
-function getStoredToken(): string | null {
-  try {
-    return localStorage.getItem('leanworks_custom_token') || (window as any).__customToken || null;
-  } catch {
-    return null;
-  }
-}
-
 // Helper for API calls
 async function apiCall<T>(
   endpoint: string,
@@ -166,11 +157,6 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   // Get auth headers with org context
   const getOrgHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = {};
-    const token = getStoredToken();
-    
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
     
     if (currentOrg) {
       headers['X-Org-Id'] = currentOrg.id;
@@ -592,4 +578,3 @@ export function useIsOrgOwner(): boolean {
   const { currentOrg } = useOrg();
   return currentOrg?.isOwner || false;
 }
-
