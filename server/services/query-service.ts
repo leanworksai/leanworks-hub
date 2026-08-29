@@ -62,7 +62,9 @@ const BLOCKED_TABLES = [
   'team_join_requests',
   'team_invitations',
   'integrations',
-  'github_installations'
+  'github_installations',
+  'transcription_sessions',
+  'transcription_chunks'
 ];
 
 const FORBIDDEN_KEYWORDS = [

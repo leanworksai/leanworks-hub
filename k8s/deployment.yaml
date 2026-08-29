@@ -22,10 +22,6 @@ spec:
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
     spec:
-      tolerations:
-      - key: "node.gke.io/balloon-pod-resize"
-        operator: "Exists"
-        effect: "NoSchedule"
       containers:
       - name: leanworks-hub
         image: us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:latest
@@ -62,28 +58,23 @@ spec:
           value: "postgres"
         - name: DB_REGION
           value: "us-west1"
+        - name: LIVEKIT_URL
+          # Production: Use subdomain with SSL via ingress
+          # The ingress routes livekit.leanworks.ai directly to LiveKit service
+          # This handles TLS termination and WebSocket upgrades
+          value: "wss://livekit.leanworks.ai"
+          # Alternative: Use LoadBalancer IP directly (requires TLS on LiveKit or will fail)
+          # value: "wss://136.117.244.184:7881"
+          # For local development, use:
+          # value: "ws://localhost:7880"
         - name: GOOGLE_CLOUD_PROJECT
           value: "leanworks-474204"
+        - name: PUBSUB_AUDIO_CHUNKS_TOPIC
+          value: "audio-chunks"
+        - name: PUBSUB_CALL_EVENTS_TOPIC
+          value: "call-events"
         - name: AUDIO_STORAGE_BUCKET
-          valueFrom:
-            configMapKeyRef:
-              name: leanworks-config
-              key: AUDIO_STORAGE_BUCKET
-        - name: DB_INSTANCE_NAME
-          valueFrom:
-            configMapKeyRef:
-              name: leanworks-config
-              key: DB_INSTANCE_NAME
-        - name: FIRESTORE_DATABASE_NAME
-          valueFrom:
-            configMapKeyRef:
-              name: leanworks-config
-              key: FIRESTORE_DATABASE_NAME
-        - name: ENVIRONMENT
-          valueFrom:
-            configMapKeyRef:
-              name: leanworks-config
-              key: ENVIRONMENT
+          value: "leanworks-prod"
         livenessProbe:
           httpGet:
             path: /api/health
@@ -96,10 +87,10 @@ spec:
           httpGet:
             path: /api/health
             port: 80
-          initialDelaySeconds: 30
+          initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 60  # Allow up to 10 minutes for startup (60 * 10s)
+          failureThreshold: 30  # Allow up to 5 minutes for startup (30 * 10s)
         readinessProbe:
           httpGet:
             path: /api/health
@@ -132,3 +123,4 @@ spec:
     name: http
   selector:
     app: leanworks-hub
+

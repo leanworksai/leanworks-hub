@@ -1,12 +1,18 @@
 import React from "react";
-import { User, ExternalLink } from "lucide-react";
+import { User, Phone, ExternalLink } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { cn, getAvatarColor } from "@/lib/utils";
 import { LikeButton } from "./LikeButton";
 import { CitedContextBadges } from "./CitedContextBadges";
 import { ImplicitContextBadge } from "./ImplicitContextBadge";
 import { Message, ChannelMessage, LikedByUser, CitedContext } from "./types";
+import { useWebRTCContext } from "@/contexts/WebRTCContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { callSignalingService, type CallSignal } from "@/services/api";
+import { db } from "@/lib/firebase-client";
+import { getCurrentOrgSlug } from "@/services/api";
 import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatTimeInTimezone } from "@/lib/dateTimeUtils";
 import { marked } from "marked";
@@ -42,7 +48,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   };
   
   // Parse Selected Docs
-  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Text):|$)/i);
+  const docsMatch = citedContextText.match(/Selected Docs:\s*([\s\S]*?)(?=Selected (?:Projects|Tasks|Teams|Text):|$)/i);
   if (docsMatch) {
     const docs = parseItems(docsMatch[1]).map(item => ({ id: item.id, title: item.name }));
     if (docs.length > 0) {
@@ -51,7 +57,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Projects
-  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Text):|$)/i);
+  const projectsMatch = citedContextText.match(/Selected Projects:\s*([\s\S]*?)(?=Selected (?:Docs|Tasks|Teams|Text):|$)/i);
   if (projectsMatch) {
     const projects = parseItems(projectsMatch[1]).map(item => ({ id: item.id, name: item.name }));
     if (projects.length > 0) {
@@ -60,7 +66,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
   }
   
   // Parse Selected Tasks
-  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Text):|$)/i);
+  const tasksMatch = citedContextText.match(/Selected Tasks:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Teams|Text):|$)/i);
   if (tasksMatch) {
     const tasks = parseItems(tasksMatch[1]).map(item => ({ id: item.id, title: item.name }));
     if (tasks.length > 0) {
@@ -68,8 +74,17 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
     }
   }
   
+  // Parse Selected Teams
+  const teamsMatch = citedContextText.match(/Selected Teams:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks|Text):|$)/i);
+  if (teamsMatch) {
+    const teams = parseItems(teamsMatch[1]).map(item => ({ id: item.id, name: item.name }));
+    if (teams.length > 0) {
+      citedContext.teams = teams;
+    }
+  }
+  
   // Parse Selected Text
-  const selectedTextMatch = citedContextText.match(/Selected Text:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks):|$)/i);
+  const selectedTextMatch = citedContextText.match(/Selected Text:\s*([\s\S]*?)(?=Selected (?:Docs|Projects|Tasks|Teams):|$)/i);
   if (selectedTextMatch) {
     const selectedTexts: Array<{ id: string; text: string; docId?: string }> = [];
     const textContent = selectedTextMatch[1].trim();
@@ -99,7 +114,7 @@ function parseCitedContext(content: string): { citedContext: CitedContext | null
     }
   }
   
-  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.selectedTexts;
+  const hasAnyContext = citedContext.docs || citedContext.projects || citedContext.tasks || citedContext.teams || citedContext.selectedTexts;
   
   return {
     citedContext: hasAnyContext ? citedContext : null,
@@ -164,20 +179,12 @@ function renderMessageContent(
   getUserDisplayName?: (email: string) => string | null
 ): JSX.Element | string {
   // First, process @mentions to create styled spans
-  // Supports: @username, @user@domain.com, and @agent:agent-name
-  const mentionRegex = /@(agent:[a-zA-Z0-9_-]+|[a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
+  const mentionRegex = /@([a-zA-Z0-9_]+(?:\s+[a-zA-Z0-9_]+)*?|[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?)(?=\s|$|[.,!?;:])/g;
   
   // Replace mentions with styled HTML spans
   let processedContent = content.replace(mentionRegex, (match) => {
     const mentionValue = match.substring(1); // Remove @
     let displayName = mentionValue;
-
-    if (mentionValue.startsWith('agent:')) {
-      // Agent mention — style differently
-      displayName = mentionValue.substring(6); // strip "agent:"
-      return `<span class="text-violet-600 dark:text-violet-400 font-semibold">🤖 @${displayName}</span>`;
-    }
-
     if (mentionValue.includes('@') && getUserDisplayName) {
       const userDisplayName = getUserDisplayName(mentionValue);
       if (userDisplayName) {
@@ -331,6 +338,148 @@ function renderMessageContent(
   return parts.length > 0 ? <>{parts}</> : content;
 }
 
+// Component to render "Join Call" button for call notification messages
+function CallJoinButton({ callId, roomName }: { callId: string; roomName: string }) {
+  const { answerCall, callStatus, setCurrentCallId, currentCallId } = useWebRTCContext();
+  const { user } = useAuth();
+  const [isJoining, setIsJoining] = React.useState(false);
+  const [callStatusFromFirestore, setCallStatusFromFirestore] = React.useState<'ringing' | 'active' | 'ended' | null>(null);
+
+  // Subscribe to call status from Firestore
+  React.useEffect(() => {
+    if (!callId || !db || !user?.email) return;
+
+    const mountedRef = { current: true };
+    let unsubscribe: (() => void) | null = null;
+
+    const setupSubscription = async () => {
+      try {
+        const { doc, getDoc, onSnapshot } = await import('firebase/firestore');
+        const orgSlug = getCurrentOrgSlug();
+        if (!orgSlug || !mountedRef.current) return;
+
+        const callRef = doc(db, `orgs/${orgSlug}/calls`, callId);
+        
+        // Initial read for immediate state (prevents UI flicker)
+        try {
+          const initialDoc = await getDoc(callRef);
+          if (mountedRef.current) {
+            if (initialDoc.exists()) {
+              const status = initialDoc.data().status || 'ringing';
+              setCallStatusFromFirestore(status);
+            } else {
+              // Document doesn't exist yet - don't mark as ended immediately
+              // Let the real-time listener handle it
+              setCallStatusFromFirestore(null);
+            }
+          }
+        } catch (initialError) {
+          console.warn('Initial call status fetch failed, will rely on listener:', initialError);
+        }
+        
+        // Set up real-time listener for updates
+        if (!mountedRef.current) return;
+        
+        unsubscribe = onSnapshot(
+          callRef,
+          (snapshot) => {
+            if (!mountedRef.current) return;
+            
+            if (snapshot.exists()) {
+              const data = snapshot.data();
+              const status = data.status || 'ringing';
+              setCallStatusFromFirestore(status);
+              
+              if (import.meta.env.DEV) {
+                console.log(`CallJoinButton: Status updated to ${status} for call ${callId}`);
+              }
+            } else {
+              // Document doesn't exist - call might be deleted or not yet created
+              // Only mark as ended if we're sure it's from the server (not cache)
+              if (!snapshot.metadata.fromCache) {
+                setCallStatusFromFirestore('ended');
+                
+                if (import.meta.env.DEV) {
+                  console.log(`CallJoinButton: Call ${callId} document not found (ended)`);
+                }
+              }
+            }
+          },
+          (error) => {
+            console.error('Error subscribing to call status:', error);
+            // On error, don't assume ended - keep current state
+          }
+        );
+      } catch (err) {
+        console.error('Error setting up call status subscription:', err);
+      }
+    };
+
+    setupSubscription();
+
+    return () => {
+      mountedRef.current = false;
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
+  }, [callId, user?.email, db]);
+
+  const handleJoinCall = async () => {
+    if (callStatus !== 'idle') {
+      return; // Already in a call
+    }
+
+    try {
+      setIsJoining(true);
+      const participantName = user?.email || 'User';
+      await answerCall(roomName, participantName);
+      // Set the call ID so the button updates to "Leave"
+      setCurrentCallId(callId);
+      console.log('Joined call from message', { callId, roomName });
+    } catch (err) {
+      console.error('Error joining call from message:', err);
+      alert('Failed to join call. Please try again.');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
+  // Check if call has ended (only if we've confirmed it from Firestore)
+  const isCallEnded = callStatusFromFirestore === 'ended';
+  
+  // Check if user is already in this call
+  const isInCall = callStatus !== 'idle' && callStatus !== 'ended' && currentCallId === callId;
+  
+  // Don't show "Call ended" if status is null (still checking) or if call is active/ringing
+  if (isCallEnded && callStatusFromFirestore !== null) {
+    return (
+      <div className="mt-2 text-xs text-muted-foreground italic">
+        Call ended
+      </div>
+    );
+  }
+
+  if (isInCall) {
+    return (
+      <div className="mt-2 text-xs text-muted-foreground">
+        You're in this call
+      </div>
+    );
+  }
+
+  return (
+    <Button
+      size="sm"
+      onClick={handleJoinCall}
+      disabled={isJoining}
+      className="mt-2"
+    >
+      <Phone className="h-4 w-4 mr-2" />
+      {isJoining ? 'Joining...' : 'Join Call'}
+    </Button>
+  );
+}
 
 export interface ChatMessageProps {
   message: Message | ChannelMessage;
@@ -368,14 +517,9 @@ export function ChatMessage({
   theme = "default",
 }: ChatMessageProps) {
   const isAIChatTheme = theme === "ai-chat";
-  const timestamp = (() => {
-    if (message.timestamp instanceof Date) {
-      return isNaN(message.timestamp.getTime()) ? new Date() : message.timestamp;
-    } else {
-      const parsed = new Date(message.timestamp);
-      return isNaN(parsed.getTime()) ? new Date() : parsed;
-    }
-  })();
+  const timestamp = message.timestamp instanceof Date 
+    ? message.timestamp 
+    : new Date(message.timestamp);
   
   const userId = 'userId' in message ? message.userId : undefined;
   const role = 'role' in message ? message.role : (isLean ? 'assistant' : 'user');
@@ -515,12 +659,17 @@ export function ChatMessage({
             // Only use parsed context if message.citedContext doesn't exist
             const displayCitedContext = message.citedContext || parsedCitedContext;
             
-            const displayContent = cleanContent;
+            // Check if this is a call notification message
+            const callMatch = cleanContent.match(/\[CALL:([^:]+):([^\]]+)\]/);
+            const displayContent = callMatch 
+              ? cleanContent.replace(/\[CALL:[^\]]+\]/, '').trim()
+              : cleanContent;
             
             // Check if we have any cited context to display
             const hasCitedContext = displayCitedContext && (
               (displayCitedContext.projects && displayCitedContext.projects.length > 0) ||
               (displayCitedContext.tasks && displayCitedContext.tasks.length > 0) ||
+              (displayCitedContext.teams && displayCitedContext.teams.length > 0) ||
               (displayCitedContext.docs && displayCitedContext.docs.length > 0) ||
               (displayCitedContext.selectedTexts && displayCitedContext.selectedTexts.length > 0)
             );
@@ -546,16 +695,31 @@ export function ChatMessage({
                 )}
                 
                 {/* Message content */}
-                <div
-                  className={cn(
-                    "text-sm break-words font-medium text-foreground",
-                    isAIChatTheme && isSent && "text-white leading-relaxed",
-                    isAIChatTheme && isLean && !isSent && "leading-relaxed"
-                  )}
-                  style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                >
-                  {renderMessageContent(displayContent, isAIChatTheme, isSent)}
-                </div>
+                {callMatch ? (
+                  <div className="space-y-2">
+                    <div 
+                      className={cn(
+                        "text-sm whitespace-pre-wrap font-medium break-words",
+                        isAIChatTheme && isSent ? "text-white" : "text-foreground"
+                      )}
+                      style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                    >
+                      {renderMessageContent(displayContent, isAIChatTheme, isSent, getUserDisplayName)}
+                    </div>
+                    <CallJoinButton callId={callMatch[1]} roomName={callMatch[2]} />
+                  </div>
+                ) : (
+                  <div 
+                    className={cn(
+                      "text-sm break-words font-medium text-foreground",
+                      isAIChatTheme && isSent && "text-white leading-relaxed",
+                      isAIChatTheme && isLean && !isSent && "leading-relaxed"
+                    )}
+                    style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                  >
+                    {renderMessageContent(displayContent, isAIChatTheme, isSent)}
+                  </div>
+                )}
               </>
             );
           })()}

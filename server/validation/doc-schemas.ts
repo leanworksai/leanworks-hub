@@ -45,12 +45,11 @@ const baseDocSchema = z.object({
     .max(50, 'Project ID must be 50 characters or less')
     .optional()
     .nullable(),
-  folderId: z
+  teamId: z
     .string()
-    .max(50, 'Folder ID must be 50 characters or less')
+    .max(50, 'Team ID must be 50 characters or less')
     .optional()
     .nullable(),
-  isFolder: z.boolean().optional().default(false),
   tags: z
     .array(z.string().max(100, 'Each tag must be 100 characters or less'))
     .max(50, 'Maximum 50 tags allowed')
@@ -67,19 +66,6 @@ const baseDocSchema = z.object({
     .default([]),
 });
 
-// Content schema for folders (empty or minimal content allowed)
-const folderContentSchema = z.string().refine(
-  (content) => {
-    // Allow empty content for folders
-    if (!content || content.trim().length === 0 || content === '{}' || content === '[]') {
-      return true;
-    }
-    // Accept JSON (TipTap format) or HTML
-    return isJsonString(content) || looksLikeHtml(content);
-  },
-  { message: 'Content must be valid JSON (TipTap format), HTML, or empty for folders' }
-);
-
 // Doc creation schema
 export const createDocSchema = baseDocSchema
   .extend({
@@ -89,20 +75,6 @@ export const createDocSchema = baseDocSchema
       .max(255, 'Title must be 255 characters or less'),
     content: tiptapContentSchema,
   })
-  .refine(
-    (data) => {
-      // If this is a folder, allow empty/minimal content
-      if (data.isFolder) {
-        return true;
-      }
-      // For regular documents, content is required
-      return data.content && data.content.trim().length > 0;
-    },
-    {
-      message: 'Content is required for documents (folders can have empty content)',
-      path: ['content'],
-    }
-  )
   .refine(
     (data) => {
       // If visibility is 'specific_members', visibleToMembers must be provided and non-empty
@@ -157,19 +129,6 @@ export const updateDocSchema = baseDocSchema
     {
       message: 'visibleToMembers must be a non-empty array when visibility is specific_members',
       path: ['visibleToMembers'],
-    }
-  )
-  .refine(
-    (data) => {
-      // Prevent setting folderId to the document's own ID (circular reference)
-      if (data.folderId && data.id && data.folderId === data.id) {
-        return false;
-      }
-      return true;
-    },
-    {
-      message: 'Cannot move a document/folder into itself',
-      path: ['folderId'],
     }
   );
 

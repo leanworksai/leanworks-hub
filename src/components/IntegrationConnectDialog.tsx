@@ -10,7 +10,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { integrationsService } from "@/services/api";
 import { useOrg } from "@/contexts/OrgContext";
 import { useToast } from "@/hooks/use-toast";
@@ -18,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 export interface IntegrationField {
   id: string;
   label: string;
-  type?: "text" | "email" | "password" | "textarea";
+  type?: "text" | "email" | "password";
   placeholder?: string;
   required?: boolean;
 }
@@ -142,28 +141,15 @@ export function IntegrationConnectDialog({
             {config.fields.map((field) => (
               <div key={field.id} className="space-y-2">
                 <Label htmlFor={field.id}>{field.label}</Label>
-                {field.type === "textarea" ? (
-                  <Textarea
-                    id={field.id}
-                    placeholder={field.placeholder}
-                    value={formData[field.id] || ""}
-                    onChange={(e) => handleFieldChange(field.id, e.target.value)}
-                    disabled={loading}
-                    required={field.required !== false}
-                    rows={6}
-                    className="font-mono text-sm"
-                  />
-                ) : (
-                  <Input
-                    id={field.id}
-                    type={field.type || "text"}
-                    placeholder={field.placeholder}
-                    value={formData[field.id] || ""}
-                    onChange={(e) => handleFieldChange(field.id, e.target.value)}
-                    disabled={loading}
-                    required={field.required !== false}
-                  />
-                )}
+                <Input
+                  id={field.id}
+                  type={field.type || "text"}
+                  placeholder={field.placeholder}
+                  value={formData[field.id] || ""}
+                  onChange={(e) => handleFieldChange(field.id, e.target.value)}
+                  disabled={loading}
+                  required={field.required !== false}
+                />
               </div>
             ))}
           </div>

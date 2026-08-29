@@ -11,7 +11,6 @@ import { v4 as uuidv4 } from 'uuid';
 import sharp from 'sharp';
 import { getOrgSlugById } from '../../database/multi-tenant-pool.js';
 import { generateSignedUrl as generateSignedUrlUtil, extractStoragePath as extractStoragePathUtil } from '../utils/storage.js';
-import { getStorageBucket } from '../utils/env.js';
 
 // Image URL expiration time (default: 1 year)
 // Can be configured via environment variable IMAGE_URL_EXPIRATION_DAYS
@@ -184,8 +183,8 @@ export function setupImageEndpoints(
         }
         const storagePath = `orgs/${orgSlugForPath}/chat-images/${chatId}/${imageId}`;
 
-        // Use bucket name based on environment
-        const bucketName = getStorageBucket();
+        // Use fixed bucket name
+        const bucketName = 'leanworks-prod';
         
         console.log('📸 Using storage bucket:', bucketName);
         let bucket = storage.bucket(bucketName);

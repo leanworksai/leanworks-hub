@@ -1,14 +1,16 @@
 import { memo } from 'react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { ArrowLeft, MoreVertical, Share2, Mail, Trash2 } from 'lucide-react';
+import { ArrowLeft, MoreVertical, Share2, Mail, Paperclip, Trash2 } from 'lucide-react';
 
 interface DocToolbarProps {
   onBack: () => void;
   onShare: () => void;
   onShareViaEmail: () => void;
+  onAttachedFiles: () => void;
   onDelete: () => void;
   isOwner: boolean;
+  filesCount: number;
   isNew: boolean;
 }
 
@@ -30,13 +32,17 @@ const BackButton = memo(function BackButton({ onClick }: { onClick: () => void }
 const MoreActionsMenu = memo(function MoreActionsMenu({
   onShare,
   onShareViaEmail,
+  onAttachedFiles,
   onDelete,
   isOwner,
+  filesCount
 }: {
   onShare: () => void;
   onShareViaEmail: () => void;
+  onAttachedFiles: () => void;
   onDelete: () => void;
   isOwner: boolean;
+  filesCount: number;
 }) {
   return (
     <DropdownMenu>
@@ -58,6 +64,10 @@ const MoreActionsMenu = memo(function MoreActionsMenu({
             Share
           </DropdownMenuItem>
         )}
+        <DropdownMenuItem onClick={onAttachedFiles}>
+          <Paperclip className="mr-2 h-4 w-4" />
+          Attached Files {filesCount > 0 && `(${filesCount})`}
+        </DropdownMenuItem>
         {isOwner && (
           <DropdownMenuItem
             onClick={onDelete}
@@ -77,8 +87,10 @@ export const DocToolbar = memo(function DocToolbar({
   onBack,
   onShare,
   onShareViaEmail,
+  onAttachedFiles,
   onDelete,
   isOwner,
+  filesCount,
   isNew,
 }: DocToolbarProps) {
   return (
@@ -87,12 +99,15 @@ export const DocToolbar = memo(function DocToolbar({
     </div>
   );
 }, (prevProps, nextProps) => {
+  // Only re-render if props that affect rendering changed
   return (
     prevProps.onBack === nextProps.onBack &&
     prevProps.onShare === nextProps.onShare &&
     prevProps.onShareViaEmail === nextProps.onShareViaEmail &&
+    prevProps.onAttachedFiles === nextProps.onAttachedFiles &&
     prevProps.onDelete === nextProps.onDelete &&
     prevProps.isOwner === nextProps.isOwner &&
+    prevProps.filesCount === nextProps.filesCount &&
     prevProps.isNew === nextProps.isNew
   );
 });

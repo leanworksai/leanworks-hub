@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transcription-worker
+  labels:
+    app: transcription-worker
+spec:
+  replicas: 2  # Can scale independently based on transcription load
+  selector:
+    matchLabels:
+      app: transcription-worker
+  template:
+    metadata:
+      labels:
+        app: transcription-worker
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+    spec:
+      serviceAccountName: leanworks-hub-sa  # Same service account, but with Pub/Sub subscriber role
+      containers:
+      - name: transcription-worker
+        image: us-west1-docker.pkg.dev/leanworks-474204/docker-repo/leanworks-hub:latest
+        imagePullPolicy: Always
+        # Run the worker entry point instead of the main server
+        # Note: In production, this should use compiled JS. For now using tsx for development.
+        command: ["npx", "tsx", "server/workers/index.ts"]
+        resources:
+          requests:
+            memory: "512Mi"  # More memory for audio processing
+            cpu: "500m"      # More CPU for transcription processing
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        # Mount GCP credentials for Secret Manager and Pub/Sub access
+        volumeMounts:
+        - name: gcp-credentials
+          mountPath: /app/gcp_credential.json
+          subPath: gcp_credential.json
+          readOnly: true
+        env:
+        - name: DB_HOST
+          value: cloud-sql-proxy-service
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_REGION
+          value: "us-west1"
+        - name: GOOGLE_CLOUD_PROJECT
+          value: "leanworks-474204"
+        - name: PUBSUB_AUDIO_CHUNKS_TOPIC
+          value: "audio-chunks"
+        - name: PUBSUB_CALL_EVENTS_TOPIC
+          value: "call-events"
+        - name: PUBSUB_AUDIO_CHUNKS_SUBSCRIPTION
+          value: "transcription-workers"
+        - name: PUBSUB_CALL_EVENTS_SUBSCRIPTION
+          value: "transcription-workers-call-events"
+        - name: AUDIO_STORAGE_BUCKET
+          value: "leanworks-prod"
+        livenessProbe:
+          # Workers don't have HTTP endpoints, so we use a simple process check
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep -v grep | grep 'server/workers/index.ts' || exit 1"
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - "ps aux | grep -v grep | grep 'server/workers/index.ts' || exit 1"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: gcp-credentials
+        secret:
+          secretName: gcp-credentials
+

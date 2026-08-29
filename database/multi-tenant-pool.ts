@@ -3,7 +3,6 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getDbInstanceName, getCredentialPath, getSecretName } from '../server/utils/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -26,7 +25,7 @@ if (existsSync(envPath)) {
   });
 }
 
-const serviceAccountPath = join(__dirname, '../', getCredentialPath());
+const serviceAccountPath = join(__dirname, '../gcp_credential.json');
 let serviceAccount;
 try {
   serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
@@ -42,7 +41,7 @@ const secretManagerClient = new SecretManagerServiceClient({
 });
 
 const projectId = serviceAccount.project_id;
-const instanceName = getDbInstanceName();
+const instanceName = 'leanworks-prod';
 const region = process.env.DB_REGION || 'us-west1';
 
 // Shared database name (for users, organizations, invitations)
@@ -65,7 +64,7 @@ async function getPostgresPassword(): Promise<string> {
   }
 
   try {
-    const secretName = `projects/${projectId}/secrets/${getSecretName('postgresdb-password')}/versions/latest`;
+    const secretName = `projects/${projectId}/secrets/postgresdb-password/versions/latest`;
     const [version] = await secretManagerClient.accessSecretVersion({ name: secretName });
     cachedPassword = (version.payload?.data?.toString() || '').trim();
     console.log('✅ PostgreSQL password fetched from Secret Manager');
@@ -564,18 +563,6 @@ export async function queryOrg<T = any>(
   return result.rows;
 }
 
-/**
- * Execute a write query on an organization's database (alias of queryOrg).
- * Kept for compatibility with existing endpoint patterns.
- */
-export async function executeOrg<T = any>(
-  orgId: string,
-  text: string,
-  params?: any[]
-): Promise<T[]> {
-  return queryOrg(orgId, text, params);
-}
-
 // ============================================================================
 // USER/ORG LOOKUP HELPERS
 // ============================================================================
@@ -662,10 +649,8 @@ export async function isOrgOwner(orgId: string, email: string): Promise<boolean>
  * Get organization members
  */
 export async function getOrgMembers(orgId: string): Promise<any[]> {
-  console.log(`🔍 getOrgMembers called with orgId: ${orgId}`);
-  
-  const results = await queryShared(`
-    SELECT
+  return queryShared(`
+    SELECT 
       om.user_email as email,
       om.role,
       om.joined_at,
@@ -676,13 +661,10 @@ export async function getOrgMembers(orgId: string): Promise<any[]> {
     FROM org_members om
     INNER JOIN users u ON om.user_email = u.email
     WHERE om.org_id = $1
-    ORDER BY
+    ORDER BY 
       CASE om.role WHEN 'owner' THEN 0 ELSE 1 END,
       om.joined_at ASC
   `, [orgId]);
-  
-  console.log(`🔍 getOrgMembers returned ${results.length} results for orgId: ${orgId}`);
-  return results;
 }
 
 // ============================================================================

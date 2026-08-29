@@ -14,8 +14,6 @@ export interface Doc {
   ownerEmail: string;
   projectId?: string | null;
   teamId?: string | null;
-  folderId?: string | null;
-  isFolder?: boolean;
   visibility?: 'all_members' | 'specific_members';
   visibleToMembers?: string[]; // Array of member emails who can view this doc
   metadata?: {

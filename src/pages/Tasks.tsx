@@ -31,12 +31,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { 
@@ -63,7 +57,6 @@ import { useState, useMemo, useCallback } from "react";
 import { useUserTasks, useDeleteTask, useUpdateTask } from "@/hooks/useTasks";
 import { useSelectedTasks } from "@/contexts/SelectedTasksContext";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
-import { NewAITaskDialog } from "@/components/NewAITaskDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useUsers } from "@/hooks/useUsers";
 import { useUserMap } from "@/hooks/useUserMap";
@@ -119,9 +112,10 @@ const getPriorityColor = (priority: Task["priority"]) => {
   }
 };
 
-// Get members for a specific task (project members or org users)
-// If task has a project, return only project members; otherwise return all organization users
-const getMembersForTask = (task: Task, projects: any[], users: any[] = []) => {
+// Get team members for a specific task
+// If task has a project, return only project members
+// If task has no project, return all organization users
+const getTeamMembersForTask = (task: Task, projects: any[], users: any[] = []) => {
   const memberMap = new Map<string, { id?: string; name: string; avatar: string; role: string }>();
   
   const taskProjectId = task?.projectId;
@@ -174,9 +168,7 @@ const getInitials = (name: string): string => {
     .slice(0, 2);
 };
 
-import { createPortal } from "react-dom";
-
-export default function Tasks({ embedded, headerPortalRef }: { embedded?: boolean; headerPortalRef?: HTMLElement | null } = {}) {
+export default function Tasks() {
   const navigate = useNavigate();
   const { toggleTask, isTaskSelected, selectedTasks } = useSelectedTasks();
   const { data: tasks = [], isLoading } = useUserTasks();
@@ -192,7 +184,6 @@ export default function Tasks({ embedded, headerPortalRef }: { embedded?: boolea
   const [filterPriority, setFilterPriority] = useState<Task["priority"] | "all">("all");
   const [filterProject, setFilterProject] = useState<string>("all");
   const [isNewTaskDialogOpen, setIsNewTaskDialogOpen] = useState(false);
-  const [isNewAITaskDialogOpen, setIsNewAITaskDialogOpen] = useState(false);
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const [hoveredTask, setHoveredTask] = useState<string | null>(null); // Stores task ID for progress popover (mobile only)
   const [openDropdowns, setOpenDropdowns] = useState<Record<string, { status?: boolean; priority?: boolean; assignee?: boolean; dueDate?: boolean }>>({});
@@ -369,106 +360,83 @@ export default function Tasks({ embedded, headerPortalRef }: { embedded?: boolea
     );
   }
 
-  const controls = (
-    <>
-      <Select value={filterStatus} onValueChange={(value) => {
-        const newValue = value as Task["status"] | "all";
-        setFilterStatus(newValue);
-        trackFilter('status', newValue, '/tasks');
-      }}>
-        <SelectTrigger className="w-36 h-8">
-          <SelectValue placeholder="Status" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All Status</SelectItem>
-          <SelectItem value="todo">Todo</SelectItem>
-          <SelectItem value="in-progress">In Progress</SelectItem>
-          <SelectItem value="review">Review</SelectItem>
-          <SelectItem value="blocked">Blocked</SelectItem>
-          <SelectItem value="completed">Completed</SelectItem>
-        </SelectContent>
-      </Select>
-
-      <Select value={filterPriority} onValueChange={(value) => {
-        const newValue = value as Task["priority"] | "all";
-        setFilterPriority(newValue);
-        trackFilter('priority', newValue, '/tasks');
-      }}>
-        <SelectTrigger className="w-36 h-8">
-          <SelectValue placeholder="Priority" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All Priority</SelectItem>
-          <SelectItem value="low">Low</SelectItem>
-          <SelectItem value="medium">Medium</SelectItem>
-          <SelectItem value="high">High</SelectItem>
-          <SelectItem value="urgent">Urgent</SelectItem>
-        </SelectContent>
-      </Select>
-
-      <Select value={filterProject} onValueChange={setFilterProject}>
-        <SelectTrigger className="w-40 h-8">
-          <SelectValue placeholder="Project" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All Projects</SelectItem>
-          <SelectItem value="none">No Project</SelectItem>
-          {projects.map((project) => (
-            <SelectItem key={project.id} value={project.id}>
-              {project.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button className="bg-primary hover:bg-primary/90 h-8">
-            <Plus className="mr-2 h-4 w-4" />
-            New Task
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => setIsNewTaskDialogOpen(true)}>
-            New Task for Human
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setIsNewAITaskDialogOpen(true)}>
-            New Task for AI
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </>
-  );
-
   return (
-    <div className={cn("h-full flex flex-col animate-fade-in", embedded && "h-auto animate-none")}>
-      {/* Header: same horizontal layout as Plans */}
-      {(!embedded || !headerPortalRef) && (
-        <div className={cn(
-          "border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60",
-          embedded && "border-b-0 bg-transparent backdrop-blur-none sticky top-0 z-10"
-        )}>
-          <div className="flex h-12 items-center px-4 gap-3 flex-wrap">
-            {!embedded && (
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <h1 className="text-lg font-semibold">Tasks</h1>
-                <Badge variant="secondary" className="ml-1.5">
-                  {filteredTasks.length}
-                </Badge>
-              </div>
-            )}
-
-            {/* Filters - same row as New Task */}
-            {controls}
-          </div>
+    <div className="space-y-4 sm:space-y-6 animate-fade-in">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Tasks</h1>
         </div>
-      )}
+        <Button 
+          className="bg-primary hover:bg-primary/90 w-full sm:w-auto"
+          onClick={() => setIsNewTaskDialogOpen(true)}
+        >
+          <Plus className="mr-2 h-4 w-4" />
+          New Task
+        </Button>
+      </div>
 
-      {embedded && headerPortalRef && createPortal(controls, headerPortalRef)}
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Status:</label>
+          <Select value={filterStatus} onValueChange={(value) => {
+            const newValue = value as Task["status"] | "all";
+            setFilterStatus(newValue);
+            trackFilter('status', newValue, '/tasks');
+          }}>
+            <SelectTrigger className="w-[93px] h-8 text-xs">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent className="w-[93px] text-xs">
+              <SelectItem value="all" className="text-xs py-1.5">All</SelectItem>
+              <SelectItem value="todo" className="text-xs py-1.5">Todo</SelectItem>
+              <SelectItem value="in-progress" className="text-xs py-1.5">In Progress</SelectItem>
+              <SelectItem value="review" className="text-xs py-1.5">Review</SelectItem>
+              <SelectItem value="blocked" className="text-xs py-1.5">Blocked</SelectItem>
+              <SelectItem value="completed" className="text-xs py-1.5">Completed</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Priority:</label>
+          <Select value={filterPriority} onValueChange={(value) => {
+            const newValue = value as Task["priority"] | "all";
+            setFilterPriority(newValue);
+            trackFilter('priority', newValue, '/tasks');
+          }}>
+            <SelectTrigger className="w-[93px] h-8 text-xs">
+              <SelectValue placeholder="All priorities" />
+            </SelectTrigger>
+            <SelectContent className="w-[93px] text-xs">
+              <SelectItem value="all" className="text-xs py-1.5">All</SelectItem>
+              <SelectItem value="low" className="text-xs py-1.5">Low</SelectItem>
+              <SelectItem value="medium" className="text-xs py-1.5">Medium</SelectItem>
+              <SelectItem value="high" className="text-xs py-1.5">High</SelectItem>
+              <SelectItem value="urgent" className="text-xs py-1.5">Urgent</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">Project:</label>
+          <Select value={filterProject} onValueChange={setFilterProject}>
+            <SelectTrigger className="w-[160px] h-8 text-xs">
+              <SelectValue placeholder="All projects" />
+            </SelectTrigger>
+            <SelectContent className="text-xs">
+              <SelectItem value="all" className="text-xs py-1.5">All Projects</SelectItem>
+              <SelectItem value="none" className="text-xs py-1.5">No Project</SelectItem>
+              {projects.map((project) => (
+                <SelectItem key={project.id} value={project.id} className="text-xs py-1.5">
+                  {project.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
 
       {/* Tasks List */}
-      <div className="flex-1 overflow-auto p-6">
-        <div className="space-y-3">
+      <div className="space-y-3">
         {filteredTasks.map((task) => {
           // Get the latest progress update (sorted by date, newest first)
           const sortedUpdates = task.progressUpdates ? [...task.progressUpdates].sort((a, b) => {
@@ -650,7 +618,7 @@ export default function Tasks({ embedded, headerPortalRef }: { embedded?: boolea
                                       />
                                       Unassigned
                                     </CommandItem>
-                                    {getMembersForTask(task, projects, users).map((member) => (
+                                    {getTeamMembersForTask(task, projects, users).map((member) => (
                                       <CommandItem
                                         key={member.name}
                                         value={member.name}
@@ -886,22 +854,17 @@ export default function Tasks({ embedded, headerPortalRef }: { embedded?: boolea
             </div>
           );
         })}
-        </div>
-
-        {filteredTasks.length === 0 && (
-          <div className="text-center py-12">
-            <p className="text-muted-foreground">No tasks found matching your filters.</p>
-          </div>
-        )}
       </div>
+
+      {filteredTasks.length === 0 && (
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">No tasks found matching your filters.</p>
+        </div>
+      )}
 
       <NewTaskDialog 
         open={isNewTaskDialogOpen} 
         onOpenChange={setIsNewTaskDialogOpen} 
-      />
-      <NewAITaskDialog
-        open={isNewAITaskDialogOpen}
-        onOpenChange={setIsNewAITaskDialogOpen}
       />
 
       {/* Limit Visibility Dialog */}

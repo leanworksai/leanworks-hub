@@ -150,7 +150,7 @@ export const useUpdateTask = () => {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ taskId, updates }: { taskId: string; updates: Parameters<typeof tasksService.update>[1] }) =>
+    mutationFn: ({ taskId, updates }: { taskId: string; updates: Partial<Task> }) =>
       tasksService.update(taskId, updates),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });

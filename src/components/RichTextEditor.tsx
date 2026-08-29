@@ -113,6 +113,7 @@ import {
   AlignCenter,
   AlignRight,
   Eraser,
+  Paperclip,
   Heading,
   Image as ImageIcon,
 } from 'lucide-react';
@@ -386,7 +387,8 @@ interface RichTextEditorProps {
   onChange: (content: object) => void; // Returns TipTap JSON object
   placeholder?: string;
   readOnly?: boolean;
-  onImageAdded?: (fileInfo: { fileId: string; fileName: string; fileUrl: string; fileSize: number; mimeType: string }, docId: string) => Promise<void>; // Callback to add image to metadata, receives saved docId
+  onFileUpload?: (file: File) => Promise<void>;
+  onImageAdded?: (fileInfo: { fileId: string; fileName: string; fileUrl: string; fileSize: number; mimeType: string }, docId: string) => Promise<void>; // Callback to add image to attachments, receives saved docId
   docId?: string;
   onSaveFirst?: () => Promise<string | null>; // Callback to save document first if needed, returns new docId
 }
@@ -396,6 +398,7 @@ export function RichTextEditor({
   onChange, 
   placeholder = 'Start writing...',
   readOnly = false,
+  onFileUpload,
   onImageAdded,
   docId,
   onSaveFirst,
@@ -425,6 +428,7 @@ export function RichTextEditor({
     prevDocIdRef.current = docId;
   }
   const isUndoRedoRef = useRef<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<any>(null);
@@ -1647,7 +1651,7 @@ export function RichTextEditor({
         </DropdownMenu>
 
         {/* Image Upload */}
-        {onImageAdded && (
+        {onFileUpload && (
           <>
             <input
               ref={imageInputRef}
@@ -1673,6 +1677,50 @@ export function RichTextEditor({
               title="Insert image (max 10MB)"
             >
               <ImageIcon className="h-4 w-4" />
+            </Button>
+          </>
+        )}
+
+        {/* File Upload */}
+        {onFileUpload && docId && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+
+                // Validate file size (10MB max)
+                if (file.size > 10 * 1024 * 1024) {
+                  alert('File size exceeds 10MB limit');
+                  return;
+                }
+
+                setIsUploading(true);
+                try {
+                  await onFileUpload(file);
+                } catch (error) {
+                  alert(error instanceof Error ? error.message : 'Failed to upload file');
+                } finally {
+                  setIsUploading(false);
+                  // Reset input
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                  }
+                }
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isUploading}
+              title="Upload file (max 10MB)"
+            >
+              <Paperclip className="h-4 w-4" />
             </Button>
           </>
         )}
@@ -1875,7 +1923,7 @@ export function RichTextEditor({
               </DropdownMenu>
 
               {/* Image Upload */}
-              {onImageAdded && (
+              {onFileUpload && (
                 <>
                   <input
                     ref={imageInputRef}
@@ -1900,6 +1948,48 @@ export function RichTextEditor({
                     title="Insert image (max 10MB)"
                   >
                     <ImageIcon className="h-4 w-4" />
+                  </Button>
+                </>
+              )}
+
+              {/* File Upload */}
+              {onFileUpload && docId && (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+
+                      if (file.size > 10 * 1024 * 1024) {
+                        alert('File size exceeds 10MB limit');
+                        return;
+                      }
+
+                      setIsUploading(true);
+                      try {
+                        await onFileUpload(file);
+                      } catch (error) {
+                        alert(error instanceof Error ? error.message : 'Failed to upload file');
+                      } finally {
+                        setIsUploading(false);
+                        if (fileInputRef.current) {
+                          fileInputRef.current.value = '';
+                        }
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploading}
+                    title="Upload file (max 10MB)"
+                  >
+                    <Paperclip className="h-4 w-4" />
                   </Button>
                 </>
               )}

@@ -3,14 +3,11 @@ import { useCallback, useRef, useState } from 'react';
 /**
  * Streaming event types matching the leanworks API
  */
-export type StreamEvent =
+export type StreamEvent = 
   | { type: 'tool_start'; tool_name: string; display_name: string; description: string }
-  | { type: 'bash_command'; command: string }
   | { type: 'tool_end'; tool_name: string; summary: string }
   | { type: 'text_delta'; text: string }
   | { type: 'done'; data_sources?: string[] }
-  | { type: 'heartbeat'; timestamp?: number }
-  | { type: 'doc_progress'; stage: string; current?: number; total?: number; heading?: string; message: string }
   | { type: 'error'; error: string };
 
 export interface ToolExecution {
@@ -21,8 +18,6 @@ export interface ToolExecution {
   status: 'running' | 'completed';
   startTime: number;
   endTime?: number;
-  /** For bash tool: the command being executed (from bash_command event) */
-  command?: string;
 }
 
 export interface StreamingState {
@@ -30,13 +25,6 @@ export interface StreamingState {
   content: string;
   toolExecutions: ToolExecution[];
   dataSources: string[];
-  docProgress?: {
-    stage: string;
-    current?: number;
-    total?: number;
-    heading?: string;
-    message: string;
-  };
   error?: string;
 }
 
@@ -54,7 +42,6 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
     content: '',
     toolExecutions: [],
     dataSources: [],
-    docProgress: undefined,
   });
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -84,7 +71,6 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
       content: '',
       toolExecutions: [],
       dataSources: [],
-      docProgress: undefined,
     });
 
     // Create abort controller for fetch
@@ -181,24 +167,6 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
                   ];
                   break;
 
-                case 'bash_command': {
-                  // Attach command to the most recent running bash tool
-                  const lastRunningBashFromEnd = [...prev.toolExecutions]
-                    .reverse()
-                    .findIndex(tool =>
-                      tool.status === 'running' &&
-                      (tool.name === 'bash' || tool.displayName.toLowerCase().includes('bash'))
-                    );
-
-                  if (lastRunningBashFromEnd !== -1) {
-                    const targetIndex = prev.toolExecutions.length - 1 - lastRunningBashFromEnd;
-                    newState.toolExecutions = prev.toolExecutions.map((tool, idx) =>
-                      idx === targetIndex ? { ...tool, command: event.command } : tool
-                    );
-                  }
-                  break;
-                }
-
                 case 'tool_end':
                   console.log('✅ Tool completed:', event.tool_name);
                   newState.toolExecutions = prev.toolExecutions.map(tool =>
@@ -221,27 +189,11 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
                   console.log('✨ Stream done:', event.data_sources?.length || 0, 'sources');
                   newState.dataSources = event.data_sources || [];
                   newState.isStreaming = false;
-
+                  
                   // Call completion callback
                   if (options.onComplete) {
                     options.onComplete(newState.content, newState.dataSources);
                   }
-                  break;
-
-                case 'doc_progress':
-                  console.log('📝 Document progress:', event.message);
-                  newState.docProgress = {
-                    stage: event.stage,
-                    current: event.current,
-                    total: event.total,
-                    heading: event.heading,
-                    message: event.message
-                  };
-                  break;
-
-                case 'heartbeat':
-                  // Silent keep-alive - prevents stream timeout
-                  // console.log('💓 Heartbeat'); // Enable for debugging
                   break;
 
                 case 'error':
@@ -306,7 +258,6 @@ export function useStreamingChat(options: UseStreamingChatOptions = {}) {
       content: '',
       toolExecutions: [],
       dataSources: [],
-      docProgress: undefined,
     });
   }, []);
 

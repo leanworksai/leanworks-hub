@@ -94,7 +94,7 @@ export function SpreadsheetViewer({ doc, downloadUrl }: SpreadsheetViewerProps) 
             name: sheetName,
             data: limitedData,
             rowCount: rawData.length,
-            columnCount: rawData.length > 0 ? rawData.reduce((max, row) => Math.max(max, row.length), 0) : 0,
+            columnCount: Math.max(...rawData.map(row => row.length)),
           };
         });
 
