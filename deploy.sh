@@ -10,13 +10,9 @@ AUDIO_STORAGE_BUCKET="leanworks-${ENVIRONMENT}"
 FIRESTORE_DATABASE_NAME="leanworks-${ENVIRONMENT}"
 REGION="us-west1"  # Update this to your cluster's region
 if [ "$ENVIRONMENT" = "dev" ]; then
-    GCP_CREDENTIAL_FILE="gcp_credential_dev.json"
     CONFIGMAP_FILE="k8s/configmap-dev.yaml"
-    GCP_SECRET_NAME="gcp-credentials-dev"
 else
-    GCP_CREDENTIAL_FILE="gcp_credential.json"
     CONFIGMAP_FILE="k8s/configmap.yaml"
-    GCP_SECRET_NAME="gcp-credentials"
 fi
 ARTIFACT_REGISTRY_REPO="docker-repo"  # Artifact Registry repository name
 
@@ -28,33 +24,25 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}Starting deployment to GKE (${ENVIRONMENT} environment)...${NC}"
 
-# Check if GCP credentials file exists
-if [ ! -f "$GCP_CREDENTIAL_FILE" ]; then
-    echo -e "${RED}Error: $GCP_CREDENTIAL_FILE not found!${NC}"
+# Use the explicitly selected project or the active gcloud project. Authentication
+# comes from the operator's gcloud session; pods use Workload Identity.
+PROJECT_ID="${GCP_PROJECT_ID:-${GOOGLE_CLOUD_PROJECT:-$(gcloud config get-value project 2>/dev/null)}}"
+
+if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "(unset)" ]; then
+    echo -e "${RED}Error: Set GCP_PROJECT_ID or select a project with gcloud config set project.${NC}"
     exit 1
 fi
 
-# Read project ID from credentials file
-if command -v jq &> /dev/null; then
-    PROJECT_ID=$(jq -r '.project_id' "$GCP_CREDENTIAL_FILE")
-elif command -v python3 &> /dev/null; then
-    PROJECT_ID=$(python3 -c "import json, sys; print(json.load(open('$GCP_CREDENTIAL_FILE'))['project_id'])")
-else
-    # Fallback: use grep and sed (less robust but works without additional tools)
-    PROJECT_ID=$(grep -o '"project_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$GCP_CREDENTIAL_FILE" | sed 's/.*"project_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-fi
-
-if [ -z "$PROJECT_ID" ]; then
-    echo -e "${RED}Error: Could not extract project_id from $GCP_CREDENTIAL_FILE${NC}"
-    exit 1
-fi
+GSA_EMAIL="${GCP_SERVICE_ACCOUNT_EMAIL:-deployment@${PROJECT_ID}.iam.gserviceaccount.com}"
 
 IMAGE_NAME="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/leanworks-hub"
 
-# Set up GCP authentication
-echo -e "${YELLOW}Setting up GCP authentication...${NC}"
-export GOOGLE_APPLICATION_CREDENTIALS="$GCP_CREDENTIAL_FILE"
-gcloud auth activate-service-account --key-file="$GCP_CREDENTIAL_FILE"
+# Verify the operator already has an authenticated gcloud session.
+echo -e "${YELLOW}Checking GCP authentication...${NC}"
+if ! gcloud auth print-access-token >/dev/null 2>&1; then
+    echo -e "${RED}Error: No active gcloud session. Run gcloud auth login first.${NC}"
+    exit 1
+fi
 
 # Set the project
 echo -e "${YELLOW}Setting GCP project to ${PROJECT_ID}...${NC}"
@@ -81,34 +69,6 @@ fi
 # Get cluster credentials
 echo -e "${YELLOW}Getting GKE cluster credentials...${NC}"
 gcloud container clusters get-credentials "$CLUSTER_NAME" --region="$REGION" --project="$PROJECT_ID"
-
-# Create Kubernetes secret for GCP credentials (for Cloud SQL Proxy)
-echo -e "${YELLOW}Creating Kubernetes secret for GCP credentials...${NC}"
-if kubectl get secret "$GCP_SECRET_NAME" -n default &>/dev/null; then
-    echo -e "${YELLOW}Secret already exists, updating...${NC}"
-    kubectl create secret generic "$GCP_SECRET_NAME" \
-        --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE" \
-        --dry-run=client -o yaml | kubectl apply -f -
-    echo -e "${GREEN}Secret updated!${NC}"
-else
-    kubectl create secret generic "$GCP_SECRET_NAME" \
-        --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE"
-    echo -e "${GREEN}Secret created!${NC}"
-fi
-
-# Extract service account email for verification
-if command -v jq &> /dev/null; then
-    GSA_EMAIL=$(jq -r '.client_email' "$GCP_CREDENTIAL_FILE")
-elif command -v python3 &> /dev/null; then
-    GSA_EMAIL=$(python3 -c "import json, sys; print(json.load(open('$GCP_CREDENTIAL_FILE'))['client_email'])")
-else
-    GSA_EMAIL=$(grep -o '"client_email"[[:space:]]*:[[:space:]]*"[^"]*"' "$GCP_CREDENTIAL_FILE" | sed 's/.*"client_email"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
-fi
-
-if [ -z "$GSA_EMAIL" ]; then
-    echo -e "${RED}Error: Could not extract client_email from $GCP_CREDENTIAL_FILE${NC}"
-    exit 1
-fi
 
 echo -e "${GREEN}Using GCP service account: ${GSA_EMAIL}${NC}"
 
@@ -180,11 +140,7 @@ fi
 kubectl apply -f k8s/backend-config.yaml
 SQL_PROXY_TEMPLATE="k8s/cloud-sql-proxy.tmpl.yaml"
 if [ -f "$SQL_PROXY_TEMPLATE" ]; then
-    SQL_PROXY_MANIFEST=$(mktemp)
-    sed -e "s|__GCP_SECRET__|$GCP_SECRET_NAME|g" \
-        "$SQL_PROXY_TEMPLATE" > "$SQL_PROXY_MANIFEST"
-    kubectl apply -f "$SQL_PROXY_MANIFEST"
-    rm -f "$SQL_PROXY_MANIFEST"
+    kubectl apply -f "$SQL_PROXY_TEMPLATE"
 else
     kubectl apply -f k8s/cloud-sql-proxy.yaml
 fi
@@ -192,7 +148,7 @@ DEPLOYMENT_TEMPLATE="k8s/deployment.tmpl.yaml"
 if [ -f "$DEPLOYMENT_TEMPLATE" ]; then
     DEPLOYMENT_MANIFEST=$(mktemp)
     sed -e "s|__IMAGE__|$FULL_IMAGE_NAME|g" \
-        -e "s|__GCP_SECRET__|$GCP_SECRET_NAME|g" \
+        -e "s|__PROJECT_ID__|$PROJECT_ID|g" \
         "$DEPLOYMENT_TEMPLATE" > "$DEPLOYMENT_MANIFEST"
     kubectl apply -f "$DEPLOYMENT_MANIFEST"
     rm -f "$DEPLOYMENT_MANIFEST"

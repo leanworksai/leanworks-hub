@@ -22,6 +22,7 @@ spec:
       annotations:
         cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
     spec:
+      serviceAccountName: leanworks-hub-sa
       tolerations:
       - key: "node.gke.io/balloon-pod-resize"
         operator: "Exists"
@@ -45,12 +46,6 @@ spec:
                             # - WebSocket connections and Firebase Admin SDK operations
                             # - Node.js V8 heap and buffer overhead
             cpu: "1000m"     # Increased CPU for concurrent image processing and database operations
-        # Mount GCP credentials for Secret Manager access
-        volumeMounts:
-        - name: gcp-credentials
-          mountPath: /app/gcp_credential.json
-          subPath: gcp_credential.json
-          readOnly: true
         env:
         - name: NODE_ENV
           value: "production"
@@ -108,11 +103,6 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
-      volumes:
-      - name: gcp-credentials
-        secret:
-          secretName: gcp-credentials
-
 ---
 apiVersion: v1
 kind: Service

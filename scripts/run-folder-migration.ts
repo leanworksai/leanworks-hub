@@ -8,18 +8,16 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getCredentialPath } from '../server/utils/env.js';
+import { getGoogleCloudConfig } from '../server/utils/google-cloud.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 async function getPostgresPassword(): Promise<string> {
-  const serviceAccountPath = join(__dirname, '../', getCredentialPath());
-  const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-  const projectId = serviceAccount.project_id;
+  const { projectId } = getGoogleCloudConfig(join(__dirname, '..'));
 
   const secretManagerClient = new SecretManagerServiceClient({
-    keyFilename: serviceAccountPath,
+    projectId,
   });
 
   const secretName = `projects/${projectId}/secrets/dev-postgresdb-password/versions/latest`;

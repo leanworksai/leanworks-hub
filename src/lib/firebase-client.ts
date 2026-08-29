@@ -67,7 +67,7 @@ async function fetchFirebaseConfig(forceRefresh = false, retryCount = 0): Promis
         
         // Validate the config has a valid API key
         if (!isValidApiKey(config.apiKey)) {
-          const errorMsg = `Invalid API key in config from backend: ${config.apiKey ? config.apiKey.substring(0, 20) + '...' : 'missing'}`;
+          const errorMsg = `Invalid API key in config from backend: ${config.apiKey ? 'present but malformed' : 'missing'}`;
           console.error('❌', errorMsg);
           console.error('❌ Backend returned invalid config. This should not happen. Check server logs.');
           throw new Error(errorMsg);
@@ -407,13 +407,12 @@ function checkAndWarnInvalidApiKey() {
       // If we detect an invalid app, clear our references
       // Note: We can't prevent Firebase SDK from making background API calls,
       // but we can prevent our code from using Firebase Auth
-      // The app will still work with custom tokens for API authentication
+      // Keep authentication disabled until valid Firebase configuration is available.
       if (app === existingApp) {
         // Only log once to avoid console spam
         if (!(window as any).__firebaseInvalidKeyWarned) {
           console.warn('⚠️ Firebase has invalid API key - Firebase Auth disabled');
-          console.warn('⚠️ App will work with custom tokens for API authentication');
-          console.warn('⚠️ Firebase API errors in console are non-critical and can be ignored');
+          console.warn('⚠️ Sign-in is unavailable until Firebase configuration is corrected');
           (window as any).__firebaseInvalidKeyWarned = true;
         }
         app = null;
@@ -430,7 +429,7 @@ function checkAndWarnInvalidApiKey() {
     if (!isValidApiKey(apiKey)) {
       if (!(window as any).__firebaseInvalidKeyWarned) {
         console.warn('⚠️ Firebase has invalid API key - Firebase Auth disabled');
-        console.warn('⚠️ App will work with custom tokens for API authentication');
+        console.warn('⚠️ Sign-in is unavailable until Firebase configuration is corrected');
         (window as any).__firebaseInvalidKeyWarned = true;
       }
       // Set to null so auth context knows not to use it
@@ -492,4 +491,3 @@ if (typeof window !== 'undefined') {
 }
 
 export default app;
-

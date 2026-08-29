@@ -875,8 +875,9 @@ app.get('/api/users/:email', (req, res) => {
 
 // ============ AI Service Mock Endpoints ============
 
-app.get('/api/ask-api-key', (req, res) => {
-  res.json({ apiKey: 'demo-ask-key' });
+app.post('/api/messages/generate-response', (req, res) => {
+  const content = `Demo response to: ${req.body.message || ''}`;
+  res.json({ response: content, content });
 });
 
 app.post('/api/ask', (req, res) => {

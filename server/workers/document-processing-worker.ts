@@ -6,13 +6,11 @@
  */
 
 import { Message } from '@google-cloud/pubsub';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { applicationDefault, initializeApp, getApps } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
 import { getOrgPoolBySlug } from '../../database/multi-tenant-pool';
-import { getStorageBucket, getCredentialPath, isDevEnvironment } from '../utils/env.js';
+import { getStorageBucket, isDevEnvironment } from '../utils/env.js';
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 import {
   getDocumentProcessingPubSubClient,
   getDocumentProcessingSubscriptionName,
@@ -28,31 +26,22 @@ import {
   isDocumentProcessingError,
 } from '../utils/document-errors.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
 /**
  * Initialize Firebase Admin SDK
  */
 function initializeFirebaseAdmin(): void {
   if (getApps().length === 0) {
-    const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
-    if (existsSync(serviceAccountPath)) {
-      const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-      const storageBucket = serviceAccount.storage_bucket || getStorageBucket();
-      try {
-        initializeApp({
-          credential: cert(serviceAccount),
-          projectId: serviceAccount.project_id,
-          storageBucket: storageBucket,
-        });
-        console.log('✅ Firebase Admin SDK initialized for document processing worker');
-      } catch (error) {
-        // If Firebase is already initialized, just use the existing instance
-        console.log('ℹ️  Using existing Firebase Admin SDK instance');
-      }
-    } else {
-      throw new Error('GCP credentials not found at: ' + serviceAccountPath);
+    const { projectId } = getGoogleCloudConfig();
+    try {
+      initializeApp({
+        credential: applicationDefault(),
+        projectId,
+        storageBucket: getStorageBucket(),
+      });
+      console.log('✅ Firebase Admin SDK initialized for document processing worker');
+    } catch (error) {
+      // If Firebase is already initialized, just use the existing instance
+      console.log('ℹ️  Using existing Firebase Admin SDK instance');
     }
   } else {
     console.log('ℹ️  Firebase Admin SDK already initialized, using existing instance');

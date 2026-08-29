@@ -71,7 +71,7 @@ async function fetchTurnCredentials(authToken: string): Promise<RTCConfiguration
     const data = await response.json();
     
     if (!data.iceServers || !Array.isArray(data.iceServers)) {
-      console.warn('⚠️ Invalid TURN credentials response:', data);
+      console.warn('⚠️ Invalid TURN credentials response');
       return null;
     }
 

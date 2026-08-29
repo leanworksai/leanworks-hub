@@ -5,31 +5,18 @@
 
 import type { Plan } from '@/types/plans';
 import { API_CONFIG } from '@/config/api';
-
-interface AIHeaders {
-  'Content-Type': 'application/json';
-  'x-api-key'?: string;
-}
+import { authenticatedFetch } from '@/services/api';
 
 async function callAIApi(endpoint: string, method: string, body?: any): Promise<any> {
-  const headers: AIHeaders = {
-    'Content-Type': 'application/json',
-  };
-
-  if (API_CONFIG.aiApiKey) {
-    headers['x-api-key'] = API_CONFIG.aiApiKey;
-  }
-
   const options: RequestInit = {
     method,
-    headers,
   };
 
   if (body) {
     options.body = JSON.stringify(body);
   }
 
-  const response = await fetch(`${API_CONFIG.ai}${endpoint}`, options);
+  const response = await authenticatedFetch(`${API_CONFIG.hub}${endpoint}`, options);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));

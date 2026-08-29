@@ -78,12 +78,8 @@ export function getSecretName(baseName: string): string {
 }
 
 /**
- * Gets the appropriate GCP credential file path based on environment
- * @returns path to gcp_credential_dev.json for local dev, otherwise gcp_credential.json
+ * Gets the optional, gitignored credential file used only for local development.
  */
-export function getCredentialPath(): string {
-  if (isLocalDev()) {
-    return 'gcp_credential_dev.json';
-  }
-  return 'gcp_credential.json';
+export function getLocalCredentialPath(): string {
+  return 'gcp_credential_dev.json';
 }

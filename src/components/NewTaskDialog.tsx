@@ -35,7 +35,7 @@ import { useUserTimezone } from "@/hooks/useUserTimezone";
 import { formatDateInTimezone } from "@/lib/dateTimeUtils";
 import { Check, ChevronsUpDown, Sparkles, Lock } from "lucide-react";
 import { v4 as uuidv4 } from 'uuid';
-import { getAuthToken, subscriptionService } from "@/services/api";
+import { authenticatedFetch, subscriptionService } from "@/services/api";
 import { cn } from "@/lib/utils";
 import { trackCreate, trackConversion, trackFirstFeatureUse, trackEvent, trackModal } from "@/lib/analytics";
 import { getUserSignupDate, getDaysSinceSignup } from "@/lib/first-time-tracker";
@@ -231,50 +231,7 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
 
     setIsGeneratingAI(true);
     try {
-      const isLocalDev = import.meta.env.DEV;
-      const apiUrl = `${API_CONFIG.ai}/generate-task`;
-
-      // Prepare headers
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-
-      // Get authentication token (with fallback to localStorage)
-      const customToken = await getAuthToken();
-      if (!isLocalDev && !customToken) {
-        throw new Error('Authentication token not found. Please sign in again.');
-      }
-
-      if (isLocalDev) {
-        try {
-          const backendApiBase = API_CONFIG.hub;
-          const apiKeyResponse = await fetch(`${backendApiBase}/ask-api-key`, {
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${customToken || ''}`,
-            },
-          });
-
-          if (!apiKeyResponse.ok) {
-            throw new Error('Failed to fetch API key from backend');
-          }
-
-          const apiKeyData = await apiKeyResponse.json();
-          headers['X-API-Key'] = apiKeyData.apiKey;
-        } catch (error) {
-          if (import.meta.env.DEV) {
-            console.error('Failed to fetch API key from backend:', error);
-          }
-          const fallbackKey = import.meta.env.VITE_ASK_API_KEY;
-          if (fallbackKey) {
-            headers['X-API-Key'] = fallbackKey;
-          } else {
-            throw new Error('API key not available');
-          }
-        }
-      } else {
-        headers['Authorization'] = `Bearer ${customToken}`;
-      }
+      const apiUrl = `${API_CONFIG.hub}/generate-task`;
 
       // Get current form values to pass as context
       const currentFormData = form.getValues();
@@ -325,9 +282,8 @@ function NewTaskDialogComponent({ open, onOpenChange, initialProjectId }: NewTas
         requestBody.created_by = user.email;
       }
 
-      const response = await fetch(apiUrl, {
+      const response = await authenticatedFetch(apiUrl, {
         method: 'POST',
-        headers,
         body: JSON.stringify(requestBody),
       });
 

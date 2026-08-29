@@ -21,6 +21,7 @@ spec:
         job: db-migration
     spec:
       restartPolicy: Never
+      serviceAccountName: leanworks-hub-sa
       # If your deployment uses imagePullSecrets, uncomment and set the same secret name:
       # imagePullSecrets:
       # - name: your-registry-secret
@@ -71,11 +72,6 @@ spec:
             configMapKeyRef:
               name: leanworks-config
               key: ENVIRONMENT
-        volumeMounts:
-        - name: gcp-credentials
-          mountPath: /app/gcp_credential.json
-          subPath: gcp_credential.json
-          readOnly: true
         resources:
           requests:
             memory: "256Mi"
@@ -83,7 +79,3 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "500m"
-      volumes:
-      - name: gcp-credentials
-        secret:
-          secretName: gcp-credentials

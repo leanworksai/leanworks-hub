@@ -17,7 +17,8 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getCredentialPath, getSecretName } from '../server/utils/env.js';
+import { getSecretName } from '../server/utils/env.js';
+import { getGoogleCloudConfig } from '../server/utils/google-cloud.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -43,14 +44,11 @@ if (existsSync(envPath)) {
   });
 }
 
-// Read GCP credentials
-const serviceAccountPath = join(__dirname, '../', getCredentialPath());
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-const projectId = serviceAccount.project_id;
+const { projectId } = getGoogleCloudConfig(join(__dirname, '..'));
 
 // Initialize Secret Manager client
 const secretManagerClient = new SecretManagerServiceClient({
-  keyFilename: serviceAccountPath,
+  projectId,
 });
 
 // Fetch PostgreSQL password from Secret Manager

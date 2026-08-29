@@ -14,8 +14,8 @@
  *   npm run db:migrate:dry-run -- --prod     # Dry run, prod
  *
  * Options:
- *   --dev, -D    Use dev DB (gcp_credential_dev.json, dev-postgresdb-password, localhost)
- *   --prod, -P   Use prod DB (gcp_credential.json, postgresdb-password, Cloud SQL or DB_HOST)
+ *   --dev, -D    Use dev DB (dev-postgresdb-password, localhost)
+ *   --prod, -P   Use prod DB (postgresdb-password, Cloud SQL or DB_HOST)
  *   --dry-run, -d  Do not apply migrations, only list what would be done
  *
  * For prod: set DB_HOST=localhost when using Cloud SQL Proxy; otherwise uses Unix socket.
@@ -26,6 +26,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { getGoogleCloudConfig } from '../server/utils/google-cloud.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,17 +63,15 @@ if (existsSync(envPath)) {
 }
 
 // Resolve paths and names from --dev / --prod
-const credentialFile = TARGET_ENV === 'dev' ? 'gcp_credential_dev.json' : 'gcp_credential.json';
 const secretNameForPassword = TARGET_ENV === 'dev' ? 'dev-postgresdb-password' : 'postgresdb-password';
 const defaultInstanceName = TARGET_ENV === 'dev' ? 'leanworks-dev' : 'leanworks-prod';
 const dbRegion = process.env.DB_REGION || 'us-west1';
 
-const serviceAccountPath = join(__dirname, '..', credentialFile);
-const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-const projectId = serviceAccount.project_id;
+process.env.ENVIRONMENT = TARGET_ENV;
+const { projectId } = getGoogleCloudConfig(join(__dirname, '..'));
 
 const secretManagerClient = new SecretManagerServiceClient({
-  keyFilename: serviceAccountPath,
+  projectId,
 });
 
 async function getPostgresPassword(): Promise<string> {
@@ -318,7 +317,7 @@ async function main() {
   console.log(`🚀 Starting database migration for all organizations (target: ${TARGET_ENV})...\n`);
   console.log('Database Configuration:');
   console.log(`  Target: ${TARGET_ENV}`);
-  console.log(`  Credentials: ${credentialFile}`);
+  console.log('  Authentication: Application Default Credentials');
   console.log(`  Host: ${dbHost}`);
   console.log(`  Port: ${dbHost.startsWith('/') ? 'Unix socket' : dbPort}`);
   console.log(`  User: postgres`);

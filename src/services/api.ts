@@ -4,8 +4,7 @@ import type { Doc } from '@/data/docsData';
 import { normalizeDocContentForSave } from '@/lib/tiptapContent';
 import { auth, db } from '@/lib/firebase-client';
 
-// Use proxy API in development (uses gcp_credential.json via Admin SDK)
-// In production, use relative path so nginx can proxy to the backend server
+// In development, call the local backend. In production, use the same-origin proxy.
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 
 // Storage key for current org
@@ -60,29 +59,6 @@ export async function getAuthToken(): Promise<string | null> {
     } catch (error) {
       console.warn('⚠️ Failed to get token from Firebase Auth:', error);
     }
-  } else {
-  }
-  
-  // Fallback: try to get stored custom token from window (set by auth context)
-  try {
-    const storedToken = (window as any).__customToken;
-    if (storedToken) {
-      return storedToken;
-    }
-  } catch (error) {
-    // Ignore
-  }
-  
-  // Final fallback: try to get from localStorage (for persistence)
-  try {
-    const cachedToken = localStorage.getItem('leanworks_custom_token');
-    if (cachedToken) {
-      // Also restore it to window for consistency
-      (window as any).__customToken = cachedToken;
-      return cachedToken;
-    }
-  } catch (error) {
-    // Ignore localStorage errors
   }
   
   console.warn('⚠️ No auth token available for API request');
@@ -665,51 +641,6 @@ export const messagesService = {
       throw new Error('Organization context is required');
     }
 
-    // Determine the external AI service URL
-    const isLocalDev = import.meta.env.DEV;
-    const aiServiceBase = isLocalDev
-      ? import.meta.env.VITE_AI_SERVICE_URL || 'http://0.0.0.0:8082'
-      : import.meta.env.VITE_AI_SERVICE_URL || '';
-
-    const aiServiceUrl = `${aiServiceBase}/api/messages/generate-response`;
-
-    // Prepare headers
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-
-    // Use Bearer token for production, API key for local testing
-    if (isLocalDev) {
-      try {
-        const backendApiBase = import.meta.env.DEV ? 'http://localhost:3001' : '';
-        const apiKeyResponse = await fetch(`${backendApiBase}/api/ask-api-key`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${await getAuthToken() || ''}`,
-          },
-        });
-
-        if (apiKeyResponse.ok) {
-          const apiKeyData = await apiKeyResponse.json();
-          headers['X-API-Key'] = apiKeyData.apiKey;
-        } else {
-          const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-          headers['X-API-Key'] = fallbackKey;
-        }
-      } catch (error) {
-        console.error('Failed to fetch API key from backend, using fallback:', error);
-        const fallbackKey = import.meta.env.VITE_ASK_API_KEY || '7aeCdl+e5wtI/7PZFlGcUaWEM8Mf32AY7qSoThiO5WI=';
-        headers['X-API-Key'] = fallbackKey;
-      }
-    } else {
-      const token = await getAuthToken();
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      } else {
-        throw new Error('Authentication required');
-      }
-    }
-
     const requestPayload: any = {
       user_id: userEmail.toLowerCase(),
       org_slug: orgSlug,
@@ -723,9 +654,11 @@ export const messagesService = {
       requestPayload.cited_context = params.citedContext;
     }
 
-    const response = await fetch(aiServiceUrl, {
+    const aiServiceUrl = import.meta.env.DEV
+      ? `${API_BASE}/api/messages/generate-response`
+      : `${API_BASE}/messages/generate-response`;
+    const response = await authenticatedFetch(aiServiceUrl, {
       method: 'POST',
-      headers,
       body: JSON.stringify(requestPayload),
     });
 

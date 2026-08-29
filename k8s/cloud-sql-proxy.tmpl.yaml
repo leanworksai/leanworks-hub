@@ -27,7 +27,6 @@ spec:
         args:
         - "--address=0.0.0.0"
         - "--port=5432"
-        - "--credentials-file=/secrets/gcp_credential.json"
         - "$(DB_INSTANCE_CONNECTION_STRING)"
         env:
         - name: DB_INSTANCE_CONNECTION_STRING
@@ -45,10 +44,6 @@ spec:
           limits:
             memory: "256Mi"
             cpu: "200m"
-        volumeMounts:
-        - name: gcp-credentials
-          mountPath: /secrets
-          readOnly: true
         livenessProbe:
           tcpSocket:
             port: 5432
@@ -65,10 +60,6 @@ spec:
           failureThreshold: 3
         securityContext:
           runAsNonRoot: true
-      volumes:
-      - name: gcp-credentials
-        secret:
-          secretName: __GCP_SECRET__
 ---
 apiVersion: v1
 kind: Service

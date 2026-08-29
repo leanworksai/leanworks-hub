@@ -10,14 +10,8 @@
 
 import { PubSub, Topic, Subscription, Message } from '@google-cloud/pubsub';
 import crypto from 'crypto';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { getCredentialPath } from '../utils/env.js';
+import { getGoogleCloudConfig } from '../utils/google-cloud.js';
 import { queryOrg, executeOrg } from '../../database/multi-tenant-pool.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // ============================================================================
 // TYPES
@@ -91,24 +85,10 @@ let platformEventsTopic: Topic | null = null;
 const TOPIC_NAME = process.env.PUBSUB_PLATFORM_EVENTS_TOPIC || 'platform-events';
 const SUBSCRIPTION_NAME = process.env.PUBSUB_PLATFORM_EVENTS_SUB || 'platform-events-sub';
 
-function getProjectId(): string {
-  const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
-  if (existsSync(serviceAccountPath)) {
-    const sa = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-    return sa.project_id;
-  }
-  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT_ID || '';
-}
-
 function getPubSubClient(): PubSub {
   if (!pubsubClient) {
-    const projectId = getProjectId();
-    const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
-    if (existsSync(serviceAccountPath)) {
-      pubsubClient = new PubSub({ projectId, keyFilename: serviceAccountPath });
-    } else {
-      pubsubClient = new PubSub({ projectId });
-    }
+    const { projectId } = getGoogleCloudConfig();
+    pubsubClient = new PubSub({ projectId });
   }
   return pubsubClient;
 }
