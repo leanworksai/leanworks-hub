@@ -2,6 +2,10 @@
 
 A comprehensive collaboration platform built with modern technologies. Leanworks Hub combines task management, document collaboration, and AI-powered assistance into a unified workspace.
 
+## Product Demo
+
+[![Watch the Leanworks Hub product demo](https://img.youtube.com/vi/R19LnjhraIM/maxresdefault.jpg)](https://youtu.be/R19LnjhraIM)
+
 ## Table of Contents
 
 - [Demo Mode](#demo-mode)
