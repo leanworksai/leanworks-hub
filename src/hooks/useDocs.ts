@@ -114,7 +114,6 @@ export const useCreateDoc = () => {
 
 export const useUpdateDoc = () => {
   const queryClient = useQueryClient();
-  const { currentOrg } = useOrg();
   
   return useMutation({
     mutationFn: ({ docId, updates }: { docId: string; updates: Partial<Doc> }) =>
@@ -125,22 +124,20 @@ export const useUpdateDoc = () => {
       await queryClient.cancelQueries({ queryKey: ['docs'] });
       
       // Snapshot the previous values
-      const previousDoc = queryClient.getQueryData<Doc>(['docs', docId, currentOrg?.id]);
-      const previousDocs = currentOrg?.id 
-        ? queryClient.getQueryData<Doc[]>(['docs', currentOrg.id])
-        : null;
+      const previousDoc = queryClient.getQueryData<Doc>(['docs', docId]);
+      const previousDocs = queryClient.getQueryData<Doc[]>(['docs']);
       
       // Optimistically update the cache
       if (previousDoc) {
         const optimisticDoc = { ...previousDoc, ...updates, updatedAt: new Date().toISOString() };
-        queryClient.setQueryData<Doc>(['docs', docId, currentOrg?.id], optimisticDoc);
+        queryClient.setQueryData<Doc>(['docs', docId], optimisticDoc);
         
         // Also update in the docs list
-        if (previousDocs && currentOrg?.id) {
+        if (previousDocs) {
           const updatedDocs = previousDocs.map(doc => 
             doc.id === docId ? optimisticDoc : doc
           );
-          queryClient.setQueryData<Doc[]>(['docs', currentOrg.id], updatedDocs);
+          queryClient.setQueryData<Doc[]>(['docs'], updatedDocs);
         }
       }
       
@@ -148,43 +145,34 @@ export const useUpdateDoc = () => {
     },
     onError: (err, variables, context) => {
       // Rollback on error
-      if (context?.previousDoc && currentOrg?.id) {
-        queryClient.setQueryData(['docs', variables.docId, currentOrg.id], context.previousDoc);
+      if (context?.previousDoc) {
+        queryClient.setQueryData(['docs', variables.docId], context.previousDoc);
       }
-      if (context?.previousDocs && currentOrg?.id) {
-        queryClient.setQueryData(['docs', currentOrg.id], context.previousDocs);
+      if (context?.previousDocs) {
+        queryClient.setQueryData(['docs'], context.previousDocs);
       }
     },
     onSuccess: (_, variables) => {
       // Update cache directly with the data we just saved - no refetch needed
       // This prevents cursor reset in the editor
-      if (currentOrg?.id) {
-        const currentDoc = queryClient.getQueryData<Doc>(['docs', variables.docId, currentOrg.id]);
-        if (currentDoc) {
-          queryClient.setQueryData(['docs', variables.docId, currentOrg.id], {
-            ...currentDoc,
-            ...variables.updates,
-            updatedAt: new Date().toISOString(),
-          });
-        }
+      const currentDoc = queryClient.getQueryData<Doc>(['docs', variables.docId]);
+      if (currentDoc) {
+        queryClient.setQueryData(['docs', variables.docId], {
+          ...currentDoc,
+          ...variables.updates,
+          updatedAt: new Date().toISOString(),
+        });
       }
       
-      // Invalidate the docs list query for the current org to trigger refetch
-      // This ensures the hierarchical structure is updated after moving items
-      if (currentOrg?.id) {
-        queryClient.invalidateQueries({ 
-          queryKey: ['docs', currentOrg.id],
-        });
-      } else {
-        // Fallback: invalidate all docs queries if no org context
-        queryClient.invalidateQueries({ 
-          queryKey: ['docs'],
-          predicate: (query) => {
-            // Only invalidate list queries (['docs', orgId]), not individual doc queries (['docs', docId, orgId])
-            return query.queryKey[0] === 'docs' && query.queryKey.length === 2;
-          }
-        });
-      }
+      // Only invalidate the docs list query, not the current document query
+      // Invalidating the current doc causes refetch which resets cursor position
+      queryClient.invalidateQueries({ 
+        queryKey: ['docs'],
+        predicate: (query) => {
+          // Only invalidate list queries (['docs']), not individual doc queries (['docs', docId])
+          return query.queryKey[0] === 'docs' && query.queryKey.length === 1;
+        }
+      });
     },
   });
 };

@@ -5,7 +5,6 @@
 
 import express from 'express';
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
-import { getSecretName } from '../utils/env.js';
 
 // Cache for Twilio credentials (from Secret Manager)
 let cachedTwilioCredentials: { accountSid: string; authToken: string } | null = null;
@@ -46,12 +45,12 @@ async function getTwilioCredentials(
 
   try {
     // Fetch Account SID
-    const accountSidSecretName = `projects/${projectId}/secrets/${getSecretName('twilio-account-sid')}/versions/latest`;
+    const accountSidSecretName = `projects/${projectId}/secrets/twilio-account-sid/versions/latest`;
     const [accountSidVersion] = await secretManagerClient.accessSecretVersion({ name: accountSidSecretName });
     const accountSid = accountSidVersion.payload?.data?.toString()?.trim() || '';
 
     // Fetch Auth Token
-    const authTokenSecretName = `projects/${projectId}/secrets/${getSecretName('twilio-auth-token')}/versions/latest`;
+    const authTokenSecretName = `projects/${projectId}/secrets/twilio-auth-token/versions/latest`;
     const [authTokenVersion] = await secretManagerClient.accessSecretVersion({ name: authTokenSecretName });
     const authToken = authTokenVersion.payload?.data?.toString()?.trim() || '';
 

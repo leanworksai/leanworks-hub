@@ -37,51 +37,6 @@ const clickupIntegrationSchema = z.object({
   apiToken: z.string().min(1, 'API token is required'),
 });
 
-// Workday integration schema
-const workdayIntegrationSchema = z.object({
-  clientId: z.string().min(1, 'Client ID is required'),
-  clientSecret: z.string().min(1, 'Client Secret is required'),
-  tenantId: z.string().min(1, 'Tenant ID is required'),
-  baseUrl: z.string().min(1, 'Base URL is required'),
-});
-
-// GCP service account JSON validation helper
-const serviceAccountJsonSchema = z.string().min(1, 'Service account JSON is required').refine(
-  (val) => {
-    try {
-      const parsed = JSON.parse(val);
-      const hasKey = (parsed.private_key ?? parsed.privateKey) != null;
-      const hasEmail = (parsed.client_email ?? (parsed as any).clientEmail) != null;
-      return (
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        typeof (parsed.type ?? (parsed as any).type) === 'string' &&
-        hasKey &&
-        hasEmail
-      );
-    } catch {
-      return false;
-    }
-  },
-  { message: 'Must be valid GCP service account JSON with type, private_key, and client_email' }
-);
-
-// Google Drive integration schema
-const googleDriveIntegrationSchema = z.object({
-  serviceAccountJson: serviceAccountJsonSchema,
-});
-
-// Google Cloud Storage integration schema
-const googleCloudStorageIntegrationSchema = z.object({
-  serviceAccountJson: serviceAccountJsonSchema,
-  bucketName: z.string().optional(),
-});
-
-// BigQuery integration schema
-const bigqueryIntegrationSchema = z.object({
-  serviceAccountJson: serviceAccountJsonSchema,
-});
-
 // Union schema for all integrations
 export const connectIntegrationSchema = z.union([
   slackIntegrationSchema,
@@ -90,10 +45,6 @@ export const connectIntegrationSchema = z.union([
   notionIntegrationSchema,
   linearIntegrationSchema,
   clickupIntegrationSchema,
-  workdayIntegrationSchema,
-  googleDriveIntegrationSchema,
-  googleCloudStorageIntegrationSchema,
-  bigqueryIntegrationSchema,
 ]);
 
 // Export individual schemas for specific use
@@ -104,10 +55,6 @@ export {
   notionIntegrationSchema,
   linearIntegrationSchema,
   clickupIntegrationSchema,
-  workdayIntegrationSchema,
-  googleDriveIntegrationSchema,
-  googleCloudStorageIntegrationSchema,
-  bigqueryIntegrationSchema,
 };
 
 // Export types
@@ -117,7 +64,3 @@ export type OutlookIntegrationInput = z.infer<typeof outlookIntegrationSchema>;
 export type NotionIntegrationInput = z.infer<typeof notionIntegrationSchema>;
 export type LinearIntegrationInput = z.infer<typeof linearIntegrationSchema>;
 export type ClickUpIntegrationInput = z.infer<typeof clickupIntegrationSchema>;
-export type WorkdayIntegrationInput = z.infer<typeof workdayIntegrationSchema>;
-export type GoogleDriveIntegrationInput = z.infer<typeof googleDriveIntegrationSchema>;
-export type GoogleCloudStorageIntegrationInput = z.infer<typeof googleCloudStorageIntegrationSchema>;
-export type BigQueryIntegrationInput = z.infer<typeof bigqueryIntegrationSchema>;

@@ -53,7 +53,7 @@ async function getPostgresPassword(): Promise<string> {
 
 // Database configuration
 const isLocalDev = process.env.NODE_ENV === 'development' || !process.env.DB_HOST;
-const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:${process.env.DB_INSTANCE_NAME || 'leanworks-prod'}`);
+const dbHost = process.env.DB_HOST || (isLocalDev ? 'localhost' : `/cloudsql/${projectId}:us-west1:leanworks-prod`);
 const dbPort = parseInt(process.env.DB_PORT || '5432');
 
 const orgSlug = process.argv[2] || 'leanworksai_mj6bu7m8';

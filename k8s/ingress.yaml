@@ -5,7 +5,7 @@ metadata:
   annotations:
     # Static IP name - update if your existing reservation uses a different name
     kubernetes.io/ingress.global-static-ip-name: "leanworks-hub-ip"
-    networking.gke.io/managed-certificates: "leanworks-ai-ssl-cert,hub-leanworks-ai-ssl-cert"
+    networking.gke.io/managed-certificates: "leanworks-ai-ssl-cert,hub-leanworks-ai-ssl-cert,livekit-leanworks-ai-ssl-cert"
     # HTTPS only - disable HTTP
     kubernetes.io/ingress.allow-http: "false"
     # Backend config annotation (matches working pattern)
@@ -70,6 +70,14 @@ spec:
             name: ask-api
             port:
               number: 80
+      # LiveKit WebSocket endpoint (must come before catch-all)
+      - path: /livekit
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-service
+            port:
+              number: 7880
       # All other paths (including leanworks-hub /api/* routes) go to frontend
       - path: /
         pathType: Prefix
@@ -78,6 +86,17 @@ spec:
             name: leanworks-hub-service
             port:
               number: 80
+  # LiveKit subdomain - routes directly to LiveKit service
+  - host: livekit.leanworks.ai
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-service
+            port:
+              number: 7880
   # Legacy domain (for backward compatibility during migration)
   - host: hub.leanworks.ai
     http:
@@ -133,6 +152,14 @@ spec:
             name: ask-api
             port:
               number: 80
+      # LiveKit WebSocket endpoint (must come before catch-all)
+      - path: /livekit
+        pathType: Prefix
+        backend:
+          service:
+            name: livekit-service
+            port:
+              number: 7880
       # All other paths (including leanworks-hub /api/* routes) go to frontend
       - path: /
         pathType: Prefix
@@ -160,4 +187,12 @@ spec:
   domains:
     - hub.leanworks.ai
 
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: livekit-leanworks-ai-ssl-cert
+spec:
+  domains:
+    - livekit.leanworks.ai
 

@@ -11,9 +11,6 @@ import { setAnalyticsUserId, setAnalyticsUserProperties, trackEvent, trackJourne
 import { getAuthToken } from '@/services/api';
 import { calculateJourneyStage, calculateDaysSinceSignup } from '@/lib/journey-tracker';
 
-// Check if demo mode is enabled
-const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
-
 // API base URL
 const API_BASE = import.meta.env.DEV ? 'http://localhost:3001' : '/api';
 
@@ -95,69 +92,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const restoreAuthState = async (retryCount = 0) => {
       try {
-        // In demo mode, auto-login the demo user
-        if (DEMO_MODE) {
-          console.log('🎭 Demo mode: Auto-logging in demo user');
-          
-          const mockUser = {
-            uid: 'demo-user-id',
-            email: 'demo@example.com',
-            displayName: 'Demo User',
-            emailVerified: true,
-            isAnonymous: false,
-            metadata: {},
-            providerData: [],
-            refreshToken: 'demo-token',
-            toJSON: () => ({}),
-            getIdToken: async () => 'mock-token-demo',
-            getIdTokenResult: async () => ({ token: 'mock-token-demo', expirationTime: new Date(Date.now() + 3600000).toISOString(), issuedAtTime: new Date().toISOString(), signInProvider: 'custom', signInTime: new Date().toISOString(), claims: {} }),
-            reload: async () => {},
-            getDisplayName: () => 'Demo User',
-            getEmail: () => 'demo@example.com',
-            getPhotoURL: () => null,
-            getPhoneNumber: () => null,
-            getProviderData: () => [],
-            getRecreateEmailVerificationLink: async () => '',
-            getRecreateSignInLink: async () => '',
-            getRecreatePasswordEmailLink: async () => '',
-            reauthenticateWithCredential: async () => ({}),
-            reauthenticateWithPhoneNumber: async () => ({}),
-            reauthenticateWithPopup: async () => ({}),
-            reauthenticateWithRedirect: async () => {},
-            reauthenticateAndRetrieveDataWithCredential: async () => ({}),
-            reauthenticateWithProvider: async () => ({}),
-            linkWithCredential: async () => ({}),
-            linkWithPhoneNumber: async () => ({}),
-            linkWithPopup: async () => ({}),
-            linkWithRedirect: async () => {},
-            linkWithProvider: async () => ({}),
-            unlinkProvider: async () => ({}),
-            updateProfile: async () => {},
-            updateEmail: async () => {},
-            updatePassword: async () => {},
-            updatePhoneNumber: async () => {},
-            sendEmailVerification: async () => {},
-            sendPasswordResetEmail: async () => {},
-            delete: async () => {},
-          } as any as User;
-          
-          setUser(mockUser);
-          storedCustomToken = 'mock-token-demo';
-          (window as any).__customToken = 'mock-token-demo';
-          storage.set(STORAGE_KEYS.CUSTOM_TOKEN, 'mock-token-demo');
-          storage.set(STORAGE_KEYS.USER_DATA, JSON.stringify({
-            uid: 'demo-user-id',
-            email: 'demo@example.com',
-            emailVerified: true,
-          }));
-          
-          setAuthReady(true);
-          setLoading(false);
-          
-          console.log('✅ Demo mode: User authenticated');
-          return;
-        }
-
         // Check for invalid API key in existing Firebase app (from cache or previous load)
         // This is especially important for Safari which aggressively caches
         checkAndWarnInvalidApiKey();

@@ -9,7 +9,6 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getSharedPool } from '../../database/multi-tenant-pool.js';
-import { getCredentialPath } from '../utils/env.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,7 +18,7 @@ let pubsubClient: PubSub | null = null;
 
 // Get project ID from credentials
 function getProjectId(): string {
-  const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
+  const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
   if (existsSync(serviceAccountPath)) {
     const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
     return serviceAccount.project_id;
@@ -31,7 +30,7 @@ function getProjectId(): string {
 function getPubSubClient(): PubSub {
   if (!pubsubClient) {
     const projectId = getProjectId();
-    const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
     if (existsSync(serviceAccountPath)) {
       pubsubClient = new PubSub({
         projectId,

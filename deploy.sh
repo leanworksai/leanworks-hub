@@ -3,21 +3,9 @@
 set -e
 
 # Configuration
-ENVIRONMENT="${1:-prod}"  # Default to "prod" if no argument provided
-CLUSTER_NAME="leanworks-${ENVIRONMENT}"
-DB_INSTANCE_NAME="leanworks-${ENVIRONMENT}"
-AUDIO_STORAGE_BUCKET="leanworks-${ENVIRONMENT}"
-FIRESTORE_DATABASE_NAME="leanworks-${ENVIRONMENT}"
+CLUSTER_NAME="leanworks-prod"
 REGION="us-west1"  # Update this to your cluster's region
-if [ "$ENVIRONMENT" = "dev" ]; then
-    GCP_CREDENTIAL_FILE="gcp_credential_dev.json"
-    CONFIGMAP_FILE="k8s/configmap-dev.yaml"
-    GCP_SECRET_NAME="gcp-credentials-dev"
-else
-    GCP_CREDENTIAL_FILE="gcp_credential.json"
-    CONFIGMAP_FILE="k8s/configmap.yaml"
-    GCP_SECRET_NAME="gcp-credentials"
-fi
+GCP_CREDENTIAL_FILE="gcp_credential.json"
 ARTIFACT_REGISTRY_REPO="docker-repo"  # Artifact Registry repository name
 
 # Colors for output
@@ -26,7 +14,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Starting deployment to GKE (${ENVIRONMENT} environment)...${NC}"
+echo -e "${GREEN}Starting deployment to GKE...${NC}"
 
 # Check if GCP credentials file exists
 if [ ! -f "$GCP_CREDENTIAL_FILE" ]; then
@@ -84,14 +72,14 @@ gcloud container clusters get-credentials "$CLUSTER_NAME" --region="$REGION" --p
 
 # Create Kubernetes secret for GCP credentials (for Cloud SQL Proxy)
 echo -e "${YELLOW}Creating Kubernetes secret for GCP credentials...${NC}"
-if kubectl get secret "$GCP_SECRET_NAME" -n default &>/dev/null; then
+if kubectl get secret gcp-credentials -n default &>/dev/null; then
     echo -e "${YELLOW}Secret already exists, updating...${NC}"
-    kubectl create secret generic "$GCP_SECRET_NAME" \
+    kubectl create secret generic gcp-credentials \
         --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE" \
         --dry-run=client -o yaml | kubectl apply -f -
     echo -e "${GREEN}Secret updated!${NC}"
 else
-    kubectl create secret generic "$GCP_SECRET_NAME" \
+    kubectl create secret generic gcp-credentials \
         --from-file=gcp_credential.json="$GCP_CREDENTIAL_FILE"
     echo -e "${GREEN}Secret created!${NC}"
 fi
@@ -111,27 +99,6 @@ if [ -z "$GSA_EMAIL" ]; then
 fi
 
 echo -e "${GREEN}Using GCP service account: ${GSA_EMAIL}${NC}"
-
-# Ensure Kubernetes service account exists and is annotated for Workload Identity
-echo -e "${YELLOW}Ensuring Kubernetes service account exists...${NC}"
-kubectl apply -f k8s/serviceaccount.yaml
-kubectl annotate serviceaccount leanworks-hub-sa \
-    iam.gke.io/gcp-service-account="${GSA_EMAIL}" \
-    --overwrite 1>/dev/null
-echo -e "${GREEN}Kubernetes service account annotated for Workload Identity.${NC}"
-
-# Allow KSA to impersonate GSA (Workload Identity)
-echo -e "${YELLOW}Binding Workload Identity user role...${NC}"
-if ! gcloud iam service-accounts add-iam-policy-binding "${GSA_EMAIL}" \
-    --role="roles/iam.workloadIdentityUser" \
-    --member="serviceAccount:${PROJECT_ID}.svc.id.goog[default/leanworks-hub-sa]" \
-    --quiet 2>/dev/null; then
-    echo -e "${YELLOW}⚠️  Could not bind Workload Identity user role automatically.${NC}"
-    echo -e "${YELLOW}   If Workload Identity is enabled, run manually:${NC}"
-    echo -e "   gcloud iam service-accounts add-iam-policy-binding ${GSA_EMAIL} \\"
-    echo -e "     --role=\"roles/iam.workloadIdentityUser\" \\"
-    echo -e "     --member=\"serviceAccount:${PROJECT_ID}.svc.id.goog[default/leanworks-hub-sa]\""
-fi
 
 # Grant Cloud SQL Client role to the service account (if needed)
 echo -e "${YELLOW}Verifying Cloud SQL Client role for ${GSA_EMAIL}...${NC}"
@@ -167,90 +134,68 @@ docker push "$IMAGE_NAME:latest"
 
 # Apply Kubernetes manifests (for initial deployment or config changes)
 echo -e "${YELLOW}Applying Kubernetes manifests...${NC}"
-CONFIGMAP_TEMPLATE="${CONFIGMAP_FILE%.yaml}.tmpl.yaml"
-if [ -f "$CONFIGMAP_TEMPLATE" ]; then
-    CONFIGMAP_MANIFEST=$(mktemp)
-    sed -e "s|__PROJECT_ID__|$PROJECT_ID|g" \
-        "$CONFIGMAP_TEMPLATE" > "$CONFIGMAP_MANIFEST"
-    kubectl apply -f "$CONFIGMAP_MANIFEST"
-    rm -f "$CONFIGMAP_MANIFEST"
-else
-    kubectl apply -f "$CONFIGMAP_FILE"
-fi
 kubectl apply -f k8s/backend-config.yaml
-SQL_PROXY_TEMPLATE="k8s/cloud-sql-proxy.tmpl.yaml"
-if [ -f "$SQL_PROXY_TEMPLATE" ]; then
-    SQL_PROXY_MANIFEST=$(mktemp)
-    sed -e "s|__GCP_SECRET__|$GCP_SECRET_NAME|g" \
-        "$SQL_PROXY_TEMPLATE" > "$SQL_PROXY_MANIFEST"
-    kubectl apply -f "$SQL_PROXY_MANIFEST"
-    rm -f "$SQL_PROXY_MANIFEST"
-else
-    kubectl apply -f k8s/cloud-sql-proxy.yaml
-fi
-DEPLOYMENT_TEMPLATE="k8s/deployment.tmpl.yaml"
-if [ -f "$DEPLOYMENT_TEMPLATE" ]; then
-    DEPLOYMENT_MANIFEST=$(mktemp)
-    sed -e "s|__IMAGE__|$FULL_IMAGE_NAME|g" \
-        -e "s|__GCP_SECRET__|$GCP_SECRET_NAME|g" \
-        "$DEPLOYMENT_TEMPLATE" > "$DEPLOYMENT_MANIFEST"
-    kubectl apply -f "$DEPLOYMENT_MANIFEST"
-    rm -f "$DEPLOYMENT_MANIFEST"
-else
-    kubectl apply -f k8s/deployment.yaml
-fi
-
-# Apply environment-specific ingress and certificates
-if [ "$ENVIRONMENT" = "dev" ]; then
-    echo -e "${YELLOW}Applying dev-specific ingress and certificates...${NC}"
-    kubectl apply -f k8s/ingress-dev.yaml
-else
-    echo -e "${YELLOW}Applying production ingress...${NC}"
-    kubectl apply -f k8s/ingress.yaml
-fi
+kubectl apply -f k8s/cloud-sql-proxy.yaml
+kubectl apply -f k8s/serviceaccount.yaml
+kubectl apply -f k8s/livekit-deployment.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/ingress.yaml
 
 # Update the deployment with the new image tag
 echo -e "${YELLOW}Updating Kubernetes deployment with new image tag...${NC}"
 kubectl set image deployment/leanworks-hub leanworks-hub="$FULL_IMAGE_NAME" -n default
 
-# Force a rollout restart to ensure the new image/config are applied
-echo -e "${YELLOW}Forcing deployment rollouts...${NC}"
+# Force a rollout restart to ensure the new image is pulled
+echo -e "${YELLOW}Forcing deployment rollout...${NC}"
 kubectl rollout restart deployment/leanworks-hub
-kubectl rollout restart deployment/cloud-sql-proxy
 
 # Wait for deployments to be ready
+echo -e "${YELLOW}Waiting for LiveKit deployment to be ready...${NC}"
+if kubectl wait --for=condition=available --timeout=300s deployment/livekit-server 2>/dev/null; then
+    echo -e "${GREEN}✅ LiveKit deployment is ready${NC}"
+else
+    echo -e "${YELLOW}⚠️  LiveKit deployment may still be starting...${NC}"
+    kubectl get pods -l app=livekit-server
+fi
 
-echo -e "${YELLOW}Waiting for deployments to be ready...${NC}"
+echo -e "${YELLOW}Waiting for backend deployment to be ready...${NC}"
 kubectl rollout status deployment/leanworks-hub
-kubectl rollout status deployment/cloud-sql-proxy
 
-# Note: LIVEKIT_URL is now handled by ConfigMap in deployment.yaml
-# No manual override needed - ConfigMap provides environment-specific URLs
+# Get LiveKit LoadBalancer IP and update backend if available
+echo -e "${YELLOW}Checking LiveKit LoadBalancer IP...${NC}"
+EXTERNAL_IP=$(kubectl get svc livekit-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+if [ -n "$EXTERNAL_IP" ]; then
+    echo -e "${GREEN}✅ LiveKit LoadBalancer IP: ${EXTERNAL_IP}${NC}"
+    # Use secure domain URL with SSL (required for HTTPS pages)
+    # The ingress routes livekit.leanworks.ai to the LiveKit service
+    LIVEKIT_URL="wss://livekit.leanworks.ai"
+    echo -e "${YELLOW}Updating backend deployment with LiveKit URL...${NC}"
+    if kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null; then
+        echo -e "${GREEN}✅ Backend LIVEKIT_URL updated to: ${LIVEKIT_URL}${NC}"
+        echo -e "${GREEN}   (Using secure domain instead of IP for HTTPS compatibility)${NC}"
+        kubectl rollout status deployment/leanworks-hub --timeout=120s || echo -e "${YELLOW}⚠️  Rollout may still be in progress${NC}"
+    else
+        echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL. You may need to update it manually.${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠️  LiveKit LoadBalancer IP not available yet.${NC}"
+    echo -e "${YELLOW}   The LoadBalancer may take a few minutes to provision.${NC}"
+    echo -e "${YELLOW}   Using secure domain URL: wss://livekit.leanworks.ai${NC}"
+    # Still set the secure URL even if IP is not available
+    LIVEKIT_URL="wss://livekit.leanworks.ai"
+    kubectl set env deployment/leanworks-hub LIVEKIT_URL="${LIVEKIT_URL}" 2>/dev/null || echo -e "${YELLOW}⚠️  Could not update LIVEKIT_URL${NC}"
+fi
 
 # Get service information
 echo -e "${GREEN}Deployment completed successfully!${NC}"
 echo -e "${YELLOW}Service information:${NC}"
 kubectl get service leanworks-hub-service
+echo ""
+echo -e "${YELLOW}LiveKit service information:${NC}"
+kubectl get service livekit-service livekit-service-udp livekit-service-rtc-tcp 2>/dev/null || echo "LiveKit services may still be provisioning..."
 
-# Display IP addresses for DNS mapping
-echo -e "${GREEN}IP Addresses for DNS mapping:${NC}"
-if [ "$ENVIRONMENT" = "dev" ]; then
-    DEV_IP=$(gcloud compute addresses describe leanworks-dev-hub-ip --global --format="value(address)" 2>/dev/null)
-    if [ -n "$DEV_IP" ]; then
-        echo -e "${GREEN}Dev Ingress IP: ${DEV_IP}${NC}"
-        echo -e "${YELLOW}DNS Records needed:${NC}"
-        echo -e "  dev.leanworks.ai     → A record → ${DEV_IP}"
-    else
-        echo -e "${YELLOW}⚠️  Dev IP not available yet. Run this command to get it:${NC}"
-        echo "gcloud compute addresses describe leanworks-dev-hub-ip --global --format=\"value(address)\""
-    fi
-else
-    # For production, show current ingress IP
-    PROD_IP=$(kubectl get ingress leanworks-hub-ingress -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-    if [ -n "$PROD_IP" ]; then
-        echo -e "${GREEN}Production Ingress IP: ${PROD_IP}${NC}"
-    fi
-fi
-
-echo -e "${GREEN}To get the external IPs manually, run:${NC}"
+echo -e "${GREEN}To get the external IPs, run:${NC}"
 echo "kubectl get service leanworks-hub-service"
+echo "kubectl get service livekit-service"
+

@@ -29,6 +29,7 @@ export interface ChannelMessage {
   content: string;
   timestamp: Date;
   projectId?: string;
+  teamId?: string;
   userId?: string;
   imageUrls?: string[];
   likes?: string[];
@@ -49,5 +50,5 @@ export interface LikedByUser {
   initials: string;
 }
 
-export type ChatType = 'dm' | 'ai-assistant' | 'project';
+export type ChatType = 'dm' | 'ai-assistant' | 'project' | 'team';
 

@@ -12,11 +12,9 @@ import { fileURLToPath } from 'url';
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
 import { getOrgPoolBySlug } from '../../database/multi-tenant-pool';
-import { getStorageBucket, getCredentialPath, isDevEnvironment } from '../utils/env.js';
 import {
   getDocumentProcessingPubSubClient,
   getDocumentProcessingSubscriptionName,
-  getDocProcessingTopic,
   DocumentProcessingJob,
   publishDocumentProcessingStatus,
 } from '../services/document-pubsub.js';
@@ -36,10 +34,10 @@ const __dirname = dirname(__filename);
  */
 function initializeFirebaseAdmin(): void {
   if (getApps().length === 0) {
-    const serviceAccountPath = join(__dirname, '../../', getCredentialPath());
+    const serviceAccountPath = join(__dirname, '../../gcp_credential.json');
     if (existsSync(serviceAccountPath)) {
       const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
-      const storageBucket = serviceAccount.storage_bucket || getStorageBucket();
+      const storageBucket = serviceAccount.storage_bucket || 'leanworks-prod';
       try {
         initializeApp({
           credential: cert(serviceAccount),
@@ -360,22 +358,10 @@ export async function startDocumentProcessingWorker(): Promise<void> {
     const subscriptionName = getDocumentProcessingSubscriptionName();
     const subscription = pubsub.subscription(subscriptionName);
 
-    // Check if subscription exists, create if not (in dev environments)
+    // Check if subscription exists
     const [exists] = await subscription.exists();
     if (!exists) {
-      if (isDevEnvironment()) {
-        console.warn(`⚠️ Pub/Sub subscription ${subscriptionName} does not exist. Creating...`);
-
-        const topic = await getDocProcessingTopic();
-        await topic.createSubscription(subscriptionName, {
-          ackDeadlineSeconds: ACK_DEADLINE,
-          messageRetentionDuration: { seconds: 604800 }, // 7 days
-          maxDeliveryAttempts: 5,
-        });
-        console.log(`✅ Pub/Sub subscription ${subscriptionName} created`);
-      } else {
-        throw new Error(`Subscription ${subscriptionName} does not exist. Please run setup script.`);
-      }
+      throw new Error(`Subscription ${subscriptionName} does not exist. Please run setup script.`);
     }
 
     // Configure subscription

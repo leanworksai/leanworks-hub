@@ -13,9 +13,11 @@ interface DocDetailToolbarProps {
   onBack: () => void;
   onShare: () => void;
   onShareViaEmail: () => void;
+  onAttachedFiles: () => void;
   onDelete: () => void;
   onExportPDF?: () => void;
   isOwner: boolean;
+  filesCount: number;
   isNew: boolean;
   doc: { id: string } | null | undefined;
 }
@@ -24,9 +26,11 @@ export function DocDetailToolbar({
   onBack,
   onShare,
   onShareViaEmail,
+  onAttachedFiles,
   onDelete,
   onExportPDF,
   isOwner,
+  filesCount,
   isNew,
   doc,
 }: DocDetailToolbarProps) {
@@ -38,8 +42,10 @@ export function DocDetailToolbar({
           onBack={onBack}
           onShare={onShare}
           onShareViaEmail={onShareViaEmail}
+          onAttachedFiles={onAttachedFiles}
           onDelete={onDelete}
           isOwner={isOwner}
+          filesCount={filesCount}
           isNew={isNew}
         />
       </div>
@@ -62,9 +68,10 @@ export function DocDetailToolbar({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {createDocActions(isOwner, {
+              {createDocActions(isOwner, filesCount, {
                 onShare,
                 onShareViaEmail,
+                onAttachedFiles,
                 onDelete,
                 onExportPDF,
               }).map((action, index) => (
